@@ -166,6 +166,7 @@ function HeatDashboard(): React.JSX.Element {
 
   const [isLoadingKeywords, setIsLoadingKeywords] = useState(false)
   const [isLoadingProducts, setIsLoadingProducts] = useState(false)
+  const [isImportingSnapshot, setIsImportingSnapshot] = useState(false)
   const [isSourcing, setIsSourcing] = useState(false)
   const [isSourcingRunning, setIsSourcingRunning] = useState(false)
   const [isBindingSupplier, setIsBindingSupplier] = useState(false)
@@ -659,6 +660,40 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [])
 
+  const handleImportSnapshotExcel = useCallback(async (): Promise<void> => {
+    if (isImportingSnapshot) return
+    setIsImportingSnapshot(true)
+    try {
+      const result = (await window.api.cms.scout.dashboard.importExcelFile()) as
+        | {
+            snapshotDates: string[]
+            rowsUpserted: number
+            productsMapped: number
+            keywordsCount: number
+            sourceFile: string
+          }
+        | null
+      if (!result) {
+        setStatusText('已取消上传快照表格')
+        return
+      }
+      const sourceName = String(result.sourceFile || '')
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .pop()
+      await loadMeta()
+      await Promise.all([loadKeywordsAndTrends(), loadProducts()])
+      setStatusText(
+        `快照导入完成：${sourceName || '未知文件'}，写入 ${result.rowsUpserted} 行，映射 ${result.productsMapped} 个商品`
+      )
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      setStatusText(`快照导入失败：${msg}`)
+    } finally {
+      setIsImportingSnapshot(false)
+    }
+  }, [isImportingSnapshot, loadKeywordsAndTrends, loadMeta, loadProducts])
+
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return
@@ -718,6 +753,17 @@ function HeatDashboard(): React.JSX.Element {
                 ))}
               </ul>
             )}
+          </div>
+
+          <div className="border-t border-zinc-800 bg-zinc-900/95 p-2">
+            <button
+              type="button"
+              className="w-full rounded-md border border-cyan-500/60 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-55"
+              onClick={() => void handleImportSnapshotExcel()}
+              disabled={isImportingSnapshot}
+            >
+              {isImportingSnapshot ? '上传中...' : '上传快照表格'}
+            </button>
           </div>
         </aside>
 
