@@ -148,6 +148,14 @@ type SourcingDebugResult = {
 }
 
 type SourcingSearchResponse = SourcingSearchResult[] | SourcingDebugResult
+type SourcingEmptyState = {
+  title: string
+  detail: string
+  showLoginAction?: boolean
+  showRetryCoverAction?: boolean
+  showRetrySourcingAction?: boolean
+}
+
 type CoverDebugState = {
   visual: boolean
   keepWindowOpen: boolean
@@ -189,6 +197,7 @@ function HeatDashboard(): React.JSX.Element {
   const [isCoverDebugUpdating, setIsCoverDebugUpdating] = useState(false)
   const [sourcingMarked, setSourcingMarked] = useState<MarkedProduct | null>(null)
   const [sourcingSearchCandidates, setSourcingSearchCandidates] = useState<SourcingSupplierCandidate[] | null>(null)
+  const [sourcingEmptyState, setSourcingEmptyState] = useState<SourcingEmptyState | null>(null)
   const [selectedSupplierIndex, setSelectedSupplierIndex] = useState(0)
 
   const keywordRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -522,6 +531,7 @@ function HeatDashboard(): React.JSX.Element {
     setIsBindingSupplier(false)
     setSourcingMarked(null)
     setSourcingSearchCandidates(null)
+    setSourcingEmptyState(null)
     setSelectedSupplierIndex(0)
   }, [selectedKeywordId, selectedProductId])
 
@@ -563,9 +573,21 @@ function HeatDashboard(): React.JSX.Element {
   useEffect(() => {
     const offLoginNeeded = window.api.cms.scout.dashboard.onSourcingLoginNeeded(() => {
       setStatusText('检测到 1688 未登录，请在弹出的窗口完成登录后继续。')
+      setSourcingEmptyState({
+        title: '1688 未登录',
+        detail: '当前会话没有可用登录态，自动搜同款无法继续。',
+        showLoginAction: true,
+        showRetrySourcingAction: true
+      })
     })
     const offCaptchaNeeded = window.api.cms.scout.dashboard.onSourcingCaptchaNeeded(() => {
       setStatusText('检测到验证码，请在弹出的窗口中完成验证后继续。')
+      setSourcingEmptyState({
+        title: '检测到验证码',
+        detail: '请先在 1688 登录窗口完成验证，再点击重试。',
+        showLoginAction: true,
+        showRetrySourcingAction: true
+      })
     })
     return () => {
       offLoginNeeded()
@@ -601,17 +623,28 @@ function HeatDashboard(): React.JSX.Element {
       }
 
       setIsSourcing(true)
-      setIsSourcingRunning(true)
+      setIsSourcingRunning(false)
       setSelectedSupplierIndex(0)
       setSourcingSearchCandidates([])
+      setSourcingEmptyState(null)
       try {
         const saved = await saveSelectedProduct(activeProduct)
         if (!saved) {
+          setSourcingEmptyState({
+            title: '未找到当前商品',
+            detail: '商品未成功写入待办列表，无法继续搜同款。',
+            showRetrySourcingAction: true
+          })
           setStatusText('搜同款失败：未找到当前商品')
           return
         }
         const targetMarked = saved.marked.find((item) => item.productKey === activeProduct.id) ?? null
         if (!targetMarked) {
+          setSourcingEmptyState({
+            title: '商品未成功加入待办',
+            detail: '请先确认快照数据正常，再重试搜同款。',
+            showRetrySourcingAction: true
+          })
           setStatusText('搜同款失败：商品未成功加入待办')
           return
         }
@@ -620,14 +653,39 @@ function HeatDashboard(): React.JSX.Element {
           targetMarked.sourceImage1
         )
         if (!imageUrl) {
+          setSourcingEmptyState({
+            title: '缺少可用主图',
+            detail: '当前卡片没有可用于图搜的主图（cover_cache/source_image_1）。',
+            showRetryCoverAction: true,
+            showRetrySourcingAction: true
+          })
           setStatusText('搜同款失败：未找到可用主图（cover_cache/source_image_1）')
           return
         }
         const targetPrice = targetMarked.salePrice ?? activeProduct.price
         if (targetPrice == null || !Number.isFinite(targetPrice) || targetPrice <= 0) {
+          setSourcingEmptyState({
+            title: '目标售价无效',
+            detail: '目标售价为空或小于等于 0，无法计算利润并筛选候选。',
+            showRetrySourcingAction: true
+          })
           setStatusText('搜同款失败：目标售价无效')
           return
         }
+
+        const has1688Login = await window.api.cms.scout.dashboard.check1688Login().catch(() => false)
+        if (!has1688Login) {
+          setSourcingEmptyState({
+            title: '1688 未登录',
+            detail: '当前生产会话缺少 1688 登录态，请先登录后再执行搜同款。',
+            showLoginAction: true,
+            showRetrySourcingAction: true
+          })
+          setStatusText('搜同款未开始：检测到 1688 未登录，请先登录')
+          return
+        }
+
+        setIsSourcingRunning(true)
         const keyword = activeProduct.name || targetMarked.productName || targetMarked.keyword
         const response = (await window.api.cms.scout.dashboard.search1688ByImage({
           imageUrl,
@@ -654,6 +712,12 @@ function HeatDashboard(): React.JSX.Element {
             return next
           })
           setSourcingSearchCandidates([])
+          setSourcingEmptyState({
+            title: '进入人工介入模式',
+            detail: `自动流程已暂停，请在弹出的 1688 页面手动处理后重试。当前页面：${response.url}`,
+            showLoginAction: true,
+            showRetrySourcingAction: true
+          })
           setStatusText(`进入法医调试模式：请在弹出的 1688 窗口手动处理，当前页面 ${response.url}`)
           return
         }
@@ -671,13 +735,26 @@ function HeatDashboard(): React.JSX.Element {
         setSelectedSupplierIndex(pickSupplierIndexByBestProfit(sourced))
 
         if (sourced.sourcingStatus === 'failed') {
+          setSourcingEmptyState({
+            title: '未检索到可用供应商',
+            detail: sourced.sourcingMessage ?? '图搜与关键词兜底均未返回可用候选。',
+            showLoginAction: true,
+            showRetrySourcingAction: true
+          })
           setStatusText(`搜同款失败：${sourced.sourcingMessage ?? '未命中供应商'}`)
           return
         }
+        setSourcingEmptyState(null)
         const withFallback = results.some((item) => item.isFallback)
         setStatusText(`搜同款完成（${withFallback ? '关键词兜底' : '图搜'}），选择候选供应商后点击“绑定供应商”保存。`)
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
+        setSourcingEmptyState({
+          title: '搜同款执行失败',
+          detail: msg || '未知错误',
+          showLoginAction: /1688|登录|验证码|captcha/i.test(msg),
+          showRetrySourcingAction: true
+        })
         setStatusText(`搜同款失败：${msg}`)
       } finally {
         setIsSourcingRunning(false)
@@ -740,6 +817,34 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [selectedProduct, selectedSupplierIndex, snapshotDate, sourcingCandidates, sourcingMarked])
 
+  const handleOpen1688Login = useCallback(async (): Promise<void> => {
+    try {
+      const opened = await window.api.cms.scout.dashboard.open1688Login()
+      if (!opened) {
+        setStatusText('打开 1688 登录窗口失败，请稍后重试')
+        return
+      }
+      setStatusText('已打开 1688 登录窗口，请先完成登录后重试搜同款')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      setStatusText(`打开 1688 登录窗口失败：${msg}`)
+    }
+  }, [])
+
+  const handleRetrySourcingCover = useCallback((): void => {
+    const activeProduct = selectedProduct
+    if (!activeProduct) {
+      setStatusText('请先选择商品后再重试抓图')
+      return
+    }
+    if (!isLikelyXhsGoodsDetailUrl(activeProduct.productUrl)) {
+      setStatusText('当前商品链接不是小红书商品详情页，无法自动抓封面')
+      return
+    }
+    enqueueMissingCoverFetch(activeProduct.id, activeProduct.productUrl ?? '')
+    setStatusText('已重新提交封面抓取任务，请稍候再重试搜同款')
+  }, [enqueueMissingCoverFetch, selectedProduct])
+
   const handleCopyProductLink = useCallback(async (productUrl: string | null): Promise<void> => {
     const target = String(productUrl ?? '').trim()
     if (!target) {
@@ -762,14 +867,14 @@ function HeatDashboard(): React.JSX.Element {
         const next = (await window.api.cms.scout.dashboard.setCoverDebugState(patch)) as CoverDebugState
         setCoverDebugState(next)
         setStatusText(
-          `封面调试已更新：可视=${next.visual ? '开' : '关'}，保留窗口=${next.keepWindowOpen ? '开' : '关'}，DevTools=${next.openDevTools ? '开' : '关'}`
+          `抓取调试已更新（封面/搜同款）：可视=${next.visual ? '开' : '关'}，保留窗口=${next.keepWindowOpen ? '开' : '关'}，DevTools=${next.openDevTools ? '开' : '关'}`
         )
         if (isCoverDebugPanelOpen) {
           void loadCoverDebugLog(120)
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        setStatusText(`封面调试开关更新失败：${msg}`)
+        setStatusText(`抓取调试开关更新失败：${msg}`)
       } finally {
         setIsCoverDebugUpdating(false)
       }
@@ -946,7 +1051,7 @@ function HeatDashboard(): React.JSX.Element {
                 className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
                 onClick={() => setIsCoverDebugPanelOpen((prev) => !prev)}
               >
-                {isCoverDebugPanelOpen ? '收起封面调试' : '封面调试'}
+                {isCoverDebugPanelOpen ? '收起抓取调试' : '抓取调试'}
               </button>
               <button
                 type="button"
@@ -1059,10 +1164,17 @@ function HeatDashboard(): React.JSX.Element {
         xhsImage={sourcingTargetImage}
         targetPrice={sourcingTargetPrice}
         candidates={sourcingCandidates}
+        emptyState={sourcingEmptyState}
         selectedSupplierIndex={selectedSupplierIndex}
         onSelectSupplier={setSelectedSupplierIndex}
-        onClose={() => setIsSourcing(false)}
+        onClose={() => {
+          setIsSourcing(false)
+          setSourcingEmptyState(null)
+        }}
         onBindSupplier={(index) => void handleBindSupplier(index)}
+        onOpen1688Login={() => void handleOpen1688Login()}
+        onRetryCoverFetch={handleRetrySourcingCover}
+        onRetrySourcing={() => void handleStartSourcing()}
         isBinding={isBindingSupplier}
       />
 
@@ -1341,9 +1453,13 @@ type SourcingPanelProps = {
   xhsImage: string | null
   targetPrice: number | null
   candidates: SourcingSupplierCandidate[]
+  emptyState: SourcingEmptyState | null
   selectedSupplierIndex: number
   onSelectSupplier: (index: number) => void
   onBindSupplier: (index: number) => void
+  onOpen1688Login: () => void
+  onRetryCoverFetch: () => void
+  onRetrySourcing: () => void
   onClose: () => void
 }
 
@@ -1355,9 +1471,13 @@ function SourcingPanel({
   xhsImage,
   targetPrice,
   candidates,
+  emptyState,
   selectedSupplierIndex,
   onSelectSupplier,
   onBindSupplier,
+  onOpen1688Login,
+  onRetryCoverFetch,
+  onRetrySourcing,
   onClose
 }: SourcingPanelProps): React.JSX.Element {
   const resolvedTargetImage = xhsImage ? resolveLocalImage(xhsImage, workspacePath) : ''
@@ -1375,7 +1495,11 @@ function SourcingPanel({
           <div>
             <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/90">搜同款</div>
             <div className="mt-0.5 text-xs text-zinc-300">
-              {isRunning ? '正在搜同款并提取供应商...' : '选择候选供应商后，可直接在卡片内点击“绑定供应商”'}
+              {isRunning
+                ? '正在搜同款并提取供应商...'
+                : emptyState
+                  ? '请根据提示完成前置条件，再重试搜同款'
+                  : '选择候选供应商后，可直接在卡片内点击“绑定供应商”'}
             </div>
           </div>
           <button
@@ -1410,9 +1534,51 @@ function SourcingPanel({
 
           <div className="h-full min-w-0 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
             {candidates.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-                {isRunning ? '供应商抓取中...' : '暂无供应商候选'}
-              </div>
+              isRunning ? (
+                <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                  供应商抓取中...
+                </div>
+              ) : emptyState ? (
+                <div className="flex h-full items-center justify-center">
+                  <div className="w-full max-w-[560px] rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-center">
+                    <div className="text-sm font-semibold text-amber-200">{emptyState.title}</div>
+                    <div className="mt-2 text-xs leading-5 text-zinc-300">{emptyState.detail}</div>
+                    <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                      {emptyState.showLoginAction && (
+                        <button
+                          type="button"
+                          className="rounded border border-cyan-400/60 bg-cyan-500/15 px-3 py-1 text-[11px] text-cyan-100 transition hover:bg-cyan-500/25"
+                          onClick={onOpen1688Login}
+                        >
+                          去登录 1688
+                        </button>
+                      )}
+                      {emptyState.showRetryCoverAction && (
+                        <button
+                          type="button"
+                          className="rounded border border-zinc-600 bg-zinc-800/70 px-3 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-700"
+                          onClick={onRetryCoverFetch}
+                        >
+                          先抓主图
+                        </button>
+                      )}
+                      {emptyState.showRetrySourcingAction && (
+                        <button
+                          type="button"
+                          className="rounded border border-emerald-400/60 bg-emerald-500/15 px-3 py-1 text-[11px] text-emerald-100 transition hover:bg-emerald-500/25"
+                          onClick={onRetrySourcing}
+                        >
+                          重试搜同款
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                  暂无供应商候选
+                </div>
+              )
             ) : (
               <div className="flex h-full items-stretch gap-2 overflow-x-auto pb-1">
                 {candidates.map((candidate, index) => (

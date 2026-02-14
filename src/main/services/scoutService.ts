@@ -3167,14 +3167,19 @@ function is1688InternalUrl(url: string): boolean {
   return /https?:\/\/(?:[^/]+\.)?(?:1688|alibaba|taobao)\.com\//i.test(normalized)
 }
 
+function readDebugSwitchFromEnv(primaryKey: string, fallbackKey: string): boolean {
+  const primary = normalizeText(process.env[primaryKey]).toLowerCase()
+  if (primary) return primary === '1' || primary === 'true' || primary === 'yes'
+  const fallback = normalizeText(process.env[fallbackKey]).toLowerCase()
+  return fallback === '1' || fallback === 'true' || fallback === 'yes'
+}
+
 function shouldEnableSourcingVisualMode(): boolean {
-  const raw = normalizeText(process.env.CMS_SCOUT_SOURCING_VISUAL).toLowerCase()
-  return raw === '1' || raw === 'true' || raw === 'yes'
+  return readDebugSwitchFromEnv('CMS_SCOUT_SOURCING_VISUAL', 'CMS_SCOUT_COVER_VISUAL')
 }
 
 function shouldOpenSourcingDevTools(): boolean {
-  const raw = normalizeText(process.env.CMS_SCOUT_OPEN_DEVTOOLS).toLowerCase()
-  return raw === '1' || raw === 'true' || raw === 'yes'
+  return readDebugSwitchFromEnv('CMS_SCOUT_OPEN_DEVTOOLS', 'CMS_SCOUT_COVER_OPEN_DEVTOOLS')
 }
 
 function maybeOpenSourcingDevTools(win: BrowserWindow): void {
@@ -3186,9 +3191,7 @@ function maybeOpenSourcingDevTools(win: BrowserWindow): void {
 }
 
 function shouldKeepSourcingWindowOpenAfterRun(): boolean {
-  const raw = normalizeText(process.env.CMS_SCOUT_KEEP_WINDOW_OPEN).toLowerCase()
-  if (!raw) return false
-  return raw === '1' || raw === 'true' || raw === 'yes'
+  return readDebugSwitchFromEnv('CMS_SCOUT_KEEP_WINDOW_OPEN', 'CMS_SCOUT_COVER_KEEP_OPEN')
 }
 
 function shouldEnableCoverVisualMode(): boolean {

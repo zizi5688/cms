@@ -99,11 +99,6 @@ function getCoverFetchDebugLogPath(): string {
   return join(app.getPath('userData'), 'cover_fetch_debug.log')
 }
 
-function parseEnvBool(value: unknown): boolean {
-  const raw = String(value ?? '').trim().toLowerCase()
-  return raw === '1' || raw === 'true' || raw === 'yes'
-}
-
 function parseOptionalBool(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value
   if (typeof value !== 'string') return null
@@ -119,10 +114,16 @@ function readCoverDebugState(): {
   openDevTools: boolean
   logPath: string
 } {
+  const coverVisual = parseOptionalBool(process.env.CMS_SCOUT_COVER_VISUAL)
+  const sourcingVisual = parseOptionalBool(process.env.CMS_SCOUT_SOURCING_VISUAL)
+  const coverKeepOpen = parseOptionalBool(process.env.CMS_SCOUT_COVER_KEEP_OPEN)
+  const sourcingKeepOpen = parseOptionalBool(process.env.CMS_SCOUT_KEEP_WINDOW_OPEN)
+  const coverDevTools = parseOptionalBool(process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS)
+  const sourcingDevTools = parseOptionalBool(process.env.CMS_SCOUT_OPEN_DEVTOOLS)
   return {
-    visual: parseEnvBool(process.env.CMS_SCOUT_COVER_VISUAL),
-    keepWindowOpen: parseEnvBool(process.env.CMS_SCOUT_COVER_KEEP_OPEN),
-    openDevTools: parseEnvBool(process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS),
+    visual: coverVisual ?? sourcingVisual ?? false,
+    keepWindowOpen: coverKeepOpen ?? sourcingKeepOpen ?? false,
+    openDevTools: coverDevTools ?? sourcingDevTools ?? false,
     logPath: getCoverFetchDebugLogPath()
   }
 }
@@ -2522,9 +2523,21 @@ app.whenReady().then(async () => {
     const keepWindowOpen = parseOptionalBool(row.keepWindowOpen)
     const openDevTools = parseOptionalBool(row.openDevTools)
 
-    if (visual != null) process.env.CMS_SCOUT_COVER_VISUAL = visual ? '1' : '0'
-    if (keepWindowOpen != null) process.env.CMS_SCOUT_COVER_KEEP_OPEN = keepWindowOpen ? '1' : '0'
-    if (openDevTools != null) process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS = openDevTools ? '1' : '0'
+    if (visual != null) {
+      const value = visual ? '1' : '0'
+      process.env.CMS_SCOUT_COVER_VISUAL = value
+      process.env.CMS_SCOUT_SOURCING_VISUAL = value
+    }
+    if (keepWindowOpen != null) {
+      const value = keepWindowOpen ? '1' : '0'
+      process.env.CMS_SCOUT_COVER_KEEP_OPEN = value
+      process.env.CMS_SCOUT_KEEP_WINDOW_OPEN = value
+    }
+    if (openDevTools != null) {
+      const value = openDevTools ? '1' : '0'
+      process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS = value
+      process.env.CMS_SCOUT_OPEN_DEVTOOLS = value
+    }
 
     const state = readCoverDebugState()
     appendCoverFetchDebugLog(
