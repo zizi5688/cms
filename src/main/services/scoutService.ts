@@ -1547,6 +1547,7 @@ export class ScoutService {
         backgroundThrottling: false
       }
     })
+    setupSourcingWindowOpenBridge(win)
     let keepWindowOpen = false
 
     try {
@@ -1564,9 +1565,7 @@ export class ScoutService {
         if (!win.isDestroyed()) {
           win.show()
           win.focus()
-          if (!win.webContents.isDevToolsOpened()) {
-            win.webContents.openDevTools({ mode: 'detach' })
-          }
+          maybeOpenSourcingDevTools(win)
         }
         const stuckUrl = normalizeText(uploadState.url || win.webContents.getURL())
         console.log('Stuck at URL:', stuckUrl)
@@ -1622,9 +1621,7 @@ export class ScoutService {
       if (!win.isDestroyed()) {
         win.show()
         win.focus()
-        if (!win.webContents.isDevToolsOpened()) {
-          win.webContents.openDevTools({ mode: 'detach' })
-        }
+        maybeOpenSourcingDevTools(win)
       }
       if (FORENSIC_DEBUG_MODE) {
         return { error: 'DEBUG_MODE_ACTIVE', url: currentUrl || 'about:blank' }
@@ -1636,7 +1633,8 @@ export class ScoutService {
       }
       throw new Scout1688SearchError('PARSE_ERROR', '自动搜索失败，请尝试手动介入')
     } finally {
-      if (!keepWindowOpen && !win.isDestroyed()) win.destroy()
+      const shouldCloseWindow = !keepWindowOpen && !shouldKeepSourcingWindowOpenAfterRun()
+      if (shouldCloseWindow && !win.isDestroyed()) win.destroy()
     }
   }
 
@@ -2027,27 +2025,166 @@ async function uploadImageByDomInjection(
   const injected = (await win.webContents.executeJavaScript(
     `(() => {
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+      const OVERLAY_ID = '__cms_scout_sourcing_overlay__'
+      const OVERLAY_STAGE_ID = '__cms_scout_sourcing_overlay_stage__'
+      const OVERLAY_LEGEND_ID = '__cms_scout_sourcing_overlay_legend__'
+      const ensureOverlayRoot = () => {
+        let root = document.getElementById(OVERLAY_ID)
+        if (root && root instanceof HTMLElement) return root
+        root = document.createElement('div')
+        root.id = OVERLAY_ID
+        root.style.position = 'fixed'
+        root.style.left = '0'
+        root.style.top = '0'
+        root.style.width = '100vw'
+        root.style.height = '100vh'
+        root.style.pointerEvents = 'none'
+        root.style.zIndex = '2147483646'
+        document.documentElement.appendChild(root)
+        return root
+      }
+      const ensureBadge = () => {
+        let badge = document.getElementById(OVERLAY_STAGE_ID)
+        if (badge && badge instanceof HTMLElement) return badge
+        badge = document.createElement('div')
+        badge.id = OVERLAY_STAGE_ID
+        badge.style.position = 'fixed'
+        badge.style.left = '12px'
+        badge.style.top = '10px'
+        badge.style.padding = '6px 10px'
+        badge.style.border = '1px solid rgba(248,250,252,0.35)'
+        badge.style.background = 'rgba(2,6,23,0.84)'
+        badge.style.color = '#e2e8f0'
+        badge.style.fontSize = '12px'
+        badge.style.fontWeight = '600'
+        badge.style.borderRadius = '8px'
+        badge.style.letterSpacing = '0.2px'
+        badge.style.pointerEvents = 'none'
+        badge.style.zIndex = '2147483647'
+        document.documentElement.appendChild(badge)
+        return badge
+      }
+      const ensureLegend = () => {
+        let legend = document.getElementById(OVERLAY_LEGEND_ID)
+        if (legend && legend instanceof HTMLElement) return legend
+        legend = document.createElement('div')
+        legend.id = OVERLAY_LEGEND_ID
+        legend.style.position = 'fixed'
+        legend.style.right = '12px'
+        legend.style.top = '10px'
+        legend.style.padding = '8px 10px'
+        legend.style.border = '1px solid rgba(248,250,252,0.3)'
+        legend.style.background = 'rgba(2,6,23,0.84)'
+        legend.style.color = '#e2e8f0'
+        legend.style.fontSize = '11px'
+        legend.style.lineHeight = '1.45'
+        legend.style.borderRadius = '8px'
+        legend.style.pointerEvents = 'none'
+        legend.style.zIndex = '2147483647'
+        document.documentElement.appendChild(legend)
+        return legend
+      }
+      const renderLegend = () => {
+        const legend = ensureLegend()
+        legend.innerHTML =
+          '<div><span style="color:#ef4444;">■</span> 入口候选</div>' +
+          '<div><span style="color:#f59e0b;">■</span> 上传输入框</div>' +
+          '<div><span style="color:#06b6d4;">■</span> 搜索按钮候选</div>' +
+          '<div><span style="color:#22c55e;">■</span> 实际点击</div>'
+      }
+      const clearOverlay = (stage) => {
+        const root = ensureOverlayRoot()
+        root.innerHTML = ''
+        const badge = ensureBadge()
+        badge.textContent = stage || '1688 自动化可视化'
+        renderLegend()
+      }
+      const pickRect = (node) => {
+        if (!(node instanceof HTMLElement)) return null
+        const rect = node.getBoundingClientRect()
+        if (!rect) return null
+        if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null
+        if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height)) return null
+        if (rect.width < 4 || rect.height < 4) return null
+        return rect
+      }
+      const drawBox = (node, options) => {
+        const rect = pickRect(node)
+        if (!rect) return false
+        const root = ensureOverlayRoot()
+        const box = document.createElement('div')
+        box.style.position = 'fixed'
+        box.style.left = rect.left + 'px'
+        box.style.top = rect.top + 'px'
+        box.style.width = rect.width + 'px'
+        box.style.height = rect.height + 'px'
+        box.style.border = '2px ' + (options?.style === 'dashed' ? 'dashed ' : 'solid ') + (options?.color || '#ef4444')
+        box.style.borderRadius = '6px'
+        box.style.boxSizing = 'border-box'
+        box.style.background = (options?.fill || 'transparent')
+        box.style.pointerEvents = 'none'
+        root.appendChild(box)
+        if (options?.label) {
+          const tag = document.createElement('div')
+          tag.textContent = String(options.label)
+          tag.style.position = 'fixed'
+          tag.style.left = Math.max(0, rect.left) + 'px'
+          tag.style.top = Math.max(0, rect.top - 18) + 'px'
+          tag.style.padding = '1px 5px'
+          tag.style.borderRadius = '4px'
+          tag.style.background = options?.color || '#ef4444'
+          tag.style.color = '#020617'
+          tag.style.fontWeight = '700'
+          tag.style.fontSize = '10px'
+          tag.style.pointerEvents = 'none'
+          root.appendChild(tag)
+        }
+        return true
+      }
       const clickImageSearchEntrances = () => {
+        clearOverlay('步骤1/3：定位图搜入口')
         const selectors = [
           '.search-bar [class*="image"]',
           '.search-bar [class*="camera"]',
-          '.search-upload-entry',
-          '.search-upload-trigger',
           '.search-by-image',
           '.search-by-photo',
-          '[class*="search-upload"]',
           '[class*="by-image"]',
           '[class*="image-search"]',
           '[class*="camera-search"]'
         ]
+        const isLikelyNativeFileDialogTrigger = (node) => {
+          if (!(node instanceof HTMLElement)) return false
+          const text = String(node.innerText || '').replace(/\\s+/g, '').toLowerCase()
+          const cls = String(node.className || '').toLowerCase()
+          const id = String(node.id || '').toLowerCase()
+          const aria = String(node.getAttribute('aria-label') || '').toLowerCase()
+          const title = String(node.getAttribute('title') || '').toLowerCase()
+          const full = [text, cls, id, aria, title].join(' ')
+          if (/上传|本地图片|选择图片|添加图片|选择文件|upload|filepicker|file-picker/.test(full)) return true
+          if (node.matches && node.matches('[for]')) {
+            const targetId = String(node.getAttribute('for') || '')
+            if (targetId) {
+              const input = document.getElementById(targetId)
+              if (input instanceof HTMLInputElement && input.type === 'file') return true
+            }
+          }
+          if (node.querySelector && node.querySelector('input[type="file"]')) return true
+          return false
+        }
         const clicked = []
+        let drawnCount = 0
         for (const selector of selectors) {
           const nodes = Array.from(document.querySelectorAll(selector))
           for (const node of nodes) {
             if (!(node instanceof HTMLElement)) continue
+            if (isLikelyNativeFileDialogTrigger(node)) continue
+            if (drawnCount < 8) {
+              if (drawBox(node, { color: '#ef4444', label: '入口候选', style: 'dashed' })) drawnCount += 1
+            }
             try {
               node.click()
               clicked.push(selector)
+              drawBox(node, { color: '#22c55e', label: '已点击入口' })
               break
             } catch {
               // ignore click error
@@ -2059,10 +2196,15 @@ async function uploadImageByDomInjection(
           if (!(node instanceof HTMLElement)) continue
           const text = String(node.innerText || '').trim()
           if (!text) continue
-          if (!/(搜同款|以图搜|图片搜索|找同款|拍立淘|图搜)/i.test(text)) continue
+          if (!/(搜同款|以图搜|找同款|图搜)/i.test(text)) continue
+          if (isLikelyNativeFileDialogTrigger(node)) continue
+          if (drawnCount < 10) {
+            if (drawBox(node, { color: '#ef4444', label: '文案入口', style: 'dashed' })) drawnCount += 1
+          }
           try {
             node.click()
             clicked.push('text:' + text)
+            drawBox(node, { color: '#22c55e', label: '已点击文案入口' })
             break
           } catch {
             // ignore click error
@@ -2115,6 +2257,7 @@ async function uploadImageByDomInjection(
           } catch {
             // ignore
           }
+          drawBox(node, { color: '#22c55e', label: '已点击搜索按钮' })
           const rect = node.getBoundingClientRect()
           const point =
             rect && Number.isFinite(rect.width) && Number.isFinite(rect.height)
@@ -2143,6 +2286,20 @@ async function uploadImageByDomInjection(
           ]
           const directNodes = Array.from(root.querySelectorAll(directSelectors.join(',')))
           const nodes = directNodes.length > 0 ? directNodes : Array.from(root.querySelectorAll('button,a,[role="button"],div,span'))
+          let candidateDrawn = 0
+          for (const rawNode of nodes) {
+            if (!(rawNode instanceof HTMLElement)) continue
+            if (!isVisible(rawNode)) continue
+            const text = String(rawNode.innerText || '').replace(/\\s+/g, '')
+            if (!text) continue
+            if (!isLikelyClickableControl(rawNode)) continue
+            if (!isReasonableSize(rawNode)) continue
+            if (!isLikelySubmitText(text)) continue
+            if (candidateDrawn >= 8) break
+            if (drawBox(rawNode, { color: '#06b6d4', label: '搜索候选', style: 'dashed' })) {
+              candidateDrawn += 1
+            }
+          }
           for (const node of nodes) {
             if (!(node instanceof HTMLElement)) continue
             if (!isVisible(node)) continue
@@ -2237,23 +2394,27 @@ async function uploadImageByDomInjection(
       }
       return (async () => {
         const start = Date.now()
+        let lastEntranceClicks = []
         let input = pickInput()
         while (!input && Date.now() - start < 12000) {
-          clickImageSearchEntrances()
+          lastEntranceClicks = clickImageSearchEntrances()
           await sleep(350)
           input = pickInput()
         }
         if (!input) {
+          clearOverlay('步骤2/3：未找到上传输入框')
           return {
             ok: false,
             reason: 'file_input_not_found',
             debug: {
               fileInputCount: document.querySelectorAll('input[type="file"]').length,
-              clicked: clickImageSearchEntrances()
+              clicked: lastEntranceClicks
             }
           }
         }
         console.log('Found file input:', input)
+        clearOverlay('步骤2/3：定位上传输入框')
+        drawBox(input, { color: '#f59e0b', label: '上传输入框' })
         try {
           const response = await fetch(${payload})
           const blob = await response.blob()
@@ -2263,8 +2424,8 @@ async function uploadImageByDomInjection(
           input.files = transfer.files
           input.dispatchEvent(new Event('change', { bubbles: true }))
           input.dispatchEvent(new Event('input', { bubbles: true }))
-          // Some 1688 builds require a direct click on upload trigger after assigning files.
-          clickImageSearchEntrances()
+          clearOverlay('步骤3/3：上传完成，定位搜索按钮')
+          drawBox(input, { color: '#f59e0b', label: '上传输入框' })
           const scope = input.closest('[id*="img-search"], [class*="img-search"], [class*="same"], [class*="reader"]')
           const submitPayload = clickSearchSubmitButton(scope, input)
           let submitData = null
@@ -2800,6 +2961,49 @@ async function nudge1688ImageSearchSubmit(win: BrowserWindow): Promise<void> {
   }
 }
 
+function setupSourcingWindowOpenBridge(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  win.webContents.setWindowOpenHandler((details) => {
+    const targetUrl = normalizeText(details?.url)
+    if (!targetUrl) {
+      return { action: 'deny' }
+    }
+    if (is1688InternalUrl(targetUrl)) {
+      setTimeout(() => {
+        if (win.isDestroyed()) return
+        void win.loadURL(targetUrl).catch(() => void 0)
+      }, 0)
+      return { action: 'deny' }
+    }
+    return { action: 'deny' }
+  })
+}
+
+function is1688InternalUrl(url: string): boolean {
+  const normalized = normalizeText(url).toLowerCase()
+  if (!normalized) return false
+  return /https?:\/\/(?:[^/]+\.)?(?:1688|alibaba|taobao)\.com\//i.test(normalized)
+}
+
+function shouldOpenSourcingDevTools(): boolean {
+  const raw = normalizeText(process.env.CMS_SCOUT_OPEN_DEVTOOLS).toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
+function maybeOpenSourcingDevTools(win: BrowserWindow): void {
+  if (!shouldOpenSourcingDevTools()) return
+  if (win.isDestroyed()) return
+  if (!win.webContents.isDevToolsOpened()) {
+    win.webContents.openDevTools({ mode: 'detach' })
+  }
+}
+
+function shouldKeepSourcingWindowOpenAfterRun(): boolean {
+  const raw = normalizeText(process.env.CMS_SCOUT_KEEP_WINDOW_OPEN).toLowerCase()
+  if (!raw) return true
+  return !(raw === '0' || raw === 'false' || raw === 'no')
+}
+
 function extractPointFromDebugPayload(debug: unknown): { x: number; y: number } | null {
   if (!debug || typeof debug !== 'object') return null
   const record = debug as Record<string, unknown>
@@ -2853,6 +3057,120 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
   const raw = await win.webContents.executeJavaScript(
     `(() => {
       const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
+      const OVERLAY_ID = '__cms_scout_sourcing_overlay__'
+      const OVERLAY_STAGE_ID = '__cms_scout_sourcing_overlay_stage__'
+      const OVERLAY_LEGEND_ID = '__cms_scout_sourcing_overlay_legend__'
+      const ensureOverlayRoot = () => {
+        let root = document.getElementById(OVERLAY_ID)
+        if (root && root instanceof HTMLElement) return root
+        root = document.createElement('div')
+        root.id = OVERLAY_ID
+        root.style.position = 'fixed'
+        root.style.left = '0'
+        root.style.top = '0'
+        root.style.width = '100vw'
+        root.style.height = '100vh'
+        root.style.pointerEvents = 'none'
+        root.style.zIndex = '2147483646'
+        document.documentElement.appendChild(root)
+        return root
+      }
+      const ensureBadge = () => {
+        let badge = document.getElementById(OVERLAY_STAGE_ID)
+        if (badge && badge instanceof HTMLElement) return badge
+        badge = document.createElement('div')
+        badge.id = OVERLAY_STAGE_ID
+        badge.style.position = 'fixed'
+        badge.style.left = '12px'
+        badge.style.top = '10px'
+        badge.style.padding = '6px 10px'
+        badge.style.border = '1px solid rgba(248,250,252,0.35)'
+        badge.style.background = 'rgba(2,6,23,0.84)'
+        badge.style.color = '#e2e8f0'
+        badge.style.fontSize = '12px'
+        badge.style.fontWeight = '600'
+        badge.style.borderRadius = '8px'
+        badge.style.letterSpacing = '0.2px'
+        badge.style.pointerEvents = 'none'
+        badge.style.zIndex = '2147483647'
+        document.documentElement.appendChild(badge)
+        return badge
+      }
+      const ensureLegend = () => {
+        let legend = document.getElementById(OVERLAY_LEGEND_ID)
+        if (legend && legend instanceof HTMLElement) return legend
+        legend = document.createElement('div')
+        legend.id = OVERLAY_LEGEND_ID
+        legend.style.position = 'fixed'
+        legend.style.right = '12px'
+        legend.style.top = '10px'
+        legend.style.padding = '8px 10px'
+        legend.style.border = '1px solid rgba(248,250,252,0.3)'
+        legend.style.background = 'rgba(2,6,23,0.84)'
+        legend.style.color = '#e2e8f0'
+        legend.style.fontSize = '11px'
+        legend.style.lineHeight = '1.45'
+        legend.style.borderRadius = '8px'
+        legend.style.pointerEvents = 'none'
+        legend.style.zIndex = '2147483647'
+        document.documentElement.appendChild(legend)
+        return legend
+      }
+      const renderLegend = () => {
+        const legend = ensureLegend()
+        legend.innerHTML =
+          '<div><span style="color:#3b82f6;">■</span> supplier[i] 候选卡</div>' +
+          '<div><span style="color:#a855f7;">■</span> 店铺名(companyName)</div>' +
+          '<div><span style="color:#22c55e;">■</span> price → purchasePrice</div>' +
+          '<div><span style="color:#f59e0b;">■</span> moq</div>' +
+          '<div><span style="color:#06b6d4;">■</span> serviceRate48h/repurchaseRate</div>' +
+          '<div><span style="color:#eab308;">■</span> detailUrl</div>'
+      }
+      const clearOverlay = (stage) => {
+        const root = ensureOverlayRoot()
+        root.innerHTML = ''
+        const badge = ensureBadge()
+        badge.textContent = stage || '1688 自动化可视化'
+        renderLegend()
+      }
+      const drawBox = (node, options) => {
+        if (!(node instanceof HTMLElement)) return false
+        const rect = node.getBoundingClientRect()
+        if (!rect) return false
+        if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return false
+        if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height)) return false
+        if (rect.width < 4 || rect.height < 4) return false
+        const root = ensureOverlayRoot()
+        const box = document.createElement('div')
+        box.style.position = 'fixed'
+        box.style.left = rect.left + 'px'
+        box.style.top = rect.top + 'px'
+        box.style.width = rect.width + 'px'
+        box.style.height = rect.height + 'px'
+        box.style.border = '2px ' + (options?.style === 'dashed' ? 'dashed ' : 'solid ') + (options?.color || '#3b82f6')
+        box.style.borderRadius = '6px'
+        box.style.boxSizing = 'border-box'
+        box.style.background = options?.fill || 'transparent'
+        box.style.pointerEvents = 'none'
+        root.appendChild(box)
+        if (options?.label) {
+          const tag = document.createElement('div')
+          tag.textContent = String(options.label)
+          tag.style.position = 'fixed'
+          tag.style.left = Math.max(0, rect.left) + 'px'
+          tag.style.top = Math.max(0, rect.top - 18) + 'px'
+          tag.style.padding = '1px 5px'
+          tag.style.borderRadius = '4px'
+          tag.style.background = options?.color || '#3b82f6'
+          tag.style.color = '#020617'
+          tag.style.fontWeight = '700'
+          tag.style.fontSize = '10px'
+          tag.style.pointerEvents = 'none'
+          root.appendChild(tag)
+        }
+        return true
+      }
+      clearOverlay('结果页：定位前五个抓取卡片与字段')
       const abs = (value) => {
         if (!value || typeof value !== 'string') return ''
         try { return new URL(value, location.href).toString() } catch { return '' }
@@ -3000,6 +3318,14 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
         const match = t.match(/48\\s*[Hh](?:小时)?\\s*揽收(?:率)?\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?%)/i)
         return match ? clean(match[1]) : ''
       }
+      const parseShopNameFromSettlementText = (text) => {
+        const t = clean(text)
+        if (!t) return ''
+        const inline = t.match(/入驻\\s*\\d+\\s*年\\s*([\\u4e00-\\u9fa5A-Za-z0-9·()（）\\-]{2,40})/)
+        if (inline && inline[1]) return clean(inline[1])
+        const tail = t.match(/([\\u4e00-\\u9fa5A-Za-z0-9·()（）\\-]{2,40})\\s*$/)
+        return tail && tail[1] ? clean(tail[1]) : ''
+      }
       const pickText = (container, selectors) => {
         for (const selector of selectors) {
           const node = container.querySelector(selector)
@@ -3008,6 +3334,29 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
           if (text) return text
         }
         return ''
+      }
+      const pickNode = (container, selectors) => {
+        for (const selector of selectors) {
+          const node = container.querySelector(selector)
+          if (!(node instanceof HTMLElement)) continue
+          const text = clean(node.textContent || '')
+          if (!text) continue
+          return node
+        }
+        return null
+      }
+      const pickShopNodeBySettlementText = (container) => {
+        const nodes = Array.from(container.querySelectorAll('a,span,div,p')).slice(0, 180)
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) continue
+          const text = clean(node.innerText || node.textContent || '')
+          if (!text) continue
+          if (!/入驻\\s*\\d+\\s*年/.test(text)) continue
+          const shop = parseShopNameFromSettlementText(text)
+          if (!shop) continue
+          return { node, shopName: shop }
+        }
+        return null
       }
       const pickAttribute = (container, selectors, attr) => {
         for (const selector of selectors) {
@@ -3085,6 +3434,15 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
         const anchorInfo = anchorInfoSeed || pickOfferAnchor(container) || pickOfferFromAttributes(container)
         if (!anchorInfo) return
         if (seen.has(anchorInfo.href)) return
+        const candidateIndex = rows.length + 1
+        drawBox(container, {
+          color: '#3b82f6',
+          label: 'supplier[' + String(candidateIndex - 1) + '] 候选卡',
+          style: 'solid'
+        })
+        if (anchorInfo.anchor instanceof HTMLElement) {
+          drawBox(anchorInfo.anchor, { color: '#eab308', label: 'detailUrl', style: 'dashed' })
+        }
         const text = clean(container.textContent || '')
         const anchorNode = anchorInfo.anchor instanceof Element ? anchorInfo.anchor : null
         const supplierTitle =
@@ -3095,7 +3453,7 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
             '[class*="title"]'
           ]) ||
           clean((anchorNode && (anchorNode.getAttribute('title') || anchorNode.textContent)) || '')
-        const companyName =
+        let companyName =
           pickAttribute(
             container,
             [
@@ -3116,9 +3474,41 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
             '[class*="shop"] [class*="name"]',
             'a[href*="company.1688.com"]'
           ])
+        const settlementShop = pickShopNodeBySettlementText(container)
+        if (!companyName && settlementShop?.shopName) {
+          companyName = settlementShop.shopName
+        }
+        const companyNode =
+          settlementShop?.node ||
+          pickNode(container, [
+            'a.offer-company',
+            '[class*="company-name"]',
+            '[class*="shop-name"]',
+            '[class*="company"] [class*="name"]',
+            '[class*="seller"] [class*="name"]',
+            '[class*="shop"] [class*="name"]',
+            'a[href*="company.1688.com"]'
+          ])
+        if (companyNode) {
+          drawBox(companyNode, { color: '#a855f7', label: '店铺名(companyName)', style: 'dashed' })
+        }
         const supplierName = companyName || supplierTitle
         const moqText = pickText(container, ['[class*="moq"]', '[class*="batch"]', '[class*="start"]']) || parseMoq(text)
+        const moqNode = pickNode(container, ['[class*="moq"]', '[class*="batch"]', '[class*="start"]'])
+        if (moqNode) {
+          drawBox(moqNode, { color: '#f59e0b', label: 'moq', style: 'dashed' })
+        }
         const serviceRate48h = parseServiceRate48h(text)
+        const serviceNode = pickNode(container, [
+          '[class*="service"]',
+          '[class*="48"]',
+          '[class*="repurchase"]',
+          '[class*="headpurchase"]',
+          '[class*="回头率"]'
+        ])
+        if (serviceNode) {
+          drawBox(serviceNode, { color: '#06b6d4', label: 'serviceRate48h/repurchaseRate', style: 'dashed' })
+        }
         const repurchase =
           pickText(container, ['[class*="repurchase"]', '[class*="headpurchase"]', '[class*="回头率"]']) ||
           parseRepurchaseRate(text)
@@ -3146,6 +3536,10 @@ async function parse1688RowsFromCurrentPage(win: BrowserWindow): Promise<Scout16
         const priceNodes = Array.from(
           container.querySelectorAll('[class*="price"], [class*="Price"], .price, .amount, [data-price], [data-offer-price]')
         ).slice(0, 40)
+        const firstPriceNode = priceNodes.find((node) => node instanceof HTMLElement)
+        if (firstPriceNode && firstPriceNode instanceof HTMLElement) {
+          drawBox(firstPriceNode, { color: '#22c55e', label: 'price -> purchasePrice', style: 'dashed' })
+        }
         for (const node of priceNodes) {
           if (!(node instanceof Element)) continue
           const textValue = clean(node.textContent || '')

@@ -1334,9 +1334,6 @@ function SupplierCard({
 
       <div className="mt-2 grid grid-cols-2 gap-2">
         <div className="rounded border border-zinc-800 bg-zinc-900/80 p-1.5">
-          <div className="truncate rounded border border-red-400/60 bg-red-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">
-            {candidate.companyName || '供应商'}
-          </div>
           <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">进货价</div>
           <div className="mt-1 text-2xl font-black leading-none text-amber-300">{purchaseText}</div>
         </div>
@@ -1413,7 +1410,11 @@ function buildSourcingCandidatesFromSearchResults(
   const fallback = ['98%', '95%', '92%', '89%', '85%']
   return results.map((item, index) => ({
     id: `search-${index + 1}`,
-    name: normalizeTextValue(item.supplierTitle) || String(item.supplierName || '').trim() || `供应商 ${index + 1}`,
+    name:
+      normalizeTextValue(item.companyName) ||
+      normalizeTextValue(item.supplierName) ||
+      normalizeTextValue(item.supplierTitle) ||
+      `店铺 ${index + 1}`,
     companyName: normalizeTextValue(item.companyName),
     url: item.detailUrl || null,
     purchasePrice: Number.isFinite(item.price) ? item.price : null,
