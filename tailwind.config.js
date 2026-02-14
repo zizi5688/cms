@@ -5,6 +5,10 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        prism: {
+          bg: '#09090b',
+          surface: '#18181b'
+        },
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
@@ -60,5 +64,5 @@ module.exports = {
       }
     }
   },
-  plugins: [require('tailwindcss-animate')]
+  plugins: []
 }

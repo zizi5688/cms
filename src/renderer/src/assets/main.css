@@ -169,3 +169,48 @@ code {
     display: none;
   }
 }
+
+.media-matrix-kanban-calendar .rbc-month-row:not(:has(.rbc-selected-week-day)) {
+  display: none;
+}
+
+.media-matrix-kanban-calendar .rbc-month-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.media-matrix-kanban-calendar .rbc-month-row {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.media-matrix-kanban-calendar .rbc-month-view,
+.media-matrix-kanban-calendar .rbc-month-row,
+.media-matrix-kanban-calendar .rbc-day-bg,
+.media-matrix-kanban-calendar .rbc-month-row + .rbc-month-row,
+.media-matrix-kanban-calendar .rbc-day-bg + .rbc-day-bg {
+  border-color: transparent !important;
+}
+
+.media-matrix-kanban-calendar .rbc-row-content {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.media-matrix-kanban-calendar .rbc-event {
+  margin: 0 !important;
+}
+
+.media-matrix-kanban-calendar .rbc-event-content {
+  display: block !important;
+  align-items: initial !important;
+}
+
+.media-matrix-kanban-calendar .rbc-time-view .rbc-time-gutter {
+  display: none !important;
+}
+
+.media-matrix-kanban-calendar .rbc-time-content > * {
+  border-top: none !important;
+}

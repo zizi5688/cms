@@ -1,0 +1,4 @@
+interface:
+  display_name: "XHS DIP"
+  short_description: "Enforce anti-bot-safe Xiaohongshu data interaction rules"
+  default_prompt: "Apply XHS-DIP to any Xiaohongshu network or scraping code changes, then self-audit compliance."
