@@ -1616,9 +1616,9 @@ export class ScoutService {
     }
 
     const { BrowserWindow } = await import('electron')
-    const FORENSIC_DEBUG_MODE = true
+    const FORENSIC_DEBUG_MODE = shouldEnableSourcingVisualMode()
     const win = new BrowserWindow({
-      show: true,
+      show: FORENSIC_DEBUG_MODE,
       width: 1360,
       height: 920,
       webPreferences: {
@@ -1641,15 +1641,18 @@ export class ScoutService {
       let imageSearchFailedByUpload = false
 
       if (uploadState.requiresManualIntervention) {
-        keepWindowOpen = true
-        if (!win.isDestroyed()) {
-          win.show()
-          win.focus()
-          maybeOpenSourcingDevTools(win)
-        }
         const stuckUrl = normalizeText(uploadState.url || win.webContents.getURL())
-        console.log('Stuck at URL:', stuckUrl)
-        return { error: 'DEBUG_MODE_ACTIVE', url: stuckUrl || 'about:blank' }
+        if (FORENSIC_DEBUG_MODE) {
+          keepWindowOpen = true
+          if (!win.isDestroyed()) {
+            win.show()
+            win.focus()
+            maybeOpenSourcingDevTools(win)
+          }
+          console.log('Stuck at URL:', stuckUrl)
+          return { error: 'DEBUG_MODE_ACTIVE', url: stuckUrl || 'about:blank' }
+        }
+        imageSearchFailedByUpload = true
       }
 
       if (imageUploadOk) {
@@ -1697,8 +1700,8 @@ export class ScoutService {
     } catch (error) {
       const currentUrl = normalizeText(win.webContents.getURL())
       console.log('Stuck at URL:', currentUrl)
-      keepWindowOpen = true
-      if (!win.isDestroyed()) {
+      keepWindowOpen = FORENSIC_DEBUG_MODE
+      if (FORENSIC_DEBUG_MODE && !win.isDestroyed()) {
         win.show()
         win.focus()
         maybeOpenSourcingDevTools(win)
@@ -2360,9 +2363,7 @@ async function uploadImageByDomInjection(
             '[class*="img-search"] [class*="btn"]',
             '[class*="same"] [class*="btn"]',
             '[class*="search"] [class*="btn"]',
-            '[class*="submit"]',
-            '[class*="upload"]',
-            '[class*="camera"]'
+            '[class*="submit"]'
           ]
           const directNodes = Array.from(root.querySelectorAll(directSelectors.join(',')))
           const nodes = directNodes.length > 0 ? directNodes : Array.from(root.querySelectorAll('button,a,[role="button"],div,span'))
@@ -2390,46 +2391,6 @@ async function uploadImageByDomInjection(
             if (!isReasonableSize(node)) continue
             const clicked = clickNode(node)
             return JSON.stringify(clicked)
-          }
-          const inputRect = inputNode instanceof HTMLElement ? inputNode.getBoundingClientRect() : null
-          const getSubmitHeuristicScore = (node) => {
-            if (!(node instanceof HTMLElement)) return Number.NEGATIVE_INFINITY
-            const text = String(node.innerText || '')
-            const cls = String(node.className || '')
-            const id = String(node.id || '')
-            const role = String(node.getAttribute('role') || '')
-            const aria = String(node.getAttribute('aria-label') || '')
-            const dataText = String(node.getAttribute('data-spm-click') || '')
-            const full = (text + ' ' + cls + ' ' + id + ' ' + role + ' ' + aria + ' ' + dataText).toLowerCase()
-            if (!full) return Number.NEGATIVE_INFINITY
-            if (/cancel|close|关闭|取消|返回/.test(full)) return Number.NEGATIVE_INFINITY
-            let score = 0
-            if (/搜索|搜同款|以图搜|找同款|search|submit|camera|image|upload|same/.test(full)) score += 6
-            if (/以图搜款|以图搜|上传图片|拍立淘/.test(full) && !/搜索图片|开始搜索|立即搜索|确认搜索|submit|search/.test(full)) {
-              score -= 6
-            }
-            if (/btn|button|submit|search/.test(full)) score += 2
-            if (node.tagName.toLowerCase() === 'button') score += 2
-            const rect = node.getBoundingClientRect()
-            if (rect && Number.isFinite(rect.width) && Number.isFinite(rect.height)) {
-              if (rect.width >= 36 && rect.width <= 360 && rect.height >= 20 && rect.height <= 120) score += 2
-            }
-            if (inputRect && rect) {
-              const dx = Math.abs((rect.left + rect.width / 2) - (inputRect.left + inputRect.width / 2))
-              const dy = Math.abs((rect.top + rect.height / 2) - (inputRect.top + inputRect.height / 2))
-              if (dx <= 420 && dy <= 260) score += 3
-            }
-            return score
-          }
-          const fallbackNodes = nodes
-            .filter((node) => node instanceof HTMLElement && isVisible(node) && isLikelyClickableControl(node) && isReasonableSize(node))
-            .map((node) => ({ node, score: getSubmitHeuristicScore(node) }))
-            .filter((item) => Number.isFinite(item.score) && item.score >= 7)
-            .sort((a, b) => b.score - a.score)
-          if (fallbackNodes.length > 0) {
-            const picked = fallbackNodes[0].node
-            const clicked = clickNode(picked)
-            return JSON.stringify({ ...clicked, via: 'heuristic' })
           }
           return ''
         }
@@ -2548,10 +2509,6 @@ async function uploadImageByDomInjection(
     reason: normalizeText(injected?.reason),
     debug: injected?.debug ?? null
   })
-  const submitPoint = extractPointFromDebugPayload(injected?.debug)
-  if (submitPoint) {
-    await triggerUserGestureClick(win, submitPoint.x, submitPoint.y)
-  }
   const nav = await waitForImageSearchNavigationAfterUpload(win, 18_000, { onCaptchaNeeded: opts.onCaptchaNeeded })
   return {
     ok: true,
@@ -3065,6 +3022,11 @@ function is1688InternalUrl(url: string): boolean {
   return /https?:\/\/(?:[^/]+\.)?(?:1688|alibaba|taobao)\.com\//i.test(normalized)
 }
 
+function shouldEnableSourcingVisualMode(): boolean {
+  const raw = normalizeText(process.env.CMS_SCOUT_SOURCING_VISUAL).toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
 function shouldOpenSourcingDevTools(): boolean {
   const raw = normalizeText(process.env.CMS_SCOUT_OPEN_DEVTOOLS).toLowerCase()
   return raw === '1' || raw === 'true' || raw === 'yes'
@@ -3080,20 +3042,8 @@ function maybeOpenSourcingDevTools(win: BrowserWindow): void {
 
 function shouldKeepSourcingWindowOpenAfterRun(): boolean {
   const raw = normalizeText(process.env.CMS_SCOUT_KEEP_WINDOW_OPEN).toLowerCase()
-  if (!raw) return true
-  return !(raw === '0' || raw === 'false' || raw === 'no')
-}
-
-function extractPointFromDebugPayload(debug: unknown): { x: number; y: number } | null {
-  if (!debug || typeof debug !== 'object') return null
-  const record = debug as Record<string, unknown>
-  const rawPoint = record.submitPoint
-  if (!rawPoint || typeof rawPoint !== 'object') return null
-  const point = rawPoint as Record<string, unknown>
-  const x = typeof point.x === 'number' ? point.x : NaN
-  const y = typeof point.y === 'number' ? point.y : NaN
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
-  return { x, y }
+  if (!raw) return false
+  return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
 async function triggerUserGestureClick(win: BrowserWindow, x: number, y: number): Promise<void> {

@@ -1,6 +1,10 @@
 import * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import {
+  OperationalProductCard,
+  type OperationalProduct
+} from './components/OperationalProductCard'
 import { cn } from '@renderer/lib/utils'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { useCmsStore } from '@renderer/store/useCmsStore'
@@ -143,6 +147,8 @@ type SourcingDebugResult = {
 }
 
 type SourcingSearchResponse = SourcingSearchResult[] | SourcingDebugResult
+const PRODUCT_PLACEHOLDER_IMAGE =
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='640' viewBox='0 0 640 640'%3E%3Cdefs%3E%3ClinearGradient id='bg' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f3f4f6'/%3E%3Cstop offset='100%25' stop-color='%23e5e7eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='640' height='640' fill='url(%23bg)'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='Arial' font-size='28'%3ENo Image%3C/text%3E%3C/svg%3E"
 
 function HeatDashboard(): React.JSX.Element {
   const workspacePath = useCmsStore((s) => s.workspacePath)
@@ -423,27 +429,30 @@ function HeatDashboard(): React.JSX.Element {
     setSelectedSupplierIndex(0)
   }, [selectedKeywordId, selectedProductId])
 
-  const saveSelectedProduct = useCallback(async () => {
-    if (!selectedProduct || !snapshotDate) return null
-    const result = await window.api.cms.scout.dashboard.markPotential({
-      snapshotDate,
-      products: [
-        {
-          productKey: selectedProduct.id,
-          keyword: selectedProduct.keyword,
-          productName: selectedProduct.name,
-          productUrl: selectedProduct.productUrl,
-          salePrice: selectedProduct.price
-        }
-      ]
-    })
-    const marked = (await window.api.cms.scout.dashboard.markedProducts({
-      snapshotDate,
-      keyword: selectedKeywordId ?? undefined
-    })) as MarkedProduct[]
-    setMarkedProducts(marked)
-    return { result, marked }
-  }, [selectedKeywordId, selectedProduct, snapshotDate])
+  const saveSelectedProduct = useCallback(
+    async (targetProduct: ProductCardModel) => {
+      if (!snapshotDate) return null
+      const result = await window.api.cms.scout.dashboard.markPotential({
+        snapshotDate,
+        products: [
+          {
+            productKey: targetProduct.id,
+            keyword: targetProduct.keyword,
+            productName: targetProduct.name,
+            productUrl: targetProduct.productUrl,
+            salePrice: targetProduct.price
+          }
+        ]
+      })
+      const marked = (await window.api.cms.scout.dashboard.markedProducts({
+        snapshotDate,
+        keyword: selectedKeywordId ?? undefined
+      })) as MarkedProduct[]
+      setMarkedProducts(marked)
+      return { result, marked }
+    },
+    [selectedKeywordId, snapshotDate]
+  )
 
   const sourcingCandidates = useMemo<SourcingSupplierCandidate[]>(() => {
     if (Array.isArray(sourcingSearchCandidates)) return sourcingSearchCandidates
@@ -474,7 +483,7 @@ function HeatDashboard(): React.JSX.Element {
       return
     }
     try {
-      const saved = await saveSelectedProduct()
+      const saved = await saveSelectedProduct(selectedProduct)
       if (!saved) {
         setStatusText('加入待办失败：未找到当前商品')
         return
@@ -487,95 +496,99 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [saveSelectedProduct, selectedProduct, snapshotDate])
 
-  const handleStartSourcing = useCallback(async (): Promise<void> => {
-    if (!selectedProduct || !snapshotDate) {
-      setStatusText('请先选择商品后再执行搜同款')
-      return
-    }
+  const handleStartSourcing = useCallback(
+    async (targetProduct?: ProductCardModel): Promise<void> => {
+      const activeProduct = targetProduct ?? selectedProduct
+      if (!activeProduct || !snapshotDate) {
+        setStatusText('请先选择商品后再执行搜同款')
+        return
+      }
 
-    setIsSourcing(true)
-    setIsSourcingRunning(true)
-    setSelectedSupplierIndex(0)
-    setSourcingSearchCandidates([])
-    try {
-      const saved = await saveSelectedProduct()
-      if (!saved) {
-        setStatusText('搜同款失败：未找到当前商品')
-        return
-      }
-      const targetMarked = saved.marked.find((item) => item.productKey === selectedProduct.id) ?? null
-      if (!targetMarked) {
-        setStatusText('搜同款失败：商品未成功加入待办')
-        return
-      }
-      const imageUrl = pickSourcingImageUrl(
-        selectedProduct.potential.cachedImageUrl,
-        targetMarked.sourceImage1
-      )
-      if (!imageUrl) {
-        setStatusText('搜同款失败：未找到可用主图（cover_cache/source_image_1）')
-        return
-      }
-      const targetPrice = targetMarked.salePrice ?? selectedProduct.price
-      if (targetPrice == null || !Number.isFinite(targetPrice) || targetPrice <= 0) {
-        setStatusText('搜同款失败：目标售价无效')
-        return
-      }
-      const keyword = selectedProduct.name || targetMarked.productName || targetMarked.keyword
-      const response = (await window.api.cms.scout.dashboard.search1688ByImage({
-        imageUrl,
-        targetPrice,
-        productId: targetMarked.productKey,
-        keyword
-      })) as SourcingSearchResponse
-      if (isSourcingDebugResult(response)) {
-        const now = Date.now()
-        const manualMarked: MarkedProduct = {
-          ...targetMarked,
-          sourceImage1: imageUrl,
-          sourcingStatus: 'running',
-          sourcingMessage: `人工介入中：${response.url}`,
-          sourcingUpdatedAt: now,
-          updatedAt: now
+      setIsSourcing(true)
+      setIsSourcingRunning(true)
+      setSelectedSupplierIndex(0)
+      setSourcingSearchCandidates([])
+      try {
+        const saved = await saveSelectedProduct(activeProduct)
+        if (!saved) {
+          setStatusText('搜同款失败：未找到当前商品')
+          return
         }
-        setSourcingMarked(manualMarked)
+        const targetMarked = saved.marked.find((item) => item.productKey === activeProduct.id) ?? null
+        if (!targetMarked) {
+          setStatusText('搜同款失败：商品未成功加入待办')
+          return
+        }
+        const imageUrl = pickSourcingImageUrl(
+          activeProduct.potential.cachedImageUrl,
+          targetMarked.sourceImage1
+        )
+        if (!imageUrl) {
+          setStatusText('搜同款失败：未找到可用主图（cover_cache/source_image_1）')
+          return
+        }
+        const targetPrice = targetMarked.salePrice ?? activeProduct.price
+        if (targetPrice == null || !Number.isFinite(targetPrice) || targetPrice <= 0) {
+          setStatusText('搜同款失败：目标售价无效')
+          return
+        }
+        const keyword = activeProduct.name || targetMarked.productName || targetMarked.keyword
+        const response = (await window.api.cms.scout.dashboard.search1688ByImage({
+          imageUrl,
+          targetPrice,
+          productId: targetMarked.productKey,
+          keyword
+        })) as SourcingSearchResponse
+        if (isSourcingDebugResult(response)) {
+          const now = Date.now()
+          const manualMarked: MarkedProduct = {
+            ...targetMarked,
+            sourceImage1: imageUrl,
+            sourcingStatus: 'running',
+            sourcingMessage: `人工介入中：${response.url}`,
+            sourcingUpdatedAt: now,
+            updatedAt: now
+          }
+          setSourcingMarked(manualMarked)
+          setMarkedProducts((prev) => {
+            const idx = prev.findIndex((item) => item.id === manualMarked.id)
+            if (idx < 0) return [manualMarked, ...prev]
+            const next = prev.slice()
+            next[idx] = manualMarked
+            return next
+          })
+          setSourcingSearchCandidates([])
+          setStatusText(`进入法医调试模式：请在弹出的 1688 窗口手动处理，当前页面 ${response.url}`)
+          return
+        }
+        const results = response
+        const sourced = mergeSourcingResultIntoMarked(targetMarked, imageUrl, results)
+        setSourcingSearchCandidates(buildSourcingCandidatesFromSearchResults(results, targetPrice))
+        setSourcingMarked(sourced)
         setMarkedProducts((prev) => {
-          const idx = prev.findIndex((item) => item.id === manualMarked.id)
-          if (idx < 0) return [manualMarked, ...prev]
+          const idx = prev.findIndex((item) => item.id === sourced.id)
+          if (idx < 0) return [sourced, ...prev]
           const next = prev.slice()
-          next[idx] = manualMarked
+          next[idx] = sourced
           return next
         })
-        setSourcingSearchCandidates([])
-        setStatusText(`进入法医调试模式：请在弹出的 1688 窗口手动处理，当前页面 ${response.url}`)
-        return
-      }
-      const results = response
-      const sourced = mergeSourcingResultIntoMarked(targetMarked, imageUrl, results)
-      setSourcingSearchCandidates(buildSourcingCandidatesFromSearchResults(results, targetPrice))
-      setSourcingMarked(sourced)
-      setMarkedProducts((prev) => {
-        const idx = prev.findIndex((item) => item.id === sourced.id)
-        if (idx < 0) return [sourced, ...prev]
-        const next = prev.slice()
-        next[idx] = sourced
-        return next
-      })
-      setSelectedSupplierIndex(pickSupplierIndexByBestProfit(sourced))
+        setSelectedSupplierIndex(pickSupplierIndexByBestProfit(sourced))
 
-      if (sourced.sourcingStatus === 'failed') {
-        setStatusText(`搜同款失败：${sourced.sourcingMessage ?? '未命中供应商'}`)
-        return
+        if (sourced.sourcingStatus === 'failed') {
+          setStatusText(`搜同款失败：${sourced.sourcingMessage ?? '未命中供应商'}`)
+          return
+        }
+        const withFallback = results.some((item) => item.isFallback)
+        setStatusText(`搜同款完成（${withFallback ? '关键词兜底' : '图搜'}），选择候选供应商后点击“绑定供应商”保存。`)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        setStatusText(`搜同款失败：${msg}`)
+      } finally {
+        setIsSourcingRunning(false)
       }
-      const withFallback = results.some((item) => item.isFallback)
-      setStatusText(`搜同款完成（${withFallback ? '关键词兜底' : '图搜'}），选择候选供应商后点击“绑定供应商”保存。`)
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      setStatusText(`搜同款失败：${msg}`)
-    } finally {
-      setIsSourcingRunning(false)
-    }
-  }, [saveSelectedProduct, selectedProduct, snapshotDate])
+    },
+    [saveSelectedProduct, selectedProduct, snapshotDate]
+  )
 
   const handleBindSupplier = useCallback(async (): Promise<void> => {
     if (!selectedProduct || !snapshotDate) {
@@ -648,6 +661,20 @@ function HeatDashboard(): React.JSX.Element {
       setStatusText('复制失败，请检查剪贴板权限')
     }
   }, [selectedProduct?.bestSupplierUrl])
+
+  const handleCopyProductLink = useCallback(async (productUrl: string | null): Promise<void> => {
+    const target = String(productUrl ?? '').trim()
+    if (!target) {
+      setStatusText('当前商品暂无可复制链接')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(target)
+      setStatusText('商品链接已复制')
+    } catch {
+      setStatusText('复制失败，请检查剪贴板权限')
+    }
+  }, [])
 
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
@@ -742,6 +769,15 @@ function HeatDashboard(): React.JSX.Element {
                     focused={card.id === selectedProductId}
                     onSelect={() => setSelectedProductId(card.id)}
                     onQuickLook={() => setQuickLookProductId(card.id)}
+                    onCopyLink={() => void handleCopyProductLink(card.productUrl)}
+                    onSameStyle={() => {
+                      setSelectedProductId(card.id)
+                      void handleStartSourcing(card)
+                    }}
+                    onCompetitorAnalysis={() => {
+                      setSelectedProductId(card.id)
+                      setQuickLookProductId(card.id)
+                    }}
                     onRequestMissingImage={enqueueMissingCoverFetch}
                     isImageFetching={queueLoadingMap[card.id] === true}
                   />
@@ -945,6 +981,9 @@ type ProductCardProps = {
   focused: boolean
   onSelect: () => void
   onQuickLook: () => void
+  onCopyLink: () => void
+  onSameStyle: () => void
+  onCompetitorAnalysis: () => void
   onRequestMissingImage: (productId: string, xiaohongshuUrl: string) => void
   isImageFetching: boolean
 }
@@ -955,6 +994,9 @@ function ProductCard({
   focused,
   onSelect,
   onQuickLook,
+  onCopyLink,
+  onSameStyle,
+  onCompetitorAnalysis,
   onRequestMissingImage,
   isImageFetching
 }: ProductCardProps): React.JSX.Element {
@@ -964,131 +1006,61 @@ function ProductCard({
     onRequestMissingImage(card.id, card.productUrl ?? '')
   }, [card.id, card.imageUrl, card.productUrl, onRequestMissingImage])
 
+  const readyImageUrl = useMemo(() => {
+    if (!hasValidImageUrl(card.imageUrl)) return PRODUCT_PLACEHOLDER_IMAGE
+    const resolved = resolveLocalImage(String(card.imageUrl), workspacePath)
+    return resolved || PRODUCT_PLACEHOLDER_IMAGE
+  }, [card.imageUrl, workspacePath])
+
+  const operationalProduct = useMemo<OperationalProduct>(() => {
+    const addCart24h = Number.isFinite(card.potential.addCart24hValue) ? card.potential.addCart24hValue : 0
+    return {
+      title: card.name,
+      price: Number.isFinite(card.price) ? Number(card.price) : 0,
+      velocity24h: Math.max(0, Math.round(addCart24h)),
+      totalSales: estimateTotalSales(card.potential.addCart24hValue, card.potential.prevAddCart24hValue),
+      shopName: card.bestSupplierName || card.potential.shopName || '待绑定店铺',
+      shopScore: toShopScore(card.profitLevel),
+      isNewArrival: card.potential.isNew,
+      imageUrl: readyImageUrl
+    }
+  }, [card, readyImageUrl])
+
   return (
-    <article
-      className={cn(
-        'group aspect-[3/4] rounded-lg bg-gray-800/90 p-1.5 transition duration-200',
-        focused
-          ? 'bg-gray-700/95 shadow-[0_0_0_1px_rgba(113,113,122,0.9)]'
-          : 'hover:-translate-y-0.5 hover:bg-gray-700/85'
-      )}
-    >
-      <button
-        type="button"
-        className="flex h-full w-full flex-col gap-1.5 text-left focus:outline-none"
+    <article className={cn('transition duration-200', focused ? 'ring-2 ring-cyan-400/70' : 'hover:-translate-y-0.5')}>
+      <div
+        role="button"
+        tabIndex={0}
+        className="h-full w-full rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
         onClick={onSelect}
         onFocus={onSelect}
         onKeyDown={(event) => {
           if (event.key === ' ') {
             event.preventDefault()
             onQuickLook()
+            return
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onSelect()
           }
         }}
       >
-        <div className="h-[85%] min-h-0">
-          <ProductImage
-            key={`${card.id}:${card.imageUrl ?? 'none'}`}
-            src={card.imageUrl}
-            alt={card.name}
-            workspacePath={workspacePath}
-            price={card.price}
-            profitLevel={card.profitLevel}
-            isFetching={isImageFetching}
+        <div className="relative">
+          <OperationalProductCard
+            product={operationalProduct}
+            onCopyLink={onCopyLink}
+            onSameStyle={onSameStyle}
+            onCompetitorAnalysis={onCompetitorAnalysis}
           />
-        </div>
-
-        <div className="flex h-[15%] min-h-0 items-center px-1">
-          <div className="w-full truncate text-xs text-zinc-100" title={card.name}>
-            {card.name}
-          </div>
-        </div>
-      </button>
-    </article>
-  )
-}
-
-function ProductImage({
-  src,
-  alt,
-  workspacePath,
-  price,
-  profitLevel,
-  isFetching
-}: {
-  src: string | null
-  alt: string
-  workspacePath: string
-  price: number | null
-  profitLevel: 'high' | 'medium' | 'low'
-  isFetching: boolean
-}): React.JSX.Element {
-  const hostRef = useRef<HTMLDivElement | null>(null)
-  const [isInView, setIsInView] = useState(false)
-  const [isLoaded, setIsLoaded] = useState(false)
-  const [hasError, setHasError] = useState(false)
-
-  useEffect(() => {
-    const host = hostRef.current
-    if (!host || isInView) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) {
-          setIsInView(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '180px 0px' }
-    )
-
-    observer.observe(host)
-    return () => observer.disconnect()
-  }, [isInView])
-
-  const resolvedSrc = useMemo(() => {
-    if (!src) return ''
-    return resolveLocalImage(src, workspacePath)
-  }, [src, workspacePath])
-
-  const showImage = Boolean(resolvedSrc && isInView && !hasError)
-
-  return (
-    <div ref={hostRef} className="relative h-full w-full overflow-hidden rounded-md bg-zinc-800">
-      <div
-        className={cn(
-          'absolute inset-0 bg-zinc-700/90 transition-opacity',
-          isLoaded ? 'opacity-0' : 'animate-pulse opacity-100'
-        )}
-      />
-
-      {showImage ? (
-        <img
-          src={resolvedSrc}
-          alt={alt}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          className={cn(
-            'absolute inset-0 h-full w-full object-cover transition-opacity duration-200',
-            isLoaded ? 'opacity-100' : 'opacity-0'
+          {isImageFetching && !hasValidImageUrl(card.imageUrl) && (
+            <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/70 px-2 py-1 text-[11px] text-white">
+              封面抓取中...
+            </div>
           )}
-          onLoad={() => setIsLoaded(true)}
-          onError={() => {
-            setHasError(true)
-            setIsLoaded(false)
-          }}
-        />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center text-[11px] text-zinc-500">
-          {src ? '图片加载中...' : isFetching ? '封面抓取中...' : '暂无图片'}
         </div>
-      )}
-
-      <div className="absolute bottom-1.5 left-1.5 rounded-sm bg-black/65 px-1.5 py-0.5 text-[10px] text-white">
-        {formatMoney(price)}
       </div>
-
-      <ProfitDot level={profitLevel} />
-    </div>
+    </article>
   )
 }
 
@@ -1118,14 +1090,6 @@ function SelectedThumb({
       loading="lazy"
       referrerPolicy="no-referrer"
     />
-  )
-}
-
-function ProfitDot({ level }: { level: 'high' | 'medium' | 'low' }): React.JSX.Element {
-  const cls =
-    level === 'high' ? 'bg-emerald-500' : level === 'medium' ? 'bg-amber-400' : 'bg-rose-400'
-  return (
-    <span className={cn('absolute right-2 top-2 h-2 w-2 rounded-full', cls)} aria-hidden="true" />
   )
 }
 
@@ -1335,15 +1299,22 @@ function SupplierCard({
     candidate.netProfitRate == null || !Number.isFinite(candidate.netProfitRate)
       ? '--%'
       : `${candidate.netProfitRate.toFixed(1)}%`
-  const handleCardClick = (): void => {
+  const handleCardClick = (): void => onSelect()
+  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
     onSelect()
+  }
+  const handleOpenExternal = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    event.stopPropagation()
     if (!candidate.url) return
     void window.api.cms.system.openExternal(candidate.url).catch(() => void 0)
   }
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className={cn(
         'min-w-[220px] cursor-pointer rounded-md border bg-zinc-950/90 p-2 text-left transition hover:bg-gray-800',
         selected
@@ -1351,8 +1322,20 @@ function SupplierCard({
           : 'border-zinc-800 hover:border-zinc-600'
       )}
       onClick={handleCardClick}
+      onKeyDown={handleCardKeyDown}
     >
-      <div className="truncate text-xs font-semibold text-zinc-100">{candidate.name}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="truncate text-xs font-semibold text-zinc-100">{candidate.name}</div>
+        <button
+          type="button"
+          className="shrink-0 rounded border border-zinc-600 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-45"
+          onClick={handleOpenExternal}
+          disabled={!candidate.url}
+          title={candidate.url ? '打开1688详情页' : '暂无详情链接'}
+        >
+          打开
+        </button>
+      </div>
       <div className="mt-1 text-[11px] text-zinc-400">48h揽收: {candidate.serviceRateLabel}</div>
 
       <div className="mt-2 grid grid-cols-2 gap-2">
@@ -1372,7 +1355,7 @@ function SupplierCard({
         <span>起批: {moqText}</span>
         <span>运费: {freightText}</span>
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -1575,6 +1558,20 @@ function toProfitLevel(raw: number | null): 'high' | 'medium' | 'low' {
   if (value >= 15) return 'high'
   if (value >= 8) return 'medium'
   return 'low'
+}
+
+function estimateTotalSales(addCart24h: number, prevAddCart24h: number | null): number {
+  const current = Number.isFinite(addCart24h) ? Math.max(0, addCart24h) : 0
+  const previous =
+    prevAddCart24h == null || !Number.isFinite(prevAddCart24h) ? null : Math.max(0, prevAddCart24h)
+  if (previous == null) return Math.round(current * 12)
+  return Math.round(Math.max(current, (current + previous) * 6))
+}
+
+function toShopScore(level: 'high' | 'medium' | 'low'): number {
+  if (level === 'high') return 4.8
+  if (level === 'medium') return 4.6
+  return 4.4
 }
 
 function isLikelyXhsGoodsDetailUrl(url: string | null): boolean {
