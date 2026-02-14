@@ -159,7 +159,6 @@ function HeatDashboard(): React.JSX.Element {
 
   const [isLoadingKeywords, setIsLoadingKeywords] = useState(false)
   const [isLoadingProducts, setIsLoadingProducts] = useState(false)
-  const [isMarkingTodo, setIsMarkingTodo] = useState(false)
   const [isSourcing, setIsSourcing] = useState(false)
   const [isSourcingRunning, setIsSourcingRunning] = useState(false)
   const [isBindingSupplier, setIsBindingSupplier] = useState(false)
@@ -474,7 +473,6 @@ function HeatDashboard(): React.JSX.Element {
       setStatusText('请先选择商品后再加入待办')
       return
     }
-    setIsMarkingTodo(true)
     try {
       const saved = await saveSelectedProduct()
       if (!saved) {
@@ -486,8 +484,6 @@ function HeatDashboard(): React.JSX.Element {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       setStatusText(`加入待办失败：${msg}`)
-    } finally {
-      setIsMarkingTodo(false)
     }
   }, [saveSelectedProduct, selectedProduct, snapshotDate])
 
@@ -628,29 +624,30 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [selectedProduct, selectedSupplierIndex, snapshotDate, sourcingCandidates, sourcingMarked])
 
-  const handleCopyLink = useCallback(async (): Promise<void> => {
-    if (!selectedProduct?.productUrl) {
-      setStatusText('当前商品没有可复制链接')
+  const handleOpenBestSupplier = useCallback((): void => {
+    const target = selectedProduct?.bestSupplierUrl
+    if (!target) {
+      setStatusText('当前暂无可跳转的供应商链接')
       return
     }
+    void window.api.cms.system.openExternal(target).catch(() => {
+      setStatusText('打开供应商链接失败')
+    })
+  }, [selectedProduct?.bestSupplierUrl])
 
+  const handleCopySupplierLink = useCallback(async (): Promise<void> => {
+    const target = selectedProduct?.bestSupplierUrl
+    if (!target) {
+      setStatusText('当前暂无可复制的供应商链接')
+      return
+    }
     try {
-      await navigator.clipboard.writeText(selectedProduct.productUrl)
-      setStatusText('商品链接已复制')
+      await navigator.clipboard.writeText(target)
+      setStatusText('供应商链接已复制')
     } catch {
       setStatusText('复制失败，请检查剪贴板权限')
     }
-  }, [selectedProduct?.productUrl])
-
-  const handleQuickPurchase = useCallback((): void => {
-    if (!selectedProduct) return
-    const target = selectedProduct.bestSupplierUrl || selectedProduct.productUrl
-    if (!target) {
-      setStatusText('没有可打开的采购链接')
-      return
-    }
-    window.open(target, '_blank', 'noopener,noreferrer')
-  }, [selectedProduct])
+  }, [selectedProduct?.bestSupplierUrl])
 
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
@@ -775,11 +772,31 @@ function HeatDashboard(): React.JSX.Element {
             </div>
 
             <div className="flex min-w-0 flex-1 flex-col justify-center">
-              <div className="truncate text-xs text-zinc-400">
-                最优供应商：{selectedProduct.bestSupplierName || '待抓取'}
+              <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
+                <span className="shrink-0">最优供应商：</span>
+                {selectedProduct.bestSupplierUrl ? (
+                  <button
+                    type="button"
+                    className="min-w-0 max-w-[240px] truncate text-left text-cyan-300 hover:text-cyan-200 hover:underline"
+                    title={selectedProduct.bestSupplierName || selectedProduct.bestSupplierUrl}
+                    onClick={handleOpenBestSupplier}
+                  >
+                    {selectedProduct.bestSupplierName || '未命名店铺'}
+                  </button>
+                ) : (
+                  <span className="truncate text-zinc-500">待抓取</span>
+                )}
+                <button
+                  type="button"
+                  className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                  onClick={() => void handleCopySupplierLink()}
+                  disabled={!selectedProduct.bestSupplierUrl}
+                >
+                  复制链接
+                </button>
               </div>
               <div className="text-xl font-bold leading-tight text-emerald-400">
-                净利: {formatMoney(selectedProduct.profit)}
+                毛利: {formatMoney(selectedProduct.profit)}
               </div>
             </div>
 
@@ -791,29 +808,6 @@ function HeatDashboard(): React.JSX.Element {
                 disabled={isSourcingRunning}
               >
                 {isSourcingRunning ? '搜同款中...' : '搜同款'}
-              </button>
-              <button
-                type="button"
-                className="rounded border border-zinc-600 bg-transparent px-3 py-1.5 text-xs text-zinc-100 hover:bg-zinc-800"
-                onClick={handleQuickPurchase}
-              >
-                一键采购
-              </button>
-              <button
-                type="button"
-                className="rounded border border-zinc-600 bg-transparent px-3 py-1.5 text-xs text-zinc-100 hover:bg-zinc-800"
-                onClick={() => void handleCopyLink()}
-              >
-                复制链接
-              </button>
-              <button
-                type="button"
-                className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-                onClick={() => void handleAddTodo()}
-                disabled={isMarkingTodo}
-                title="快捷键：Cmd/Ctrl + S"
-              >
-                {isMarkingTodo ? '加入中...' : '加入待办'}
               </button>
             </div>
           </div>
