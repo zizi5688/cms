@@ -157,6 +157,15 @@ declare global {
             keywordsCount: number
             sourceFile: string
           } | null>
+          deleteSnapshot: (payload: {
+            snapshotDate: string
+          }) => Promise<{
+            snapshotDate: string
+            deletedSnapshotRows: number
+            deletedWatchlistRows: number
+            deletedProductMapRows: number
+            deletedCoverCacheRows: number
+          }>
           meta: () => Promise<{
             latestDate: string | null
             availableDates: string[]

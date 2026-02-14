@@ -2401,6 +2401,12 @@ app.whenReady().then(async () => {
     return scoutService.importExcelSnapshotFromFile(result.filePaths[0]!)
   })
 
+  ipcMain.handle('cms.scout.dashboard.deleteSnapshot', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const snapshotDate = typeof query.snapshotDate === 'string' ? query.snapshotDate : ''
+    return scoutService.deleteDashboardSnapshot(snapshotDate)
+  })
+
   ipcMain.handle('cms.scout.dashboard.meta', async () => scoutService.getDashboardMeta())
 
   ipcMain.handle('cms.scout.dashboard.keywordHeat', async (_event, payload: unknown) => {

@@ -167,6 +167,7 @@ function HeatDashboard(): React.JSX.Element {
   const [isLoadingKeywords, setIsLoadingKeywords] = useState(false)
   const [isLoadingProducts, setIsLoadingProducts] = useState(false)
   const [isImportingSnapshot, setIsImportingSnapshot] = useState(false)
+  const [isDeletingSnapshot, setIsDeletingSnapshot] = useState(false)
   const [isSourcing, setIsSourcing] = useState(false)
   const [isSourcingRunning, setIsSourcingRunning] = useState(false)
   const [isBindingSupplier, setIsBindingSupplier] = useState(false)
@@ -251,6 +252,23 @@ function HeatDashboard(): React.JSX.Element {
 
   useEffect(() => {
     void loadMeta()
+  }, [loadMeta])
+
+  useEffect(() => {
+    const refreshOnForeground = (): void => {
+      void loadMeta()
+    }
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        void loadMeta()
+      }
+    }
+    window.addEventListener('focus', refreshOnForeground)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('focus', refreshOnForeground)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [loadMeta])
 
   useEffect(() => {
@@ -694,6 +712,45 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [isImportingSnapshot, loadKeywordsAndTrends, loadMeta, loadProducts])
 
+  const handleDeleteSnapshot = useCallback(async (): Promise<void> => {
+    if (isDeletingSnapshot) return
+    if (!snapshotDate) {
+      setStatusText('暂无可删除快照')
+      return
+    }
+    const confirmed = window.confirm(`确认删除快照日 ${snapshotDate} 的数据吗？此操作不可撤销。`)
+    if (!confirmed) return
+
+    setIsDeletingSnapshot(true)
+    try {
+      const result = (await window.api.cms.scout.dashboard.deleteSnapshot({
+        snapshotDate
+      })) as {
+        snapshotDate: string
+        deletedSnapshotRows: number
+        deletedWatchlistRows: number
+        deletedProductMapRows: number
+        deletedCoverCacheRows: number
+      }
+      setSelectedKeywordId(null)
+      setSelectedProductId(null)
+      setPotentialProducts([])
+      setMarkedProducts([])
+      setQueuedImageMap({})
+      setQueueLoadingMap({})
+      requestedQueueProductIdsRef.current.clear()
+      await loadMeta()
+      setStatusText(
+        `已删除快照 ${result.snapshotDate}：快照 ${result.deletedSnapshotRows} 行，待办 ${result.deletedWatchlistRows} 行`
+      )
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      setStatusText(`删除快照失败：${msg}`)
+    } finally {
+      setIsDeletingSnapshot(false)
+    }
+  }, [isDeletingSnapshot, loadMeta, setSelectedKeywordId, setSelectedProductId, snapshotDate])
+
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return
@@ -725,8 +782,16 @@ function HeatDashboard(): React.JSX.Element {
         <aside className="flex h-full min-h-0 flex-col border-r border-zinc-800 bg-zinc-900">
           <div className="border-b border-zinc-800 bg-zinc-900/90 px-3 py-2.5">
             <div className="text-sm font-semibold text-zinc-100">趋势雷达</div>
-            <div className="mt-1 text-xs text-zinc-400">
-              {snapshotDate ? `快照日：${snapshotDate}` : '暂无快照数据'}
+            <div className="mt-1 flex items-center justify-between gap-2 text-xs text-zinc-400">
+              <span>{snapshotDate ? `快照日：${snapshotDate}` : '暂无快照数据'}</span>
+              <button
+                type="button"
+                className="rounded border border-rose-500/50 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => void handleDeleteSnapshot()}
+                disabled={!snapshotDate || isDeletingSnapshot || isImportingSnapshot}
+              >
+                {isDeletingSnapshot ? '删除中...' : '删除当日'}
+              </button>
             </div>
           </div>
 

@@ -249,6 +249,15 @@ const api = {
           keywordsCount: number
           sourceFile: string
         } | null> => ipcRenderer.invoke('cms.scout.dashboard.importExcelFile'),
+        deleteSnapshot: (payload: {
+          snapshotDate: string
+        }): Promise<{
+          snapshotDate: string
+          deletedSnapshotRows: number
+          deletedWatchlistRows: number
+          deletedProductMapRows: number
+          deletedCoverCacheRows: number
+        }> => ipcRenderer.invoke('cms.scout.dashboard.deleteSnapshot', payload),
         meta: (): Promise<{
           latestDate: string | null
           availableDates: string[]

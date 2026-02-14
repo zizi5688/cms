@@ -78,6 +78,16 @@ export type ScoutDashboardMeta = {
   lastImportAt: number | null
 }
 
+export type ScoutDashboardDeleteSnapshotResult = {
+  snapshotDate: string
+  deletedSnapshotRows: number
+  deletedWatchlistRows: number
+  deletedProductMapRows: number
+  deletedCoverCacheRows: number
+  deletedImportBatches: number
+  affectedSnapshotDates: string[]
+}
+
 export type ScoutKeywordHeatRecord = {
   keyword: string
   todayHeat: number
@@ -971,6 +981,134 @@ export class ScoutService {
       keywordsCount: keywords.size,
       sourceFile
     }
+  }
+
+  deleteDashboardSnapshot(snapshotDate: string): ScoutDashboardDeleteSnapshotResult {
+    const db = this.sqlite.connection
+    const date = normalizeText(snapshotDate)
+    if (!date) {
+      throw new Error('快照日期不能为空')
+    }
+
+    const chunked = <T>(rows: T[], size = 400): T[][] => {
+      const list: T[][] = []
+      for (let i = 0; i < rows.length; i += size) {
+        list.push(rows.slice(i, i + size))
+      }
+      return list
+    }
+
+    const result = db.transaction(() => {
+      const importBatchRows = db
+        .prepare(
+          `SELECT DISTINCT imported_at
+           FROM scout_dashboard_snapshot_rows
+           WHERE snapshot_date = ?`
+        )
+        .all(date) as Array<{ imported_at?: unknown }>
+      const importBatches = Array.from(
+        new Set(importBatchRows.map((row) => toInt(row.imported_at)).filter((value) => value > 0))
+      )
+      if (importBatches.length === 0) {
+        return {
+          snapshotDate: date,
+          deletedSnapshotRows: 0,
+          deletedWatchlistRows: 0,
+          deletedProductMapRows: 0,
+          deletedCoverCacheRows: 0,
+          deletedImportBatches: 0,
+          affectedSnapshotDates: []
+        } satisfies ScoutDashboardDeleteSnapshotResult
+      }
+
+      const touchedProductRows: Array<{ product_key?: unknown; snapshot_date?: unknown }> = []
+      for (const batchIds of chunked(importBatches)) {
+        const placeholders = batchIds.map(() => '?').join(',')
+        const rows = db
+          .prepare(
+            `SELECT product_key, snapshot_date
+             FROM scout_dashboard_snapshot_rows
+             WHERE imported_at IN (${placeholders})`
+          )
+          .all(...batchIds) as Array<{ product_key?: unknown; snapshot_date?: unknown }>
+        touchedProductRows.push(...rows)
+      }
+
+      const productKeys = Array.from(
+        new Set(touchedProductRows.map((row) => normalizeText(row.product_key)).filter(Boolean))
+      )
+      const affectedSnapshotDates = Array.from(
+        new Set(touchedProductRows.map((row) => normalizeText(row.snapshot_date)).filter(Boolean))
+      ).sort()
+
+      let deletedSnapshotRows = 0
+      for (const batchIds of chunked(importBatches)) {
+        const placeholders = batchIds.map(() => '?').join(',')
+        deletedSnapshotRows +=
+          db
+            .prepare(`DELETE FROM scout_dashboard_snapshot_rows WHERE imported_at IN (${placeholders})`)
+            .run(...batchIds).changes ?? 0
+      }
+
+      const deletedWatchlistRows =
+        db
+          .prepare(
+            `DELETE FROM scout_dashboard_watchlist
+             WHERE NOT EXISTS (
+               SELECT 1
+               FROM scout_dashboard_snapshot_rows s
+               WHERE s.snapshot_date = scout_dashboard_watchlist.snapshot_date
+                 AND s.product_key = scout_dashboard_watchlist.product_key
+             )`
+          )
+          .run().changes ?? 0
+
+      let deletedProductMapRows = 0
+      let deletedCoverCacheRows = 0
+
+      if (productKeys.length > 0) {
+        const remainedProductKeys = new Set<string>()
+        for (const keys of chunked(productKeys)) {
+          const placeholders = keys.map(() => '?').join(',')
+          const rows = db
+            .prepare(
+              `SELECT DISTINCT product_key
+               FROM scout_dashboard_snapshot_rows
+               WHERE product_key IN (${placeholders})`
+            )
+            .all(...keys) as Array<{ product_key?: unknown }>
+          for (const row of rows) {
+            const key = normalizeText(row.product_key)
+            if (key) remainedProductKeys.add(key)
+          }
+        }
+
+        const staleProductKeys = productKeys.filter((key) => !remainedProductKeys.has(key))
+        for (const keys of chunked(staleProductKeys)) {
+          const placeholders = keys.map(() => '?').join(',')
+          deletedProductMapRows +=
+            db
+              .prepare(`DELETE FROM scout_dashboard_product_map WHERE product_key IN (${placeholders})`)
+              .run(...keys).changes ?? 0
+          deletedCoverCacheRows +=
+            db
+              .prepare(`DELETE FROM scout_dashboard_cover_cache WHERE product_key IN (${placeholders})`)
+              .run(...keys).changes ?? 0
+        }
+      }
+
+      return {
+        snapshotDate: date,
+        deletedSnapshotRows,
+        deletedWatchlistRows,
+        deletedProductMapRows,
+        deletedCoverCacheRows,
+        deletedImportBatches: importBatches.length,
+        affectedSnapshotDates
+      } satisfies ScoutDashboardDeleteSnapshotResult
+    })
+
+    return result()
   }
 
   getDashboardMeta(): ScoutDashboardMeta {
