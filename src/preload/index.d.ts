@@ -267,6 +267,47 @@ declare global {
             createdAt: number
             updatedAt: number
           }>>
+          bindSupplier: (payload: {
+            snapshotDate: string
+            productKey: string
+            supplierName?: string | null
+            companyName?: string | null
+            supplierUrl?: string | null
+            supplierPrice?: number | null
+            supplierNetProfit?: number | null
+            supplierMoq?: string | null
+            supplierFreightPrice?: number | null
+            supplierServiceRateLabel?: string | null
+            sourceImage1?: string | null
+          }) => Promise<{
+            id: string
+            snapshotDate: string
+            productKey: string
+            keyword: string
+            productName: string
+            productUrl: string | null
+            salePrice: number | null
+            sourceImage1: string | null
+            sourceImage2: string | null
+            supplier1Name: string | null
+            supplier1Url: string | null
+            supplier1Price: number | null
+            supplier2Name: string | null
+            supplier2Url: string | null
+            supplier2Price: number | null
+            supplier3Name: string | null
+            supplier3Url: string | null
+            supplier3Price: number | null
+            profit1: number | null
+            profit2: number | null
+            profit3: number | null
+            bestProfitAmount: number | null
+            sourcingStatus: 'idle' | 'running' | 'success' | 'failed'
+            sourcingMessage: string | null
+            sourcingUpdatedAt: number | null
+            createdAt: number
+            updatedAt: number
+          } | null>
           fetchXhsImage: (payload: { productId: string; xiaohongshuUrl: string }) => void
           onXhsImageUpdated: (
             listener: (payload: { productId: string; imageUrl: string }) => void

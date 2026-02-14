@@ -587,9 +587,38 @@ function HeatDashboard(): React.JSX.Element {
       return
     }
     const chosen = sourcingCandidates[selectedSupplierIndex] ?? null
+    if (!chosen) {
+      setStatusText('请先选择候选供应商后再绑定')
+      return
+    }
     setIsBindingSupplier(true)
     try {
-      setStatusText(`供应商绑定完成：${chosen?.name ?? '未命名供应商'}`)
+      const saved = (await window.api.cms.scout.dashboard.bindSupplier({
+        snapshotDate,
+        productKey: selectedProduct.id,
+        supplierName: chosen.name,
+        companyName: chosen.companyName,
+        supplierUrl: chosen.url,
+        supplierPrice: chosen.purchasePrice,
+        supplierNetProfit: chosen.netProfit,
+        supplierMoq: chosen.moq,
+        supplierFreightPrice: chosen.freightPrice,
+        supplierServiceRateLabel: chosen.serviceRateLabel,
+        sourceImage1: sourcingMarked?.sourceImage1 ?? selectedProduct.imageUrl ?? null
+      })) as MarkedProduct | null
+      if (!saved) {
+        setStatusText('绑定失败：未找到待办记录，请先加入待办后重试')
+        return
+      }
+      setSourcingMarked(saved)
+      setMarkedProducts((prev) => {
+        const idx = prev.findIndex((item) => item.id === saved.id || item.productKey === saved.productKey)
+        if (idx < 0) return [saved, ...prev]
+        const next = prev.slice()
+        next[idx] = saved
+        return next
+      })
+      setStatusText(`供应商绑定完成：${saved.supplier1Name ?? chosen.name ?? '未命名店铺'}`)
       setIsSourcing(false)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -597,7 +626,7 @@ function HeatDashboard(): React.JSX.Element {
     } finally {
       setIsBindingSupplier(false)
     }
-  }, [selectedProduct, selectedSupplierIndex, snapshotDate, sourcingCandidates])
+  }, [selectedProduct, selectedSupplierIndex, snapshotDate, sourcingCandidates, sourcingMarked])
 
   const handleCopyLink = useCallback(async (): Promise<void> => {
     if (!selectedProduct?.productUrl) {

@@ -163,6 +163,20 @@ export type ScoutMarkedProductPayload = {
   salePrice?: number | null
 }
 
+export type ScoutBindSupplierPayload = {
+  snapshotDate: string
+  productKey: string
+  supplierName?: string | null
+  companyName?: string | null
+  supplierUrl?: string | null
+  supplierPrice?: number | null
+  supplierNetProfit?: number | null
+  supplierMoq?: string | null
+  supplierFreightPrice?: number | null
+  supplierServiceRateLabel?: string | null
+  sourceImage1?: string | null
+}
+
 export type ScoutMarkedProductRecord = {
   id: string
   snapshotDate: string
@@ -1449,6 +1463,72 @@ export class ScoutService {
 
     txn(products)
     return { upserted, skipped }
+  }
+
+  bindDashboardSupplier(payload: ScoutBindSupplierPayload): ScoutMarkedProductRecord | null {
+    const db = this.sqlite.connection
+    const snapshotDate = normalizeText(payload.snapshotDate)
+    const productKey = normalizeText(payload.productKey)
+    if (!snapshotDate || !productKey) return null
+
+    const now = Date.now()
+    const companyName = normalizeNullable(payload.companyName)
+    const supplierName = normalizeNullable(payload.supplierName) || companyName
+    const supplierUrl = normalizeNullable(payload.supplierUrl)
+    const supplierPrice = parseNumber(payload.supplierPrice)
+    const supplierNetProfit = parseNumber(payload.supplierNetProfit)
+    const supplierMoq = normalizeText(payload.supplierMoq)
+    const serviceRate = normalizeText(payload.supplierServiceRateLabel)
+    const freightPrice = parseNumber(payload.supplierFreightPrice)
+    const sourceImage1 = normalizeNullable(payload.sourceImage1)
+
+    const messageParts = [`绑定店铺：${supplierName || '未命名店铺'}`]
+    if (serviceRate) messageParts.push(`48h揽收: ${serviceRate}`)
+    if (supplierMoq) messageParts.push(`起批: ${supplierMoq}`)
+    if (freightPrice != null && Number.isFinite(freightPrice) && freightPrice >= 0) {
+      messageParts.push(`运费: ¥${freightPrice}`)
+    }
+    const sourcingMessage = messageParts.join('；')
+
+    const updated = db
+      .prepare(
+        `UPDATE scout_dashboard_watchlist
+         SET source_image_1 = COALESCE(NULLIF(source_image_1, ''), ?, source_image_1),
+             supplier1_name = ?,
+             supplier1_url = ?,
+             supplier1_price = ?,
+             profit1 = ?,
+             best_profit_amount = CASE
+               WHEN ? IS NOT NULL THEN ?
+               ELSE best_profit_amount
+             END,
+             sourcing_status = 'success',
+             sourcing_message = ?,
+             sourcing_updated_at = ?,
+             updated_at = ?
+         WHERE snapshot_date = ? AND product_key = ?`
+      )
+      .run(
+        sourceImage1,
+        supplierName,
+        supplierUrl,
+        supplierPrice,
+        supplierNetProfit,
+        supplierNetProfit,
+        supplierNetProfit,
+        sourcingMessage,
+        now,
+        now,
+        snapshotDate,
+        productKey
+      )
+
+    if ((updated.changes ?? 0) <= 0) return null
+    const row = db
+      .prepare(`SELECT * FROM scout_dashboard_watchlist WHERE snapshot_date = ? AND product_key = ? LIMIT 1`)
+      .get(snapshotDate, productKey) as Record<string, unknown> | undefined
+    if (!row) return null
+    return mapMarkedProductRow(row)
   }
 
   listDashboardMarkedProducts(query: {

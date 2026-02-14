@@ -2477,6 +2477,26 @@ app.whenReady().then(async () => {
     })
   })
 
+  ipcMain.handle('cms.scout.dashboard.bindSupplier', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    return scoutService.bindDashboardSupplier({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : '',
+      productKey: typeof query.productKey === 'string' ? query.productKey : '',
+      supplierName: typeof query.supplierName === 'string' ? query.supplierName : null,
+      companyName: typeof query.companyName === 'string' ? query.companyName : null,
+      supplierUrl: typeof query.supplierUrl === 'string' ? query.supplierUrl : null,
+      supplierPrice: typeof query.supplierPrice === 'number' ? query.supplierPrice : Number(query.supplierPrice),
+      supplierNetProfit:
+        typeof query.supplierNetProfit === 'number' ? query.supplierNetProfit : Number(query.supplierNetProfit),
+      supplierMoq: typeof query.supplierMoq === 'string' ? query.supplierMoq : null,
+      supplierFreightPrice:
+        typeof query.supplierFreightPrice === 'number' ? query.supplierFreightPrice : Number(query.supplierFreightPrice),
+      supplierServiceRateLabel:
+        typeof query.supplierServiceRateLabel === 'string' ? query.supplierServiceRateLabel : null,
+      sourceImage1: typeof query.sourceImage1 === 'string' ? query.sourceImage1 : null
+    })
+  })
+
   ipcMain.handle(IPC_SEARCH_1688_BY_IMAGE, async (event, payload: unknown) => {
     const query = (payload ?? {}) as Record<string, unknown>
     const imageUrl = typeof query.imageUrl === 'string' ? query.imageUrl.trim() : ''
