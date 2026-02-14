@@ -30,3 +30,8 @@ coverage/
 tmp/
 temp/
 *.tmp
+
+# Local tool/runtime artifacts not suitable for repo baseline
+AI_Tools/
+build/pyinstaller/
+build/pyinstaller-config/
