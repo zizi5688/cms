@@ -166,6 +166,23 @@ declare global {
             deletedProductMapRows: number
             deletedCoverCacheRows: number
           }>
+          coverDebugState: () => Promise<{
+            visual: boolean
+            keepWindowOpen: boolean
+            openDevTools: boolean
+            logPath: string
+          }>
+          setCoverDebugState: (payload: {
+            visual?: boolean
+            keepWindowOpen?: boolean
+            openDevTools?: boolean
+          }) => Promise<{
+            visual: boolean
+            keepWindowOpen: boolean
+            openDevTools: boolean
+            logPath: string
+          }>
+          coverDebugLog: (payload?: { limit?: number }) => Promise<{ logPath: string; lines: string[] }>
           meta: () => Promise<{
             latestDate: string | null
             availableDates: string[]
@@ -320,6 +337,9 @@ declare global {
           fetchXhsImage: (payload: { productId: string; xiaohongshuUrl: string }) => void
           onXhsImageUpdated: (
             listener: (payload: { productId: string; imageUrl: string }) => void
+          ) => () => void
+          onXhsImageFetchFailed: (
+            listener: (payload: { productId: string; reason: string; retryable: boolean }) => void
           ) => () => void
           search1688ByImage: (payload: {
             imageUrl: string

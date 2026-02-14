@@ -258,6 +258,24 @@ const api = {
           deletedProductMapRows: number
           deletedCoverCacheRows: number
         }> => ipcRenderer.invoke('cms.scout.dashboard.deleteSnapshot', payload),
+        coverDebugState: (): Promise<{
+          visual: boolean
+          keepWindowOpen: boolean
+          openDevTools: boolean
+          logPath: string
+        }> => ipcRenderer.invoke('cms.scout.dashboard.coverDebugState'),
+        setCoverDebugState: (payload: {
+          visual?: boolean
+          keepWindowOpen?: boolean
+          openDevTools?: boolean
+        }): Promise<{
+          visual: boolean
+          keepWindowOpen: boolean
+          openDevTools: boolean
+          logPath: string
+        }> => ipcRenderer.invoke('cms.scout.dashboard.setCoverDebugState', payload),
+        coverDebugLog: (payload?: { limit?: number }): Promise<{ logPath: string; lines: string[] }> =>
+          ipcRenderer.invoke('cms.scout.dashboard.coverDebugLog', payload),
         meta: (): Promise<{
           latestDate: string | null
           availableDates: string[]
@@ -399,6 +417,23 @@ const api = {
           ipcRenderer.on('IPC_IMAGE_UPDATED', handler)
           return () => {
             ipcRenderer.off('IPC_IMAGE_UPDATED', handler)
+          }
+        },
+        onXhsImageFetchFailed: (
+          listener: (payload: { productId: string; reason: string; retryable: boolean }) => void
+        ): (() => void) => {
+          const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+            if (!payload || typeof payload !== 'object') return
+            const row = payload as Record<string, unknown>
+            const productId = typeof row.productId === 'string' ? row.productId : ''
+            const reason = typeof row.reason === 'string' ? row.reason : ''
+            const retryable = row.retryable === true
+            if (!productId || !reason) return
+            listener({ productId, reason, retryable })
+          }
+          ipcRenderer.on('IPC_IMAGE_FETCH_FAILED', handler)
+          return () => {
+            ipcRenderer.off('IPC_IMAGE_FETCH_FAILED', handler)
           }
         },
         search1688ByImage: (payload: {

@@ -1722,10 +1722,15 @@ export class ScoutService {
     return normalizedImage
   }
 
-  async getXhsCoverImage(url: string): Promise<string | null> {
+  async getXhsCoverImage(
+    url: string,
+    opts: { preferredPartitionKey?: string } = {}
+  ): Promise<string | null> {
     const normalizedUrl = normalizeText(url)
     if (!normalizedUrl) return null
-    return fetchXhsCoverImageByHiddenWindow(normalizedUrl)
+    return fetchXhsCoverImageByHiddenWindow(normalizedUrl, {
+      preferredPartitionKey: normalizeNullable(opts.preferredPartitionKey) ?? undefined
+    })
   }
 
   async search1688ByImage(
@@ -2216,9 +2221,11 @@ type Scout1688ParsedRow = {
 }
 
 const XHS_COVER_PARTITION = 'persist:scout-xhs-cover'
+const XHS_COVER_PARTITION_RELAXED = 'persist:scout-xhs-cover-relaxed'
 const XHS_COVER_STEALTH_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const XHS_ANTI_SPIDER_ERROR = 'ANTI_SPIDER_DETECTED'
+const XHS_COVER_PARSE_ERROR = 'COVER_IMAGE_NOT_FOUND'
 
 async function uploadImageByDomInjection(
   win: BrowserWindow,
@@ -3184,6 +3191,30 @@ function shouldKeepSourcingWindowOpenAfterRun(): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
+function shouldEnableCoverVisualMode(): boolean {
+  const raw = normalizeText(process.env.CMS_SCOUT_COVER_VISUAL).toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
+function shouldOpenCoverDevTools(): boolean {
+  const raw = normalizeText(process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS).toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
+function shouldKeepCoverWindowOpenAfterRun(): boolean {
+  const raw = normalizeText(process.env.CMS_SCOUT_COVER_KEEP_OPEN).toLowerCase()
+  if (!raw) return false
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
+function maybeOpenCoverDevTools(win: BrowserWindow): void {
+  if (!shouldOpenCoverDevTools()) return
+  if (win.isDestroyed()) return
+  if (!win.webContents.isDevToolsOpened()) {
+    win.webContents.openDevTools({ mode: 'detach' })
+  }
+}
+
 async function triggerUserGestureClick(win: BrowserWindow, x: number, y: number): Promise<void> {
   win.webContents.sendInputEvent({ type: 'mouseMove', x, y })
   win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
@@ -3915,43 +3946,74 @@ function inferImageMimeType(filePath: string): string {
   return 'image/jpeg'
 }
 
-async function fetchXhsCoverImageByHiddenWindow(url: string): Promise<string | null> {
+async function fetchXhsCoverImageByHiddenWindow(
+  url: string,
+  opts: { relaxed?: boolean; preferredPartitionKey?: string } = {}
+): Promise<string | null> {
   const normalizedUrl = normalizeText(url)
   if (!normalizedUrl || !/^https?:\/\//i.test(normalizedUrl)) return null
+  const relaxed = opts.relaxed === true
+  const preferredPartitionKey = normalizeText(opts.preferredPartitionKey)
+  const hasPreferredPartition = Boolean(preferredPartitionKey)
+  const debugVisible = shouldEnableCoverVisualMode()
+  const debugKeepWindowOpen = shouldKeepCoverWindowOpenAfterRun()
+  const debugOpenDevTools = shouldOpenCoverDevTools()
+  const shouldShowWindow = debugVisible || debugKeepWindowOpen || debugOpenDevTools
+  const partitionKey = hasPreferredPartition
+    ? preferredPartitionKey
+    : relaxed
+      ? XHS_COVER_PARTITION_RELAXED
+      : XHS_COVER_PARTITION
 
   const { BrowserWindow, session } = await import('electron')
-  const workerSession = session.fromPartition(XHS_COVER_PARTITION)
+  const workerSession = session.fromPartition(partitionKey)
   const requestFilter = { urls: ['*://*/*'] }
-  workerSession.webRequest.onBeforeRequest(requestFilter, (details, callback) => {
-    const type = normalizeText((details as { resourceType?: unknown }).resourceType).toLowerCase()
-    const shouldBlock = type === 'image' || type === 'stylesheet' || type === 'font'
-    callback({ cancel: shouldBlock })
-  })
+  const shouldInstallRequestBlocker = !relaxed && !hasPreferredPartition
+  if (shouldInstallRequestBlocker) {
+    workerSession.webRequest.onBeforeRequest(requestFilter, (details, callback) => {
+      const type = normalizeText((details as { resourceType?: unknown }).resourceType).toLowerCase()
+      const shouldBlock = type === 'image' || type === 'stylesheet' || type === 'font'
+      callback({ cancel: shouldBlock })
+    })
+  }
 
   const win = new BrowserWindow({
-    show: false,
+    show: shouldShowWindow,
     width: 1400,
     height: 900,
     webPreferences: {
-      partition: XHS_COVER_PARTITION,
+      partition: partitionKey,
       sandbox: false,
-      offscreen: true,
+      offscreen: !relaxed && !shouldShowWindow,
       backgroundThrottling: false
     }
   })
 
   const cleanupRequestHook = (): void => {
-    workerSession.webRequest.onBeforeRequest(requestFilter, (_details, callback) => {
-      callback({ cancel: false })
-    })
+    if (shouldInstallRequestBlocker) {
+      workerSession.webRequest.onBeforeRequest(requestFilter, (_details, callback) => {
+        callback({ cancel: false })
+      })
+    }
+  }
+
+  const consoleHints: string[] = []
+  const onConsoleMessage = (_event: unknown, _level: number, message: string): void => {
+    const text = normalizeText(message)
+    if (!text) return
+    if (!/chrome-extension:\/\/|inject\.bundle|content-scripts|net::ERR_FAILED/i.test(text)) return
+    if (consoleHints.length >= 5) return
+    consoleHints.push(text.slice(0, 220))
   }
 
   try {
+    win.webContents.on('console-message', onConsoleMessage)
+
     const domReadyPromise = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         detach()
         reject(new Error('dom-ready timeout'))
-      }, 12_000)
+      }, relaxed ? 18_000 : 12_000)
       const onDomReady = (): void => {
         detach()
         resolve()
@@ -3973,13 +4035,17 @@ async function fetchXhsCoverImageByHiddenWindow(url: string): Promise<string | n
       userAgent: XHS_COVER_STEALTH_UA
     })
     await domReadyPromise
+    if (shouldShowWindow && !win.isDestroyed()) {
+      win.show()
+      maybeOpenCoverDevTools(win)
+    }
 
     // Warm-up: mimic human reading session to avoid "instant bounce".
     try {
       await win.webContents.executeJavaScript(
         `(() => new Promise((resolve) => {
-          const delay = 2000 + Math.floor(Math.random() * 2501)
-          try { window.scrollBy({ top: 500, behavior: 'smooth' }) } catch { try { window.scrollBy(0, 500) } catch {} }
+          const delay = ${relaxed ? '3200 + Math.floor(Math.random() * 2201)' : '2000 + Math.floor(Math.random() * 2501)'}
+          try { window.scrollBy({ top: 480, behavior: 'smooth' }) } catch { try { window.scrollBy(0, 480) } catch {} }
           setTimeout(resolve, delay)
         }))()`,
         true
@@ -3988,29 +4054,227 @@ async function fetchXhsCoverImageByHiddenWindow(url: string): Promise<string | n
       // noop
     }
 
-    const picked = await win.webContents.executeJavaScript(
-      `(() => {
+    const picked = (await win.webContents.executeJavaScript(
+      `(() => new Promise(async (resolve) => {
         try {
-          // 1. Try Global State (Most Accurate)
-          const state = window.__INITIAL_STATE__;
-          if (state && state.note && state.note.noteDetailMap) {
-            const noteId = state.note.firstNoteId;
-            const note = state.note.noteDetailMap[noteId]?.note;
-            if (note && note.imageList && note.imageList.length > 0) {
-              return note.imageList[0].urlDefault; // Return the high-res URL
+          const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+          const antiMarkers = [
+            '异常流量',
+            '访问受限',
+            '安全验证',
+            '请完成验证',
+            '验证码',
+            'anti-spider',
+            'risk control'
+          ];
+          const isLikelyImageUrl = (value) => {
+            const text = String(value || '').trim();
+            if (!text) return false;
+            const lower = text.toLowerCase();
+            if (lower.startsWith('data:') || lower.startsWith('blob:')) return false;
+            if (!/^https?:\\/\\//i.test(text) && !/^\\/\\//.test(text) && !text.startsWith('/')) return false;
+            if (/(logo|avatar|sprite|placeholder|default)/i.test(lower)) return false;
+            return /(\\.(jpe?g|png|webp|avif)(\\?|$)|imageView2|xhs|xhscdn|sns-webpic)/i.test(lower);
+          };
+          const toAbs = (value) => {
+            const text = String(value || '').trim();
+            if (!text) return '';
+            if (/^\\/\\//.test(text)) return 'https:' + text;
+            if (/^https?:\\/\\//i.test(text)) return text;
+            if (/^\\//.test(text)) {
+              try { return new URL(text, location.href).toString(); } catch { return text; }
             }
+            return text;
+          };
+          const findAntiMarker = () => {
+            const bodyText = String(document.body?.innerText || '').slice(0, 3000).toLowerCase();
+            const title = String(document.title || '').toLowerCase();
+            return antiMarkers.find((item) => bodyText.includes(item.toLowerCase()) || title.includes(item.toLowerCase())) || '';
+          };
+          const scorePath = (path) => {
+            const text = String(path || '').toLowerCase();
+            let score = 0;
+            if (/image|img|cover|main|first|default|url/.test(text)) score += 6;
+            if (/imagelist|swiper|carousel|top/.test(text)) score += 4;
+            if (/detail|desc|description|rich/.test(text)) score -= 3;
+            return score;
+          };
+          const pickFromObject = (root) => {
+            if (!root || (typeof root !== 'object' && !Array.isArray(root))) return '';
+            const queue = [{ value: root, path: '$', depth: 0 }];
+            const seen = new Set();
+            let best = { url: '', score: -Infinity };
+            let stateReady = false;
+            while (queue.length > 0 && seen.size < 7000) {
+              const node = queue.shift();
+              if (!node) continue;
+              const { value, path, depth } = node;
+              if (value == null) continue;
+              if (typeof value === 'object') {
+                if (seen.has(value)) continue;
+                seen.add(value);
+              }
+              if (depth > 8) continue;
+              if (typeof value === 'string') {
+                if (!isLikelyImageUrl(value)) continue;
+                const abs = toAbs(value);
+                if (!isLikelyImageUrl(abs)) continue;
+                const pathScore = scorePath(path);
+                const hostScore = /(xhs|xhscdn|sns-webpic)/i.test(abs) ? 3 : 0;
+                const total = pathScore + hostScore;
+                if (total > best.score) best = { url: abs, score: total };
+                continue;
+              }
+              if (Array.isArray(value)) {
+                for (let i = 0; i < Math.min(value.length, 16); i += 1) {
+                  queue.push({ value: value[i], path: path + '[' + i + ']', depth: depth + 1 });
+                }
+                continue;
+              }
+              if (value && typeof value === 'object') {
+                stateReady = true;
+                const entries = Object.entries(value);
+                for (let i = 0; i < Math.min(entries.length, 80); i += 1) {
+                  const [key, next] = entries[i];
+                  queue.push({ value: next, path: path + '.' + key, depth: depth + 1 });
+                }
+              }
+            }
+            return { image: best.url, stateReady };
+          };
+          const pickFromStates = () => {
+            const candidates = [
+              window.__INITIAL_STATE__,
+              window.__INITIAL_SSR_STATE__,
+              window.__PRELOADED_STATE__,
+              window.__NEXT_DATA__,
+              window.__NUXT__
+            ];
+            let stateReady = false;
+            for (const state of candidates) {
+              const result = pickFromObject(state);
+              if (result && typeof result === 'object' && result.stateReady) stateReady = true;
+              const image = result && typeof result === 'object' ? result.image : '';
+              if (isLikelyImageUrl(image)) return { image, stateReady };
+            }
+            return { image: '', stateReady };
+          };
+          const pickFromMeta = () => {
+            const selectors = [
+              'meta[property="og:image"]',
+              'meta[name="og:image"]',
+              'meta[name="twitter:image"]'
+            ];
+            for (const selector of selectors) {
+              const content = document.querySelector(selector)?.getAttribute('content') || '';
+              const image = toAbs(content);
+              if (isLikelyImageUrl(image)) return image;
+            }
+            return '';
+          };
+          const pickFromDom = () => {
+            const viewportH = Math.max(window.innerHeight || 0, 1);
+            const viewportW = Math.max(window.innerWidth || 0, 1);
+            const images = Array.from(document.querySelectorAll('img[src]'));
+            let best = { url: '', score: -Infinity };
+            for (const img of images) {
+              const src = toAbs(img.getAttribute('src') || img.currentSrc || '');
+              if (!isLikelyImageUrl(src)) continue;
+              const rect = img.getBoundingClientRect();
+              const width = Math.max(rect.width || img.naturalWidth || 0, 0);
+              const height = Math.max(rect.height || img.naturalHeight || 0, 0);
+              if (width < 180 || height < 180) continue;
+              if (rect.top > viewportH * 1.4 || rect.bottom < -40) continue;
+              const centerX = rect.left + rect.width / 2;
+              const centerPenalty = Math.abs(centerX - viewportW / 2) / 32;
+              const areaScore = Math.min(width * height, 1200000) / 3600;
+              const topScore = Math.max(0, 260 - Math.max(rect.top, 0));
+              const score = areaScore + topScore - centerPenalty;
+              if (score > best.score) best = { url: src, score };
+            }
+            return best.url;
+          };
+
+          const maxRounds = ${relaxed ? '10' : '7'};
+          for (let round = 0; round < maxRounds; round += 1) {
+            const antiMarker = findAntiMarker();
+            const fromState = pickFromStates();
+            const fromMeta = pickFromMeta();
+            const fromDom = pickFromDom();
+            const image = fromState.image || fromMeta || fromDom || '';
+            if (isLikelyImageUrl(image)) {
+              resolve({
+                image,
+                antiMarker,
+                stateReady: Boolean(fromState.stateReady),
+                title: String(document.title || '').slice(0, 120),
+                href: String(location.href || ''),
+                method: fromState.image ? 'state' : fromMeta ? 'meta' : 'dom'
+              });
+              return;
+            }
+            if (antiMarker) {
+              resolve({
+                image: '',
+                antiMarker,
+                stateReady: Boolean(fromState.stateReady),
+                title: String(document.title || '').slice(0, 120),
+                href: String(location.href || ''),
+                method: ''
+              });
+              return;
+            }
+            await sleep(900 + Math.floor(Math.random() * 500));
           }
-          // 2. Fallback to Meta Tag (Only if State fails)
-          return document.querySelector('meta[name="og:image"]')?.content || '';
-        } catch (e) { return ''; }
-      })()`,
+          resolve({
+            image: '',
+            antiMarker: '',
+            stateReady: true,
+            title: String(document.title || '').slice(0, 120),
+            href: String(location.href || ''),
+            method: ''
+          });
+        } catch (e) {
+          resolve({
+            image: '',
+            antiMarker: '',
+            stateReady: false,
+            title: '',
+            href: '',
+            method: ''
+          });
+        }
+      }))()`,
       true
-    )
-    const rawPicked = normalizeText(picked)
-    if (!rawPicked) throw new Error(XHS_ANTI_SPIDER_ERROR)
+    )) as
+      | {
+          image?: unknown
+          antiMarker?: unknown
+          stateReady?: unknown
+          title?: unknown
+          href?: unknown
+          method?: unknown
+        }
+      | string
+      | null
+
+    const rawPicked = normalizeText(typeof picked === 'string' ? picked : picked?.image)
+    if (!rawPicked) {
+      const antiMarker = normalizeText(typeof picked === 'string' ? '' : picked?.antiMarker)
+      const title = normalizeText(typeof picked === 'string' ? '' : picked?.title)
+      const href = normalizeText(typeof picked === 'string' ? '' : picked?.href)
+      const debugHint = consoleHints.length > 0 ? `|console:${consoleHints.join(' || ')}` : ''
+      const meta = [antiMarker, title, href].filter(Boolean).join('|')
+      if (antiMarker) {
+        throw new Error(meta ? `${XHS_ANTI_SPIDER_ERROR}:${meta}${debugHint}` : XHS_ANTI_SPIDER_ERROR)
+      }
+      throw new Error(
+        `${XHS_COVER_PARSE_ERROR}:${[title, href].filter(Boolean).join('|') || 'no-image'}${debugHint}`
+      )
+    }
     const lower = rawPicked.toLowerCase()
     if (lower.includes('logo') || lower.includes('assets/img') || lower.includes('spacer')) {
-      throw new Error(XHS_ANTI_SPIDER_ERROR)
+      throw new Error(`${XHS_COVER_PARSE_ERROR}:placeholder-image`)
     }
     try {
       return new URL(rawPicked, normalizedUrl).toString()
@@ -4020,12 +4284,27 @@ async function fetchXhsCoverImageByHiddenWindow(url: string): Promise<string | n
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes(XHS_ANTI_SPIDER_ERROR)) {
-      throw new Error(XHS_ANTI_SPIDER_ERROR)
+      if (!relaxed) {
+        return fetchXhsCoverImageByHiddenWindow(normalizedUrl, { relaxed: true, preferredPartitionKey })
+      }
+      throw new Error(message || XHS_ANTI_SPIDER_ERROR)
+    }
+    if (message.includes(XHS_COVER_PARSE_ERROR)) {
+      throw new Error(message)
     }
     return null
   } finally {
+    win.webContents.removeListener('console-message', onConsoleMessage)
     cleanupRequestHook()
-    if (!win.isDestroyed()) win.destroy()
+    if (shouldShowWindow && debugKeepWindowOpen && !win.isDestroyed()) {
+      try {
+        win.setTitle(`XHS封面调试窗口${relaxed ? '（relaxed）' : ''}`)
+      } catch {
+        // noop
+      }
+    } else if (!win.isDestroyed()) {
+      win.destroy()
+    }
   }
 }
 

@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, dialog, protocol, clipboard, powerS
 import { spawn } from 'child_process'
 import { join, resolve, extname, basename, dirname } from 'path'
 import * as path from 'path'
-import { createReadStream, openAsBlob, existsSync, statSync } from 'fs'
+import { createReadStream, openAsBlob, existsSync, statSync, appendFileSync } from 'fs'
 import { copyFile, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'fs/promises'
 import { createHash } from 'crypto'
 import { tmpdir } from 'os'
@@ -70,6 +70,7 @@ let scheduleHeartbeatTimer: NodeJS.Timeout | null = null
 const runningScheduleByAccount = new Map<string, Promise<void>>()
 const IPC_FETCH_XHS_IMAGE = 'IPC_FETCH_XHS_IMAGE'
 const IPC_IMAGE_UPDATED = 'IPC_IMAGE_UPDATED'
+const IPC_IMAGE_FETCH_FAILED = 'IPC_IMAGE_FETCH_FAILED'
 const IPC_SEARCH_1688_BY_IMAGE = 'IPC_SEARCH_1688_BY_IMAGE'
 const IPC_SOURCING_CAPTCHA_NEEDED = 'IPC_SOURCING_CAPTCHA_NEEDED'
 const IPC_SOURCING_LOGIN_NEEDED = 'IPC_SOURCING_LOGIN_NEEDED'
@@ -83,6 +84,47 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
+}
+
+function appendCoverFetchDebugLog(line: string): void {
+  try {
+    const ts = new Date().toISOString()
+    appendFileSync(getCoverFetchDebugLogPath(), `[${ts}] ${line}\n`, 'utf-8')
+  } catch {
+    // noop
+  }
+}
+
+function getCoverFetchDebugLogPath(): string {
+  return join(app.getPath('userData'), 'cover_fetch_debug.log')
+}
+
+function parseEnvBool(value: unknown): boolean {
+  const raw = String(value ?? '').trim().toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
+function parseOptionalBool(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value
+  if (typeof value !== 'string') return null
+  const raw = value.trim().toLowerCase()
+  if (raw === '1' || raw === 'true' || raw === 'yes') return true
+  if (raw === '0' || raw === 'false' || raw === 'no') return false
+  return null
+}
+
+function readCoverDebugState(): {
+  visual: boolean
+  keepWindowOpen: boolean
+  openDevTools: boolean
+  logPath: string
+} {
+  return {
+    visual: parseEnvBool(process.env.CMS_SCOUT_COVER_VISUAL),
+    keepWindowOpen: parseEnvBool(process.env.CMS_SCOUT_COVER_KEEP_OPEN),
+    openDevTools: parseEnvBool(process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS),
+    logPath: getCoverFetchDebugLogPath()
+  }
 }
 
 function isLikelyMountedOrRemotePath(filePath: string): boolean {
@@ -642,6 +684,31 @@ app.whenReady().then(async () => {
   if (sqliteReady) {
     try { scoutService.ensureSchema() } catch (e) { console.error('[Scout] ensureSchema failed:', e) }
   }
+  const accountManager = new AccountManager()
+
+  const resolveLoggedInXhsPartitionKey = async (): Promise<string | null> => {
+    const accounts = accountManager.listAccounts()
+    if (accounts.length === 0) return null
+
+    // Prefer accounts already marked as logged in, then fallback to probing others.
+    const ordered = [
+      ...accounts.filter((item) => item.status === 'logged_in'),
+      ...accounts.filter((item) => item.status !== 'logged_in')
+    ]
+
+    for (const account of ordered) {
+      try {
+        const ok = await accountManager.checkLoginStatus(account.id)
+        if (!ok) continue
+        const partitionKey = String(account.partitionKey ?? '').trim()
+        if (!partitionKey) continue
+        return partitionKey
+      } catch {
+        // ignore probe error and continue next account
+      }
+    }
+    return null
+  }
 
   type XhsImageQueueItem = {
     productId: string
@@ -672,6 +739,21 @@ app.whenReady().then(async () => {
     }
   }
 
+  const broadcastImageFetchFailed = (payload: {
+    productId: string
+    reason: string
+    retryable: boolean
+  }): void => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (win.isDestroyed()) continue
+        win.webContents.send(IPC_IMAGE_FETCH_FAILED, payload)
+      } catch (error) {
+        void error
+      }
+    }
+  }
+
   const processImageFetchQueue = async (): Promise<void> => {
     if (isProcessingImageQueue || imageFetchQueue.length === 0) return
     const next = imageFetchQueue.shift()
@@ -679,7 +761,15 @@ app.whenReady().then(async () => {
 
     isProcessingImageQueue = true
     try {
-      const imageUrl = await scoutService.getXhsCoverImage(next.xiaohongshuUrl)
+      const preferredPartitionKey = await resolveLoggedInXhsPartitionKey()
+      if (preferredPartitionKey) {
+        appendCoverFetchDebugLog(`session productId=${next.productId} partition=${preferredPartitionKey}`)
+      } else {
+        appendCoverFetchDebugLog(`session productId=${next.productId} partition=isolated-default`)
+      }
+      const imageUrl = await scoutService.getXhsCoverImage(next.xiaohongshuUrl, {
+        preferredPartitionKey: preferredPartitionKey ?? undefined
+      })
       if (!imageUrl || isLikelyPlaceholderImage(imageUrl)) {
         throw new Error('未解析到有效商品主图')
       }
@@ -687,11 +777,22 @@ app.whenReady().then(async () => {
         scoutService.saveDashboardProductCover(next.productId, next.xiaohongshuUrl, imageUrl) ?? imageUrl
       broadcastImageUpdated({ productId: next.productId, imageUrl: savedImageUrl })
       sendLogToRenderer('info', `[XHS Cover Queue] updated productId=${next.productId}`)
+      appendCoverFetchDebugLog(
+        `ok productId=${next.productId} url=${next.xiaohongshuUrl} image=${String(savedImageUrl).slice(0, 180)}`
+      )
       queuedOrRunningProductIds.delete(next.productId)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
+      appendCoverFetchDebugLog(
+        `fail productId=${next.productId} url=${next.xiaohongshuUrl} msg=${msg} retry=${next.retryCount}`
+      )
       if (msg.includes('ANTI_SPIDER_DETECTED')) {
         sendLogToRenderer('warn', `[XHS Cover Queue] failed productId=${next.productId} msg=${msg}`)
+        broadcastImageFetchFailed({
+          productId: next.productId,
+          reason: '触发反爬限制（ANTI_SPIDER），请稍后重试',
+          retryable: true
+        })
         queuedOrRunningProductIds.delete(next.productId)
         // Do not retry immediately; treat as soft-block and let user retry later.
       } else if (next.retryCount < 1) {
@@ -699,6 +800,11 @@ app.whenReady().then(async () => {
         sendLogToRenderer('warn', `[XHS Cover Queue] retry productId=${next.productId}`)
       } else {
         sendLogToRenderer('warn', `[XHS Cover Queue] failed productId=${next.productId} msg=${msg}`)
+        broadcastImageFetchFailed({
+          productId: next.productId,
+          reason: msg || '封面抓取失败',
+          retryable: false
+        })
         queuedOrRunningProductIds.delete(next.productId)
       }
     } finally {
@@ -731,7 +837,6 @@ app.whenReady().then(async () => {
     void processImageFetchQueue()
   })
 
-  const accountManager = new AccountManager()
   const publisherService = new PublisherService(accountManager)
   const productManager = new ProductManager()
   const taskManager = new TaskManager(undefined, {
@@ -2405,6 +2510,43 @@ app.whenReady().then(async () => {
     const query = (payload ?? {}) as Record<string, unknown>
     const snapshotDate = typeof query.snapshotDate === 'string' ? query.snapshotDate : ''
     return scoutService.deleteDashboardSnapshot(snapshotDate)
+  })
+
+  ipcMain.handle('cms.scout.dashboard.coverDebugState', async () => {
+    return readCoverDebugState()
+  })
+
+  ipcMain.handle('cms.scout.dashboard.setCoverDebugState', async (_event, payload: unknown) => {
+    const row = (payload ?? {}) as Record<string, unknown>
+    const visual = parseOptionalBool(row.visual)
+    const keepWindowOpen = parseOptionalBool(row.keepWindowOpen)
+    const openDevTools = parseOptionalBool(row.openDevTools)
+
+    if (visual != null) process.env.CMS_SCOUT_COVER_VISUAL = visual ? '1' : '0'
+    if (keepWindowOpen != null) process.env.CMS_SCOUT_COVER_KEEP_OPEN = keepWindowOpen ? '1' : '0'
+    if (openDevTools != null) process.env.CMS_SCOUT_COVER_OPEN_DEVTOOLS = openDevTools ? '1' : '0'
+
+    const state = readCoverDebugState()
+    appendCoverFetchDebugLog(
+      `debug-switch visual=${state.visual ? 1 : 0} keep=${state.keepWindowOpen ? 1 : 0} devtools=${state.openDevTools ? 1 : 0}`
+    )
+    return state
+  })
+
+  ipcMain.handle('cms.scout.dashboard.coverDebugLog', async (_event, payload: unknown) => {
+    const row = (payload ?? {}) as Record<string, unknown>
+    const parsedLimit = typeof row.limit === 'number' ? row.limit : Number(row.limit)
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.max(20, Math.min(500, Math.floor(parsedLimit)))
+      : 120
+    const logPath = getCoverFetchDebugLogPath()
+    const content = await readFile(logPath, 'utf-8').catch(() => '')
+    const lines = content
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(-limit)
+    return { logPath, lines }
   })
 
   ipcMain.handle('cms.scout.dashboard.meta', async () => scoutService.getDashboardMeta())

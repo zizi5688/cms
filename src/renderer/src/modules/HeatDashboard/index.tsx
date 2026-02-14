@@ -148,6 +148,13 @@ type SourcingDebugResult = {
 }
 
 type SourcingSearchResponse = SourcingSearchResult[] | SourcingDebugResult
+type CoverDebugState = {
+  visual: boolean
+  keepWindowOpen: boolean
+  openDevTools: boolean
+  logPath: string
+}
+
 const PRODUCT_PLACEHOLDER_IMAGE =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='640' viewBox='0 0 640 640'%3E%3Cdefs%3E%3ClinearGradient id='bg' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f3f4f6'/%3E%3Cstop offset='100%25' stop-color='%23e5e7eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='640' height='640' fill='url(%23bg)'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='Arial' font-size='28'%3ENo Image%3C/text%3E%3C/svg%3E"
 
@@ -175,6 +182,11 @@ function HeatDashboard(): React.JSX.Element {
   const [quickLookProductId, setQuickLookProductId] = useState<string | null>(null)
   const [queuedImageMap, setQueuedImageMap] = useState<Record<string, string>>({})
   const [queueLoadingMap, setQueueLoadingMap] = useState<Record<string, boolean>>({})
+  const [queueErrorMap, setQueueErrorMap] = useState<Record<string, string>>({})
+  const [coverDebugState, setCoverDebugState] = useState<CoverDebugState | null>(null)
+  const [coverDebugLines, setCoverDebugLines] = useState<string[]>([])
+  const [isCoverDebugPanelOpen, setIsCoverDebugPanelOpen] = useState(false)
+  const [isCoverDebugUpdating, setIsCoverDebugUpdating] = useState(false)
   const [sourcingMarked, setSourcingMarked] = useState<MarkedProduct | null>(null)
   const [sourcingSearchCandidates, setSourcingSearchCandidates] = useState<SourcingSupplierCandidate[] | null>(null)
   const [selectedSupplierIndex, setSelectedSupplierIndex] = useState(0)
@@ -188,6 +200,31 @@ function HeatDashboard(): React.JSX.Element {
   const loadMeta = useCallback(async (): Promise<void> => {
     const nextMeta = await window.api.cms.scout.dashboard.meta()
     setMeta(nextMeta)
+  }, [])
+
+  const loadCoverDebugState = useCallback(async (): Promise<void> => {
+    try {
+      const next = (await window.api.cms.scout.dashboard.coverDebugState()) as CoverDebugState
+      setCoverDebugState(next)
+    } catch {
+      // noop
+    }
+  }, [])
+
+  const loadCoverDebugLog = useCallback(async (limit = 100): Promise<void> => {
+    try {
+      const result = (await window.api.cms.scout.dashboard.coverDebugLog({ limit })) as {
+        logPath: string
+        lines: string[]
+      }
+      setCoverDebugLines(Array.isArray(result.lines) ? result.lines : [])
+      setCoverDebugState((prev) => {
+        if (!prev) return prev
+        return { ...prev, logPath: result.logPath || prev.logPath }
+      })
+    } catch {
+      // noop
+    }
   }, [])
 
   const loadKeywordsAndTrends = useCallback(async (): Promise<void> => {
@@ -255,6 +292,10 @@ function HeatDashboard(): React.JSX.Element {
   }, [loadMeta])
 
   useEffect(() => {
+    void loadCoverDebugState()
+  }, [loadCoverDebugState])
+
+  useEffect(() => {
     const refreshOnForeground = (): void => {
       void loadMeta()
     }
@@ -317,6 +358,7 @@ function HeatDashboard(): React.JSX.Element {
   useEffect(() => {
     setQueuedImageMap({})
     setQueueLoadingMap({})
+    setQueueErrorMap({})
     requestedQueueProductIdsRef.current.clear()
   }, [selectedKeywordId, snapshotDate])
 
@@ -332,6 +374,12 @@ function HeatDashboard(): React.JSX.Element {
         delete next[productId]
         return next
       })
+      setQueueErrorMap((prev) => {
+        if (!prev[productId]) return prev
+        const next = { ...prev }
+        delete next[productId]
+        return next
+      })
       setMarkedProducts((prev) =>
         prev.map((item) =>
           item.productKey === productId && !item.sourceImage1
@@ -341,6 +389,28 @@ function HeatDashboard(): React.JSX.Element {
       )
     })
   }, [])
+
+  useEffect(() => {
+    return window.api.cms.scout.dashboard.onXhsImageFetchFailed(({ productId, reason }) => {
+      setQueueLoadingMap((prev) => {
+        if (!prev[productId]) return prev
+        const next = { ...prev }
+        delete next[productId]
+        return next
+      })
+      setQueueErrorMap((prev) => ({ ...prev, [productId]: reason }))
+      setStatusText(`封面抓取失败（${productId.slice(0, 10)}）：${reason}`)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!isCoverDebugPanelOpen) return
+    void loadCoverDebugLog(120)
+    const timer = window.setInterval(() => {
+      void loadCoverDebugLog(120)
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [isCoverDebugPanelOpen, loadCoverDebugLog])
 
   const markedByProductKey = useMemo(() => {
     const map = new Map<string, MarkedProduct>()
@@ -383,6 +453,12 @@ function HeatDashboard(): React.JSX.Element {
     if (requestedQueueProductIdsRef.current.has(normalizedProductId)) return
     requestedQueueProductIdsRef.current.add(normalizedProductId)
     setQueueLoadingMap((prev) => ({ ...prev, [normalizedProductId]: true }))
+    setQueueErrorMap((prev) => {
+      if (!prev[normalizedProductId]) return prev
+      const next = { ...prev }
+      delete next[normalizedProductId]
+      return next
+    })
     window.api.cms.scout.dashboard.fetchXhsImage({
       productId: normalizedProductId,
       xiaohongshuUrl: normalizedUrl
@@ -678,6 +754,29 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [])
 
+  const handleUpdateCoverDebugState = useCallback(
+    async (patch: Partial<Pick<CoverDebugState, 'visual' | 'keepWindowOpen' | 'openDevTools'>>): Promise<void> => {
+      if (isCoverDebugUpdating) return
+      setIsCoverDebugUpdating(true)
+      try {
+        const next = (await window.api.cms.scout.dashboard.setCoverDebugState(patch)) as CoverDebugState
+        setCoverDebugState(next)
+        setStatusText(
+          `封面调试已更新：可视=${next.visual ? '开' : '关'}，保留窗口=${next.keepWindowOpen ? '开' : '关'}，DevTools=${next.openDevTools ? '开' : '关'}`
+        )
+        if (isCoverDebugPanelOpen) {
+          void loadCoverDebugLog(120)
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        setStatusText(`封面调试开关更新失败：${msg}`)
+      } finally {
+        setIsCoverDebugUpdating(false)
+      }
+    },
+    [isCoverDebugPanelOpen, isCoverDebugUpdating, loadCoverDebugLog]
+  )
+
   const handleImportSnapshotExcel = useCallback(async (): Promise<void> => {
     if (isImportingSnapshot) return
     setIsImportingSnapshot(true)
@@ -841,6 +940,76 @@ function HeatDashboard(): React.JSX.Element {
               关键词 {meta?.totalKeywords ?? 0} 个，商品 {meta?.totalProducts ?? 0} 个
             </div>
             {statusText && <div className="mt-1 text-xs text-zinc-400">{statusText}</div>}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
+                onClick={() => setIsCoverDebugPanelOpen((prev) => !prev)}
+              >
+                {isCoverDebugPanelOpen ? '收起封面调试' : '封面调试'}
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                  coverDebugState?.visual
+                    ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                )}
+                onClick={() =>
+                  void handleUpdateCoverDebugState({
+                    visual: !(coverDebugState?.visual === true)
+                  })
+                }
+                disabled={isCoverDebugUpdating}
+              >
+                可视抓取: {coverDebugState?.visual ? '开' : '关'}
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                  coverDebugState?.keepWindowOpen
+                    ? 'border-amber-400/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
+                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                )}
+                onClick={() =>
+                  void handleUpdateCoverDebugState({
+                    keepWindowOpen: !(coverDebugState?.keepWindowOpen === true)
+                  })
+                }
+                disabled={isCoverDebugUpdating}
+              >
+                保留窗口: {coverDebugState?.keepWindowOpen ? '开' : '关'}
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                  coverDebugState?.openDevTools
+                    ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
+                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                )}
+                onClick={() =>
+                  void handleUpdateCoverDebugState({
+                    openDevTools: !(coverDebugState?.openDevTools === true)
+                  })
+                }
+                disabled={isCoverDebugUpdating}
+              >
+                DevTools: {coverDebugState?.openDevTools ? '开' : '关'}
+              </button>
+            </div>
+            {isCoverDebugPanelOpen && (
+              <div className="mt-2 rounded-md border border-zinc-700 bg-black/35 p-2">
+                <div className="mb-1 text-[11px] text-zinc-400">
+                  实时日志：{coverDebugState?.logPath ? coverDebugState.logPath : '-'}
+                </div>
+                <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-zinc-300">
+                  {coverDebugLines.length > 0 ? coverDebugLines.join('\n') : '暂无日志'}
+                </pre>
+              </div>
+            )}
           </header>
 
           <div className="p-4">
@@ -874,6 +1043,7 @@ function HeatDashboard(): React.JSX.Element {
                     }}
                     onRequestMissingImage={enqueueMissingCoverFetch}
                     isImageFetching={queueLoadingMap[card.id] === true}
+                    imageFetchError={queueErrorMap[card.id] ?? null}
                   />
                 ))}
               </div>
@@ -1018,6 +1188,7 @@ type ProductCardProps = {
   onCompetitorAnalysis: () => void
   onRequestMissingImage: (productId: string, xiaohongshuUrl: string) => void
   isImageFetching: boolean
+  imageFetchError: string | null
 }
 
 function ProductCard({
@@ -1030,7 +1201,8 @@ function ProductCard({
   onSameStyle,
   onCompetitorAnalysis,
   onRequestMissingImage,
-  isImageFetching
+  isImageFetching,
+  imageFetchError
 }: ProductCardProps): React.JSX.Element {
   useEffect(() => {
     if (hasValidImageUrl(card.imageUrl)) return
@@ -1088,6 +1260,11 @@ function ProductCard({
           {isImageFetching && !hasValidImageUrl(card.imageUrl) && (
             <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/70 px-2 py-1 text-[11px] text-white">
               封面抓取中...
+            </div>
+          )}
+          {!isImageFetching && !hasValidImageUrl(card.imageUrl) && imageFetchError && (
+            <div className="pointer-events-none absolute right-2 top-2 rounded bg-rose-700/85 px-2 py-1 text-[11px] text-white">
+              {formatImageFetchErrorLabel(imageFetchError)}
             </div>
           )}
         </div>
@@ -1604,6 +1781,15 @@ function hasValidImageUrl(url: string | null): boolean {
   const lower = normalized.toLowerCase()
   if (lower.includes('placeholder') || lower.includes('default') || lower.includes('sprite')) return false
   return true
+}
+
+function formatImageFetchErrorLabel(reason: string): string {
+  const text = String(reason ?? '').toLowerCase()
+  if (!text) return '抓取失败'
+  if (text.includes('anti_spider') || text.includes('反爬')) return '反爬限制'
+  if (text.includes('timeout') || text.includes('超时')) return '请求超时'
+  if (text.includes('未解析到有效商品主图') || text.includes('主图')) return '未解析主图'
+  return '抓取失败'
 }
 
 function formatGrowth(value: number | null): string {
