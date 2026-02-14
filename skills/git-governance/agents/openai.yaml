@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Governance"
+  short_description: "Gate commits, branching, and safe Git flow"
+  default_prompt: "Apply git-governance: choose branch strategy, detect commit checkpoints, and ask for explicit commit approval before committing."

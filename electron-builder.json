@@ -1,0 +1,79 @@
+{
+  "appId": "com.supercms.app",
+  "productName": "Super CMS",
+  "directories": {
+    "buildResources": "build",
+    "output": "release"
+  },
+  "files": [
+    "!**/.vscode/*",
+    "!src/*",
+    "!electron.vite.config.{js,ts,mjs,cjs}",
+    "!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}",
+    "!{.env,.env.*,.npmrc,pnpm-lock.yaml}",
+    "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
+  ],
+  "extraResources": [
+    {
+      "from": "dist/cms_engine",
+      "to": "cms_engine"
+    },
+    {
+      "from": "AI_Tools/realesrgan-ncnn-vulkan-20220424-macos",
+      "to": "realesrgan"
+    }
+  ],
+  "asarUnpack": [
+    "resources/**",
+    "**/node_modules/sharp/**",
+    "**/node_modules/@img/**",
+    "**/node_modules/better-sqlite3/**",
+    "**/node_modules/ffmpeg-static/**",
+    "**/node_modules/ffprobe-static/**"
+  ],
+  "win": {
+    "executableName": "super-cms"
+  },
+  "nsis": {
+    "artifactName": "${name}-${version}-setup.${ext}",
+    "shortcutName": "${productName}",
+    "uninstallDisplayName": "${productName}",
+    "createDesktopShortcut": "always"
+  },
+  "mac": {
+    "target": ["dmg"],
+    "icon": "build/icon.icns",
+    "identity": null,
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "extendInfo": [
+      {
+        "NSCameraUsageDescription": "Application requests access to the device's camera.",
+        "NSMicrophoneUsageDescription": "Application requests access to the device's microphone.",
+        "NSDocumentsFolderUsageDescription": "Application requests access to the user's Documents folder.",
+        "NSDownloadsFolderUsageDescription": "Application requests access to the user's Downloads folder."
+      }
+    ],
+    "notarize": false
+  },
+  "dmg": {
+    "artifactName": "${name}-${version}.${ext}"
+  },
+  "linux": {
+    "target": ["AppImage", "snap", "deb"],
+    "maintainer": "electronjs.org",
+    "category": "Utility"
+  },
+  "appImage": {
+    "artifactName": "${name}-${version}.${ext}"
+  },
+  "npmRebuild": false,
+  "publish": {
+    "provider": "generic",
+    "url": "https://example.com/auto-updates"
+  },
+  "electronDownload": {
+    "mirror": "https://npmmirror.com/mirrors/electron/"
+  }
+}

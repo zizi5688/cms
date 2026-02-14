@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${ALLOW_MAIN_PUSH:-}" == "1" ]]; then
+  exit 0
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master)
+      echo "[git-governance] Blocked: direct push to ${remote_ref#refs/heads/}."
+      echo "[git-governance] Push a feature branch instead:"
+      echo "  git push -u origin codex/<scope>-<goal>"
+      echo "[git-governance] Emergency bypass (understood risk):"
+      echo "  ALLOW_MAIN_PUSH=1 git push origin ${remote_ref#refs/heads/}"
+      exit 1
+      ;;
+  esac
+done
+
+exit 0

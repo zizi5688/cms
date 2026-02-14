@@ -1,0 +1,14 @@
+# <type>: <summary>
+#
+# Types:
+# - feat: new feature
+# - fix: bug fix
+# - refactor: code restructuring without behavior change
+# - chore: tooling/config/maintenance
+# - docs: documentation
+# - test: tests only
+#
+# Checkpoint:
+# - User impact:
+# - Validation:
+# - Risk:
