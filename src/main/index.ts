@@ -9,6 +9,7 @@ import { tmpdir } from 'os'
 import ElectronStore from 'electron-store'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import devDockIcon from '../../resources/icon-dev.png?asset'
 import { Readable } from 'stream'
 import sharp from 'sharp'
 import pLimit from 'p-limit'
@@ -565,6 +566,15 @@ async function createWindow(): Promise<void> {
 
 // Electron 初始化完成后触发：创建窗口等操作应在此之后执行
 app.whenReady().then(async () => {
+  // 开发模式使用独立 Dock 图标，避免和 Release 产物混淆
+  if (is.dev && process.platform === 'darwin') {
+    try {
+      app.dock?.setIcon(devDockIcon)
+    } catch (error) {
+      void error
+    }
+  }
+
   try {
     await performBackup()
   } catch (error) {
