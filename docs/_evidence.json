@@ -1,0 +1,309 @@
+{
+  "generated_at": "2026-02-14T00:00:00Z",
+  "mode": "full",
+  "ui_framework_hint": "electron",
+  "repo": "CMS-2.0",
+  "evidence_items": [
+    {
+      "id": "EV-001",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "侧边栏驱动模块切换（素材处理、数据工坊、媒体矩阵、选品数据、热度看板、设置）",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/layout/Sidebar.tsx", "symbol": "menuItems" },
+        { "path": "src/renderer/src/components/layout/MainLayout.tsx", "symbol": "switch(activeModule)" }
+      ]
+    },
+    {
+      "id": "EV-002",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "素材处理支持图片/视频双模式、日志面板、封面处理与发送数据工坊",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/modules/ImageLab.tsx", "symbol": "handleAddPaths" },
+        { "path": "src/renderer/src/components/modules/ImageLab.tsx", "symbol": "handleSendToWorkshop" },
+        { "path": "src/renderer/src/components/modules/ImageLab.tsx", "symbol": "details(处理日志)" }
+      ]
+    },
+    {
+      "id": "EV-003",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "图片处理链路由主进程 IPC 驱动：去印、超分、切宫格",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('process-watermark')" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('process-hd-upscale')" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('process-grid-split')" }
+      ]
+    },
+    {
+      "id": "EV-004",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "视频兼容检测与预览转码由 ffmpeg/ffprobe 完成并带缓存清理",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/videoProcessor.ts", "symbol": "prepareVideoPreview" },
+        { "path": "src/main/services/videoProcessor.ts", "symbol": "generatePreview" },
+        { "path": "src/main/services/videoProcessor.ts", "symbol": "cleanupTempPreviews" }
+      ]
+    },
+    {
+      "id": "EV-005",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "数据工坊支持 CSV+素材生成任务预览并派发到账号队列",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/modules/DataBuilder.tsx", "symbol": "handleGenerate" },
+        { "path": "src/renderer/src/components/modules/DataBuilder.tsx", "symbol": "dispatchSelected" },
+        { "path": "src/renderer/src/lib/cms-engine.ts", "symbol": "generateManifest/generateVideoManifest" }
+      ]
+    },
+    {
+      "id": "EV-006",
+      "category": "IPC/RPC/API 调用关系",
+      "conclusion": "任务批量创建支持进度回传 requestId 过滤",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/preload/index.ts", "symbol": "task.onCreateBatchProgress" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.task.createBatch')" }
+      ]
+    },
+    {
+      "id": "EV-007",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "媒体矩阵支持账号 CRUD、登录窗口、列表/日历双视图、批量排期与取消",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/AutoPublish/AutoPublishView.tsx", "symbol": "handleAddAccount/handleDeleteAccount" },
+        { "path": "src/renderer/src/components/AutoPublish/AutoPublishView.tsx", "symbol": "handleConfirmSmartSchedule" },
+        { "path": "src/renderer/src/modules/MediaMatrix/CalendarView.tsx", "symbol": "handleEventDrop" }
+      ]
+    },
+    {
+      "id": "EV-008",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "调度队列具备过期任务修复、加锁领取、失败重试计数",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/queueService.ts", "symbol": "markStalledTasksAsFailed" },
+        { "path": "src/main/services/queueService.ts", "symbol": "acquireNextTask" },
+        { "path": "src/main/services/queueService.ts", "symbol": "failTask" }
+      ]
+    },
+    {
+      "id": "EV-009",
+      "category": "IPC/RPC/API 调用关系",
+      "conclusion": "发布执行依赖 BrowserWindow + preload 自动化并回传结果",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/publisher.ts", "symbol": "publishTask" },
+        { "path": "src/main/preload/xhs-automation.ts", "symbol": "publisher:task handler" },
+        { "path": "src/main/publisher.ts", "symbol": "waitForAutomationResult" }
+      ]
+    },
+    {
+      "id": "EV-010",
+      "category": "测试/错误处理/日志与告警",
+      "conclusion": "发布失败会落本地诊断（截图+网络日志）",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/diagnostics.ts", "symbol": "saveDiagnostics" },
+        { "path": "src/main/publisher.ts", "symbol": "DiagnosticsService usage" }
+      ]
+    },
+    {
+      "id": "EV-011",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "选品数据模块支持关键词管理、商品排序、导出 Excel",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/ProductScout/KeywordManager.tsx", "symbol": "handleAdd/onRemove" },
+        { "path": "src/renderer/src/modules/ProductScout/ProductTable.tsx", "symbol": "handleSortClick/handleExport" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.scout.export.excel')" }
+      ]
+    },
+    {
+      "id": "EV-012",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "选品服务持久化关键词、商品、同步日志并支持 JSON/Excel 导入",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/scoutService.ts", "symbol": "ensureSchema" },
+        { "path": "src/main/services/scoutService.ts", "symbol": "importSyncData" },
+        { "path": "src/main/services/scoutService.ts", "symbol": "importExcelSnapshotFromFile" }
+      ]
+    },
+    {
+      "id": "EV-013",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "热度看板实现关键词趋势雷达、潜力品卡片、Quick Look、搜同款面板",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "keywordItems/productCards" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "QuickLookModal/SourcingPanel" }
+      ]
+    },
+    {
+      "id": "EV-014",
+      "category": "IPC/RPC/API 调用关系",
+      "conclusion": "热度看板搜同款通过 IPC 转发到 1688 搜索并支持登录/验证码事件",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('IPC_SEARCH_1688_BY_IMAGE')" },
+        { "path": "src/preload/index.ts", "symbol": "dashboard.onSourcingLoginNeeded/onSourcingCaptchaNeeded" },
+        { "path": "src/main/services/scoutService.ts", "symbol": "search1688ByImage" }
+      ]
+    },
+    {
+      "id": "EV-015",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "热度看板“绑定供应商”仅更新前端状态，未见持久化写回",
+      "implementation_level": "部分实现",
+      "confidence": "medium",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleBindSupplier" }
+      ]
+    },
+    {
+      "id": "EV-016",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "设置页具备工作区切换、飞书测试连接、工具路径配置",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/modules/Settings.tsx", "symbol": "changeWorkspace/testConnection" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('workspace.setPath')" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('feishu-test-connection')" }
+      ]
+    },
+    {
+      "id": "EV-017",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "工作区服务负责路径可写性检查与状态落盘",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/workspaceService.ts", "symbol": "init/setPath/applyPath" }
+      ]
+    },
+    {
+      "id": "EV-018",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "SQLite 初始化会创建 accounts/products/tasks 并处理 JSON 迁移",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/sqliteService.ts", "symbol": "init" },
+        { "path": "src/main/services/sqliteService.ts", "symbol": "migrateFromJSON/migrateFromJSONFile" }
+      ]
+    },
+    {
+      "id": "EV-019",
+      "category": "测试/错误处理/日志与告警",
+      "conclusion": "启动时执行数据库备份并保留最近 7 份",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/services/backupService.ts", "symbol": "performBackup" },
+        { "path": "src/main/index.ts", "symbol": "app.whenReady -> performBackup" }
+      ]
+    },
+    {
+      "id": "EV-020",
+      "category": "IPC/RPC/API 调用关系",
+      "conclusion": "safe-file 协议支持 Range/HEAD，并带路径恢复策略",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/index.ts", "symbol": "protocol.handle('safe-file')" }
+      ]
+    },
+    {
+      "id": "EV-021",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "上传管理可执行飞书上传流程，但默认侧边栏入口被注释",
+      "implementation_level": "部分实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/modules/UploadManager.tsx", "symbol": "startUpload" },
+        { "path": "src/renderer/src/components/layout/Sidebar.tsx", "symbol": "menuItems 注释 upload" }
+      ]
+    },
+    {
+      "id": "EV-022",
+      "category": "测试/错误处理/日志与告警",
+      "conclusion": "开发模式提供可折叠日志控制台，支持按关键字着色",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/layout/ConsolePanel.tsx", "symbol": "ConsolePanel" }
+      ]
+    },
+    {
+      "id": "EV-023",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "主布局存在默认占位提示“配置中心模块将在下一阶段实现”",
+      "implementation_level": "占位或规划中",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/components/layout/MainLayout.tsx", "symbol": "default content" }
+      ]
+    },
+    {
+      "id": "EV-024",
+      "category": "安全与权限",
+      "conclusion": "外链仅允许 http/https，阻断非法协议",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.system.openExternal')" }
+      ]
+    }
+  ],
+  "pending_confirmation": [
+    {
+      "id": "PC-001",
+      "question": "热度看板绑定供应商是否应持久化写入 watchlist 表",
+      "related_evidence_ids": ["EV-015"]
+    },
+    {
+      "id": "PC-002",
+      "question": "UploadManager 是否仍为正式功能，还是将被移除",
+      "related_evidence_ids": ["EV-021"]
+    },
+    {
+      "id": "PC-003",
+      "question": "是否需要接入外部监控/告警平台（当前仅本地日志与诊断）",
+      "related_evidence_ids": ["EV-010", "EV-022"]
+    },
+    {
+      "id": "PC-004",
+      "question": "主窗口 sandbox=false 是否有既定收敛计划",
+      "related_evidence_ids": ["EV-024"]
+    },
+    {
+      "id": "PC-005",
+      "question": "1688 人工调试模式下的操作 SLA 与回退策略是否有产品定义",
+      "related_evidence_ids": ["EV-014"]
+    },
+    {
+      "id": "PC-006",
+      "question": "CSV 字段兼容策略是否需要固定模板约束",
+      "related_evidence_ids": ["EV-005"]
+    }
+  ]
+}
