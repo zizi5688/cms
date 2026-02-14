@@ -118,6 +118,7 @@ type SourcingSupplierCandidate = {
   name: string
   companyName: string | null
   url: string | null
+  imageUrl: string | null
   purchasePrice: number | null
   freightPrice: number | null
   moq: string | null
@@ -590,12 +591,19 @@ function HeatDashboard(): React.JSX.Element {
     [saveSelectedProduct, selectedProduct, snapshotDate]
   )
 
-  const handleBindSupplier = useCallback(async (): Promise<void> => {
+  const handleBindSupplier = useCallback(async (targetIndex?: number): Promise<void> => {
     if (!selectedProduct || !snapshotDate) {
       setStatusText('请先选择商品后再绑定供应商')
       return
     }
-    const chosen = sourcingCandidates[selectedSupplierIndex] ?? null
+    const bindIndex =
+      typeof targetIndex === 'number' && Number.isFinite(targetIndex)
+        ? Math.max(0, Math.floor(targetIndex))
+        : selectedSupplierIndex
+    if (bindIndex !== selectedSupplierIndex) {
+      setSelectedSupplierIndex(bindIndex)
+    }
+    const chosen = sourcingCandidates[bindIndex] ?? null
     if (!chosen) {
       setStatusText('请先选择候选供应商后再绑定')
       return
@@ -637,31 +645,6 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [selectedProduct, selectedSupplierIndex, snapshotDate, sourcingCandidates, sourcingMarked])
 
-  const handleOpenBestSupplier = useCallback((): void => {
-    const target = selectedProduct?.bestSupplierUrl
-    if (!target) {
-      setStatusText('当前暂无可跳转的供应商链接')
-      return
-    }
-    void window.api.cms.system.openExternal(target).catch(() => {
-      setStatusText('打开供应商链接失败')
-    })
-  }, [selectedProduct?.bestSupplierUrl])
-
-  const handleCopySupplierLink = useCallback(async (): Promise<void> => {
-    const target = selectedProduct?.bestSupplierUrl
-    if (!target) {
-      setStatusText('当前暂无可复制的供应商链接')
-      return
-    }
-    try {
-      await navigator.clipboard.writeText(target)
-      setStatusText('供应商链接已复制')
-    } catch {
-      setStatusText('复制失败，请检查剪贴板权限')
-    }
-  }, [selectedProduct?.bestSupplierUrl])
-
   const handleCopyProductLink = useCallback(async (productUrl: string | null): Promise<void> => {
     const target = String(productUrl ?? '').trim()
     if (!target) {
@@ -700,7 +683,7 @@ function HeatDashboard(): React.JSX.Element {
       <div
         className={cn(
           'grid h-full w-full',
-          isSourcing ? 'pb-[276px]' : selectedProduct ? 'pb-16' : 'pb-0'
+          isSourcing ? 'pb-[276px]' : 'pb-0'
         )}
         style={{ gridTemplateColumns: '320px minmax(0, 1fr)' }}
       >
@@ -788,68 +771,6 @@ function HeatDashboard(): React.JSX.Element {
         </section>
       </div>
 
-      {selectedProduct && (
-        <footer className="absolute bottom-0 left-0 right-0 z-30 h-16 border-t border-zinc-700 bg-zinc-900/95">
-          <div className="flex h-full items-center gap-4 px-4">
-            <div className="flex min-w-0 flex-1 items-center gap-3">
-              <div className="h-11 w-9 shrink-0 overflow-hidden rounded border border-zinc-700 bg-zinc-800">
-                <SelectedThumb
-                  src={selectedProduct.imageUrl}
-                  alt={selectedProduct.name}
-                  workspacePath={workspacePath}
-                />
-              </div>
-
-              <div className="min-w-0">
-                <div className="truncate text-sm text-zinc-100" title={selectedProduct.name}>
-                  {selectedProduct.name}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex min-w-0 flex-1 flex-col justify-center">
-              <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
-                <span className="shrink-0">最优供应商：</span>
-                {selectedProduct.bestSupplierUrl ? (
-                  <button
-                    type="button"
-                    className="min-w-0 max-w-[240px] truncate text-left text-cyan-300 hover:text-cyan-200 hover:underline"
-                    title={selectedProduct.bestSupplierName || selectedProduct.bestSupplierUrl}
-                    onClick={handleOpenBestSupplier}
-                  >
-                    {selectedProduct.bestSupplierName || '未命名店铺'}
-                  </button>
-                ) : (
-                  <span className="truncate text-zinc-500">待抓取</span>
-                )}
-                <button
-                  type="button"
-                  className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-                  onClick={() => void handleCopySupplierLink()}
-                  disabled={!selectedProduct.bestSupplierUrl}
-                >
-                  复制链接
-                </button>
-              </div>
-              <div className="text-xl font-bold leading-tight text-emerald-400">
-                毛利: {formatMoney(selectedProduct.profit)}
-              </div>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                className="rounded border border-cyan-500/60 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-60"
-                onClick={() => void handleStartSourcing()}
-                disabled={isSourcingRunning}
-              >
-                {isSourcingRunning ? '搜同款中...' : '搜同款'}
-              </button>
-            </div>
-          </div>
-        </footer>
-      )}
-
       <SourcingPanel
         isOpen={isSourcing}
         isRunning={isSourcingRunning}
@@ -860,7 +781,7 @@ function HeatDashboard(): React.JSX.Element {
         selectedSupplierIndex={selectedSupplierIndex}
         onSelectSupplier={setSelectedSupplierIndex}
         onClose={() => setIsSourcing(false)}
-        onBindSupplier={() => void handleBindSupplier()}
+        onBindSupplier={(index) => void handleBindSupplier(index)}
         isBinding={isBindingSupplier}
       />
 
@@ -1064,35 +985,6 @@ function ProductCard({
   )
 }
 
-function SelectedThumb({
-  src,
-  alt,
-  workspacePath
-}: {
-  src: string | null
-  alt: string
-  workspacePath: string
-}): React.JSX.Element {
-  const resolved = src ? resolveLocalImage(src, workspacePath) : ''
-  if (!resolved) {
-    return (
-      <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-500">
-        无图
-      </div>
-    )
-  }
-
-  return (
-    <img
-      src={resolved}
-      alt={alt}
-      className="h-full w-full object-cover"
-      loading="lazy"
-      referrerPolicy="no-referrer"
-    />
-  )
-}
-
 type QuickLookModalProps = {
   product: ProductCardModel
   workspacePath: string
@@ -1163,7 +1055,7 @@ type SourcingPanelProps = {
   candidates: SourcingSupplierCandidate[]
   selectedSupplierIndex: number
   onSelectSupplier: (index: number) => void
-  onBindSupplier: () => void
+  onBindSupplier: (index: number) => void
   onClose: () => void
 }
 
@@ -1181,8 +1073,6 @@ function SourcingPanel({
   onClose
 }: SourcingPanelProps): React.JSX.Element {
   const resolvedTargetImage = xhsImage ? resolveLocalImage(xhsImage, workspacePath) : ''
-  const selectedSupplier = candidates[selectedSupplierIndex] ?? null
-  const bindDisabled = isRunning || isBinding || candidates.length === 0
 
   return (
     <div
@@ -1197,7 +1087,7 @@ function SourcingPanel({
           <div>
             <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/90">搜同款</div>
             <div className="mt-0.5 text-xs text-zinc-300">
-              {isRunning ? '正在搜同款并提取供应商...' : '选择供应商后点击“绑定供应商”保存'}
+              {isRunning ? '正在搜同款并提取供应商...' : '选择候选供应商后，可直接在卡片内点击“绑定供应商”'}
             </div>
           </div>
           <button
@@ -1210,8 +1100,8 @@ function SourcingPanel({
           </button>
         </div>
 
-        <div className="mt-4 grid gap-4" style={{ gridTemplateColumns: '1fr 4fr 1.2fr' }}>
-          <div className="relative h-[208px] overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1">
+        <div className="mt-4 grid h-[336px] gap-4" style={{ gridTemplateColumns: '1.35fr 5.65fr' }}>
+          <div className="relative h-full overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1">
             {resolvedTargetImage ? (
               <img
                 src={resolvedTargetImage}
@@ -1230,50 +1120,26 @@ function SourcingPanel({
             </div>
           </div>
 
-          <div className="min-w-0 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+          <div className="h-full min-w-0 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
             {candidates.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-zinc-500">
                 {isRunning ? '供应商抓取中...' : '暂无供应商候选'}
               </div>
             ) : (
-              <div className="flex h-full gap-2 overflow-x-auto pb-1">
+              <div className="flex h-full items-stretch gap-2 overflow-x-auto pb-1">
                 {candidates.map((candidate, index) => (
                   <SupplierCard
                     key={candidate.id}
                     candidate={candidate}
                     selected={index === selectedSupplierIndex}
                     onSelect={() => onSelectSupplier(index)}
+                    onBindSupplier={() => onBindSupplier(index)}
+                    isBinding={isBinding}
+                    isRunning={isRunning}
                   />
                 ))}
               </div>
             )}
-          </div>
-
-          <div className="flex h-[208px] flex-col justify-between rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.12em] text-zinc-400">操作</div>
-              <div className="mt-2 text-xs text-zinc-300">
-                {selectedSupplier ? (
-                  <>
-                    <div className="truncate font-medium text-zinc-100">
-                      {selectedSupplier.companyName || selectedSupplier.name}
-                    </div>
-                    <div className="mt-1 text-zinc-400">48h揽收: {selectedSupplier.serviceRateLabel}</div>
-                  </>
-                ) : (
-                  <div className="text-zinc-500">请选择候选供应商</div>
-                )}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="rounded-md bg-emerald-500 px-3 py-2 text-sm font-bold text-zinc-950 shadow-[0_0_22px_rgba(16,185,129,0.3)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-55"
-              disabled={bindDisabled}
-              onClick={onBindSupplier}
-            >
-              {isBinding ? '保存中...' : '绑定供应商'}
-            </button>
           </div>
         </div>
       </section>
@@ -1284,16 +1150,23 @@ function SourcingPanel({
 function SupplierCard({
   candidate,
   selected,
-  onSelect
+  onSelect,
+  onBindSupplier,
+  isBinding,
+  isRunning
 }: {
   candidate: SourcingSupplierCandidate
   selected: boolean
   onSelect: () => void
+  onBindSupplier: () => void
+  isBinding: boolean
+  isRunning: boolean
 }): React.JSX.Element {
   const isHighMargin = (candidate.netProfitRate ?? 0) > 30
   const netProfitClass = isHighMargin ? 'text-emerald-300' : 'text-orange-300'
   const purchaseText = formatMoney(candidate.purchasePrice)
   const freightText = formatMoney(candidate.freightPrice)
+  const productImageUrl = normalizeExternalImageUrl(candidate.imageUrl)
   const moqText = candidate.moq ? String(candidate.moq).trim() : '--'
   const profitRateText =
     candidate.netProfitRate == null || !Number.isFinite(candidate.netProfitRate)
@@ -1310,13 +1183,17 @@ function SupplierCard({
     if (!candidate.url) return
     void window.api.cms.system.openExternal(candidate.url).catch(() => void 0)
   }
+  const handleBindClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    event.stopPropagation()
+    onBindSupplier()
+  }
 
   return (
     <div
       role="button"
       tabIndex={0}
       className={cn(
-        'min-w-[220px] cursor-pointer rounded-md border bg-zinc-950/90 p-2 text-left transition hover:bg-gray-800',
+        'flex h-full min-w-[276px] cursor-pointer flex-col rounded-md border bg-zinc-950/90 p-2.5 text-left transition hover:bg-gray-800',
         selected
           ? 'border-emerald-500/90 shadow-[0_0_0_1px_rgba(16,185,129,0.75)]'
           : 'border-zinc-800 hover:border-zinc-600'
@@ -1338,23 +1215,43 @@ function SupplierCard({
       </div>
       <div className="mt-1 text-[11px] text-zinc-400">48h揽收: {candidate.serviceRateLabel}</div>
 
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <div className="rounded border border-zinc-800 bg-zinc-900/80 p-1.5">
+      <div className="mt-2 grid min-h-0 flex-1 grid-cols-2 gap-2">
+        <div className="h-full rounded border border-zinc-800 bg-zinc-900/80 p-2">
           <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">进货价</div>
           <div className="mt-1 text-2xl font-black leading-none text-amber-300">{purchaseText}</div>
-        </div>
-        <div className="rounded border border-zinc-800 bg-zinc-900/80 p-1.5">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">预估毛利</div>
-          <div className={cn('mt-1 text-2xl font-black leading-none', netProfitClass)}>
-            {formatMoney(candidate.netProfit)}
+          <div className={cn('mt-2 text-sm font-bold leading-none', netProfitClass)}>
+            毛利 {formatMoney(candidate.netProfit)}
           </div>
           <div className={cn('mt-1 text-xs font-semibold', netProfitClass)}>{profitRateText}</div>
+        </div>
+        <div className="h-full overflow-hidden rounded border border-zinc-800 bg-zinc-900/80">
+          {productImageUrl ? (
+            <img
+              src={productImageUrl}
+              alt={candidate.name}
+              className="h-full w-full object-cover"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-[11px] text-zinc-500">
+              暂无主图
+            </div>
+          )}
         </div>
       </div>
       <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400">
         <span>起批: {moqText}</span>
         <span>运费: {freightText}</span>
       </div>
+      <button
+        type="button"
+        className="mt-2 w-full rounded-md bg-emerald-500 px-3 py-2 text-sm font-bold text-zinc-950 shadow-[0_0_22px_rgba(16,185,129,0.3)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-55"
+        disabled={isRunning || isBinding}
+        onClick={handleBindClick}
+      >
+        {isBinding ? '保存中...' : '绑定供应商'}
+      </button>
     </div>
   )
 }
@@ -1398,6 +1295,7 @@ function buildSourcingCandidates(marked: MarkedProduct | null): SourcingSupplier
         name: normalizedName || `供应商 ${index + 1}`,
         companyName: null as string | null,
         url: item.url,
+        imageUrl: null as string | null,
         purchasePrice: item.purchasePrice,
         freightPrice: null as number | null,
         moq: null as string | null,
@@ -1423,6 +1321,7 @@ function buildSourcingCandidatesFromSearchResults(
       `店铺 ${index + 1}`,
     companyName: normalizeTextValue(item.companyName),
     url: item.detailUrl || null,
+    imageUrl: normalizeExternalImageUrl(item.imgUrl),
     purchasePrice: Number.isFinite(item.price) ? item.price : null,
     freightPrice: Number.isFinite(item.freightPrice) ? item.freightPrice : null,
     moq: normalizeTextValue(item.moq),
@@ -1497,6 +1396,14 @@ function extractServiceRateLabels(message: string | null, count: number): string
 function normalizeTextValue(value: string | null | undefined): string | null {
   const normalized = String(value ?? '').trim()
   return normalized ? normalized : null
+}
+
+function normalizeExternalImageUrl(value: string | null | undefined): string | null {
+  const normalized = normalizeTextValue(value)
+  if (!normalized) return null
+  if (/^https?:\/\//i.test(normalized)) return normalized
+  if (/^\/\//.test(normalized)) return `https:${normalized}`
+  return null
 }
 
 function getSupplierDisplayName(row: SourcingSearchResult | undefined): string | null {
