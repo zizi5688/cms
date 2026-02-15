@@ -10,6 +10,8 @@ export type OperationalProduct = {
   shopName: string
   shopScore: number
   isNewArrival: boolean
+  positiveReviewTag?: string | null
+  shopFans?: string | null
   imageUrl: string
 }
 
@@ -35,7 +37,8 @@ export function OperationalProductCard({
   const velocityText = formatCompactStat(product.velocity24h)
   const totalSalesText = formatCompactStat(product.totalSales)
   const monthlyText = formatCompactStat(monthlyAvgSales)
-  const scoreText = `${product.shopScore.toFixed(1)}分`
+  const reviewTagText = formatRawMetric(product.positiveReviewTag)
+  const shopFansText = formatRawMetric(product.shopFans) ?? '--'
 
   return (
     <article className="group overflow-hidden rounded-[12px] border border-zinc-200 bg-[#f3f4f6] p-2 text-zinc-900 shadow-sm transition-shadow hover:shadow-md">
@@ -57,6 +60,11 @@ export function OperationalProductCard({
           {showNewArrival && (
             <span className="rounded-md bg-emerald-500 px-2 py-1 text-[11px] font-semibold leading-none text-white">
               🆕 新品
+            </span>
+          )}
+          {reviewTagText && (
+            <span className="rounded-md bg-pink-500 px-2 py-1 text-[11px] font-semibold leading-none text-white">
+              好评 {reviewTagText}
             </span>
           )}
         </div>
@@ -98,7 +106,7 @@ export function OperationalProductCard({
           />
           <MatrixCell icon={Store} label="总销量" value={totalSalesText} valueClassName="text-zinc-700" />
           <MatrixCell icon={Users} label="3个月购买" value={monthlyText} valueClassName="text-zinc-700" />
-          <MatrixCell icon={BarChart3} label="好评标签" value={scoreText} valueClassName="text-zinc-700" />
+          <MatrixCell icon={BarChart3} label="店铺粉丝" value={shopFansText} valueClassName="text-zinc-700" />
         </section>
 
         <footer className="space-y-1.5">
@@ -184,6 +192,17 @@ function formatCompactStat(value: number): string {
   if (!Number.isFinite(value)) return '--'
   if (value >= 10000) return `${(value / 10000).toFixed(1)}w+`
   return `${Math.round(Math.max(0, value))}+`
+}
+
+function formatRawMetric(value: string | null | undefined): string | null {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  const normalized = raw.replace(/,/g, '')
+  const numeric = Number(normalized)
+  if (Number.isFinite(numeric) && /^\d+(?:\.\d+)?$/.test(normalized)) {
+    return numeric >= 10000 ? `${(numeric / 10000).toFixed(1)}w+` : `${Math.round(Math.max(0, numeric))}`
+  }
+  return raw
 }
 
 function getAdaptiveCellSize(label: string, value: string): {

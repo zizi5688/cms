@@ -112,6 +112,7 @@ export type ScoutPotentialProductRecord = {
   isNew: boolean
   firstSeenAt: number
   lastUpdatedAt: number
+  positiveReviewTag: string | null
   shopName: string | null
   shopFans: string | null
   potentialScore: number
@@ -464,11 +465,15 @@ export class ScoutService {
       .all() as Array<{ name?: unknown }>
     const hasShopFans = snapshotColumns.some((col) => normalizeText(col.name) === 'shop_fans')
     const hasRawPayload = snapshotColumns.some((col) => normalizeText(col.name) === 'raw_payload')
+    const hasPositiveReviewTag = snapshotColumns.some((col) => normalizeText(col.name) === 'positive_review_tag')
     if (!hasShopFans) {
       db.exec(`ALTER TABLE scout_dashboard_snapshot_rows ADD COLUMN shop_fans TEXT`)
     }
     if (!hasRawPayload) {
       db.exec(`ALTER TABLE scout_dashboard_snapshot_rows ADD COLUMN raw_payload TEXT`)
+    }
+    if (!hasPositiveReviewTag) {
+      db.exec(`ALTER TABLE scout_dashboard_snapshot_rows ADD COLUMN positive_review_tag TEXT`)
     }
   }
 
@@ -737,6 +742,7 @@ export class ScoutService {
       addCart24hValue: number
       totalSales: string | null
       threeMonthBuyers: string | null
+      positiveReviewTag: string | null
       shopName: string | null
       shopFans: string | null
       productRating: number | null
@@ -851,6 +857,7 @@ export class ScoutService {
           addCart24hValue,
           totalSales,
           threeMonthBuyers,
+          positiveReviewTag,
           shopName,
           shopFans,
           productRating,
@@ -911,11 +918,11 @@ export class ScoutService {
     const upsertSnapshot = db.prepare(`
       INSERT INTO scout_dashboard_snapshot_rows (
         snapshot_date, product_key, keyword, primary_keyword, product_name, product_url, price,
-        add_cart_24h_value, total_sales, three_month_buyers, shop_name, shop_fans, product_rating, shop_rating,
+        add_cart_24h_value, total_sales, three_month_buyers, positive_review_tag, shop_name, shop_fans, product_rating, shop_rating,
         first_seen_at, last_updated_at, source_file, raw_payload, imported_at
       ) VALUES (
         @snapshotDate, @productKey, @keyword, @primaryKeyword, @productName, @productUrl, @price,
-        @addCart24hValue, @totalSales, @threeMonthBuyers, @shopName, @shopFans, @productRating, @shopRating,
+        @addCart24hValue, @totalSales, @threeMonthBuyers, @positiveReviewTag, @shopName, @shopFans, @productRating, @shopRating,
         @firstSeenAt, @lastUpdatedAt, @sourceFile, @rawPayload, @importedAt
       )
       ON CONFLICT(snapshot_date, product_key) DO UPDATE SET
@@ -927,6 +934,7 @@ export class ScoutService {
         add_cart_24h_value = excluded.add_cart_24h_value,
         total_sales = excluded.total_sales,
         three_month_buyers = excluded.three_month_buyers,
+        positive_review_tag = excluded.positive_review_tag,
         shop_name = excluded.shop_name,
         shop_fans = excluded.shop_fans,
         product_rating = excluded.product_rating,
@@ -1213,6 +1221,14 @@ export class ScoutService {
     const base = this.resolveSnapshotWindow(query.snapshotDate)
     if (!base.currentDate) return []
 
+    const snapshotColumns = db
+      .prepare(`PRAGMA table_info(scout_dashboard_snapshot_rows)`)
+      .all() as Array<{ name?: unknown }>
+    const hasPositiveReviewTag = snapshotColumns.some((col) => normalizeText(col.name) === 'positive_review_tag')
+    const positiveReviewSelect = hasPositiveReviewTag
+      ? 'positive_review_tag'
+      : 'NULL AS positive_review_tag'
+
     const keywordFilter = normalizeText(query.keyword)
     const whereCurrent = keywordFilter
       ? `WHERE snapshot_date = ? AND primary_keyword = ?`
@@ -1221,7 +1237,7 @@ export class ScoutService {
       .prepare(
         `SELECT
           product_key, primary_keyword, product_name, product_url, price, add_cart_24h_value,
-          first_seen_at, last_updated_at, shop_name, shop_fans
+          first_seen_at, last_updated_at, ${positiveReviewSelect}, shop_name, shop_fans, raw_payload
          FROM scout_dashboard_snapshot_rows
          ${whereCurrent}`
       )
@@ -1263,6 +1279,8 @@ export class ScoutService {
         firstSeenAt > 0 &&
         firstSeenAt <= currentDateStart + dayMs &&
         currentDateStart - firstSeenAt <= 7 * dayMs
+      const positiveReviewTag =
+        normalizeNullable(row.positive_review_tag) ?? extractPositiveReviewTagFromRawPayload(row.raw_payload)
       return {
         productKey,
         keyword: normalizeText(row.primary_keyword),
@@ -1276,6 +1294,7 @@ export class ScoutService {
         isNew,
         firstSeenAt,
         lastUpdatedAt: toInt(row.last_updated_at),
+        positiveReviewTag,
         shopName: normalizeNullable(row.shop_name),
         shopFans: normalizeNullable(row.shop_fans),
         potentialScore: 0,
@@ -2021,6 +2040,18 @@ function buildProductKey(productUrl: string | null, productName: string, shopNam
   const shop = normalizeText(shopName)
   if (!name && !shop) return ''
   return `name_shop:${name}|${shop}`
+}
+
+function extractPositiveReviewTagFromRawPayload(rawPayload: unknown): string | null {
+  const rawText = normalizeText(rawPayload)
+  if (!rawText) return null
+  try {
+    const parsed = JSON.parse(rawText) as Record<string, unknown>
+    if (!parsed || typeof parsed !== 'object') return null
+    return normalizeNullable(parsed['好评标签'] ?? parsed['positiveReviewTag'] ?? parsed['positive_review_tag'])
+  } catch {
+    return null
+  }
 }
 
 function getCellString(value: unknown): string {

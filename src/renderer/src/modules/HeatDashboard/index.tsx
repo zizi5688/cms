@@ -49,6 +49,7 @@ type PotentialProduct = {
   isNew: boolean
   firstSeenAt: number
   lastUpdatedAt: number
+  positiveReviewTag: string | null
   shopName: string | null
   shopFans: string | null
   potentialScore: number
@@ -1338,6 +1339,8 @@ function ProductCard({
       shopName: card.bestSupplierName || card.potential.shopName || '待绑定店铺',
       shopScore: toShopScore(card.profitLevel),
       isNewArrival: card.potential.isNew,
+      positiveReviewTag: card.potential.positiveReviewTag,
+      shopFans: card.potential.shopFans,
       imageUrl: readyImageUrl
     }
   }, [card, readyImageUrl])

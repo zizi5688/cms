@@ -225,6 +225,7 @@ declare global {
             isNew: boolean
             firstSeenAt: number
             lastUpdatedAt: number
+            positiveReviewTag: string | null
             shopName: string | null
             shopFans: string | null
             potentialScore: number
