@@ -561,6 +561,216 @@ async function robustImageUpload(imagePaths: string[]): Promise<void> {
   await sleep(400)
 }
 
+function compactText(value: string): string {
+  return normalizeText(value).replace(/\s+/g, '')
+}
+
+function isImageUploadingMessage(text: string): boolean {
+  const normalized = compactText(text)
+  if (!normalized) return false
+  if (/图片上传中[，,]?(请稍后|请稍候)/.test(normalized)) return true
+  return false
+}
+
+function findImageUploadingMessage(): string | null {
+  const selectors = [
+    '.ant-message-notice-content',
+    '.ant-message-custom-content',
+    '.ant-notification-notice-message',
+    '.ant-notification-notice-description',
+    '[role="alert"]'
+  ]
+
+  for (const selector of selectors) {
+    const nodes = Array.from(document.querySelectorAll(selector)).filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && isVisible(el)
+    )
+    for (const el of nodes) {
+      const text = normalizeText(el.innerText || el.textContent || '')
+      if (!text) continue
+      if (!isImageUploadingMessage(text)) continue
+      return text
+    }
+  }
+
+  const bodyText = normalizeText(document.body?.innerText || '')
+  if (isImageUploadingMessage(bodyText)) return '图片上传中，请稍后'
+  return null
+}
+
+function isLikelyUploadedImagePreview(img: HTMLImageElement): boolean {
+  if (!isVisible(img)) return false
+  const src = String(img.src || '').trim().toLowerCase()
+  if (!src) return false
+  if (src.startsWith('data:image/svg')) return false
+  if (src.includes('logo') || src.includes('icon') || src.includes('avatar') || src.includes('sprite')) return false
+
+  const rect = img.getBoundingClientRect()
+  if (rect.width < 48 || rect.height < 48) return false
+  if (rect.width > 420 || rect.height > 420) return false
+
+  if (src.startsWith('blob:')) return true
+  if (src.includes('xhscdn') || src.includes('xhs')) return true
+  if (/^https?:\/\//.test(src)) return true
+  return false
+}
+
+function countUploadedImagePreviews(expectedCount: number): number {
+  const input = findImageFileInput()
+  const scope =
+    (input?.closest('#publish-container') as HTMLElement | null) ||
+    (input?.closest('[class*="upload"]') as HTMLElement | null) ||
+    (document.querySelector('#publish-container') as HTMLElement | null) ||
+    document.body
+
+  const preferred = Array.from(
+    scope.querySelectorAll(
+      '[class*="upload"] img, [class*="dragger"] img, [class*="image"] img, [class*="img"] img'
+    )
+  ).filter((el): el is HTMLImageElement => el instanceof HTMLImageElement && isLikelyUploadedImagePreview(el))
+
+  if (preferred.length >= expectedCount) return preferred.length
+
+  const fallback = Array.from(scope.querySelectorAll('img')).filter(
+    (el): el is HTMLImageElement => el instanceof HTMLImageElement && isLikelyUploadedImagePreview(el)
+  )
+  return fallback.length
+}
+
+async function checkImageReady(
+  expectedCount: number,
+  options?: { timeoutMs?: number; stableMs?: number; intervalMs?: number }
+): Promise<void> {
+  const timeoutMs = Math.max(10_000, Math.floor(options?.timeoutMs ?? 180_000))
+  const stableMs = Math.max(1_000, Math.floor(options?.stableMs ?? 3_000))
+  const intervalMs = Math.max(200, Math.floor(options?.intervalMs ?? 800))
+  const startedAt = Date.now()
+
+  let readySince: number | null = null
+  let lastLogAt = 0
+  let latestCount = 0
+  let latestDisabled = true
+  let latestBlockingMessage = ''
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const blockingMessage = findImageUploadingMessage()
+    const uploadedCount = countUploadedImagePreviews(expectedCount)
+    const publishButton = findPublishButtonAnyState() || findPublishSubmitButton()
+    const publishDisabled = publishButton ? isDisabledLike(publishButton) : true
+
+    latestCount = uploadedCount
+    latestDisabled = publishDisabled
+    latestBlockingMessage = blockingMessage || ''
+
+    const ready = !blockingMessage && !publishDisabled && uploadedCount >= expectedCount
+    if (ready) {
+      if (readySince == null) {
+        readySince = Date.now()
+        logPlain('[图文就绪] 条件首次满足，进入稳定观察...')
+      }
+      if (Date.now() - readySince >= stableMs) {
+        logPlain('[图文就绪] 上传已完成，可执行发布。', {
+          uploadedCount,
+          expectedCount
+        })
+        return
+      }
+    } else {
+      readySince = null
+    }
+
+    if (Date.now() - lastLogAt >= 5_000) {
+      logPlain('[图文就绪] 等待上传完成...', {
+        uploadedCount,
+        expectedCount,
+        hasPublishButton: Boolean(publishButton),
+        publishDisabled,
+        blockingMessage: blockingMessage || ''
+      })
+      lastLogAt = Date.now()
+    }
+
+    await sleep(intervalMs)
+  }
+
+  throw new Error(
+    `图片上传未就绪：期望 ${expectedCount} 张，当前识别 ${latestCount} 张，` +
+      `发布按钮${latestDisabled ? '不可用' : '可用'}` +
+      (latestBlockingMessage ? `，提示：${latestBlockingMessage}` : '')
+  )
+}
+
+async function publishImageWithReadyGuard(expectedCount: number): Promise<void> {
+  const startedAt = Date.now()
+  const totalTimeoutMs = 180_000
+  let attempts = 0
+
+  while (Date.now() - startedAt <= totalTimeoutMs) {
+    attempts += 1
+    const remainingMs = Math.max(5_000, totalTimeoutMs - (Date.now() - startedAt))
+
+    await checkImageReady(expectedCount, { timeoutMs: Math.min(remainingMs, 60_000) })
+
+    const publishButton = await waitFor(() => findPublishSubmitButton(), {
+      timeoutMs: Math.min(30_000, remainingMs),
+      intervalMs: 250,
+      timeoutMessage: '未找到发布按钮（可能页面结构变化）。'
+    })
+    highlightWithRedBorder(publishButton)
+    try {
+      publishButton.scrollIntoView({ block: 'center', inline: 'center' })
+    } catch (error) {
+      void error
+    }
+    await sleep(200)
+    await clickPublish(publishButton)
+
+    const immediateBlock = await waitFor(() => findImageUploadingMessage() || null, {
+      timeoutMs: 2_000,
+      intervalMs: 200,
+      timeoutMessage: '未出现上传中拦截提示'
+    }).catch(() => null)
+
+    if (typeof immediateBlock === 'string' && immediateBlock) {
+      logPlain(`[发布] 第 ${attempts} 次点击后被拦截：${immediateBlock}，继续等待上传完成后重试。`)
+      await sleep(1200)
+      continue
+    }
+
+    const outcome = await waitFor(
+      () => {
+        const blocked = findImageUploadingMessage()
+        if (blocked) return { kind: 'blocked', message: blocked } as const
+
+        const success =
+          findByText('发布成功', { match: 'contains' }) ||
+          findByText('已发布', { match: 'contains' }) ||
+          queryFirstVisible('.ant-message-success') ||
+          queryFirstVisible('.ant-notification-notice-success') ||
+          null
+        if (success) return { kind: 'success' } as const
+
+        const maybeStillHasPublish = findPublishSubmitButton()
+        if (!maybeStillHasPublish && !isLikelyLoginUrl(location.href)) return { kind: 'success' } as const
+        return null
+      },
+      { timeoutMs: Math.min(60_000, remainingMs), intervalMs: 500, timeoutMessage: '发布结果未确认（可能页面结构变化或网络异常）。' }
+    ).catch(() => null)
+
+    if (outcome?.kind === 'success') return
+
+    if (outcome?.kind === 'blocked') {
+      logPlain(`[发布] 第 ${attempts} 次点击后出现拦截提示：${outcome.message}，继续等待并重试。`)
+      await sleep(1200)
+      continue
+    }
+
+    throw new Error('发布结果未确认（可能页面结构变化或网络异常）。')
+  }
+
+  throw new Error('图片上传未就绪：180 秒内多次尝试发布仍提示“图片上传中，请稍后”。')
+}
+
 async function fillTitle(title: string): Promise<void> {
   const el = await waitFor(
     () => {
@@ -2492,34 +2702,7 @@ async function runTask(
       logPlain('[时间] 正在点击发布按钮...')
       await scrollPageToBottom()
       await sleep(300)
-      const publishButton = await waitFor(() => findPublishSubmitButton(), {
-        timeoutMs: 30_000,
-        intervalMs: 250,
-        timeoutMessage: '未找到发布按钮（可能页面结构变化）。'
-      })
-      highlightWithRedBorder(publishButton)
-      try {
-        publishButton.scrollIntoView({ block: 'center', inline: 'center' })
-      } catch (error) {
-        void error
-      }
-      await sleep(200)
-      await clickPublish(publishButton)
-      await waitFor(
-        () => {
-          const success =
-            findByText('发布成功', { match: 'contains' }) ||
-            findByText('已发布', { match: 'contains' }) ||
-            queryFirstVisible('.ant-message-success') ||
-            queryFirstVisible('.ant-notification-notice-success') ||
-            null
-          if (success) return true
-          const maybeStillHasPublish = findPublishSubmitButton()
-          if (!maybeStillHasPublish && !isLikelyLoginUrl(location.href)) return true
-          return null
-        },
-        { timeoutMs: 60_000, intervalMs: 500, timeoutMessage: '发布结果未确认（可能页面结构变化或网络异常）。' }
-      )
+      await publishImageWithReadyGuard(images.length)
     })
     const time = new Date().toISOString()
     logPlain('[时间] 已确认发布成功。', { time })
