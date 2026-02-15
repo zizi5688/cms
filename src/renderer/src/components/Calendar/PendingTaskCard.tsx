@@ -43,6 +43,8 @@ function PendingTaskCard({
   const imageCount = Array.isArray(task.images) ? task.images.length : 0
   const isRemix = Boolean(task.tags?.includes('remix') || task.tags?.includes('裂变'))
   const isVideo = task.mediaType === 'video'
+  const isFailed = task.status === 'failed' || task.status === 'publish_failed'
+  const errorText = (task.errorMsg || task.errorMessage || '').trim()
 
   const [{ isDragging }, dragRef] = useDrag<
     UnscheduledTaskDragItem,
@@ -77,14 +79,17 @@ function PendingTaskCard({
     <div
       ref={cardRef}
       className={cn(
-        'group relative flex min-h-[88px] cursor-grab items-start gap-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-3 text-xs text-zinc-100',
-        'hover:bg-zinc-900/70 active:cursor-grabbing',
+        'group relative flex min-h-[88px] cursor-grab items-start gap-3 rounded-md border p-3 text-xs text-zinc-100',
+        isFailed
+          ? 'border-red-700/60 bg-red-950/35 hover:bg-red-950/45'
+          : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900/70',
+        'active:cursor-grabbing',
         isDragging && 'opacity-60',
         isSelected && 'bg-zinc-800 border-zinc-600',
         isFlashing && 'border-amber-500/70 bg-amber-500/10 ring-2 ring-amber-400/30 animate-pulse',
         isGroupDragging && 'opacity-60'
       )}
-      title={task.title}
+      title={isFailed && errorText ? errorText : task.title}
       onClick={(e) => onSelect(e, task.id)}
     >
       <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md bg-zinc-950">
@@ -115,6 +120,11 @@ function PendingTaskCard({
       </div>
 
       <div className="min-w-0 flex-1">
+        {isFailed ? (
+          <div className="mb-1 inline-flex w-fit items-center rounded border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-200">
+            自动重试失败
+          </div>
+        ) : null}
         {isRemix ? (
           <div className="mb-1 flex min-w-0 items-center">
             <div
@@ -127,8 +137,11 @@ function PendingTaskCard({
           </div>
         ) : null}
         <div className="min-w-0 font-semibold text-zinc-100 break-words whitespace-normal overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
-          {task.title || '(未命名)'}
+          {isFailed ? `❌ ${task.title || '(未命名)'}` : task.title || '(未命名)'}
         </div>
+        {isFailed && errorText ? (
+          <div className="mt-1 truncate text-[11px] text-red-300">{errorText}</div>
+        ) : null}
         <div className="mt-1 truncate text-[11px] text-zinc-400">{task.productName || '未绑定商品'}</div>
       </div>
 

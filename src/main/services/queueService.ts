@@ -199,6 +199,7 @@ export class QueueService {
           UPDATE tasks
           SET errorMsg = ?,
               status = CASE WHEN retry_count >= 3 THEN 'failed' ELSE 'pending' END,
+              scheduledAt = CASE WHEN retry_count >= 3 THEN NULL ELSE scheduledAt END,
               locked_at = NULL
           WHERE id = ?
         `

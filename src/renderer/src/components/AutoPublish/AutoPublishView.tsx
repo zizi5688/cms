@@ -814,6 +814,7 @@ function AutoPublishView(): React.JSX.Element {
                     {filteredTasks.map((task) => {
                       const isSelected = selectedTaskIds.has(task.id)
                       const isVideo = task.mediaType === 'video'
+                      const taskErrorText = (task.errorMsg || task.errorMessage || '').trim()
                       return (
                         <div
                           key={task.id}
@@ -865,12 +866,12 @@ function AutoPublishView(): React.JSX.Element {
                                 <div className="truncate text-sm font-bold text-zinc-100">
                                   {task.title ? task.title : '（无标题）'}
                                 </div>
-                                {task.status === 'failed' && task.errorMessage && (
+                                {task.status === 'failed' && taskErrorText && (
                                   <div className="mt-1 flex items-center gap-1.5 text-[11px] text-red-400">
                                     <span className="shrink-0 rounded bg-red-500/10 px-1 py-0.5 font-bold uppercase">
                                     错误
                                     </span>
-                                    <span className="truncate">{task.errorMessage}</span>
+                                    <span className="truncate">{taskErrorText}</span>
                                   </div>
                                 )}
                                 {task.status === 'publish_failed' && (
@@ -878,7 +879,7 @@ function AutoPublishView(): React.JSX.Element {
                                     <span className="shrink-0 rounded bg-red-600 px-1.5 py-0.5 font-bold uppercase text-white">
                                     发布失败
                                     </span>
-                                    {task.errorMessage && <span className="truncate">{task.errorMessage}</span>}
+                                    {taskErrorText && <span className="truncate">{taskErrorText}</span>}
                                   </div>
                                 )}
                                 {task.scheduledAt ? (
