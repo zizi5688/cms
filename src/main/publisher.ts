@@ -445,6 +445,19 @@ export class PublisherService {
           break
         }
 
+        if (task.mediaType === 'video' && !task.videoPath) {
+          processed += 1
+          failed += 1
+          queueService.failTask(task.id, '[Queue] 视频任务缺少 videoPath，已跳过执行。')
+          const updated = taskManager.updateBatch([task.id], {})[0]
+          if (updated) broadcastToRenderers('cms.task.updated', updated)
+          task = queueService.acquireNextTask({
+            accountId: typeof options.accountId === 'string' ? options.accountId : undefined,
+            taskIds: Array.isArray(options.taskIds) ? options.taskIds : undefined
+          })
+          continue
+        }
+
         processed += 1
         consecutiveTasks += 1
         broadcastToRenderers('cms.task.updated', task)

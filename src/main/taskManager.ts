@@ -370,7 +370,7 @@ export class TaskManager {
         FROM tasks
         WHERE scheduledAt IS NOT NULL
           AND scheduledAt <= ?
-          AND status NOT IN ('published', 'processing', 'failed')
+          AND status = 'pending'
         ORDER BY scheduledAt ASC`
       )
       .all(time) as Array<Record<string, unknown>>
@@ -955,7 +955,15 @@ export class TaskManager {
       ? (record.images as unknown[]).map((v) => (typeof v === 'string' ? v.trim() : '')).filter(Boolean)
       : null
 
-    const resolvedStatus = nextStatus !== null ? nextStatus : task.status
+    const scheduledAtTouched = nextScheduledAt !== null
+    const shouldForcePendingAfterReschedule =
+      nextStatus === null &&
+      scheduledAtTouched &&
+      typeof nextScheduledAt === 'number' &&
+      Number.isFinite(nextScheduledAt) &&
+      task.status !== 'published'
+    const resolvedStatus =
+      nextStatus !== null ? nextStatus : shouldForcePendingAfterReschedule ? 'pending' : task.status
     const resolvedPublishedAt = nextPublishedAt !== undefined ? nextPublishedAt : task.publishedAt
     const resolvedVideoPath = nextVideoPath !== null ? nextVideoPath : task.videoPath
     const resolvedVideoPreviewPath = nextVideoPreviewPath !== null ? nextVideoPreviewPath : task.videoPreviewPath
