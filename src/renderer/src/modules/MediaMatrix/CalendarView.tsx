@@ -33,6 +33,11 @@ import { CalendarHeader } from './CalendarHeader'
 import { KanbanWeekView } from './KanbanWeekView'
 import { getTaskDisplayTime, setDateKeepingTime, withDefaultStartTime } from './calendarUtils'
 import { buildSurpriseRemix } from './surpriseRemix'
+import {
+  PENDING_POOL_TITLE_LIMIT,
+  getTitleLengthIssue,
+  type TitleLengthIssue
+} from './titleLengthGuard'
 
 type CalendarViewProps = {
   tasks: CmsPublishTask[]
@@ -166,6 +171,15 @@ function CalendarView({
     return tasks.filter((task) => task.status !== 'published' && task.scheduledAt == null)
   }, [tasks])
 
+  const unscheduledTitleIssueById = useMemo(() => {
+    const map = new Map<string, TitleLengthIssue>()
+    for (const task of unscheduledPool) {
+      const issue = getTitleLengthIssue(task.title, PENDING_POOL_TITLE_LIMIT)
+      if (issue) map.set(task.id, issue)
+    }
+    return map
+  }, [unscheduledPool])
+
   useEffect(() => {
     const allIds = new Set(tasks.map((t) => t.id))
     const nextSelected = selectedTaskIds.filter((id) => allIds.has(id))
@@ -178,6 +192,12 @@ function CalendarView({
     const selected = new Set(selectedTaskIds)
     return unscheduledPool.filter((t) => selected.has(t.id))
   }, [selectedTaskIds, unscheduledPool])
+
+  const notifyTitleTooLong = (task: CmsPublishTask, issue: TitleLengthIssue): void => {
+    const title = (task.title || '').trim()
+    const shortTitle = title || '(未命名)'
+    setToastMessage(`标题超 ${issue.limit}（${issue.count}/${issue.limit}）：${shortTitle}，禁止排期`)
+  }
 
   const handleTaskClick = (event: React.MouseEvent<HTMLDivElement>, taskId: string): void => {
     event.stopPropagation()
@@ -245,6 +265,13 @@ function CalendarView({
     scheduledAt: number,
     options?: { forcePending?: boolean }
   ): Promise<void> => {
+    if (task.scheduledAt == null) {
+      const issue = unscheduledTitleIssueById.get(task.id)
+      if (issue) {
+        notifyTitleTooLong(task, issue)
+        return
+      }
+    }
     if (isSaving) return
     setIsSaving(true)
     try {
@@ -266,6 +293,23 @@ function CalendarView({
   ): Promise<void> => {
     if (isSaving) return
     if (updates.length === 0) return
+
+    const invalidTasks = updates
+      .map((update) => tasks.find((task) => task.id === update.id) || null)
+      .filter(
+        (task): task is CmsPublishTask =>
+          task !== null && task.scheduledAt == null && unscheduledTitleIssueById.has(task.id)
+      )
+
+    if (invalidTasks.length > 0) {
+      const first = invalidTasks[0]
+      if (first) {
+        const issue = unscheduledTitleIssueById.get(first.id)
+        if (issue) notifyTitleTooLong(first, issue)
+      }
+      return
+    }
+
     setIsSaving(true)
     try {
       const patches = updates.map((u) => ({
@@ -502,6 +546,11 @@ function CalendarView({
                   </button>
                 </div>
               </div>
+              {unscheduledTitleIssueById.size > 0 ? (
+                <div className="rounded-md border border-rose-500/50 bg-rose-950/30 px-2 py-1.5 text-xs text-rose-200">
+                  检测到 {unscheduledTitleIssueById.size} 个任务标题超 {PENDING_POOL_TITLE_LIMIT}，请先修改标题后再排期
+                </div>
+              ) : null}
               <div
                 className="min-h-0 flex-1 space-y-2 overflow-auto pr-1"
                 onMouseDown={(e) => {
@@ -534,6 +583,7 @@ function CalendarView({
                         selectedCount={selectedTaskIds.length}
                         selectedTaskIds={selectedTaskIds}
                         orderedSelectedTasks={orderedSelectedTasks}
+                        titleLengthIssue={unscheduledTitleIssueById.get(task.id) || null}
                         onDraggingChange={setDraggingTask}
                         onDraggingBatchIdsChange={setDraggingBatchIds}
                         onBeforeDragUnselected={ensureSingleSelectionForDrag}

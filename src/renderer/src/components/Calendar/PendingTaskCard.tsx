@@ -7,6 +7,7 @@ import { useDrag } from 'react-dnd'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { type UnscheduledTaskDragItem, calendarDndTypes } from '@renderer/modules/MediaMatrix/calendarDnd'
+import type { TitleLengthIssue } from '@renderer/modules/MediaMatrix/titleLengthGuard'
 
 function PendingTaskCard({
   task,
@@ -17,6 +18,7 @@ function PendingTaskCard({
   selectedCount,
   selectedTaskIds,
   orderedSelectedTasks,
+  titleLengthIssue,
   onDraggingChange,
   onDraggingBatchIdsChange,
   onBeforeDragUnselected,
@@ -31,6 +33,7 @@ function PendingTaskCard({
   selectedCount: number
   selectedTaskIds: string[]
   orderedSelectedTasks: CmsPublishTask[]
+  titleLengthIssue?: TitleLengthIssue | null
   onDraggingChange: (task: CmsPublishTask | null) => void
   onDraggingBatchIdsChange: (ids: string[]) => void
   onBeforeDragUnselected: (taskId: string) => void
@@ -45,6 +48,13 @@ function PendingTaskCard({
   const isVideo = task.mediaType === 'video'
   const isFailed = task.status === 'failed' || task.status === 'publish_failed'
   const errorText = (task.errorMsg || task.errorMessage || '').trim()
+  const hasTitleLengthIssue = Boolean(titleLengthIssue)
+  const canDrag = !hasTitleLengthIssue
+  const tooltipText = isFailed && errorText
+    ? errorText
+    : hasTitleLengthIssue
+      ? `标题超 ${titleLengthIssue?.limit ?? 20}（${titleLengthIssue?.count ?? 0}/${titleLengthIssue?.limit ?? 20}），请先修改后再排期`
+      : task.title
 
   const [{ isDragging }, dragRef] = useDrag<
     UnscheduledTaskDragItem,
@@ -53,6 +63,7 @@ function PendingTaskCard({
   >(
     () => ({
       type: calendarDndTypes.UNSCHEDULED_TASK,
+      canDrag,
       collect: (monitor) => ({ isDragging: monitor.isDragging() }),
       item: () => {
         const isMultiDrag = selectedTaskIds.includes(task.id)
@@ -68,7 +79,7 @@ function PendingTaskCard({
         onDraggingBatchIdsChange([])
       }
     }),
-    [onBeforeDragUnselected, onDraggingBatchIdsChange, onDraggingChange, orderedSelectedTasks, selectedTaskIds, task]
+    [canDrag, onBeforeDragUnselected, onDraggingBatchIdsChange, onDraggingChange, orderedSelectedTasks, selectedTaskIds, task]
   )
 
   useEffect(() => {
@@ -79,17 +90,19 @@ function PendingTaskCard({
     <div
       ref={cardRef}
       className={cn(
-        'group relative flex min-h-[88px] cursor-grab items-start gap-3 rounded-md border p-3 text-xs text-zinc-100',
+        'group relative flex min-h-[88px] items-start gap-3 rounded-md border p-3 text-xs text-zinc-100',
         isFailed
           ? 'border-red-700/60 bg-red-950/35 hover:bg-red-950/45'
+          : hasTitleLengthIssue
+            ? 'border-rose-600/70 bg-rose-950/30 hover:bg-rose-950/40'
           : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900/70',
-        'active:cursor-grabbing',
+        canDrag ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed',
         isDragging && 'opacity-60',
         isSelected && 'bg-zinc-800 border-zinc-600',
         isFlashing && 'border-amber-500/70 bg-amber-500/10 ring-2 ring-amber-400/30 animate-pulse',
         isGroupDragging && 'opacity-60'
       )}
-      title={isFailed && errorText ? errorText : task.title}
+      title={tooltipText}
       onClick={(e) => onSelect(e, task.id)}
     >
       <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md bg-zinc-950">
@@ -125,6 +138,11 @@ function PendingTaskCard({
             自动重试失败
           </div>
         ) : null}
+        {hasTitleLengthIssue ? (
+          <div className="mb-1 inline-flex w-fit items-center rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-rose-200">
+            标题超 20（{titleLengthIssue?.count ?? 0}/20）
+          </div>
+        ) : null}
         {isRemix ? (
           <div className="mb-1 flex min-w-0 items-center">
             <div
@@ -141,6 +159,9 @@ function PendingTaskCard({
         </div>
         {isFailed && errorText ? (
           <div className="mt-1 truncate text-[11px] text-red-300">{errorText}</div>
+        ) : null}
+        {hasTitleLengthIssue ? (
+          <div className="mt-1 truncate text-[11px] text-rose-300">请先将标题改到 20 字符以内再排期</div>
         ) : null}
         <div className="mt-1 truncate text-[11px] text-zinc-400">{task.productName || '未绑定商品'}</div>
       </div>
