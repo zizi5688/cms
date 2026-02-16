@@ -158,7 +158,9 @@ function PendingTaskCard({
           {isFailed ? `❌ ${task.title || '(未命名)'}` : task.title || '(未命名)'}
         </div>
         {isFailed && errorText ? (
-          <div className="mt-1 truncate text-[11px] text-red-300">{errorText}</div>
+          <div className="mt-1 text-[11px] leading-4 text-red-300 break-all whitespace-pre-wrap overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+            {errorText}
+          </div>
         ) : null}
         {hasTitleLengthIssue ? (
           <div className="mt-1 truncate text-[11px] text-rose-300">请先将标题改到 20 字符以内再排期</div>

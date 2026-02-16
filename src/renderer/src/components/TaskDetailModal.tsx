@@ -22,6 +22,7 @@ import { ImagePlus, Layers, Save, Sparkles, Trash2, Video, X } from 'lucide-reac
 
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
+import { PENDING_POOL_TITLE_LIMIT, countUserVisibleChars } from '@renderer/modules/MediaMatrix/titleLengthGuard'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import { SortableImage } from '@renderer/components/ui/SortableImage'
 
@@ -107,6 +108,13 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     }
     return false
   }, [task, isEditable, draftTitle, draftContent, draftImages, draftProductId])
+
+  const draftTitleCount = useMemo(() => countUserVisibleChars(draftTitle), [draftTitle])
+  const hasTitleOverflow = useMemo(() => {
+    if (!isEditable) return false
+    return draftTitleCount > PENDING_POOL_TITLE_LIMIT
+  }, [draftTitleCount, isEditable])
+  const hasSaveTitleOverflow = hasTitleOverflow
 
   // DnD 传感器
   const sensors = useSensors(
@@ -214,6 +222,10 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
 
   const handleSave = async (): Promise<void> => {
     if (isSaving || !isDirty) return
+    if (hasSaveTitleOverflow) {
+      window.alert(`标题超 ${PENDING_POOL_TITLE_LIMIT}（${draftTitleCount}/${PENDING_POOL_TITLE_LIMIT}），请先修改标题后再保存。`)
+      return
+    }
     setIsSaving(true)
     try {
       const updates: Record<string, unknown> = {
@@ -405,13 +417,23 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
               <div className="pr-10">
                 <div className="flex flex-wrap items-center gap-2">
                   {isEditable ? (
-                    <input
-                      type="text"
-                      value={draftTitle}
-                      onChange={(e) => setDraftTitle(e.target.value)}
-                      className="min-w-0 flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-lg font-bold text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/50"
-                      placeholder="标题"
-                    />
+                    <div className="min-w-0 flex-1">
+                      <input
+                        type="text"
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                        className={cn(
+                          'min-w-0 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-lg font-bold text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/50',
+                          hasTitleOverflow && 'border-rose-500/60 text-rose-100 focus-visible:ring-rose-500/50'
+                        )}
+                        placeholder="标题"
+                      />
+                      {isEditable ? (
+                        <div className={cn('mt-1 text-[11px]', hasTitleOverflow ? 'text-rose-300' : 'text-zinc-500')}>
+                          标题字数：{draftTitleCount}/{PENDING_POOL_TITLE_LIMIT}
+                        </div>
+                      ) : null}
+                    </div>
                   ) : (
                     <h2 className="text-lg font-bold text-zinc-100 break-words whitespace-normal">{task.title || '(未命名)'}</h2>
                   )}
@@ -441,6 +463,9 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
                   <div>
                     创建时间：<span className="text-zinc-200">{createdAtText}</span>
                   </div>
+                  {hasSaveTitleOverflow ? (
+                    <div className="text-rose-300">标题超 20，需先改标题后才能保存。</div>
+                  ) : null}
                   {/* 商品：可编辑时用下拉，只读时用文本 */}
                   {isEditable ? (
                     <div className="flex items-center gap-1">
@@ -486,8 +511,9 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
                     type="button"
                     className={cn(
                       'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-purple-500/30 bg-purple-500/10 px-3 text-sm text-purple-200 transition hover:bg-purple-500/20',
-                      isSaving && 'pointer-events-none opacity-60'
+                      (isSaving || hasSaveTitleOverflow) && 'pointer-events-none opacity-60'
                     )}
+                    disabled={isSaving || hasSaveTitleOverflow}
                     onClick={() => void handleSave()}
                   >
                     <Save className="h-4 w-4" />
