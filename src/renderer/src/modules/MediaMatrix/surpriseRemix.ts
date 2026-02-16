@@ -1,3 +1,5 @@
+import { PENDING_POOL_TITLE_LIMIT } from './titleLengthGuard'
+
 type ClusteringOptions = {
   timeWindowMs?: number
   similarityThreshold?: number
@@ -41,6 +43,21 @@ function toChars(value: string): string[] {
 function takePrefix(value: string, length: number): string {
   const chars = toChars(value.trim())
   return chars.slice(0, Math.max(0, length)).join('')
+}
+
+function takePrefixByCodeUnits(value: string, maxUnits: number): string {
+  const input = String(value ?? '')
+  const limit = Math.max(0, Math.floor(maxUnits))
+  if (!input || limit <= 0) return ''
+  let used = 0
+  let out = ''
+  for (const ch of input) {
+    const units = ch.length
+    if (used + units > limit) break
+    out += ch
+    used += units
+  }
+  return out
 }
 
 function buildNgrams(value: string, n: number): Set<string> {
@@ -322,7 +339,7 @@ export function buildSurpriseRemix(
     const rawTitleBase = normalizeTitle(titleTask.title ?? '') || '(未命名)'
     // Step 2b: emoji 前缀轮换
     const emoji = EMOJI_PREFIXES[i % EMOJI_PREFIXES.length]
-    const rawTitle = takePrefix(`${emoji}${rawTitleBase}`, 20)
+    const rawTitle = takePrefixByCodeUnits(`${emoji}${rawTitleBase}`, PENDING_POOL_TITLE_LIMIT)
     const content = String(contentTask.content ?? '').trim()
 
     // Step 4a: 使用均匀展开的张数

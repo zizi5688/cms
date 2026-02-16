@@ -43,6 +43,8 @@ export type CreateBatchProgress = {
   requestId?: string
 }
 
+const XHS_TITLE_CHAR_LIMIT = 20
+
 function normalizeText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
@@ -111,6 +113,10 @@ function isRemixTags(tags: string[]): boolean {
     if (t.toLowerCase() === 'remix') return true
   }
   return false
+}
+
+function countXhsTitleChars(value: unknown): number {
+  return String(value ?? '').length
 }
 
 function resolveGeneratedAssetsDir(): string {
@@ -370,7 +376,7 @@ export class TaskManager {
         FROM tasks
         WHERE scheduledAt IS NOT NULL
           AND scheduledAt <= ?
-          AND status NOT IN ('published', 'processing', 'failed')
+          AND status = 'pending'
         ORDER BY scheduledAt ASC`
       )
       .all(time) as Array<Record<string, unknown>>
@@ -798,7 +804,9 @@ export class TaskManager {
     for (const id of unique) {
       const current = map.get(id)
       if (!current) continue
-      updatedList.push(this.applyUpdates(current, patchRecord))
+      const next = this.applyUpdates(current, patchRecord)
+      this.assertScheduleTitleLength(next, patchRecord)
+      updatedList.push(next)
     }
 
     const updateStmt = db.prepare(
@@ -860,7 +868,9 @@ export class TaskManager {
     for (const task of existing) {
       const updates = byId.get(task.id)
       if (!updates) continue
-      updatedList.push(this.applyUpdates(task, updates))
+      const next = this.applyUpdates(task, updates)
+      this.assertScheduleTitleLength(next, updates)
+      updatedList.push(next)
     }
 
     const db = this.sqlite.tryGetConnection()
@@ -955,7 +965,15 @@ export class TaskManager {
       ? (record.images as unknown[]).map((v) => (typeof v === 'string' ? v.trim() : '')).filter(Boolean)
       : null
 
-    const resolvedStatus = nextStatus !== null ? nextStatus : task.status
+    const scheduledAtTouched = nextScheduledAt !== null
+    const shouldForcePendingAfterReschedule =
+      nextStatus === null &&
+      scheduledAtTouched &&
+      typeof nextScheduledAt === 'number' &&
+      Number.isFinite(nextScheduledAt) &&
+      task.status !== 'published'
+    const resolvedStatus =
+      nextStatus !== null ? nextStatus : shouldForcePendingAfterReschedule ? 'pending' : task.status
     const resolvedPublishedAt = nextPublishedAt !== undefined ? nextPublishedAt : task.publishedAt
     const resolvedVideoPath = nextVideoPath !== null ? nextVideoPath : task.videoPath
     const resolvedVideoPreviewPath = nextVideoPreviewPath !== null ? nextVideoPreviewPath : task.videoPreviewPath
@@ -979,6 +997,15 @@ export class TaskManager {
       videoPath: resolvedMediaType === 'video' ? resolvedVideoPath : undefined,
       videoPreviewPath: resolvedMediaType === 'video' ? resolvedVideoPreviewPath : undefined
     }
+  }
+
+  private assertScheduleTitleLength(task: PublishTask, record: Record<string, unknown>): void {
+    const isCurrentlyScheduled = typeof task.scheduledAt === 'number' && Number.isFinite(task.scheduledAt)
+    const isSchedulingToSpecificTime = 'scheduledAt' in record && Number.isFinite(record.scheduledAt)
+    if (!isCurrentlyScheduled && !isSchedulingToSpecificTime) return
+    const titleCount = countXhsTitleChars(task.title)
+    if (titleCount <= XHS_TITLE_CHAR_LIMIT) return
+    throw new Error(`标题超 ${XHS_TITLE_CHAR_LIMIT}（${titleCount}/${XHS_TITLE_CHAR_LIMIT}），请先修改标题后再排期。`)
   }
 
   private parseJsonStringArray(value: unknown): string[] {
