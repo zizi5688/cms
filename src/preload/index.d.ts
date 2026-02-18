@@ -166,6 +166,17 @@ declare global {
             deletedProductMapRows: number
             deletedCoverCacheRows: number
           }>
+          deleteKeywordSnapshot: (payload: {
+            snapshotDate: string
+            keyword: string
+          }) => Promise<{
+            snapshotDate: string
+            keyword: string
+            deletedSnapshotRows: number
+            deletedWatchlistRows: number
+            deletedProductMapRows: number
+            deletedCoverCacheRows: number
+          }>
           coverDebugState: () => Promise<{
             visual: boolean
             keepWindowOpen: boolean

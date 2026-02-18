@@ -2513,6 +2513,13 @@ app.whenReady().then(async () => {
     return scoutService.deleteDashboardSnapshot(snapshotDate)
   })
 
+  ipcMain.handle('cms.scout.dashboard.deleteKeywordSnapshot', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const snapshotDate = typeof query.snapshotDate === 'string' ? query.snapshotDate : ''
+    const keyword = typeof query.keyword === 'string' ? query.keyword : ''
+    return scoutService.deleteDashboardSnapshotKeyword(snapshotDate, keyword)
+  })
+
   ipcMain.handle('cms.scout.dashboard.coverDebugState', async () => {
     return readCoverDebugState()
   })

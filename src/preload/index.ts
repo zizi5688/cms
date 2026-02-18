@@ -258,6 +258,17 @@ const api = {
           deletedProductMapRows: number
           deletedCoverCacheRows: number
         }> => ipcRenderer.invoke('cms.scout.dashboard.deleteSnapshot', payload),
+        deleteKeywordSnapshot: (payload: {
+          snapshotDate: string
+          keyword: string
+        }): Promise<{
+          snapshotDate: string
+          keyword: string
+          deletedSnapshotRows: number
+          deletedWatchlistRows: number
+          deletedProductMapRows: number
+          deletedCoverCacheRows: number
+        }> => ipcRenderer.invoke('cms.scout.dashboard.deleteKeywordSnapshot', payload),
         coverDebugState: (): Promise<{
           visual: boolean
           keepWindowOpen: boolean
