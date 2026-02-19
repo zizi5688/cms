@@ -88,6 +88,15 @@ export type ScoutDashboardDeleteSnapshotResult = {
   affectedSnapshotDates: string[]
 }
 
+export type ScoutDashboardDeleteKeywordSnapshotResult = {
+  snapshotDate: string
+  keyword: string
+  deletedSnapshotRows: number
+  deletedWatchlistRows: number
+  deletedProductMapRows: number
+  deletedCoverCacheRows: number
+}
+
 export type ScoutKeywordHeatRecord = {
   keyword: string
   todayHeat: number
@@ -475,6 +484,106 @@ export class ScoutService {
     if (!hasPositiveReviewTag) {
       db.exec(`ALTER TABLE scout_dashboard_snapshot_rows ADD COLUMN positive_review_tag TEXT`)
     }
+
+    try {
+      this.reconcileDashboardSnapshotDatesBySourceFile()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[ScoutService] reconcile snapshot_date by source_file failed: ${message}`)
+    }
+  }
+
+  private reconcileDashboardSnapshotDatesBySourceFile(): void {
+    const db = this.sqlite.tryGetConnection()
+    if (!db) return
+
+    const sourceFiles = db
+      .prepare(
+        `SELECT DISTINCT source_file
+         FROM scout_dashboard_snapshot_rows
+         WHERE source_file IS NOT NULL AND TRIM(source_file) != ''`
+      )
+      .all() as Array<{ source_file?: unknown }>
+    if (sourceFiles.length === 0) return
+
+    const selectMovedPairs = db.prepare(
+      `SELECT DISTINCT snapshot_date, product_key
+       FROM scout_dashboard_snapshot_rows
+       WHERE source_file = ? AND snapshot_date != ?`
+    )
+    const moveSnapshotRows = db.prepare(
+      `UPDATE scout_dashboard_snapshot_rows
+       SET snapshot_date = ?
+       WHERE source_file = ?
+         AND snapshot_date != ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM scout_dashboard_snapshot_rows AS t
+           WHERE t.snapshot_date = ?
+             AND t.product_key = scout_dashboard_snapshot_rows.product_key
+         )`
+    )
+    const deleteSnapshotDupRows = db.prepare(
+      `DELETE FROM scout_dashboard_snapshot_rows
+       WHERE source_file = ?
+         AND snapshot_date != ?
+         AND EXISTS (
+           SELECT 1
+           FROM scout_dashboard_snapshot_rows AS t
+           WHERE t.snapshot_date = ?
+             AND t.product_key = scout_dashboard_snapshot_rows.product_key
+         )`
+    )
+    const moveWatchlistRows = db.prepare(
+      `UPDATE scout_dashboard_watchlist
+       SET snapshot_date = ?
+       WHERE snapshot_date = ?
+         AND product_key = ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM scout_dashboard_watchlist AS t
+           WHERE t.snapshot_date = ?
+             AND t.product_key = ?
+         )`
+    )
+    const deleteWatchlistDupRows = db.prepare(
+      `DELETE FROM scout_dashboard_watchlist
+       WHERE snapshot_date = ?
+         AND product_key = ?
+         AND EXISTS (
+           SELECT 1
+           FROM scout_dashboard_watchlist AS t
+           WHERE t.snapshot_date = ?
+             AND t.product_key = ?
+         )`
+    )
+
+    const tx = db.transaction(() => {
+      for (const row of sourceFiles) {
+        const sourceFile = normalizeText(row.source_file)
+        if (!sourceFile) continue
+        const normalizedDate = extractSnapshotDateFromSourceFile(sourceFile)
+        if (!normalizedDate) continue
+
+        const movedPairs = selectMovedPairs.all(sourceFile, normalizedDate) as Array<{
+          snapshot_date?: unknown
+          product_key?: unknown
+        }>
+        if (movedPairs.length === 0) continue
+
+        moveSnapshotRows.run(normalizedDate, sourceFile, normalizedDate, normalizedDate)
+        deleteSnapshotDupRows.run(sourceFile, normalizedDate, normalizedDate)
+
+        for (const pair of movedPairs) {
+          const oldDate = normalizeText(pair.snapshot_date)
+          const productKey = normalizeText(pair.product_key)
+          if (!oldDate || !productKey || oldDate === normalizedDate) continue
+          moveWatchlistRows.run(normalizedDate, oldDate, productKey, normalizedDate, productKey)
+          deleteWatchlistDupRows.run(oldDate, productKey, normalizedDate, productKey)
+        }
+      }
+    })
+    tx()
   }
 
   // ==============================================================
@@ -728,6 +837,10 @@ export class ScoutService {
     const db = this.sqlite.connection
     const now = Date.now()
     const sourceFile = basename(normalizedPath)
+    const snapshotDateFromFile = extractSnapshotDateFromSourceFile(sourceFile)
+    if (!snapshotDateFromFile) {
+      throw new Error(`文件名未包含可识别日期，需包含 YYYYMMDD：${sourceFile}`)
+    }
     const snapshotDates = new Set<string>()
     const keywords = new Set<string>()
 
@@ -780,8 +893,8 @@ export class ScoutService {
 
       for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
         const row = worksheet.getRow(rowNumber)
-        const getVal = (columnName: string): unknown => {
-          const idx = headerIndex.get(columnName)
+        const getVal = (...columnNames: string[]): unknown => {
+          const idx = resolveHeaderIndex(headerIndex, ...columnNames)
           if (!idx || idx <= 0) return null
           return row.getCell(idx).value
         }
@@ -789,12 +902,15 @@ export class ScoutService {
         const productName = getCellString(getVal('商品名称'))
         const productUrl = normalizeNullable(getCellLinkOrText(getVal('商品链接')))
         const shopName = normalizeNullable(getCellString(getVal('店铺名称')))
+        const skuId = normalizeNullable(
+          getCellString(getVal('SKU_ID', 'sku_id', 'skuId', 'SKUID', 'SKU ID', '商品SKU_ID'))
+        )
         const lastUpdatedRaw = getVal('最后更新时间')
         const lastUpdatedAt = parseDateMs(lastUpdatedRaw)
         if (!lastUpdatedAt) continue
 
-        const snapshotDate = formatDateYmd(lastUpdatedAt)
-        const productKey = buildProductKey(productUrl, productName, shopName)
+        const snapshotDate = snapshotDateFromFile
+        const productKey = buildProductKey(skuId, productUrl, productName, shopName)
         if (!productKey) continue
 
         snapshotDates.add(snapshotDate)
@@ -826,6 +942,7 @@ export class ScoutService {
           关键词: keyword,
           主关键词: primaryKeyword,
           快照日期: snapshotDate,
+          SKU_ID: skuId,
           商品名称: productName,
           商品链接: productUrl,
           价格: price,
@@ -944,6 +1061,23 @@ export class ScoutService {
         source_file = excluded.source_file,
         raw_payload = excluded.raw_payload,
         imported_at = excluded.imported_at
+      WHERE
+        scout_dashboard_snapshot_rows.keyword != excluded.keyword
+        OR scout_dashboard_snapshot_rows.primary_keyword != excluded.primary_keyword
+        OR scout_dashboard_snapshot_rows.product_name != excluded.product_name
+        OR COALESCE(scout_dashboard_snapshot_rows.product_url, '') != COALESCE(excluded.product_url, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.price, -1) != COALESCE(excluded.price, -1)
+        OR scout_dashboard_snapshot_rows.add_cart_24h_value != excluded.add_cart_24h_value
+        OR COALESCE(scout_dashboard_snapshot_rows.total_sales, '') != COALESCE(excluded.total_sales, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.three_month_buyers, '') != COALESCE(excluded.three_month_buyers, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.positive_review_tag, '') != COALESCE(excluded.positive_review_tag, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.shop_name, '') != COALESCE(excluded.shop_name, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.shop_fans, '') != COALESCE(excluded.shop_fans, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.product_rating, -1) != COALESCE(excluded.product_rating, -1)
+        OR COALESCE(scout_dashboard_snapshot_rows.shop_rating, -1) != COALESCE(excluded.shop_rating, -1)
+        OR excluded.first_seen_at < scout_dashboard_snapshot_rows.first_seen_at
+        OR scout_dashboard_snapshot_rows.last_updated_at != excluded.last_updated_at
+        OR COALESCE(scout_dashboard_snapshot_rows.raw_payload, '') != COALESCE(excluded.raw_payload, '')
     `)
 
     const tx = db.transaction(() => {
@@ -1114,6 +1248,118 @@ export class ScoutService {
         deletedImportBatches: importBatches.length,
         affectedSnapshotDates
       } satisfies ScoutDashboardDeleteSnapshotResult
+    })
+
+    return result()
+  }
+
+  deleteDashboardSnapshotKeyword(snapshotDate: string, keyword: string): ScoutDashboardDeleteKeywordSnapshotResult {
+    const db = this.sqlite.connection
+    const date = normalizeText(snapshotDate)
+    const normalizedKeyword = normalizeText(keyword)
+    if (!date) {
+      throw new Error('快照日期不能为空')
+    }
+    if (!normalizedKeyword) {
+      throw new Error('关键词不能为空')
+    }
+
+    const chunked = <T>(rows: T[], size = 400): T[][] => {
+      const list: T[][] = []
+      for (let i = 0; i < rows.length; i += size) {
+        list.push(rows.slice(i, i + size))
+      }
+      return list
+    }
+
+    const result = db.transaction(() => {
+      const touchedRows = db
+        .prepare(
+          `SELECT DISTINCT product_key
+           FROM scout_dashboard_snapshot_rows
+           WHERE snapshot_date = ? AND primary_keyword = ?`
+        )
+        .all(date, normalizedKeyword) as Array<{ product_key?: unknown }>
+      const productKeys = Array.from(
+        new Set(touchedRows.map((row) => normalizeText(row.product_key)).filter(Boolean))
+      )
+
+      const deletedSnapshotRows =
+        db
+          .prepare(
+            `DELETE FROM scout_dashboard_snapshot_rows
+             WHERE snapshot_date = ? AND primary_keyword = ?`
+          )
+          .run(date, normalizedKeyword).changes ?? 0
+
+      let deletedWatchlistRows = 0
+      if (productKeys.length > 0) {
+        for (const keys of chunked(productKeys)) {
+          const placeholders = keys.map(() => '?').join(',')
+          deletedWatchlistRows +=
+            db
+              .prepare(
+                `DELETE FROM scout_dashboard_watchlist
+                 WHERE snapshot_date = ? AND product_key IN (${placeholders})`
+              )
+              .run(date, ...keys).changes ?? 0
+        }
+      }
+      deletedWatchlistRows +=
+        db
+          .prepare(
+            `DELETE FROM scout_dashboard_watchlist
+             WHERE snapshot_date = ?
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM scout_dashboard_snapshot_rows s
+                 WHERE s.snapshot_date = scout_dashboard_watchlist.snapshot_date
+                   AND s.product_key = scout_dashboard_watchlist.product_key
+               )`
+          )
+          .run(date).changes ?? 0
+
+      let deletedProductMapRows = 0
+      let deletedCoverCacheRows = 0
+      if (productKeys.length > 0) {
+        const remainedProductKeys = new Set<string>()
+        for (const keys of chunked(productKeys)) {
+          const placeholders = keys.map(() => '?').join(',')
+          const rows = db
+            .prepare(
+              `SELECT DISTINCT product_key
+               FROM scout_dashboard_snapshot_rows
+               WHERE product_key IN (${placeholders})`
+            )
+            .all(...keys) as Array<{ product_key?: unknown }>
+          for (const row of rows) {
+            const key = normalizeText(row.product_key)
+            if (key) remainedProductKeys.add(key)
+          }
+        }
+
+        const staleProductKeys = productKeys.filter((key) => !remainedProductKeys.has(key))
+        for (const keys of chunked(staleProductKeys)) {
+          const placeholders = keys.map(() => '?').join(',')
+          deletedProductMapRows +=
+            db
+              .prepare(`DELETE FROM scout_dashboard_product_map WHERE product_key IN (${placeholders})`)
+              .run(...keys).changes ?? 0
+          deletedCoverCacheRows +=
+            db
+              .prepare(`DELETE FROM scout_dashboard_cover_cache WHERE product_key IN (${placeholders})`)
+              .run(...keys).changes ?? 0
+        }
+      }
+
+      return {
+        snapshotDate: date,
+        keyword: normalizedKeyword,
+        deletedSnapshotRows,
+        deletedWatchlistRows,
+        deletedProductMapRows,
+        deletedCoverCacheRows
+      } satisfies ScoutDashboardDeleteKeywordSnapshotResult
     })
 
     return result()
@@ -1394,14 +1640,29 @@ export class ScoutService {
       .all(...dates, ...keywords) as Array<Record<string, unknown>>
 
     const heatMap = new Map<string, number>()
+    const keywordSeenDates = new Map<string, Set<string>>()
     for (const row of trendRows) {
       const d = normalizeText(row.snapshot_date)
       const k = normalizeText(row.primary_keyword)
       if (!d || !k) continue
       heatMap.set(`${d}::${k}`, toInt(row.heat))
+      const seenDates = keywordSeenDates.get(k) ?? new Set<string>()
+      seenDates.add(d)
+      keywordSeenDates.set(k, seenDates)
     }
 
     const series: ScoutKeywordTrend[] = keywords.map((keyword) => {
+      // 同一关键词至少在 2 个快照日存在，才绘制趋势曲线；否则视为“正在收集数据”。
+      const seenDays = keywordSeenDates.get(keyword)?.size ?? 0
+      if (seenDays < 2) {
+        return {
+          keyword,
+          values: [],
+          max: 0,
+          min: 0,
+          volatility: 0
+        }
+      }
       const values = dates.map((d) => heatMap.get(`${d}::${keyword}`) ?? 0)
       const max = values.length > 0 ? Math.max(...values) : 0
       const min = values.length > 0 ? Math.min(...values) : 0
@@ -2028,11 +2289,39 @@ function buildHeaderIndex(values: Array<unknown>): Map<string, number> {
     const key = normalizeText(values[i])
     if (!key) continue
     map.set(key, i)
+    const normalizedKey = normalizeHeaderLookupKey(key)
+    if (normalizedKey) map.set(normalizedKey, i)
   }
   return map
 }
 
-function buildProductKey(productUrl: string | null, productName: string, shopName: string | null): string {
+function normalizeHeaderLookupKey(value: unknown): string {
+  const raw = normalizeText(value)
+  if (!raw) return ''
+  return raw.replace(/[\s_\-]+/g, '').toUpperCase()
+}
+
+function resolveHeaderIndex(headerIndex: Map<string, number>, ...columnNames: string[]): number {
+  for (const name of columnNames) {
+    const direct = headerIndex.get(name)
+    if (direct && direct > 0) return direct
+    const normalized = normalizeHeaderLookupKey(name)
+    if (!normalized) continue
+    const fallback = headerIndex.get(normalized)
+    if (fallback && fallback > 0) return fallback
+  }
+  return 0
+}
+
+function buildProductKey(
+  skuId: string | null,
+  productUrl: string | null,
+  productName: string,
+  shopName: string | null
+): string {
+  const normalizedSkuId = normalizeText(skuId)
+  if (normalizedSkuId) return `sku:${normalizedSkuId}`
+
   const normalizedUrl = normalizeText(productUrl)
   if (normalizedUrl) return `url:${normalizedUrl}`
 
@@ -2118,12 +2407,33 @@ function excelSerialToMs(serial: number): number {
   return Math.round(epoch + serial * 24 * 60 * 60 * 1000)
 }
 
-function formatDateYmd(ts: number): string {
-  const d = new Date(ts)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+function extractSnapshotDateFromSourceFile(sourceFile: string): string | null {
+  const baseName = normalizeText(sourceFile).split(/[\\/]/).filter(Boolean).pop() ?? ''
+  const stem = baseName.replace(/\.[^.]+$/, '')
+  if (!stem) return null
+
+  const candidates: Array<{ y: string; m: string; d: string }> = []
+  for (const match of stem.matchAll(/(20\d{2})(\d{2})(\d{2})/g)) {
+    if (!match[1] || !match[2] || !match[3]) continue
+    candidates.push({ y: match[1], m: match[2], d: match[3] })
+  }
+  for (const match of stem.matchAll(/(20\d{2})[-_](\d{2})[-_](\d{2})/g)) {
+    if (!match[1] || !match[2] || !match[3]) continue
+    candidates.push({ y: match[1], m: match[2], d: match[3] })
+  }
+
+  for (const c of candidates) {
+    const y = Number(c.y)
+    const m = Number(c.m)
+    const d = Number(c.d)
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) continue
+    if (m < 1 || m > 12 || d < 1 || d > 31) continue
+    const dt = new Date(Date.UTC(y, m - 1, d))
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() + 1 !== m || dt.getUTCDate() !== d) continue
+    return `${c.y}-${c.m}-${c.d}`
+  }
+
+  return null
 }
 
 function formatDateTimeLocal(ts: number): string {
