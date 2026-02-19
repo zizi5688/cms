@@ -184,10 +184,13 @@ function HeatDashboard(): React.JSX.Element {
   const [isLoadingProducts, setIsLoadingProducts] = useState(false)
   const [isImportingSnapshot, setIsImportingSnapshot] = useState(false)
   const [isDeletingSnapshot, setIsDeletingSnapshot] = useState(false)
+  const [isDeletingKeywordSnapshot, setIsDeletingKeywordSnapshot] = useState(false)
+  const [deletingKeywordId, setDeletingKeywordId] = useState<string | null>(null)
   const [isSourcing, setIsSourcing] = useState(false)
   const [isSourcingRunning, setIsSourcingRunning] = useState(false)
   const [isBindingSupplier, setIsBindingSupplier] = useState(false)
   const [statusText, setStatusText] = useState('')
+  const [selectedSnapshotDate, setSelectedSnapshotDate] = useState('')
   const [quickLookProductId, setQuickLookProductId] = useState<string | null>(null)
   const [queuedImageMap, setQueuedImageMap] = useState<Record<string, string>>({})
   const [queueLoadingMap, setQueueLoadingMap] = useState<Record<string, boolean>>({})
@@ -205,12 +208,25 @@ function HeatDashboard(): React.JSX.Element {
   const [focusedKeywordIndex, setFocusedKeywordIndex] = useState(0)
   const requestedQueueProductIdsRef = useRef<Set<string>>(new Set())
 
-  const snapshotDate = meta?.latestDate ?? ''
+  const availableSnapshotDates = meta?.availableDates ?? []
+  const snapshotDate = selectedSnapshotDate
 
   const loadMeta = useCallback(async (): Promise<void> => {
     const nextMeta = await window.api.cms.scout.dashboard.meta()
     setMeta(nextMeta)
   }, [])
+
+  useEffect(() => {
+    if (availableSnapshotDates.length === 0) {
+      if (selectedSnapshotDate) setSelectedSnapshotDate('')
+      return
+    }
+    if (selectedSnapshotDate && availableSnapshotDates.includes(selectedSnapshotDate)) return
+    const next = meta?.latestDate && availableSnapshotDates.includes(meta.latestDate)
+      ? meta.latestDate
+      : availableSnapshotDates[0] ?? ''
+    if (next !== selectedSnapshotDate) setSelectedSnapshotDate(next)
+  }, [availableSnapshotDates, meta?.latestDate, selectedSnapshotDate])
 
   const loadCoverDebugState = useCallback(async (): Promise<void> => {
     try {
@@ -917,6 +933,22 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [isImportingSnapshot, loadKeywordsAndTrends, loadMeta, loadProducts])
 
+  const handleSnapshotDateChange = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>): void => {
+      const next = String(event.target.value ?? '').trim()
+      setSelectedSnapshotDate(next)
+      setSelectedKeywordId(null)
+      setSelectedProductId(null)
+      setPotentialProducts([])
+      setMarkedProducts([])
+      setQueuedImageMap({})
+      setQueueLoadingMap({})
+      requestedQueueProductIdsRef.current.clear()
+      setStatusText(next ? `已切换快照日：${next}` : '已清空快照日选择')
+    },
+    [setSelectedKeywordId, setSelectedProductId]
+  )
+
   const handleDeleteSnapshot = useCallback(async (): Promise<void> => {
     if (isDeletingSnapshot) return
     if (!snapshotDate) {
@@ -956,6 +988,64 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [isDeletingSnapshot, loadMeta, setSelectedKeywordId, setSelectedProductId, snapshotDate])
 
+  const handleDeleteKeywordSnapshot = useCallback(async (keywordId?: string): Promise<void> => {
+    if (isDeletingKeywordSnapshot) return
+    if (!snapshotDate) {
+      setStatusText('请先选择快照日')
+      return
+    }
+    const targetKeyword = String(keywordId ?? selectedKeywordId ?? '').trim()
+    if (!targetKeyword) {
+      setStatusText('请先选择要删除的关键词页')
+      return
+    }
+    const confirmed = window.confirm(
+      `确认删除快照日 ${snapshotDate} 下关键词「${targetKeyword}」的全部数据吗？此操作不可撤销。`
+    )
+    if (!confirmed) return
+
+    setIsDeletingKeywordSnapshot(true)
+    setDeletingKeywordId(targetKeyword)
+    try {
+      const result = (await window.api.cms.scout.dashboard.deleteKeywordSnapshot({
+        snapshotDate,
+        keyword: targetKeyword
+      })) as {
+        snapshotDate: string
+        keyword: string
+        deletedSnapshotRows: number
+        deletedWatchlistRows: number
+        deletedProductMapRows: number
+        deletedCoverCacheRows: number
+      }
+      setSelectedKeywordId(null)
+      setSelectedProductId(null)
+      setPotentialProducts([])
+      setMarkedProducts([])
+      setQueuedImageMap({})
+      setQueueLoadingMap({})
+      requestedQueueProductIdsRef.current.clear()
+      await Promise.all([loadMeta(), loadKeywordsAndTrends()])
+      setStatusText(
+        `已删除 ${result.snapshotDate} / ${result.keyword}：快照 ${result.deletedSnapshotRows} 行，待办 ${result.deletedWatchlistRows} 行`
+      )
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      setStatusText(`删除关键词页失败：${msg}`)
+    } finally {
+      setIsDeletingKeywordSnapshot(false)
+      setDeletingKeywordId(null)
+    }
+  }, [
+    isDeletingKeywordSnapshot,
+    loadKeywordsAndTrends,
+    loadMeta,
+    selectedKeywordId,
+    setSelectedKeywordId,
+    setSelectedProductId,
+    snapshotDate
+  ])
+
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return
@@ -988,12 +1078,30 @@ function HeatDashboard(): React.JSX.Element {
           <div className="border-b border-zinc-800 bg-zinc-900/90 px-3 py-2.5">
             <div className="text-sm font-semibold text-zinc-100">趋势雷达</div>
             <div className="mt-1 flex items-center justify-between gap-2 text-xs text-zinc-400">
-              <span>{snapshotDate ? `快照日：${snapshotDate}` : '暂无快照数据'}</span>
+              <div className="flex min-w-0 items-center gap-1">
+                <span className="shrink-0">快照日：</span>
+                <select
+                  className="h-6 min-w-[124px] max-w-[172px] rounded border border-zinc-700 bg-zinc-950 px-1.5 text-[11px] text-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-500/60 disabled:cursor-not-allowed disabled:opacity-60"
+                  value={snapshotDate}
+                  onChange={handleSnapshotDateChange}
+                  disabled={availableSnapshotDates.length === 0 || isImportingSnapshot}
+                >
+                  {availableSnapshotDates.length === 0 ? (
+                    <option value="">暂无快照数据</option>
+                  ) : (
+                    availableSnapshotDates.map((date) => (
+                      <option key={date} value={date}>
+                        {date}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
               <button
                 type="button"
                 className="rounded border border-rose-500/50 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => void handleDeleteSnapshot()}
-                disabled={!snapshotDate || isDeletingSnapshot || isImportingSnapshot}
+                disabled={!snapshotDate || isDeletingSnapshot || isDeletingKeywordSnapshot || isImportingSnapshot}
               >
                 {isDeletingSnapshot ? '删除中...' : '删除当日'}
               </button>
@@ -1012,8 +1120,11 @@ function HeatDashboard(): React.JSX.Element {
                     <TrendKeywordListItem
                       item={item}
                       active={item.id === selectedKeywordId}
+                      deleting={isDeletingKeywordSnapshot && deletingKeywordId === item.id}
+                      canDelete={Boolean(snapshotDate) && !isDeletingSnapshot && !isDeletingKeywordSnapshot && !isImportingSnapshot}
                       tabIndex={focusedKeywordIndex === index ? 0 : -1}
                       onClick={() => handleSelectKeyword(item.id)}
+                      onDelete={() => void handleDeleteKeywordSnapshot(item.id)}
                       onKeyDown={(event) => handleKeywordListKeyDown(event, index)}
                       ref={(el) => {
                         keywordRefs.current[index] = el
@@ -1193,41 +1304,69 @@ function HeatDashboard(): React.JSX.Element {
 type TrendKeywordListItemProps = {
   item: KeywordRadarItem
   active: boolean
+  deleting: boolean
+  canDelete: boolean
   tabIndex: number
   onClick: () => void
+  onDelete: () => void
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void
 }
 
 const TrendKeywordListItem = React.forwardRef<HTMLButtonElement, TrendKeywordListItemProps>(
   function TrendKeywordListItem(
-    { item, active, tabIndex, onClick, onKeyDown },
+    { item, active, deleting, canDelete, tabIndex, onClick, onDelete, onKeyDown },
     ref
   ): React.JSX.Element {
     return (
-      <button
-        ref={ref}
-        type="button"
-        className={cn(
-          'h-16 w-full rounded-md px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-500',
-          active ? 'bg-gray-800 text-zinc-100' : 'bg-transparent text-zinc-300 hover:bg-gray-800'
-        )}
-        onClick={onClick}
-        onKeyDown={onKeyDown}
-        tabIndex={tabIndex}
-      >
-        <div className="flex items-center gap-1 text-sm font-semibold">
-          <span className="truncate">{item.keyword}</span>
-          {item.isSurging && <span aria-label="surging">🔥</span>}
-        </div>
+      <div className="group relative">
+        <button
+          ref={ref}
+          type="button"
+          className={cn(
+            'h-16 w-full rounded-md px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-zinc-500',
+            active ? 'bg-gray-800 text-zinc-100' : 'bg-transparent text-zinc-300 hover:bg-gray-800'
+          )}
+          onClick={onClick}
+          onKeyDown={onKeyDown}
+          tabIndex={tabIndex}
+        >
+          <div className="flex items-center gap-1 pr-16 text-sm font-semibold">
+            <span className="truncate">{item.keyword}</span>
+            {item.isSurging && <span aria-label="surging">🔥</span>}
+          </div>
 
-        <div className="mt-0.5 h-4 w-full">
-          <KeywordSparkline data={item.trendData} growth={item.dailyGrowth} />
-        </div>
+          <div className="mt-0.5 h-4 w-full">
+            <KeywordSparkline data={item.trendData} growth={item.dailyGrowth} />
+          </div>
 
-        <div className="mt-0.5 text-[10px] text-zinc-400">
-          增长: {formatGrowth(item.dailyGrowth)}
-        </div>
-      </button>
+          <div className="mt-0.5 text-[10px] text-zinc-400">
+            增长: {formatGrowth(item.dailyGrowth)}
+          </div>
+        </button>
+        <button
+          type="button"
+          className={cn(
+            'absolute right-1 top-1 rounded border px-1.5 py-0.5 text-[10px] transition',
+            'border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20',
+            active || deleting ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+            (!canDelete || deleting) && 'pointer-events-none opacity-45'
+          )}
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (!canDelete || deleting) return
+            onDelete()
+          }}
+          title={`删除关键词页：${item.keyword}`}
+          aria-label={`删除关键词页：${item.keyword}`}
+        >
+          {deleting ? '删除中' : '删页'}
+        </button>
+      </div>
     )
   }
 )

@@ -40,7 +40,8 @@ function Settings(): React.JSX.Element {
             importStrategy: savedTools.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: savedTools.realEsrganPath ?? '',
             pythonPath: savedTools.pythonPath ?? '',
-            watermarkScriptPath: savedTools.watermarkScriptPath ?? ''
+            watermarkScriptPath: savedTools.watermarkScriptPath ?? '',
+            scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
           })
           updatePreferences({
             defaultStartTime: savedTools.defaultStartTime ?? '10:00',
@@ -113,6 +114,7 @@ function Settings(): React.JSX.Element {
           realEsrganPath: config.realEsrganPath,
           pythonPath: config.pythonPath,
           watermarkScriptPath: config.watermarkScriptPath,
+          scoutDashboardAutoImportDir: config.scoutDashboardAutoImportDir,
           defaultStartTime: preferences.defaultStartTime,
           defaultInterval: preferences.defaultInterval
         })
@@ -129,10 +131,30 @@ function Settings(): React.JSX.Element {
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
+    config.scoutDashboardAutoImportDir,
     config.watermarkScriptPath,
     preferences.defaultInterval,
     preferences.defaultStartTime
   ])
+
+  const chooseScoutDashboardAutoImportDir = async (): Promise<void> => {
+    try {
+      const selected = await window.electronAPI.openDirectory()
+      if (!selected) return
+      updateConfig({ scoutDashboardAutoImportDir: selected })
+      addLog(`[热度看板] 自动导入目录已设置：${selected}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[热度看板] 设置自动导入目录失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const clearScoutDashboardAutoImportDir = (): void => {
+    if (!config.scoutDashboardAutoImportDir.trim()) return
+    updateConfig({ scoutDashboardAutoImportDir: '' })
+    addLog('[热度看板] 自动导入目录已清空。')
+  }
 
   const testConnection = async (): Promise<void> => {
     if (isTesting) return
@@ -180,6 +202,39 @@ function Settings(): React.JSX.Element {
           </div>
           <div className="flex items-center gap-2">
             <Button onClick={changeWorkspace}>切换工作区</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>热度看板自动导入</CardTitle>
+          <CardDescription>设置爆款表文件夹后，系统会递归监听该目录，仅导入“配置生效后新增”的模板文件。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">爆款表文件夹</div>
+            <Input
+              value={config.scoutDashboardAutoImportDir || '(未设置)'}
+              readOnly
+              className={config.scoutDashboardAutoImportDir ? '' : 'text-zinc-500 italic'}
+            />
+            <div className="text-xs text-zinc-400">
+              支持多层子目录（如按年份/日期分层）；历史文件不会补导，仅监听配置后的新增文件。
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="button" onClick={chooseScoutDashboardAutoImportDir}>
+              选择文件夹
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={clearScoutDashboardAutoImportDir}
+              disabled={!config.scoutDashboardAutoImportDir.trim()}
+            >
+              清空
+            </Button>
           </div>
         </CardContent>
       </Card>

@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-02-14T00:00:00Z",
-  "mode": "full",
+  "generated_at": "2026-02-19T01:44:17Z",
+  "mode": "incremental",
   "ui_framework_hint": "electron",
   "repo": "CMS-2.0",
   "evidence_items": [
@@ -171,11 +171,13 @@
     {
       "id": "EV-015",
       "category": "页面/窗口/控件与事件链路",
-      "conclusion": "热度看板“绑定供应商”仅更新前端状态，未见持久化写回",
-      "implementation_level": "部分实现",
-      "confidence": "medium",
+      "conclusion": "热度看板“绑定供应商”通过 IPC 写回 watchlist，并返回持久化后的标记记录",
+      "implementation_level": "已实现",
+      "confidence": "high",
       "traces": [
-        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleBindSupplier" }
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleBindSupplier" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.scout.dashboard.bindSupplier')" },
+        { "path": "src/main/services/scoutService.ts", "symbol": "bindDashboardSupplier" }
       ]
     },
     {
@@ -272,14 +274,45 @@
       "traces": [
         { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.system.openExternal')" }
       ]
+    },
+    {
+      "id": "EV-025",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "热度看板支持按导入批次删除快照，并清理失效 watchlist/product_map/cover_cache 关联数据",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleDeleteSnapshot" },
+        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.scout.dashboard.deleteSnapshot')" },
+        { "path": "src/main/services/scoutService.ts", "symbol": "deleteDashboardSnapshot" }
+      ]
+    },
+    {
+      "id": "EV-026",
+      "category": "IPC/RPC/API 调用关系",
+      "conclusion": "封面抓取链路新增失败事件回传 IPC_IMAGE_FETCH_FAILED，前端可展示可重试原因",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/index.ts", "symbol": "broadcastImageFetchFailed/processImageFetchQueue" },
+        { "path": "src/preload/index.ts", "symbol": "dashboard.onXhsImageFetchFailed" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "onXhsImageFetchFailed" }
+      ]
+    },
+    {
+      "id": "EV-027",
+      "category": "测试/错误处理/日志与告警",
+      "conclusion": "抓图与搜同款支持统一调试开关（可视化/保留窗口/DevTools）并记录实时调试日志",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/main/index.ts", "symbol": "readCoverDebugState/coverDebugLog/setCoverDebugState" },
+        { "path": "src/preload/index.ts", "symbol": "dashboard.coverDebugState/coverDebugLog" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleUpdateCoverDebugState/loadCoverDebugLog" }
+      ]
     }
   ],
   "pending_confirmation": [
-    {
-      "id": "PC-001",
-      "question": "热度看板绑定供应商是否应持久化写入 watchlist 表",
-      "related_evidence_ids": ["EV-015"]
-    },
     {
       "id": "PC-002",
       "question": "UploadManager 是否仍为正式功能，还是将被移除",
@@ -299,6 +332,11 @@
       "id": "PC-005",
       "question": "1688 人工调试模式下的操作 SLA 与回退策略是否有产品定义",
       "related_evidence_ids": ["EV-014"]
+    },
+    {
+      "id": "PC-007",
+      "question": "抓图/搜同款调试开关是否需要持久化到配置并限制仅开发角色可见",
+      "related_evidence_ids": ["EV-027"]
     },
     {
       "id": "PC-006",
