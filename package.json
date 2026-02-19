@@ -20,7 +20,9 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build:app && electron-builder --dir --config electron-builder.json",
     "build:win": "npm run build:app && electron-builder --win --config electron-builder.json",
-    "build:mac": "npm run build:app && electron-builder --mac --config electron-builder.json",
+    "build:mac:engine": "bash scripts/build-cms-engine-mac.sh",
+    "build:mac:verify-engine": "bash scripts/verify-cms-engine-mac.sh",
+    "build:mac": "npm run build:mac:engine && npm run build:mac:verify-engine && npm run build:app && electron-builder --mac --config electron-builder.json",
     "build:linux": "npm run build:app && electron-builder --linux --config electron-builder.json"
   },
   "dependencies": {

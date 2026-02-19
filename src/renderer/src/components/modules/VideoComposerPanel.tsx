@@ -38,12 +38,101 @@ const DEFAULT_TEMPLATE: VideoStyleTemplate = {
   bgmVolume: 0.28
 }
 
+const TEMPLATE_STORAGE_KEY = 'cms.videoComposer.template.v1'
+
+function toSafeNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, value))
+}
+
+function toSafeInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Math.floor(toSafeNumber(value, fallback))
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function normalizeTemplateFromUnknown(raw: unknown): VideoStyleTemplate {
+  const source = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+  const transition = source.transitionType
+  const transitionType: VideoTemplateTransition =
+    transition === 'none' || transition === 'slideleft' ? transition : 'fade'
+  const imageCountMin = toSafeInt(source.imageCountMin, DEFAULT_TEMPLATE.imageCountMin, 1, 50)
+  const imageCountMax = toSafeInt(source.imageCountMax, DEFAULT_TEMPLATE.imageCountMax, 1, 50)
+  const min = Math.min(imageCountMin, imageCountMax)
+  const max = Math.max(imageCountMin, imageCountMax)
+
+  return {
+    name: typeof source.name === 'string' && source.name.trim() ? source.name.trim() : DEFAULT_TEMPLATE.name,
+    totalDurationSec: clampNumber(toSafeNumber(source.totalDurationSec, DEFAULT_TEMPLATE.totalDurationSec), 2, 60),
+    imageCountMin: min,
+    imageCountMax: max,
+    width: toSafeInt(source.width, DEFAULT_TEMPLATE.width, 360, 4096),
+    height: toSafeInt(source.height, DEFAULT_TEMPLATE.height, 360, 4096),
+    fps: toSafeInt(source.fps, DEFAULT_TEMPLATE.fps, 12, 60),
+    transitionType,
+    transitionDurationSec: clampNumber(
+      toSafeNumber(source.transitionDurationSec, DEFAULT_TEMPLATE.transitionDurationSec),
+      0,
+      3
+    ),
+    bgmVolume: clampNumber(toSafeNumber(source.bgmVolume, DEFAULT_TEMPLATE.bgmVolume), 0, 2)
+  }
+}
+
+function loadSavedTemplate(): { template: VideoStyleTemplate; savedAt: number } | null {
+  try {
+    const raw = localStorage.getItem(TEMPLATE_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { template?: unknown; savedAt?: unknown }
+    if (!parsed || typeof parsed !== 'object') return null
+
+    return {
+      template: normalizeTemplateFromUnknown(parsed.template),
+      savedAt: Number(parsed.savedAt) || 0
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveTemplateToStorage(template: VideoStyleTemplate): number | null {
+  try {
+    const savedAt = Date.now()
+    localStorage.setItem(
+      TEMPLATE_STORAGE_KEY,
+      JSON.stringify({
+        template,
+        savedAt
+      })
+    )
+    return savedAt
+  } catch {
+    return null
+  }
+}
+
+function formatSavedAt(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '未保存'
+  try {
+    return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return '未保存'
+  }
+}
+
+const INITIAL_SAVED_TEMPLATE = loadSavedTemplate()
+
 function VideoComposerPanel(): React.JSX.Element {
   const addLog = useCmsStore((s) => s.addLog)
 
   const [sourceImages, setSourceImages] = useState<string[]>([])
   const [sourceRootPath, setSourceRootPath] = useState('')
-  const [template, setTemplate] = useState<VideoStyleTemplate>(DEFAULT_TEMPLATE)
+  const [template, setTemplate] = useState<VideoStyleTemplate>(() => INITIAL_SAVED_TEMPLATE?.template ?? DEFAULT_TEMPLATE)
+  const [templateSavedAt, setTemplateSavedAt] = useState<number>(() => INITIAL_SAVED_TEMPLATE?.savedAt ?? 0)
   const [bgmPath, setBgmPath] = useState('')
   const [batchCount, setBatchCount] = useState('1')
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
@@ -59,6 +148,36 @@ function VideoComposerPanel(): React.JSX.Element {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return
     setTemplate((prev) => ({ ...prev, [field]: parsed }))
+  }
+
+  const handleSaveTemplate = (): void => {
+    const savedAt = saveTemplateToStorage(template)
+    if (!savedAt) {
+      setError('模板保存失败，请检查本地存储权限。')
+      addLog('[视频处理] 模板保存失败：localStorage 不可用')
+      return
+    }
+    setTemplateSavedAt(savedAt)
+    setError(null)
+    addLog(`[视频处理] 模板已保存：${template.name ?? '未命名模板'}（${formatSavedAt(savedAt)}）`)
+  }
+
+  const handleLoadTemplate = (): void => {
+    const saved = loadSavedTemplate()
+    if (!saved) {
+      setError('未找到已保存模板，请先点击“保存模板”。')
+      return
+    }
+    setTemplate(saved.template)
+    setTemplateSavedAt(saved.savedAt)
+    setError(null)
+    addLog(`[视频处理] 已加载模板：${saved.template.name ?? '未命名模板'}（${formatSavedAt(saved.savedAt)}）`)
+  }
+
+  const handleResetTemplate = (): void => {
+    setTemplate(DEFAULT_TEMPLATE)
+    setError(null)
+    addLog('[视频处理] 模板已恢复默认参数')
   }
 
   const handlePickBgm = async (): Promise<void> => {
@@ -238,6 +357,21 @@ function VideoComposerPanel(): React.JSX.Element {
           <CardDescription>先固定“风格模板”，再批量生产。随机变化只在允许范围内进行。</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" onClick={handleSaveTemplate} disabled={isGenerating || isScanningRoot}>
+              保存模板
+            </Button>
+            <Button type="button" variant="outline" onClick={handleLoadTemplate} disabled={isGenerating || isScanningRoot}>
+              加载模板
+            </Button>
+            <Button type="button" variant="outline" onClick={handleResetTemplate} disabled={isGenerating || isScanningRoot}>
+              恢复默认
+            </Button>
+            <div className="text-xs text-zinc-500">
+              最近保存：{formatSavedAt(templateSavedAt)}
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <div className="flex flex-col gap-1">
               <div className="text-xs text-zinc-400">模板名</div>
