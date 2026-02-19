@@ -78,6 +78,10 @@ let imageFetchProcessedCount = 0
 let mainWindow: BrowserWindow | null = null
 let sourcingLoginWindow: BrowserWindow | null = null
 const safeFileRecoveredByName = new Map<string, string>()
+const DASHBOARD_AUTO_IMPORT_SCAN_INTERVAL_MS = 5_000
+const DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS = 15_000
+const DASHBOARD_AUTO_IMPORT_EXTENSIONS = new Set(['.xlsx'])
+let disposeScoutDashboardAutoImportWatcher: (() => void) | null = null
 type ProcessLogFn = (level: 'stdout' | 'stderr' | 'info' | 'error', message: string) => void
 
 function sleepMs(ms: number): Promise<void> {
@@ -419,6 +423,8 @@ const configStore = new StoreCtor<{
   realEsrganPath: string
   pythonPath: string
   watermarkScriptPath: string
+  scoutDashboardAutoImportDir?: string
+  scoutDashboardAutoImportSince?: number
   watermarkBox: { x: number; y: number; width: number; height: number }
   defaultStartTime?: string
   defaultInterval?: number
@@ -538,6 +544,63 @@ async function scanDirectory(folderPath: string): Promise<string[]> {
       const ext = extname(absolutePath).toLowerCase()
       return allowedExt.has(ext)
     })
+}
+
+type DashboardExcelFileCandidate = {
+  filePath: string
+  mtimeMs: number
+}
+
+async function listDashboardExcelFilesRecursive(rootDir: string): Promise<DashboardExcelFileCandidate[]> {
+  const normalizedRoot = resolve(String(rootDir ?? '').trim())
+  if (!normalizedRoot) return []
+
+  const rootStats = await stat(normalizedRoot).catch(() => null)
+  if (!rootStats || !rootStats.isDirectory()) return []
+
+  const pendingDirs: string[] = [normalizedRoot]
+  const candidates: DashboardExcelFileCandidate[] = []
+
+  while (pendingDirs.length > 0) {
+    const currentDir = pendingDirs.pop()
+    if (!currentDir) continue
+
+    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const name = String(entry.name ?? '').trim()
+      if (!name) continue
+
+      const absolutePath = resolve(currentDir, name)
+      if (entry.isDirectory()) {
+        pendingDirs.push(absolutePath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      if (name.startsWith('~$')) continue
+
+      const ext = extname(name).toLowerCase()
+      if (!DASHBOARD_AUTO_IMPORT_EXTENSIONS.has(ext)) continue
+
+      const fileStats = await stat(absolutePath).catch(() => null)
+      if (!fileStats || !fileStats.isFile()) continue
+
+      const normalizedMtimeMs =
+        typeof fileStats.mtimeMs === 'number' && Number.isFinite(fileStats.mtimeMs)
+          ? fileStats.mtimeMs
+          : fileStats.mtime.getTime()
+      const normalizedBirthtimeMs =
+        typeof fileStats.birthtimeMs === 'number' && Number.isFinite(fileStats.birthtimeMs)
+          ? fileStats.birthtimeMs
+          : fileStats.birthtime.getTime()
+
+      candidates.push({
+        filePath: absolutePath,
+        mtimeMs: Math.max(normalizedMtimeMs, normalizedBirthtimeMs)
+      })
+    }
+  }
+
+  return candidates
 }
 
 function resolveBundledResourcePath(...parts: string[]): string {
@@ -685,6 +748,140 @@ app.whenReady().then(async () => {
   if (sqliteReady) {
     try { scoutService.ensureSchema() } catch (e) { console.error('[Scout] ensureSchema failed:', e) }
   }
+
+  const autoImportProcessedSignatures = new Set<string>()
+  const autoImportRetryAtBySignature = new Map<string, number>()
+  let autoImportScanTimer: NodeJS.Timeout | null = null
+  let autoImportScanRunning = false
+  let autoImportWatchDir = ''
+  let autoImportSinceTs = 0
+  let autoImportMissingDirLogged = false
+
+  const stopScoutDashboardAutoImportWatcher = (): void => {
+    if (autoImportScanTimer) {
+      clearInterval(autoImportScanTimer)
+      autoImportScanTimer = null
+    }
+    autoImportScanRunning = false
+    autoImportProcessedSignatures.clear()
+    autoImportRetryAtBySignature.clear()
+    autoImportWatchDir = ''
+    autoImportSinceTs = 0
+    autoImportMissingDirLogged = false
+  }
+
+  const readScoutDashboardAutoImportConfig = (): {
+    watchDir: string
+    sinceTs: number
+  } => {
+    const rawDir = configStore.get('scoutDashboardAutoImportDir')
+    const watchDir = typeof rawDir === 'string' ? rawDir.trim() : ''
+    const rawSince = configStore.get('scoutDashboardAutoImportSince')
+    const parsedSince = typeof rawSince === 'number' ? rawSince : Number(rawSince)
+    const sinceTs = Number.isFinite(parsedSince) && parsedSince > 0 ? Math.floor(parsedSince) : 0
+    return { watchDir, sinceTs }
+  }
+
+  const runScoutDashboardAutoImportScan = async (): Promise<void> => {
+    if (autoImportScanRunning) return
+    if (!sqliteReady || !autoImportWatchDir) return
+
+    autoImportScanRunning = true
+    try {
+      const dirStats = await stat(autoImportWatchDir).catch(() => null)
+      if (!dirStats || !dirStats.isDirectory()) {
+        if (!autoImportMissingDirLogged) {
+          sendLogToRenderer('warn', `[热度看板] 自动导入目录不可用：${autoImportWatchDir}`)
+          autoImportMissingDirLogged = true
+        }
+        return
+      }
+      autoImportMissingDirLogged = false
+
+      const candidates = await listDashboardExcelFilesRecursive(autoImportWatchDir)
+      if (candidates.length === 0) return
+
+      candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
+      for (const candidate of candidates) {
+        if (candidate.mtimeMs < autoImportSinceTs) continue
+
+        const signature = `${candidate.filePath}::${Math.floor(candidate.mtimeMs)}`
+        if (autoImportProcessedSignatures.has(signature)) continue
+
+        const retryAt = autoImportRetryAtBySignature.get(signature) ?? 0
+        if (retryAt > Date.now()) continue
+
+        const sourceFile = basename(candidate.filePath)
+        if (scoutService.hasDashboardSnapshotSourceFile(sourceFile)) {
+          autoImportProcessedSignatures.add(signature)
+          autoImportRetryAtBySignature.delete(signature)
+          continue
+        }
+
+        try {
+          const result = await scoutService.importExcelSnapshotFromFile(candidate.filePath)
+          autoImportProcessedSignatures.add(signature)
+          autoImportRetryAtBySignature.delete(signature)
+          sendLogToRenderer(
+            'info',
+            `[热度看板] 自动导入成功：${sourceFile}（日期 ${result.snapshotDates.join(', ')}）`
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          autoImportRetryAtBySignature.set(signature, Date.now() + DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS)
+          sendLogToRenderer('warn', `[热度看板] 自动导入失败：${sourceFile}，${message}`)
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      sendLogToRenderer('warn', `[热度看板] 自动导入扫描失败：${message}`)
+    } finally {
+      autoImportScanRunning = false
+    }
+  }
+
+  const ensureScoutDashboardAutoImportWatcher = (): void => {
+    if (!sqliteReady) {
+      stopScoutDashboardAutoImportWatcher()
+      return
+    }
+
+    const current = readScoutDashboardAutoImportConfig()
+    if (!current.watchDir) {
+      stopScoutDashboardAutoImportWatcher()
+      return
+    }
+
+    const sinceTs = current.sinceTs > 0 ? current.sinceTs : Date.now()
+    if (current.sinceTs <= 0) {
+      configStore.set('scoutDashboardAutoImportSince', sinceTs)
+    }
+
+    const changed = current.watchDir !== autoImportWatchDir || sinceTs !== autoImportSinceTs
+    if (changed) {
+      autoImportWatchDir = current.watchDir
+      autoImportSinceTs = sinceTs
+      autoImportMissingDirLogged = false
+      autoImportProcessedSignatures.clear()
+      autoImportRetryAtBySignature.clear()
+      sendLogToRenderer(
+        'info',
+        `[热度看板] 已开启爆款表自动导入：${autoImportWatchDir}（仅监听配置后的新增文件）`
+      )
+    }
+
+    if (!autoImportScanTimer) {
+      autoImportScanTimer = setInterval(() => {
+        void runScoutDashboardAutoImportScan()
+      }, DASHBOARD_AUTO_IMPORT_SCAN_INTERVAL_MS)
+    }
+
+    void runScoutDashboardAutoImportScan()
+  }
+
+  disposeScoutDashboardAutoImportWatcher = stopScoutDashboardAutoImportWatcher
+  ensureScoutDashboardAutoImportWatcher()
+
   const accountManager = new AccountManager()
 
   const resolveLoggedInXhsPartitionKey = async (): Promise<string | null> => {
@@ -2134,6 +2331,21 @@ app.whenReady().then(async () => {
     if (storedDefaultInterval !== defaultInterval) {
       configStore.set('defaultInterval', defaultInterval)
     }
+    const storedAutoImportDir = configStore.get('scoutDashboardAutoImportDir')
+    const scoutDashboardAutoImportDir = typeof storedAutoImportDir === 'string' ? storedAutoImportDir.trim() : ''
+    if (storedAutoImportDir !== scoutDashboardAutoImportDir) {
+      configStore.set('scoutDashboardAutoImportDir', scoutDashboardAutoImportDir)
+    }
+    const storedAutoImportSince = configStore.get('scoutDashboardAutoImportSince')
+    const parsedAutoImportSince =
+      typeof storedAutoImportSince === 'number' ? storedAutoImportSince : Number(storedAutoImportSince)
+    const normalizedAutoImportSince =
+      Number.isFinite(parsedAutoImportSince) && parsedAutoImportSince > 0 ? Math.floor(parsedAutoImportSince) : 0
+    if (scoutDashboardAutoImportDir && normalizedAutoImportSince <= 0) {
+      configStore.set('scoutDashboardAutoImportSince', Date.now())
+    } else if (!scoutDashboardAutoImportDir && normalizedAutoImportSince !== 0) {
+      configStore.set('scoutDashboardAutoImportSince', 0)
+    }
     const storedQueueConfig = configStore.get('queueConfig')
     const queueConfig = {
       taskIntervalMinMs: Math.max(0, Math.floor(Number(storedQueueConfig?.taskIntervalMinMs) || 30000)),
@@ -2148,6 +2360,7 @@ app.whenReady().then(async () => {
       realEsrganPath: configStore.get('realEsrganPath') ?? '',
       pythonPath: configStore.get('pythonPath') ?? '',
       watermarkScriptPath: configStore.get('watermarkScriptPath') ?? '',
+      scoutDashboardAutoImportDir,
       watermarkBox,
       defaultStartTime,
       defaultInterval,
@@ -2165,6 +2378,7 @@ app.whenReady().then(async () => {
             realEsrganPath?: string
             pythonPath?: string
             watermarkScriptPath?: string
+            scoutDashboardAutoImportDir?: string
             watermarkBox?: { x: number; y: number; width: number; height: number }
             defaultStartTime?: string
             defaultInterval?: number
@@ -2194,6 +2408,27 @@ app.whenReady().then(async () => {
       typeof patch?.watermarkScriptPath === 'string' ? patch.watermarkScriptPath.trim() : undefined
     if (nextWatermarkScriptPath !== undefined) {
       configStore.set('watermarkScriptPath', nextWatermarkScriptPath)
+    }
+    const nextScoutDashboardAutoImportDir =
+      typeof patch?.scoutDashboardAutoImportDir === 'string'
+        ? patch.scoutDashboardAutoImportDir.trim()
+        : undefined
+    if (nextScoutDashboardAutoImportDir !== undefined) {
+      const currentDirRaw = configStore.get('scoutDashboardAutoImportDir')
+      const currentDir = typeof currentDirRaw === 'string' ? currentDirRaw.trim() : ''
+      configStore.set('scoutDashboardAutoImportDir', nextScoutDashboardAutoImportDir)
+      if (!nextScoutDashboardAutoImportDir) {
+        configStore.set('scoutDashboardAutoImportSince', 0)
+      } else if (nextScoutDashboardAutoImportDir !== currentDir) {
+        configStore.set('scoutDashboardAutoImportSince', Date.now())
+      } else {
+        const rawSince = configStore.get('scoutDashboardAutoImportSince')
+        const parsedSince = typeof rawSince === 'number' ? rawSince : Number(rawSince)
+        if (!Number.isFinite(parsedSince) || parsedSince <= 0) {
+          configStore.set('scoutDashboardAutoImportSince', Date.now())
+        }
+      }
+      ensureScoutDashboardAutoImportWatcher()
     }
     if (isValidWatermarkBox(patch?.watermarkBox)) {
       configStore.set('watermarkBox', patch.watermarkBox)
@@ -2808,6 +3043,12 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   if (isQuitting) return
   isQuitting = true
+  try {
+    disposeScoutDashboardAutoImportWatcher?.()
+  } catch (error) {
+    void error
+  }
+  disposeScoutDashboardAutoImportWatcher = null
   app.quit()
 })
 

@@ -525,6 +525,7 @@ const electronAPI = {
     realEsrganPath: string
     pythonPath: string
     watermarkScriptPath: string
+    scoutDashboardAutoImportDir: string
     watermarkBox: { x: number; y: number; width: number; height: number }
     defaultStartTime: string
     defaultInterval: number
@@ -534,6 +535,7 @@ const electronAPI = {
     realEsrganPath?: string
     pythonPath?: string
     watermarkScriptPath?: string
+    scoutDashboardAutoImportDir?: string
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string
     defaultInterval?: number

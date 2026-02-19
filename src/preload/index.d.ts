@@ -491,6 +491,7 @@ declare global {
       realEsrganPath: string
       pythonPath: string
       watermarkScriptPath: string
+      scoutDashboardAutoImportDir: string
       watermarkBox: WatermarkBox
       defaultStartTime: string
       defaultInterval: number
@@ -500,6 +501,7 @@ declare global {
       realEsrganPath?: string
       pythonPath?: string
       watermarkScriptPath?: string
+      scoutDashboardAutoImportDir?: string
       watermarkBox?: WatermarkBox
       defaultStartTime?: string
       defaultInterval?: number

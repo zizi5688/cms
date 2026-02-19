@@ -1104,6 +1104,21 @@ export class ScoutService {
     }
   }
 
+  hasDashboardSnapshotSourceFile(sourceFile: string): boolean {
+    const normalized = normalizeText(sourceFile)
+    if (!normalized) return false
+    const db = this.sqlite.connection
+    const row = db
+      .prepare(
+        `SELECT 1 AS exists_flag
+         FROM scout_dashboard_snapshot_rows
+         WHERE source_file = ?
+         LIMIT 1`
+      )
+      .get(normalized) as { exists_flag?: unknown } | undefined
+    return toInt(row?.exists_flag) > 0
+  }
+
   deleteDashboardSnapshot(snapshotDate: string): ScoutDashboardDeleteSnapshotResult {
     const db = this.sqlite.connection
     const date = normalizeText(snapshotDate)
@@ -1619,14 +1634,29 @@ export class ScoutService {
       .all(...dates, ...keywords) as Array<Record<string, unknown>>
 
     const heatMap = new Map<string, number>()
+    const keywordSeenDates = new Map<string, Set<string>>()
     for (const row of trendRows) {
       const d = normalizeText(row.snapshot_date)
       const k = normalizeText(row.primary_keyword)
       if (!d || !k) continue
       heatMap.set(`${d}::${k}`, toInt(row.heat))
+      const seenDates = keywordSeenDates.get(k) ?? new Set<string>()
+      seenDates.add(d)
+      keywordSeenDates.set(k, seenDates)
     }
 
     const series: ScoutKeywordTrend[] = keywords.map((keyword) => {
+      // 同一关键词至少在 2 个快照日存在，才绘制趋势曲线；否则视为“正在收集数据”。
+      const seenDays = keywordSeenDates.get(keyword)?.size ?? 0
+      if (seenDays < 2) {
+        return {
+          keyword,
+          values: [],
+          max: 0,
+          min: 0,
+          volatility: 0
+        }
+      }
       const values = dates.map((d) => heatMap.get(`${d}::${keyword}`) ?? 0)
       const max = values.length > 0 ? Math.max(...values) : 0
       const min = values.length > 0 ? Math.min(...values) : 0
