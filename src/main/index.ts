@@ -21,6 +21,7 @@ import { TaskManager } from './taskManager'
 import { WorkspaceService } from './services/workspaceService'
 import { performBackup } from './services/backupService'
 import { cleanupTempPreviews, prepareVideoPreview } from './services/videoProcessor'
+import { composeVideoFromImages } from './services/videoComposer'
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService } from './services/scoutService'
@@ -538,6 +539,43 @@ async function scanDirectory(folderPath: string): Promise<string[]> {
       const ext = extname(absolutePath).toLowerCase()
       return allowedExt.has(ext)
     })
+}
+
+async function scanDirectoryRecursive(folderPath: string): Promise<string[]> {
+  const normalizedPath = folderPath.trim()
+  if (!normalizedPath) return []
+
+  const rootStats = await stat(normalizedPath)
+  if (!rootStats.isDirectory()) return []
+
+  const allowedExt = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic'])
+  const queue: string[] = [normalizedPath]
+  const results: string[] = []
+
+  while (queue.length > 0) {
+    const currentDir = queue.shift()
+    if (!currentDir) continue
+
+    let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>
+    try {
+      entries = await readdir(currentDir, { withFileTypes: true, encoding: 'utf8' })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      const absolutePath = resolve(currentDir, entry.name)
+      if (entry.isDirectory()) {
+        queue.push(absolutePath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const ext = extname(absolutePath).toLowerCase()
+      if (allowedExt.has(ext)) results.push(absolutePath)
+    }
+  }
+
+  return results
 }
 
 function resolveBundledResourcePath(...parts: string[]): string {
@@ -1514,6 +1552,19 @@ app.whenReady().then(async () => {
     return await toSelectionItem(first)
   })
 
+  ipcMain.handle('dialog:openAudioFile', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const properties: Array<'openFile'> = ['openFile']
+    const options = {
+      properties,
+      filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'aac', 'm4a', 'flac', 'ogg'] }]
+    }
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length === 0) return null
+    const first = result.filePaths[0] ?? ''
+    return first.trim() ? first : null
+  })
+
   ipcMain.handle('cms.image.saveBase64', async (_event, payload: { dataUrl?: unknown; filename?: unknown }) => {
     const dataUrl = typeof payload?.dataUrl === 'string' ? payload.dataUrl : ''
     const rawFilename = typeof payload?.filename === 'string' ? payload.filename : ''
@@ -1541,6 +1592,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:prepareVideoPreview', async (_event, payload: { filePath?: unknown }) => {
     const filePath = typeof payload?.filePath === 'string' ? payload.filePath : ''
     return prepareVideoPreview(filePath)
+  })
+
+  ipcMain.handle('media:composeVideoFromImages', async (_event, payload: unknown) => {
+    return composeVideoFromImages((payload ?? {}) as Record<string, unknown>)
   })
 
   ipcMain.handle(
@@ -1614,6 +1669,17 @@ app.whenReady().then(async () => {
       return files
     } catch (error) {
       console.error('[Super CMS] scan-directory failed:', error)
+      return []
+    }
+  })
+
+  ipcMain.handle('scan-directory-recursive', async (_event, folderPath: string) => {
+    try {
+      const files = await scanDirectoryRecursive(folderPath)
+      console.log(`[Super CMS] scan-directory-recursive: ${folderPath} -> ${files.length} files`)
+      return files
+    } catch (error) {
+      console.error('[Super CMS] scan-directory-recursive failed:', error)
       return []
     }
   })

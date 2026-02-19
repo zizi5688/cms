@@ -1,0 +1,410 @@
+import { useState } from 'react'
+import type * as React from 'react'
+
+import { FolderOpen, Loader2, Music2, Shuffle } from 'lucide-react'
+
+import { Button } from '@renderer/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { Input } from '@renderer/components/ui/input'
+import { useCmsStore } from '@renderer/store/useCmsStore'
+
+function fileNameFromPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  const parts = normalized.split('/')
+  return parts[parts.length - 1] || filePath
+}
+
+function isImageFile(filePath: string): boolean {
+  const normalized = filePath.toLowerCase()
+  return (
+    normalized.endsWith('.jpg') ||
+    normalized.endsWith('.jpeg') ||
+    normalized.endsWith('.png') ||
+    normalized.endsWith('.webp') ||
+    normalized.endsWith('.heic')
+  )
+}
+
+const DEFAULT_TEMPLATE: VideoStyleTemplate = {
+  name: 'style-v1',
+  totalDurationSec: 10,
+  imageCountMin: 6,
+  imageCountMax: 10,
+  width: 1080,
+  height: 1920,
+  fps: 30,
+  transitionType: 'fade',
+  transitionDurationSec: 0.3,
+  bgmVolume: 0.28
+}
+
+function VideoComposerPanel(): React.JSX.Element {
+  const addLog = useCmsStore((s) => s.addLog)
+
+  const [sourceImages, setSourceImages] = useState<string[]>([])
+  const [sourceRootPath, setSourceRootPath] = useState('')
+  const [template, setTemplate] = useState<VideoStyleTemplate>(DEFAULT_TEMPLATE)
+  const [bgmPath, setBgmPath] = useState('')
+  const [batchCount, setBatchCount] = useState('1')
+  const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [isScanningRoot, setIsScanningRoot] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const canGenerate = sourceImages.length > 0 && !isGenerating && !isScanningRoot
+  const normalizedMin = Math.max(1, Math.floor(Number(template.imageCountMin) || 1))
+  const normalizedMax = Math.max(normalizedMin, Math.floor(Number(template.imageCountMax) || normalizedMin))
+
+  const updateTemplateNumber = (field: keyof VideoStyleTemplate, value: string): void => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return
+    setTemplate((prev) => ({ ...prev, [field]: parsed }))
+  }
+
+  const handlePickBgm = async (): Promise<void> => {
+    if (isGenerating) return
+    try {
+      const next = await window.electronAPI.openAudioFile()
+      if (!next || !next.trim()) return
+      setBgmPath(next.trim())
+      addLog(`[视频处理] 已选择背景音乐：${next.trim()}`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      addLog(`[视频处理] 选择背景音乐失败：${message}`)
+    }
+  }
+
+  const revealInFolder = async (filePath: string): Promise<void> => {
+    const normalized = String(filePath ?? '').trim()
+    if (!normalized) return
+    const result = await window.electronAPI.shellShowItemInFolder(normalized)
+    if (!result?.success) {
+      addLog(`[视频处理] 打开文件夹失败：${result?.error ?? '未知错误'}`)
+    }
+  }
+
+  const handlePickImageRoot = async (): Promise<void> => {
+    if (isGenerating || isScanningRoot) return
+    try {
+      setIsScanningRoot(true)
+      const folderPath = await window.electronAPI.openDirectory()
+      if (!folderPath || !folderPath.trim()) return
+
+      const scanFn =
+        typeof window.electronAPI.scanDirectoryRecursive === 'function'
+          ? window.electronAPI.scanDirectoryRecursive
+          : window.electronAPI.scanDirectory
+      const files = await scanFn(folderPath.trim())
+      const imagePaths = files.filter((item) => isImageFile(item))
+      if (imagePaths.length === 0) {
+        setError('该目录下未发现可用图片（支持 jpg/jpeg/png/webp/heic）。')
+        addLog(`[视频处理] 图片根目录无可用素材：${folderPath}`)
+        window.alert('该目录下未发现可用图片（支持 jpg/jpeg/png/webp/heic）。')
+        return
+      }
+
+      setSourceRootPath(folderPath.trim())
+      setSourceImages(Array.from(new Set(imagePaths)))
+      setError(null)
+      addLog(`[视频处理] 已从目录导入 ${imagePaths.length} 张图片：${folderPath}`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      addLog(`[视频处理] 选择图片根目录失败：${message}`)
+      window.alert(`选择图片根目录失败：${message}`)
+    } finally {
+      setIsScanningRoot(false)
+    }
+  }
+
+  const startGenerate = async (): Promise<void> => {
+    if (!canGenerate) return
+    if (sourceImages.length < normalizedMin) {
+      setError(`当前仅 ${sourceImages.length} 张图，至少需要 ${normalizedMin} 张。`)
+      return
+    }
+
+    const count = Math.max(1, Math.min(20, Math.floor(Number(batchCount) || 1)))
+    setError(null)
+    setIsGenerating(true)
+    const nextOutputs: string[] = []
+    let successCount = 0
+
+    try {
+      for (let index = 0; index < count; index += 1) {
+        const seed = Date.now() + index
+        const result = await window.electronAPI.composeVideoFromImages({
+          sourceImages,
+          template: {
+            ...template,
+            imageCountMin: normalizedMin,
+            imageCountMax: normalizedMax
+          },
+          bgmPath: bgmPath.trim() || undefined,
+          seed
+        })
+
+        if (result.success && result.outputPath) {
+          successCount += 1
+          nextOutputs.push(result.outputPath)
+          addLog(
+            `[视频处理] ${index + 1}/${count} 生成成功：${result.outputPath}（使用 ${result.usedImages?.length ?? 0} 张，seed=${result.seed ?? seed}）`
+          )
+        } else {
+          addLog(`[视频处理] ${index + 1}/${count} 生成失败：${result.error ?? '未知错误'}`)
+        }
+      }
+
+      if (successCount === 0) {
+        setError('本轮生成全部失败，请检查模板参数和素材。')
+      }
+      if (nextOutputs.length > 0) {
+        setGeneratedVideos((prev) => [...nextOutputs.reverse(), ...prev].slice(0, 80))
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      addLog(`[视频处理] 生成中断：${message}`)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>视频处理</CardTitle>
+          <CardDescription>选择图片根目录后，仅显示目录路径与数量，不加载缩略图，减少卡顿。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" onClick={() => void handlePickImageRoot()} disabled={isGenerating || isScanningRoot}>
+              {isScanningRoot ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  扫描目录中...
+                </span>
+              ) : (
+                '选择图片目录'
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setSourceImages([])
+                setSourceRootPath('')
+                setError(null)
+              }}
+              disabled={isGenerating || isScanningRoot || sourceImages.length === 0}
+            >
+              清空素材
+            </Button>
+            {sourceRootPath ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => void revealInFolder(sourceRootPath)}
+                aria-label="打开图片目录"
+              >
+                <FolderOpen className="h-4 w-4" />
+              </Button>
+            ) : null}
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-sm text-zinc-300">
+            <div className="truncate">
+              图片根目录：{sourceRootPath ? sourceRootPath : '未选择'}
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              已识别图片：{sourceImages.length} 张
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              系统不会在此处加载图片预览。
+            </div>
+          </div>
+
+          {error ? <div className="text-sm text-rose-300">{error}</div> : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>模板参数</CardTitle>
+          <CardDescription>先固定“风格模板”，再批量生产。随机变化只在允许范围内进行。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">模板名</div>
+              <Input
+                value={template.name ?? ''}
+                onChange={(e) => setTemplate((prev) => ({ ...prev, name: e.target.value }))}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">总时长（秒）</div>
+              <Input value={template.totalDurationSec} onChange={(e) => updateTemplateNumber('totalDurationSec', e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">图片最小数</div>
+              <Input value={template.imageCountMin} onChange={(e) => updateTemplateNumber('imageCountMin', e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">图片最大数</div>
+              <Input value={template.imageCountMax} onChange={(e) => updateTemplateNumber('imageCountMax', e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">宽度</div>
+              <Input value={template.width} onChange={(e) => updateTemplateNumber('width', e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">高度</div>
+              <Input value={template.height} onChange={(e) => updateTemplateNumber('height', e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">FPS</div>
+              <Input value={template.fps} onChange={(e) => updateTemplateNumber('fps', e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">转场</div>
+              <select
+                value={template.transitionType}
+                onChange={(e) =>
+                  setTemplate((prev) => ({
+                    ...prev,
+                    transitionType: e.target.value as VideoTemplateTransition
+                  }))
+                }
+                className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
+              >
+                <option value="none">none</option>
+                <option value="fade">fade</option>
+                <option value="slideleft">slideleft</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">转场时长（秒）</div>
+              <Input
+                value={template.transitionDurationSec}
+                onChange={(e) => updateTemplateNumber('transitionDurationSec', e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">BGM 音量（0-2）</div>
+              <Input value={template.bgmVolume} onChange={(e) => updateTemplateNumber('bgmVolume', e.target.value)} />
+            </div>
+          </div>
+
+          <details className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <summary className="cursor-pointer text-sm text-zinc-200">查看模板 JSON</summary>
+            <pre className="mt-3 overflow-auto rounded-md bg-black p-3 text-xs text-emerald-300">
+              {JSON.stringify(
+                {
+                  ...template,
+                  imageCountMin: normalizedMin,
+                  imageCountMax: normalizedMax,
+                  sourceRootPath,
+                  sourceImageCount: sourceImages.length
+                },
+                null,
+                2
+              )}
+            </pre>
+          </details>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>生成控制</CardTitle>
+          <CardDescription>根据模板随机抽图并生成视频。每次生成都带 seed，方便后续复现。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="mb-2 text-xs text-zinc-400">背景音乐</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => void handlePickBgm()} disabled={isGenerating}>
+                <Music2 className="mr-2 h-4 w-4" />
+                选择 BGM
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setBgmPath('')}
+                disabled={isGenerating || !bgmPath}
+              >
+                清空 BGM
+              </Button>
+              {bgmPath ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => void revealInFolder(bgmPath)}
+                  aria-label="打开 BGM 所在目录"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              ) : null}
+            </div>
+            <div className="mt-2 truncate text-xs text-zinc-500">{bgmPath || '未选择背景音乐（将输出无音轨视频）'}</div>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex w-32 flex-col gap-1">
+              <div className="text-xs text-zinc-400">本次生成数量</div>
+              <Input value={batchCount} onChange={(e) => setBatchCount(e.target.value)} />
+            </div>
+            <Button type="button" onClick={() => void startGenerate()} disabled={!canGenerate}>
+              {isGenerating ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  生成中...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <Shuffle className="h-4 w-4" />
+                  开始随机生成
+                </span>
+              )}
+            </Button>
+            <div className="text-xs text-zinc-500">
+              抽样规则：每条视频随机使用 {normalizedMin}-{normalizedMax} 张图
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>输出结果</CardTitle>
+          <CardDescription>最新生成的视频会显示在这里，可直接定位文件。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {generatedVideos.length === 0 ? (
+            <div className="text-sm text-zinc-400">暂无输出。</div>
+          ) : (
+            <div className="space-y-2">
+              {generatedVideos.map((videoPath) => (
+                <div key={videoPath} className="flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-2">
+                  <div className="min-w-0 flex-1 truncate text-sm text-zinc-300">{fileNameFromPath(videoPath)}</div>
+                  <Button type="button" variant="outline" size="icon" className="h-9 w-9" onClick={() => void revealInFolder(videoPath)}>
+                    <FolderOpen className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+export { VideoComposerPanel }

@@ -52,6 +52,29 @@ declare global {
     error?: string
   }
 
+  type VideoTemplateTransition = 'none' | 'fade' | 'slideleft'
+
+  type VideoStyleTemplate = {
+    name?: string
+    totalDurationSec: number
+    imageCountMin: number
+    imageCountMax: number
+    width: number
+    height: number
+    fps: number
+    transitionType: VideoTemplateTransition
+    transitionDurationSec: number
+    bgmVolume: number
+  }
+
+  type ComposeVideoFromImagesResult = {
+    success: boolean
+    outputPath?: string
+    usedImages?: string[]
+    seed?: number
+    error?: string
+  }
+
   type MediaSelectionItem = {
     originalPath: string
     previewPath: string | null
@@ -458,7 +481,15 @@ declare global {
       multiSelections?: boolean
       accept?: 'image' | 'video' | 'all'
     }) => Promise<MediaSelectionItem | MediaSelectionItem[] | null>
+    openAudioFile: () => Promise<string | null>
     prepareVideoPreview: (filePath: string) => Promise<PrepareVideoPreviewResult>
+    composeVideoFromImages: (payload: {
+      sourceImages: string[]
+      template: VideoStyleTemplate
+      bgmPath?: string
+      outputPath?: string
+      seed?: number
+    }) => Promise<ComposeVideoFromImagesResult>
     openDirectory: () => Promise<string | null>
     showMessageBox: (payload: {
       type?: 'none' | 'info' | 'error' | 'question' | 'warning'
@@ -470,6 +501,7 @@ declare global {
       cancelId?: number
     }) => Promise<{ response: number; checkboxChecked?: boolean }>
     scanDirectory: (folderPath: string) => Promise<string[]>
+    scanDirectoryRecursive: (folderPath: string) => Promise<string[]>
     getPathForFile: (file: File) => string
     getWorkspacePath: () => Promise<{ path: string; status: 'initialized' | 'uninitialized' }>
     pickWorkspacePath: () => Promise<string | null>

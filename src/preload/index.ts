@@ -491,7 +491,32 @@ const api = {
 const electronAPI = {
   openMediaFiles: (payload?: { multiSelections?: boolean; accept?: 'image' | 'video' | 'all' }) =>
     ipcRenderer.invoke('dialog:openMediaFiles', payload),
+  openAudioFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:openAudioFile'),
   prepareVideoPreview: (filePath: string) => ipcRenderer.invoke('media:prepareVideoPreview', { filePath }),
+  composeVideoFromImages: (payload: {
+    sourceImages: string[]
+    template: {
+      name?: string
+      totalDurationSec: number
+      imageCountMin: number
+      imageCountMax: number
+      width: number
+      height: number
+      fps: number
+      transitionType: 'none' | 'fade' | 'slideleft'
+      transitionDurationSec: number
+      bgmVolume: number
+    }
+    bgmPath?: string
+    outputPath?: string
+    seed?: number
+  }): Promise<{
+    success: boolean
+    outputPath?: string
+    usedImages?: string[]
+    seed?: number
+    error?: string
+  }> => ipcRenderer.invoke('media:composeVideoFromImages', payload),
   openDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
   showMessageBox: (payload: {
     type?: 'none' | 'info' | 'error' | 'question' | 'warning'
@@ -503,6 +528,8 @@ const electronAPI = {
     cancelId?: number
   }): Promise<{ response: number; checkboxChecked?: boolean }> => ipcRenderer.invoke('dialog:showMessageBox', payload),
   scanDirectory: (folderPath: string): Promise<string[]> => ipcRenderer.invoke('scan-directory', folderPath),
+  scanDirectoryRecursive: (folderPath: string): Promise<string[]> =>
+    ipcRenderer.invoke('scan-directory-recursive', folderPath),
   getPathForFile: (file: unknown): string => webUtils.getPathForFile(file as unknown as File),
   getWorkspacePath: (): Promise<{ path: string; status: 'initialized' | 'uninitialized' }> =>
     ipcRenderer.invoke('workspace.getPath'),

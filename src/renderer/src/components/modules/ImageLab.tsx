@@ -9,6 +9,7 @@ import 'react-image-crop/dist/ReactCrop.css'
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
+import { VideoComposerPanel } from '@renderer/components/modules/VideoComposerPanel'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
 type VideoPreviewResult = {
@@ -127,6 +128,7 @@ function ImageLab(): React.JSX.Element {
   const [cropImageSize, setCropImageSize] = useState<{ width: number; height: number } | null>(null)
   const [coverPath, setCoverPath] = useState<string | null>(null)
   const [coverRevision, setCoverRevision] = useState(0)
+  const [activePanel, setActivePanel] = useState<'image' | 'video'>('image')
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cropImageRef = useRef<HTMLImageElement | null>(null)
@@ -679,11 +681,38 @@ function ImageLab(): React.JSX.Element {
         <Card>
           <CardHeader>
             <CardTitle>素材处理</CardTitle>
-            <CardDescription>线性流水线：输入图片 → 魔法去印 → 画质重生 → 网格切片。</CardDescription>
+            <CardDescription>
+              {activePanel === 'image'
+                ? '图片处理流水线：输入图片 → 魔法去印 → 画质重生 → 网格切片。'
+                : '视频处理流水线：模板参数固化 + 手动随机生成。'}
+            </CardDescription>
           </CardHeader>
+          <CardContent>
+            <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900 p-1">
+              <button
+                type="button"
+                className={`rounded-md px-3 py-1.5 text-sm transition ${
+                  activePanel === 'image' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-300 hover:text-zinc-100'
+                }`}
+                onClick={() => setActivePanel('image')}
+              >
+                图片处理
+              </button>
+              <button
+                type="button"
+                className={`rounded-md px-3 py-1.5 text-sm transition ${
+                  activePanel === 'video' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-300 hover:text-zinc-100'
+                }`}
+                onClick={() => setActivePanel('video')}
+              >
+                视频处理
+              </button>
+            </div>
+          </CardContent>
         </Card>
 
-        <div className="flex flex-col gap-6">
+        {activePanel === 'image' ? (
+          <div className="flex flex-col gap-6">
           <Card>
             <CardHeader>
               <CardTitle>输入素材</CardTitle>
@@ -1110,6 +1139,9 @@ function ImageLab(): React.JSX.Element {
           </CardContent>
         </Card>
       </div>
+        ) : (
+          <VideoComposerPanel />
+        )}
     </div>
 
       {previewImage ? (
