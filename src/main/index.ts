@@ -1917,7 +1917,8 @@ app.whenReady().then(async () => {
                 }
               }
 
-              return Promise.all(tileJobs)
+              const tileOutputs = await Promise.all(tileJobs)
+              return tileOutputs
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
               throw new Error(`[ImageLab] 网格切片失败：${filePath} (${message})`)
