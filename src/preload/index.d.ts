@@ -75,6 +75,27 @@ declare global {
     error?: string
   }
 
+  type SyncDouyinHotMusicResult = {
+    success: boolean
+    outputDir: string
+    manifestPath: string
+    total: number
+    downloaded: number
+    skipped: number
+    failed: number
+    downloadedFiles: string[]
+    errors: string[]
+    updatedAt: string
+    error?: string
+  }
+
+  type ListDouyinHotMusicResult = {
+    success: boolean
+    outputDir: string
+    files: string[]
+    error?: string
+  }
+
   type MediaSelectionItem = {
     originalPath: string
     previewPath: string | null
@@ -501,6 +522,13 @@ declare global {
       outputPath?: string
       seed?: number
     }) => Promise<ComposeVideoFromImagesResult>
+    syncDouyinHotMusic: (payload?: {
+      outputDir?: string
+      limit?: number
+    }) => Promise<SyncDouyinHotMusicResult>
+    listDouyinHotMusicTracks: (payload?: {
+      outputDir?: string
+    }) => Promise<ListDouyinHotMusicResult>
     openDirectory: () => Promise<string | null>
     showMessageBox: (payload: {
       type?: 'none' | 'info' | 'error' | 'question' | 'warning'

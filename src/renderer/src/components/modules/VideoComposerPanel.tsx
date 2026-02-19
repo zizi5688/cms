@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type * as React from 'react'
 
-import { FolderOpen, Loader2, Music2, Shuffle } from 'lucide-react'
+import { Download, FolderOpen, Loader2, Shuffle } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
@@ -22,6 +22,18 @@ function isImageFile(filePath: string): boolean {
     normalized.endsWith('.png') ||
     normalized.endsWith('.webp') ||
     normalized.endsWith('.heic')
+  )
+}
+
+function isAudioFile(filePath: string): boolean {
+  const normalized = filePath.toLowerCase()
+  return (
+    normalized.endsWith('.mp3') ||
+    normalized.endsWith('.m4a') ||
+    normalized.endsWith('.aac') ||
+    normalized.endsWith('.wav') ||
+    normalized.endsWith('.ogg') ||
+    normalized.endsWith('.flac')
   )
 }
 
@@ -138,6 +150,11 @@ function VideoComposerPanel(): React.JSX.Element {
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isScanningRoot, setIsScanningRoot] = useState(false)
+  const [isSyncingHotMusic, setIsSyncingHotMusic] = useState(false)
+  const [isLoadingBgmList, setIsLoadingBgmList] = useState(false)
+  const [bgmOptions, setBgmOptions] = useState<string[]>([])
+  const [hotMusicOutputDir, setHotMusicOutputDir] = useState('')
+  const [hotMusicSummary, setHotMusicSummary] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const canGenerate = sourceImages.length > 0 && !isGenerating && !isScanningRoot
@@ -180,19 +197,89 @@ function VideoComposerPanel(): React.JSX.Element {
     addLog('[视频处理] 模板已恢复默认参数')
   }
 
-  const handlePickBgm = async (): Promise<void> => {
-    if (isGenerating) return
+  const loadHotMusicBgmOptions = async (outputDir?: string): Promise<void> => {
+    if (isLoadingBgmList) return
     try {
-      const next = await window.electronAPI.openAudioFile()
-      if (!next || !next.trim()) return
-      setBgmPath(next.trim())
-      addLog(`[视频处理] 已选择背景音乐：${next.trim()}`)
+      setIsLoadingBgmList(true)
+
+      if (typeof window.electronAPI.listDouyinHotMusicTracks === 'function') {
+        const result = await window.electronAPI.listDouyinHotMusicTracks({
+          outputDir: outputDir?.trim() || undefined
+        })
+        if (!result.success) {
+          const message = result.error || '加载本地 BGM 列表失败。'
+          setError(message)
+          addLog(`[视频处理] ${message}`)
+          return
+        }
+
+        setBgmOptions(result.files)
+        setHotMusicOutputDir(result.outputDir)
+        if (bgmPath && !result.files.includes(bgmPath)) {
+          setBgmPath('')
+        }
+        return
+      }
+
+      const fallbackRoot = outputDir?.trim() || hotMusicOutputDir.trim()
+      if (!fallbackRoot) {
+        setBgmOptions([])
+        return
+      }
+
+      const scanFn =
+        typeof window.electronAPI.scanDirectoryRecursive === 'function'
+          ? window.electronAPI.scanDirectoryRecursive
+          : window.electronAPI.scanDirectory
+      const files = await scanFn(fallbackRoot)
+      const audioFiles = files.filter((filePath) => isAudioFile(filePath))
+      setBgmOptions(audioFiles)
+      setHotMusicOutputDir(fallbackRoot)
+      if (bgmPath && !audioFiles.includes(bgmPath)) {
+        setBgmPath('')
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
-      addLog(`[视频处理] 选择背景音乐失败：${message}`)
+      addLog(`[视频处理] 读取 BGM 列表异常：${message}`)
+    } finally {
+      setIsLoadingBgmList(false)
     }
   }
+
+  const handleSyncHotMusic = async (): Promise<void> => {
+    if (isGenerating || isSyncingHotMusic) return
+    try {
+      setIsSyncingHotMusic(true)
+      setError(null)
+      const result = await window.electronAPI.syncDouyinHotMusic()
+      if (!result.success) {
+        const message = result.error || result.errors[0] || '刷新抖音音乐榜失败。'
+        setError(message)
+        addLog(`[视频处理] 抖音音乐榜刷新失败：${message}`)
+        return
+      }
+
+      const summary = `总 ${result.total} 首，新增 ${result.downloaded}，已存在 ${result.skipped}，失败 ${result.failed}`
+      setHotMusicOutputDir(result.outputDir)
+      setHotMusicSummary(summary)
+      addLog(`[视频处理] 抖音音乐榜刷新完成：${summary}，目录：${result.outputDir}`)
+      if (result.failed > 0 && result.errors.length > 0) {
+        addLog(`[视频处理] 抖音音乐榜失败示例：${result.errors.slice(0, 3).join(' | ')}`)
+      }
+      await loadHotMusicBgmOptions(result.outputDir)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      addLog(`[视频处理] 刷新抖音音乐榜异常：${message}`)
+    } finally {
+      setIsSyncingHotMusic(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadHotMusicBgmOptions()
+  }, [])
 
   const revealInFolder = async (filePath: string): Promise<void> => {
     const normalized = String(filePath ?? '').trim()
@@ -461,10 +548,58 @@ function VideoComposerPanel(): React.JSX.Element {
         <CardContent className="flex flex-col gap-4">
           <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
             <div className="mb-2 text-xs text-zinc-400">背景音乐</div>
+            <div className="mb-2">
+              <select
+                value={bgmPath}
+                onChange={(event) => setBgmPath(event.target.value)}
+                disabled={isGenerating || isSyncingHotMusic || isLoadingBgmList || bgmOptions.length === 0}
+                className="h-10 w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
+              >
+                {bgmOptions.length === 0 ? (
+                  <option value="">暂无可用音乐，请先点击“一键刷新音乐榜”</option>
+                ) : (
+                  <option value="">不使用背景音乐</option>
+                )}
+                {bgmOptions.map((filePath) => (
+                  <option key={filePath} value={filePath}>
+                    {fileNameFromPath(filePath)}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" variant="outline" onClick={() => void handlePickBgm()} disabled={isGenerating}>
-                <Music2 className="mr-2 h-4 w-4" />
-                选择 BGM
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void handleSyncHotMusic()}
+                disabled={isGenerating || isSyncingHotMusic}
+              >
+                {isSyncingHotMusic ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    刷新音乐榜中...
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <Download className="h-4 w-4" />
+                    一键刷新音乐榜
+                  </span>
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void loadHotMusicBgmOptions(hotMusicOutputDir)}
+                disabled={isGenerating || isSyncingHotMusic || isLoadingBgmList}
+              >
+                {isLoadingBgmList ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    刷新本地列表中...
+                  </span>
+                ) : (
+                  '刷新本地列表'
+                )}
               </Button>
               <Button
                 type="button"
@@ -486,8 +621,24 @@ function VideoComposerPanel(): React.JSX.Element {
                   <FolderOpen className="h-4 w-4" />
                 </Button>
               ) : null}
+              {hotMusicOutputDir ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => void revealInFolder(hotMusicOutputDir)}
+                  aria-label="打开音乐榜下载目录"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              ) : null}
             </div>
             <div className="mt-2 truncate text-xs text-zinc-500">{bgmPath || '未选择背景音乐（将输出无音轨视频）'}</div>
+            {hotMusicSummary ? <div className="mt-1 text-xs text-zinc-500">{hotMusicSummary}</div> : null}
+            {hotMusicOutputDir ? (
+              <div className="mt-1 truncate text-xs text-zinc-500">音乐榜目录：{hotMusicOutputDir}</div>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-end gap-3">

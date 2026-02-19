@@ -22,6 +22,7 @@ import { WorkspaceService } from './services/workspaceService'
 import { performBackup } from './services/backupService'
 import { cleanupTempPreviews, prepareVideoPreview } from './services/videoProcessor'
 import { composeVideoFromImages } from './services/videoComposer'
+import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinHotMusic'
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService } from './services/scoutService'
@@ -1787,6 +1788,14 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('media:composeVideoFromImages', async (_event, payload: unknown) => {
     return composeVideoFromImages((payload ?? {}) as Record<string, unknown>)
+  })
+
+  ipcMain.handle('media:syncDouyinHotMusic', async (_event, payload: unknown) => {
+    return syncDouyinHotMusic((payload ?? {}) as Record<string, unknown>)
+  })
+
+  ipcMain.handle('media:listDouyinHotMusicTracks', async (_event, payload: unknown) => {
+    return listDouyinHotMusicTracks((payload ?? {}) as Record<string, unknown>)
   })
 
   ipcMain.handle(

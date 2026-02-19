@@ -33,6 +33,27 @@ type CmsCreateBatchProgress = {
   requestId?: string
 }
 
+type SyncDouyinHotMusicResult = {
+  success: boolean
+  outputDir: string
+  manifestPath: string
+  total: number
+  downloaded: number
+  skipped: number
+  failed: number
+  downloadedFiles: string[]
+  errors: string[]
+  updatedAt: string
+  error?: string
+}
+
+type ListDouyinHotMusicResult = {
+  success: boolean
+  outputDir: string
+  files: string[]
+  error?: string
+}
+
 // 渲染进程自定义 API（后续通过 IPC 扩展）
 const api = {
   cms: {
@@ -528,6 +549,13 @@ const electronAPI = {
     seed?: number
     error?: string
   }> => ipcRenderer.invoke('media:composeVideoFromImages', payload),
+  syncDouyinHotMusic: (payload?: {
+    outputDir?: string
+    limit?: number
+  }): Promise<SyncDouyinHotMusicResult> => ipcRenderer.invoke('media:syncDouyinHotMusic', payload),
+  listDouyinHotMusicTracks: (payload?: {
+    outputDir?: string
+  }): Promise<ListDouyinHotMusicResult> => ipcRenderer.invoke('media:listDouyinHotMusicTracks', payload),
   openDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
   showMessageBox: (payload: {
     type?: 'none' | 'info' | 'error' | 'question' | 'warning'
