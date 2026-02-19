@@ -1,7 +1,7 @@
 # Super CMS 技术架构文档（交接版）
 
-- 文档版本: v1.0
-- 生成时间: 2026-02-14
+- 文档版本: v1.1
+- 最近更新时间: 2026-02-19
 - 项目类型: Electron + React + TypeScript 桌面应用
 - UI 技术判定: `electron`（依据 `package.json`、`src/main/index.ts`、`src/preload/index.ts`）
 
@@ -84,7 +84,7 @@ flowchart LR
 | 发布 | `publisher.publish`, `automation-log`, `publisher:progress` | 双向 | 小红书自动化发布与进度 |
 | 素材处理 | `process-watermark`, `process-hd-upscale`, `process-grid-split`, `media:prepareVideoPreview` | Renderer -> Main | 图片/视频处理 |
 | 选品同步 | `cms.scout.sync.*`, `cms.scout.keyword.*`, `cms.scout.product.list` | Renderer -> Main | JSON 导入与查询 |
-| 热度看板 | `cms.scout.dashboard.*`, `IPC_FETCH_XHS_IMAGE`, `IPC_SEARCH_1688_BY_IMAGE` | 双向 | 趋势查询、封面抓取、1688 图搜 |
+| 热度看板 | `cms.scout.dashboard.*`, `IPC_FETCH_XHS_IMAGE`, `IPC_IMAGE_UPDATED`, `IPC_IMAGE_FETCH_FAILED`, `IPC_SEARCH_1688_BY_IMAGE` | 双向 | 趋势查询、封面抓取、失败回传、1688 图搜与绑定 |
 | 工作区 | `workspace.getPath/pickPath/setPath/relaunch` | Renderer -> Main | 本地工作区管理 |
 | 设置/飞书 | `get-config/save-config/get-feishu-config/feishu-*` | Renderer -> Main | 配置读写与飞书 API |
 
@@ -111,6 +111,8 @@ flowchart LR
 数据特征:
 - 快照维度按 `snapshot_date + product_key` 复合主键。
 - 监控指标（加购、评分、店铺粉丝）支持趋势聚合。
+- `deleteDashboardSnapshot` 以 `imported_at` 批次为主键删除快照，并级联清理失效 `watchlist/product_map/cover_cache`。
+- `bindDashboardSupplier` 将候选供应商写回 `scout_dashboard_watchlist`（`supplier1_*`, `profit1`, `best_profit_amount`, `sourcing_status`）。
 
 ## 6. 部署拓扑
 运行形态分开发与打包:
@@ -179,16 +181,17 @@ flowchart TB
 - 1688 图搜存在反爬与人工介入分支，自动化成功率受外部环境影响。
 
 ## 10. 已知技术债与演进建议
-- [部分实现] 热度看板“绑定供应商”未看到持久化写回（建议新增 `scout.dashboard.bindSupplier` IPC）。
 - [可维护性] IPC 字符串常量分散在 `src/main/index.ts` 与 `src/preload/index.ts`，建议抽离共享契约层。
 - [可观测性] 建议在主流程加入结构化事件埋点（任务创建、排期、发布结果、搜同款结果）。
 - [安全性] 评估主窗口 `sandbox` 收敛路径，至少对新窗口默认开启更严格策略。
 - [产品一致性] `UploadManager` 入口已隐藏但代码仍活跃，建议明确保留或下线策略。
+- [调试治理] 抓图/搜同款调试开关目前依赖进程环境变量，建议增加持久化配置与角色权限控制。
 
 ## 11. 本次变更摘要
-- 首次补齐双文档体系：`user-manual.md` + `architecture.md`。
-- 建立结构化证据索引：`docs/_evidence.json`。
-- 输出质量门禁与待确认项：`docs/_update-report.md`。
+- 对齐 `origin/main` 最新修复：待排期池标题长度校验前移到排期入口，避免非法任务进入调度队列。
+- 发布稳定性补充：上传就绪守卫 + 上传中重试拦截，降低图文发布中断率。
+- 失败任务治理补充：统一失败展示并在重试耗尽后回退待排期池，便于人工二次处理。
+- 本次巡检同步刷新文档审计产物：`docs/_evidence.json`、`docs/_update-report.md`。
 
 <!-- ARCH-SECTION:BEGIN -->
 ### 人工补充区

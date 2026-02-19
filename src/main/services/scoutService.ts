@@ -893,8 +893,8 @@ export class ScoutService {
 
       for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
         const row = worksheet.getRow(rowNumber)
-        const getVal = (columnName: string): unknown => {
-          const idx = headerIndex.get(columnName)
+        const getVal = (...columnNames: string[]): unknown => {
+          const idx = resolveHeaderIndex(headerIndex, ...columnNames)
           if (!idx || idx <= 0) return null
           return row.getCell(idx).value
         }
@@ -902,12 +902,15 @@ export class ScoutService {
         const productName = getCellString(getVal('商品名称'))
         const productUrl = normalizeNullable(getCellLinkOrText(getVal('商品链接')))
         const shopName = normalizeNullable(getCellString(getVal('店铺名称')))
+        const skuId = normalizeNullable(
+          getCellString(getVal('SKU_ID', 'sku_id', 'skuId', 'SKUID', 'SKU ID', '商品SKU_ID'))
+        )
         const lastUpdatedRaw = getVal('最后更新时间')
         const lastUpdatedAt = parseDateMs(lastUpdatedRaw)
         if (!lastUpdatedAt) continue
 
         const snapshotDate = snapshotDateFromFile
-        const productKey = buildProductKey(productUrl, productName, shopName)
+        const productKey = buildProductKey(skuId, productUrl, productName, shopName)
         if (!productKey) continue
 
         snapshotDates.add(snapshotDate)
@@ -939,6 +942,7 @@ export class ScoutService {
           关键词: keyword,
           主关键词: primaryKeyword,
           快照日期: snapshotDate,
+          SKU_ID: skuId,
           商品名称: productName,
           商品链接: productUrl,
           价格: price,
@@ -1057,6 +1061,23 @@ export class ScoutService {
         source_file = excluded.source_file,
         raw_payload = excluded.raw_payload,
         imported_at = excluded.imported_at
+      WHERE
+        scout_dashboard_snapshot_rows.keyword != excluded.keyword
+        OR scout_dashboard_snapshot_rows.primary_keyword != excluded.primary_keyword
+        OR scout_dashboard_snapshot_rows.product_name != excluded.product_name
+        OR COALESCE(scout_dashboard_snapshot_rows.product_url, '') != COALESCE(excluded.product_url, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.price, -1) != COALESCE(excluded.price, -1)
+        OR scout_dashboard_snapshot_rows.add_cart_24h_value != excluded.add_cart_24h_value
+        OR COALESCE(scout_dashboard_snapshot_rows.total_sales, '') != COALESCE(excluded.total_sales, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.three_month_buyers, '') != COALESCE(excluded.three_month_buyers, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.positive_review_tag, '') != COALESCE(excluded.positive_review_tag, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.shop_name, '') != COALESCE(excluded.shop_name, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.shop_fans, '') != COALESCE(excluded.shop_fans, '')
+        OR COALESCE(scout_dashboard_snapshot_rows.product_rating, -1) != COALESCE(excluded.product_rating, -1)
+        OR COALESCE(scout_dashboard_snapshot_rows.shop_rating, -1) != COALESCE(excluded.shop_rating, -1)
+        OR excluded.first_seen_at < scout_dashboard_snapshot_rows.first_seen_at
+        OR scout_dashboard_snapshot_rows.last_updated_at != excluded.last_updated_at
+        OR COALESCE(scout_dashboard_snapshot_rows.raw_payload, '') != COALESCE(excluded.raw_payload, '')
     `)
 
     const tx = db.transaction(() => {
@@ -1102,21 +1123,6 @@ export class ScoutService {
       keywordsCount: keywords.size,
       sourceFile
     }
-  }
-
-  hasDashboardSnapshotSourceFile(sourceFile: string): boolean {
-    const normalized = normalizeText(sourceFile)
-    if (!normalized) return false
-    const db = this.sqlite.connection
-    const row = db
-      .prepare(
-        `SELECT 1 AS exists_flag
-         FROM scout_dashboard_snapshot_rows
-         WHERE source_file = ?
-         LIMIT 1`
-      )
-      .get(normalized) as { exists_flag?: unknown } | undefined
-    return toInt(row?.exists_flag) > 0
   }
 
   deleteDashboardSnapshot(snapshotDate: string): ScoutDashboardDeleteSnapshotResult {
@@ -2283,11 +2289,39 @@ function buildHeaderIndex(values: Array<unknown>): Map<string, number> {
     const key = normalizeText(values[i])
     if (!key) continue
     map.set(key, i)
+    const normalizedKey = normalizeHeaderLookupKey(key)
+    if (normalizedKey) map.set(normalizedKey, i)
   }
   return map
 }
 
-function buildProductKey(productUrl: string | null, productName: string, shopName: string | null): string {
+function normalizeHeaderLookupKey(value: unknown): string {
+  const raw = normalizeText(value)
+  if (!raw) return ''
+  return raw.replace(/[\s_\-]+/g, '').toUpperCase()
+}
+
+function resolveHeaderIndex(headerIndex: Map<string, number>, ...columnNames: string[]): number {
+  for (const name of columnNames) {
+    const direct = headerIndex.get(name)
+    if (direct && direct > 0) return direct
+    const normalized = normalizeHeaderLookupKey(name)
+    if (!normalized) continue
+    const fallback = headerIndex.get(normalized)
+    if (fallback && fallback > 0) return fallback
+  }
+  return 0
+}
+
+function buildProductKey(
+  skuId: string | null,
+  productUrl: string | null,
+  productName: string,
+  shopName: string | null
+): string {
+  const normalizedSkuId = normalizeText(skuId)
+  if (normalizedSkuId) return `sku:${normalizedSkuId}`
+
   const normalizedUrl = normalizeText(productUrl)
   if (normalizedUrl) return `url:${normalizedUrl}`
 

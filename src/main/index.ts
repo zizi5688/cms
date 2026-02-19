@@ -812,12 +812,6 @@ app.whenReady().then(async () => {
         if (retryAt > Date.now()) continue
 
         const sourceFile = basename(candidate.filePath)
-        if (scoutService.hasDashboardSnapshotSourceFile(sourceFile)) {
-          autoImportProcessedSignatures.add(signature)
-          autoImportRetryAtBySignature.delete(signature)
-          continue
-        }
-
         try {
           const result = await scoutService.importExcelSnapshotFromFile(candidate.filePath)
           autoImportProcessedSignatures.add(signature)
