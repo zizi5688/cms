@@ -430,7 +430,7 @@ async function renderVideo(options: {
     }
 
     filterLines.push(
-      `[${index}:v]scale=${template.width}:${template.height}:force_original_aspect_ratio=decrease,pad=${template.width}:${template.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,trim=duration=${toFixed3(finalClipDuration)},setpts=PTS-STARTPTS[v${index}]`
+      `[${index}:v]scale=${template.width}:${template.height}:flags=lanczos:force_original_aspect_ratio=decrease,pad=${template.width}:${template.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,trim=duration=${toFixed3(finalClipDuration)},setpts=PTS-STARTPTS[v${index}]`
     )
   }
 
@@ -478,7 +478,7 @@ async function renderVideo(options: {
     `-threads ${resolveEncoderThreads()}`,
     '-filter_threads 1',
     '-filter_complex_threads 1',
-    '-sws_flags fast_bilinear',
+    '-sws_flags lanczos',
     '-pix_fmt yuv420p',
     '-movflags +faststart',
     `-r ${template.fps}`,
@@ -489,10 +489,11 @@ async function renderVideo(options: {
     if (lowLoadMode) {
       outputOptions.push('-allow_sw 1', '-realtime 1', '-b:v 2500k', '-maxrate 3500k', '-bufsize 6000k', '-tag:v avc1')
     } else {
-      outputOptions.push('-allow_sw 1', '-realtime 1', '-b:v 4000k', '-maxrate 6000k', '-bufsize 9000k', '-tag:v avc1')
+      outputOptions.push('-allow_sw 1', '-realtime 1', '-b:v 12M', '-maxrate 16M', '-bufsize 24M', '-tag:v avc1')
     }
   } else {
-    outputOptions.push('-preset ultrafast', '-tune stillimage', '-crf 30')
+    const crf = lowLoadMode ? 18 : 17
+    outputOptions.push('-preset fast', '-tune stillimage', `-crf ${crf}`)
   }
 
   if (hasBgm) {
