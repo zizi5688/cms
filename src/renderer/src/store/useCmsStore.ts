@@ -14,6 +14,7 @@ export type ModuleId = ActiveModuleKey
 export type WorkshopImport = {
   type: 'image' | 'video' | null
   path: string | null
+  paths?: string[]
   coverPath?: string
   source: 'imagelab' | null
 }
@@ -88,7 +89,8 @@ export interface CmsState {
   setWorkshopImport: (
     type: WorkshopImport['type'],
     path: string | null,
-    coverPath?: string | null
+    coverPath?: string | null,
+    paths?: string[] | null
   ) => void
   addFiles: (paths: string[]) => void
   addFilesToUpload: (paths: string[]) => void
@@ -152,17 +154,32 @@ const useCmsStore = create<CmsState>((set) => ({
   setUploadTasks: (tasks) => set(() => ({ uploadTasks: tasks })),
   setCsvContent: (content) => set(() => ({ csvContent: content })),
   setDataWorkshopFolderPath: (path) => set(() => ({ dataWorkshopFolderPath: path })),
-  setWorkshopImport: (type, path, coverPath) =>
+  setWorkshopImport: (type, path, coverPath, paths) =>
     set(() => {
       const normalizedPath = typeof path === 'string' ? path.trim() : null
       const normalizedCoverPath = typeof coverPath === 'string' ? coverPath.trim() : ''
+      const normalizedPaths = Array.from(
+        new Set(
+          (Array.isArray(paths) ? paths : [])
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        )
+      )
       if (!type) return { workshopImport: { type: null, path: null, source: null } }
       if (!normalizedPath) return { workshopImport: { type: null, path: null, source: null } }
+
+      const finalPaths =
+        type === 'video'
+          ? normalizedPaths.length > 0
+            ? normalizedPaths
+            : [normalizedPath]
+          : []
       return {
         workshopImport: {
           type,
           path: normalizedPath,
           source: 'imagelab',
+          ...(finalPaths.length > 0 ? { paths: finalPaths } : {}),
           ...(normalizedCoverPath ? { coverPath: normalizedCoverPath } : {})
         }
       }

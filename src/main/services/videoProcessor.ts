@@ -63,6 +63,10 @@ function getTempPreviewDir(): string {
   return join(app.getPath('userData'), 'temp_previews')
 }
 
+function getTempCoverDir(): string {
+  return join(app.getPath('userData'), 'temp_covers')
+}
+
 function hashPreviewKey(input: { filePath: string; size?: number; mtimeMs?: number }): string {
   const hasher = createHash('sha1')
   hasher.update(input.filePath)
@@ -195,6 +199,66 @@ export async function prepareVideoPreview(filePath: string): Promise<PrepareVide
       isCompatible: false,
       error: message
     }
+  }
+}
+
+async function captureVideoFrameAt(inputPath: string, outputPath: string, timeSec: number): Promise<void> {
+  ensureFfmpegConfigured()
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .seekInput(Math.max(0, timeSec))
+      .outputOptions(['-frames:v 1', '-q:v 2'])
+      .on('error', (err) => reject(err))
+      .on('end', () => resolve())
+      .save(outputPath)
+  })
+}
+
+export async function captureVideoFrame(filePath: string, timeSec = 0): Promise<string> {
+  const normalizedPath = String(filePath ?? '').trim()
+  if (!normalizedPath) throw new Error('[videoProcessor] filePath is required.')
+
+  const safeTime = Number.isFinite(timeSec) ? Math.max(0, Number(timeSec)) : 0
+  const coverDir = getTempCoverDir()
+  await mkdir(coverDir, { recursive: true })
+
+  const key = createHash('sha1')
+    .update(normalizedPath)
+    .update('|')
+    .update(String(Math.floor(safeTime * 1000)))
+    .digest('hex')
+    .slice(0, 16)
+
+  const outputPath = join(coverDir, `cover_${Date.now()}_${key}.jpg`)
+
+  try {
+    await captureVideoFrameAt(normalizedPath, outputPath, safeTime)
+    if (!existsSync(outputPath)) throw new Error('[videoProcessor] frame capture output not found.')
+    return outputPath
+  } catch (error) {
+    if (safeTime > 0.05) {
+      try {
+        await captureVideoFrameAt(normalizedPath, outputPath, 0)
+        if (!existsSync(outputPath)) throw new Error('[videoProcessor] frame capture output not found.')
+        return outputPath
+      } catch (fallbackError) {
+        try {
+          if (existsSync(outputPath)) await unlink(outputPath)
+        } catch {
+          void 0
+        }
+        const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+        throw new Error(`[videoProcessor] frame capture failed: ${message}`)
+      }
+    }
+
+    try {
+      if (existsSync(outputPath)) await unlink(outputPath)
+    } catch {
+      void 0
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`[videoProcessor] frame capture failed: ${message}`)
   }
 }
 

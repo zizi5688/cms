@@ -34,6 +34,8 @@ export interface TaskCardProps {
   title: string
   body: string
   images: string[]
+  mediaType?: 'image' | 'video'
+  videoPath?: string
   note?: string
   select?: {
     checked: boolean
@@ -49,6 +51,8 @@ const TaskCard = React.memo(function TaskCard({
   title,
   body,
   images,
+  mediaType,
+  videoPath,
   note,
   select,
   className
@@ -57,6 +61,8 @@ const TaskCard = React.memo(function TaskCard({
   const workspacePath = useCmsStore((s) => s.workspacePath)
   const updateTask = useCmsStore((s) => s.updateTask)
   const canEdit = Boolean(taskId)
+  const normalizedVideoPath = typeof videoPath === 'string' ? videoPath.trim() : ''
+  const isVideoTask = mediaType === 'video' && Boolean(normalizedVideoPath)
 
   const [draftTitle, setDraftTitle] = React.useState(title)
   const [draftBody, setDraftBody] = React.useState(body)
@@ -153,7 +159,7 @@ const TaskCard = React.memo(function TaskCard({
               )}
             />
           </div>
-          <div className="shrink-0 text-[11px] text-zinc-500">{images.length} 图</div>
+          <div className="shrink-0 text-[11px] text-zinc-500">{isVideoTask ? '视频任务' : `${images.length} 图`}</div>
         </div>
 
         <Textarea
@@ -172,7 +178,18 @@ const TaskCard = React.memo(function TaskCard({
           )}
         />
 
-        {images.length === 0 ? (
+        {isVideoTask ? (
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-2">
+            <div className="text-xs text-zinc-400">视频素材</div>
+            <div className="mt-1 truncate text-sm text-zinc-200">{fileNameFromPath(normalizedVideoPath)}</div>
+            <div className="mt-1 break-all text-xs text-zinc-500">{normalizedVideoPath}</div>
+            {images.length > 0 ? (
+              <div className="mt-2 text-xs text-emerald-300">已设置封面图</div>
+            ) : (
+              <div className="mt-2 text-xs text-zinc-500">未设置封面图</div>
+            )}
+          </div>
+        ) : images.length === 0 ? (
           <div className="text-xs text-zinc-500">未分配图片</div>
         ) : canEdit && taskId ? (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>

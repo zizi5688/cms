@@ -141,6 +141,8 @@ const INITIAL_SAVED_TEMPLATE = loadSavedTemplate()
 
 function VideoComposerPanel(): React.JSX.Element {
   const addLog = useCmsStore((s) => s.addLog)
+  const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
+  const setActiveModule = useCmsStore((s) => s.setActiveModule)
 
   const [sourceImages, setSourceImages] = useState<string[]>([])
   const [sourceRootPath, setSourceRootPath] = useState('')
@@ -149,6 +151,7 @@ function VideoComposerPanel(): React.JSX.Element {
   const [bgmPath, setBgmPath] = useState('')
   const [batchCount, setBatchCount] = useState('1')
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
+  const [selectedGeneratedVideos, setSelectedGeneratedVideos] = useState<Set<string>>(() => new Set())
   const [isGenerating, setIsGenerating] = useState(false)
   const [isScanningRoot, setIsScanningRoot] = useState(false)
   const [outputAspect, setOutputAspect] = useState<'9:16' | '3:4'>('9:16')
@@ -168,6 +171,8 @@ function VideoComposerPanel(): React.JSX.Element {
   const outputSizeLabel = outputAspect === '3:4' ? '1080x1440' : '1080x1920'
   const selectedBgmValue = bgmPath && bgmPath.trim() ? bgmPath : bgmOptions.length > 0 ? RANDOM_BGM_VALUE : ''
   const isRandomBgmMode = selectedBgmValue === RANDOM_BGM_VALUE
+  const selectedGeneratedCount = selectedGeneratedVideos.size
+  const isAllGeneratedSelected = generatedVideos.length > 0 && selectedGeneratedVideos.size === generatedVideos.length
 
   const updateTemplateNumber = (field: keyof VideoStyleTemplate, value: string): void => {
     const parsed = Number(value)
@@ -317,6 +322,42 @@ function VideoComposerPanel(): React.JSX.Element {
       addLog(`[视频处理] 打开文件夹失败：${result?.error ?? '未知错误'}`)
     }
   }
+
+  const handleSendSelectedToWorkshop = (): void => {
+    const selectedPaths = generatedVideos.filter((item) => selectedGeneratedVideos.has(item))
+    if (selectedPaths.length === 0) return
+    const firstPath = selectedPaths[0]
+    setWorkshopImport('video', firstPath, null, selectedPaths)
+    setActiveModule('workshop')
+    addLog(`[视频处理] 已将 ${selectedPaths.length} 条视频导入数据工坊。`)
+  }
+
+  const toggleSelectAllGenerated = (): void => {
+    setSelectedGeneratedVideos((prev) => {
+      if (generatedVideos.length === 0) return prev
+      if (prev.size === generatedVideos.length) return new Set()
+      return new Set(generatedVideos)
+    })
+  }
+
+  const toggleSelectGenerated = (videoPath: string): void => {
+    setSelectedGeneratedVideos((prev) => {
+      const next = new Set(prev)
+      if (next.has(videoPath)) {
+        next.delete(videoPath)
+      } else {
+        next.add(videoPath)
+      }
+      return next
+    })
+  }
+
+  useEffect(() => {
+    setSelectedGeneratedVideos((prev) => {
+      const next = new Set(generatedVideos.filter((item) => prev.has(item)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [generatedVideos])
 
   const handlePickImageRoot = async (): Promise<void> => {
     if (isGenerating || isScanningRoot) return
@@ -745,12 +786,44 @@ function VideoComposerPanel(): React.JSX.Element {
             <div className="text-sm text-zinc-400">暂无输出。</div>
           ) : (
             <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-2">
+                <label className="flex items-center gap-2 text-xs text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={isAllGeneratedSelected}
+                    onChange={toggleSelectAllGenerated}
+                  />
+                  全选（{selectedGeneratedCount}/{generatedVideos.length}）
+                </label>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setSelectedGeneratedVideos(new Set())}
+                    disabled={selectedGeneratedCount === 0}
+                  >
+                    清空选择
+                  </Button>
+                  <Button type="button" onClick={handleSendSelectedToWorkshop} disabled={selectedGeneratedCount === 0}>
+                    一键发送所选
+                  </Button>
+                </div>
+              </div>
               {generatedVideos.map((videoPath) => (
                 <div key={videoPath} className="flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-2">
-                  <div className="min-w-0 flex-1 truncate text-sm text-zinc-300">{fileNameFromPath(videoPath)}</div>
-                  <Button type="button" variant="outline" size="icon" className="h-9 w-9" onClick={() => void revealInFolder(videoPath)}>
-                    <FolderOpen className="h-4 w-4" />
-                  </Button>
+                  <label className="min-w-0 flex flex-1 items-center gap-2 text-sm text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={selectedGeneratedVideos.has(videoPath)}
+                      onChange={() => toggleSelectGenerated(videoPath)}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{fileNameFromPath(videoPath)}</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <Button type="button" variant="outline" size="icon" className="h-9 w-9" onClick={() => void revealInFolder(videoPath)}>
+                      <FolderOpen className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>

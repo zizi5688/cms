@@ -546,6 +546,8 @@ const electronAPI = {
     ipcRenderer.invoke('dialog:openMediaFiles', payload),
   openAudioFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:openAudioFile'),
   prepareVideoPreview: (filePath: string) => ipcRenderer.invoke('media:prepareVideoPreview', { filePath }),
+  captureVideoFrame: (filePath: string, timeSec?: number): Promise<string> =>
+    ipcRenderer.invoke('media:captureVideoFrame', { filePath, timeSec }),
   composeVideoFromImages: (payload: {
     sourceImages: string[]
     template: {

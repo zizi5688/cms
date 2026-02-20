@@ -536,6 +536,7 @@ declare global {
     }) => Promise<MediaSelectionItem | MediaSelectionItem[] | null>
     openAudioFile: () => Promise<string | null>
     prepareVideoPreview: (filePath: string) => Promise<PrepareVideoPreviewResult>
+    captureVideoFrame: (filePath: string, timeSec?: number) => Promise<string>
     composeVideoFromImages: (payload: {
       sourceImages: string[]
       template: VideoStyleTemplate

@@ -146,9 +146,15 @@ export function generateManifest(
   return tasks
 }
 
-export function generateVideoManifest(csvText: string, videoPath: string): Task[] {
-  const normalizedVideoPath = String(videoPath ?? '').trim()
-  if (!normalizedVideoPath) {
+export function generateVideoManifest(csvText: string, videoPath: string | string[]): Task[] {
+  const normalizedVideoPaths = Array.from(
+    new Set(
+      (Array.isArray(videoPath) ? videoPath : [videoPath])
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+    )
+  )
+  if (normalizedVideoPaths.length === 0) {
     throw new Error('视频路径为空，无法生成任务。')
   }
 
@@ -157,11 +163,12 @@ export function generateVideoManifest(csvText: string, videoPath: string): Task[
     throw new Error('CSV 内容为空或无法解析。')
   }
 
-  return rows.map((row) => {
+  return rows.map((row, index) => {
     const title = normalizeLineBreaks(getStringField(row, ['title', '标题'], ['title'])).trim()
     const body = normalizeLineBreaks(
       getStringField(row, ['body', '正文', 'content'], ['body', 'content', '正文'])
     ).trim()
+    const selectedVideoPath = normalizedVideoPaths[index % normalizedVideoPaths.length]
 
     return {
       id: createId(),
@@ -169,7 +176,7 @@ export function generateVideoManifest(csvText: string, videoPath: string): Task[
       body,
       assignedImages: [],
       mediaType: 'video',
-      videoPath: normalizedVideoPath,
+      videoPath: selectedVideoPath,
       status: 'idle',
       log: ''
     }

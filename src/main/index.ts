@@ -20,7 +20,7 @@ import { ProductManager } from './services/productManager'
 import { TaskManager } from './taskManager'
 import { WorkspaceService } from './services/workspaceService'
 import { performBackup } from './services/backupService'
-import { cleanupTempPreviews, prepareVideoPreview } from './services/videoProcessor'
+import { captureVideoFrame, cleanupTempPreviews, prepareVideoPreview } from './services/videoProcessor'
 import {
   composeVideoFromImages,
   composeVideoFromPreparedImagePool,
@@ -1790,6 +1790,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:prepareVideoPreview', async (_event, payload: { filePath?: unknown }) => {
     const filePath = typeof payload?.filePath === 'string' ? payload.filePath : ''
     return prepareVideoPreview(filePath)
+  })
+
+  ipcMain.handle('media:captureVideoFrame', async (_event, payload: { filePath?: unknown; timeSec?: unknown }) => {
+    const filePath = typeof payload?.filePath === 'string' ? payload.filePath : ''
+    const timeSec = Number(payload?.timeSec)
+    return captureVideoFrame(filePath, Number.isFinite(timeSec) ? timeSec : 0)
   })
 
   ipcMain.handle('media:composeVideoFromImages', async (_event, payload: unknown) => {
