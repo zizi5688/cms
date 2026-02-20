@@ -139,14 +139,7 @@ function formatSavedAt(timestamp: number): string {
 
 const INITIAL_SAVED_TEMPLATE = loadSavedTemplate()
 
-type MaterialPanel = 'image' | 'video'
-
-interface VideoComposerPanelProps {
-  activePanel: MaterialPanel
-  onChangePanel: (panel: MaterialPanel) => void
-}
-
-function VideoComposerPanel({ activePanel, onChangePanel }: VideoComposerPanelProps): React.JSX.Element {
+function VideoComposerPanel(): React.JSX.Element {
   const addLog = useCmsStore((s) => s.addLog)
   const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
   const setActiveModule = useCmsStore((s) => s.setActiveModule)
@@ -474,27 +467,6 @@ function VideoComposerPanel({ activePanel, onChangePanel }: VideoComposerPanelPr
     >
       <div className="min-h-0 xl:basis-[45%] xl:min-w-[500px] xl:shrink-0">
         <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/15 px-3 py-3">
-          <div className="inline-flex w-fit items-center rounded-full border border-zinc-800 bg-zinc-900/70 p-0.5">
-            <button
-              type="button"
-              className={`h-7 rounded-full px-3 text-xs font-medium transition ${
-                activePanel === 'image' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-zinc-100'
-              }`}
-              onClick={() => onChangePanel('image')}
-            >
-              图片处理
-            </button>
-            <button
-              type="button"
-              className={`h-7 rounded-full px-3 text-xs font-medium transition ${
-                activePanel === 'video' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-zinc-100'
-              }`}
-              onClick={() => onChangePanel('video')}
-            >
-              视频处理
-            </button>
-          </div>
-
           <section className="border-b border-zinc-800 pb-3">
             <div className="mb-2 text-sm font-medium text-zinc-100">视频处理</div>
             <div className="flex items-center gap-2">
