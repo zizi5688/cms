@@ -48,6 +48,29 @@ function Sidebar({ active, onChange }: SidebarProps): React.JSX.Element {
       return false
     }
   })
+  const [releaseMeta, setReleaseMeta] = React.useState<AppReleaseMeta | null>(null)
+
+  const displayVersion = React.useMemo(() => {
+    if (!releaseMeta) return 'V1.0.0'
+    const major = Number.isFinite(Number(releaseMeta.majorVersion))
+      ? Math.max(0, Math.floor(Number(releaseMeta.majorVersion)))
+      : 1
+    return `V${major}.0.0`
+  }, [releaseMeta])
+
+  const displayUpdatedAt = React.useMemo(() => {
+    const raw = releaseMeta?.updatedAt?.trim() ?? ''
+    if (!raw) return '--'
+    const isoLike = raw.includes('T') ? raw : raw.replace(' ', 'T')
+    const parsed = new Date(isoLike)
+    if (!Number.isFinite(parsed.getTime())) return raw
+    const year = parsed.getFullYear()
+    const month = String(parsed.getMonth() + 1).padStart(2, '0')
+    const day = String(parsed.getDate()).padStart(2, '0')
+    const hour = String(parsed.getHours()).padStart(2, '0')
+    const minute = String(parsed.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day} ${hour}:${minute}`
+  }, [releaseMeta])
 
   React.useEffect(() => {
     try {
@@ -56,6 +79,21 @@ function Sidebar({ active, onChange }: SidebarProps): React.JSX.Element {
       return
     }
   }, [isCollapsed])
+
+  React.useEffect(() => {
+    let cancelled = false
+    if (typeof window.electronAPI.getReleaseMeta !== 'function') return
+    void window.electronAPI
+      .getReleaseMeta()
+      .then((meta) => {
+        if (cancelled) return
+        setReleaseMeta(meta)
+      })
+      .catch(() => void 0)
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   return (
     <aside
@@ -112,6 +150,13 @@ function Sidebar({ active, onChange }: SidebarProps): React.JSX.Element {
               </button>
             )
           })}
+
+          {!isCollapsed && (
+            <div className="px-0 text-[11px] leading-5 text-zinc-400">
+              <div className="text-zinc-300">{displayVersion}</div>
+              <div>更新日期：{displayUpdatedAt}</div>
+            </div>
+          )}
 
           <button
             type="button"

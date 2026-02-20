@@ -84,6 +84,11 @@ declare global {
     failures: Array<{ index: number; error: string }>
   }
 
+  type AppReleaseMeta = {
+    majorVersion: number
+    updatedAt: string
+  }
+
   type SyncDouyinHotMusicResult = {
     success: boolean
     outputDir: string
@@ -550,6 +555,7 @@ declare global {
       bgmOptions?: string[]
       seedBase?: number
       lowLoadMode?: boolean
+      renderMode?: 'low' | 'hd'
     }) => Promise<ComposeVideoBatchFromImagesResult>
     onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void) => () => void
     syncDouyinHotMusic: (payload?: {
@@ -559,6 +565,7 @@ declare global {
     listDouyinHotMusicTracks: (payload?: {
       outputDir?: string
     }) => Promise<ListDouyinHotMusicResult>
+    getReleaseMeta: () => Promise<AppReleaseMeta>
     openDirectory: () => Promise<string | null>
     showMessageBox: (payload: {
       type?: 'none' | 'info' | 'error' | 'question' | 'warning'

@@ -52,6 +52,7 @@ const DEFAULT_TEMPLATE: VideoStyleTemplate = {
 
 const TEMPLATE_STORAGE_KEY = 'cms.videoComposer.template.v1'
 const RANDOM_BGM_VALUE = '__RANDOM_BGM__'
+type GenerateRenderMode = 'low' | 'hd'
 
 function toSafeNumber(value: unknown, fallback: number): number {
   const parsed = Number(value)
@@ -151,7 +152,8 @@ function VideoComposerPanel(): React.JSX.Element {
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isScanningRoot, setIsScanningRoot] = useState(false)
-  const [lowLoadMode, setLowLoadMode] = useState(true)
+  const [renderMode, setRenderMode] = useState<GenerateRenderMode>('low')
+  const [hdDisableTransition, setHdDisableTransition] = useState(true)
   const [generateProgressPercent, setGenerateProgressPercent] = useState(0)
   const [generateProgressText, setGenerateProgressText] = useState('')
   const [isSyncingHotMusic, setIsSyncingHotMusic] = useState(false)
@@ -366,19 +368,25 @@ function VideoComposerPanel(): React.JSX.Element {
     try {
       const bgmMode: 'none' | 'fixed' | 'random' =
         selectedBgmValue === RANDOM_BGM_VALUE ? 'random' : selectedBgmValue.trim() ? 'fixed' : 'none'
+      const effectiveTransitionType: VideoTemplateTransition =
+        renderMode === 'hd' && hdDisableTransition ? 'none' : template.transitionType
+      const effectiveTransitionDurationSec =
+        renderMode === 'hd' && hdDisableTransition ? 0 : template.transitionDurationSec
       const result = await window.electronAPI.composeVideoBatchFromImages({
         sourceImages,
         template: {
           ...template,
           imageCountMin: normalizedMin,
-          imageCountMax: normalizedMax
+          imageCountMax: normalizedMax,
+          transitionType: effectiveTransitionType,
+          transitionDurationSec: effectiveTransitionDurationSec
         },
         batchCount: count,
         bgmMode,
         bgmPath: bgmMode === 'fixed' ? selectedBgmValue.trim() : undefined,
         bgmOptions: bgmMode === 'random' ? bgmOptions : undefined,
         seedBase: Date.now(),
-        lowLoadMode
+        renderMode
       })
 
       if (result.successCount === 0) {
@@ -686,15 +694,29 @@ function VideoComposerPanel(): React.JSX.Element {
               <div className="text-xs text-zinc-400">本次生成数量</div>
               <Input value={batchCount} onChange={(e) => setBatchCount(e.target.value)} />
             </div>
-            <label className="flex items-center gap-2 text-xs text-zinc-400">
-              <input
-                type="checkbox"
-                checked={lowLoadMode}
-                onChange={(event) => setLowLoadMode(event.target.checked)}
+            <div className="flex min-w-[240px] flex-col gap-1">
+              <div className="text-xs text-zinc-400">生成模式</div>
+              <select
+                value={renderMode}
+                onChange={(event) => setRenderMode(event.target.value as GenerateRenderMode)}
                 disabled={isGenerating}
-              />
-              低占用模式（推荐）
-            </label>
+                className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
+              >
+                <option value="low">低占用 720p（推荐）</option>
+                <option value="hd">高清 1080p（更慢）</option>
+              </select>
+            </div>
+            {renderMode === 'hd' ? (
+              <label className="flex items-center gap-2 text-xs text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={hdDisableTransition}
+                  onChange={(event) => setHdDisableTransition(event.target.checked)}
+                  disabled={isGenerating}
+                />
+                高清模式关闭转场（推荐）
+              </label>
+            ) : null}
             <Button type="button" onClick={() => void startGenerate()} disabled={!canGenerate}>
               {isGenerating ? (
                 <span className="flex items-center gap-2">
@@ -710,7 +732,8 @@ function VideoComposerPanel(): React.JSX.Element {
             </Button>
             <div className="text-xs text-zinc-500">
               抽样规则：每条视频随机使用 {normalizedMin}-{normalizedMax} 张图
-              {lowLoadMode ? '（低占用：720p / 12fps / 轻转场）' : ''}
+              {renderMode === 'low' ? '（低占用：720p / 12fps / 轻转场）' : '（高清：1080p / 12fps / 轻转场）'}
+              {renderMode === 'hd' && hdDisableTransition ? '（已关闭转场）' : ''}
             </div>
           </div>
           {isGenerating ? (

@@ -26,6 +26,7 @@ import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinH
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService } from './services/scoutService'
+import { getAppReleaseMeta } from './services/releaseMeta'
 
 // 防止 dev 模式下 stdout 管道断开导致未捕获 EPIPE 崩溃
 process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
@@ -1809,7 +1810,8 @@ app.whenReady().then(async () => {
     const batchCountRaw = Number(body.batchCount)
     const batchCount = Number.isFinite(batchCountRaw) ? Math.max(1, Math.min(20, Math.floor(batchCountRaw))) : 1
     const sourceRootPath = typeof body.sourceRootPath === 'string' ? body.sourceRootPath.trim() : ''
-    const lowLoadMode = body.lowLoadMode !== false
+    const renderModeRaw = typeof body.renderMode === 'string' ? body.renderMode.trim().toLowerCase() : ''
+    const lowLoadMode = renderModeRaw === 'hd' ? false : body.lowLoadMode !== false
 
     let sourceImages = normalizeImagePaths(body.sourceImages)
     if (sourceImages.length === 0 && sourceRootPath) {
@@ -1854,14 +1856,12 @@ app.whenReady().then(async () => {
     const failures: Array<{ index: number; error: string }> = []
     const lowLoadImageProxyCache = new Map<string, string>()
     const imageReadableCache = new Map<string, boolean>()
-    const lowLoadCacheDir = join(
+    const imageProxyCacheDir = join(
       app.getPath('temp'),
-      `super-cms-video-lowload-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`
+      `super-cms-video-proxy-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`
     )
 
-    if (lowLoadMode) {
-      await mkdir(lowLoadCacheDir, { recursive: true }).catch(() => void 0)
-    }
+    await mkdir(imageProxyCacheDir, { recursive: true }).catch(() => void 0)
 
     try {
       for (let index = 0; index < batchCount; index += 1) {
@@ -1891,7 +1891,7 @@ app.whenReady().then(async () => {
           },
           {
             lowLoadMode,
-            lowLoadCacheDir,
+            lowLoadCacheDir: imageProxyCacheDir,
             lowLoadImageProxyCache,
             imageReadableCache,
             onProgress: (progress) => {
@@ -1911,9 +1911,7 @@ app.whenReady().then(async () => {
         }
       }
     } finally {
-      if (lowLoadMode) {
-        await rm(lowLoadCacheDir, { recursive: true, force: true }).catch(() => void 0)
-      }
+      await rm(imageProxyCacheDir, { recursive: true, force: true }).catch(() => void 0)
     }
 
     return {
@@ -1933,6 +1931,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:listDouyinHotMusicTracks', async (_event, payload: unknown) => {
     return listDouyinHotMusicTracks((payload ?? {}) as Record<string, unknown>)
   })
+
+  ipcMain.handle('app:getReleaseMeta', async () => getAppReleaseMeta())
 
   ipcMain.handle(
     'dialog:showMessageBox',

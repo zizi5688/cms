@@ -70,6 +70,11 @@ type ComposeVideoBatchFromImagesResult = {
   failures: Array<{ index: number; error: string }>
 }
 
+type AppReleaseMeta = {
+  majorVersion: number
+  updatedAt: string
+}
+
 // 渲染进程自定义 API（后续通过 IPC 扩展）
 const api = {
   cms: {
@@ -588,6 +593,7 @@ const electronAPI = {
     bgmOptions?: string[]
     seedBase?: number
     lowLoadMode?: boolean
+    renderMode?: 'low' | 'hd'
   }): Promise<ComposeVideoBatchFromImagesResult> => ipcRenderer.invoke('media:composeVideoBatchFromImages', payload),
   onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
@@ -616,6 +622,7 @@ const electronAPI = {
   listDouyinHotMusicTracks: (payload?: {
     outputDir?: string
   }): Promise<ListDouyinHotMusicResult> => ipcRenderer.invoke('media:listDouyinHotMusicTracks', payload),
+  getReleaseMeta: (): Promise<AppReleaseMeta> => ipcRenderer.invoke('app:getReleaseMeta'),
   openDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
   showMessageBox: (payload: {
     type?: 'none' | 'info' | 'error' | 'question' | 'warning'

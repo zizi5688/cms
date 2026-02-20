@@ -179,6 +179,18 @@ function toLowLoadTemplate(template: VideoStyleTemplate): VideoStyleTemplate {
   }
 }
 
+function toHdTemplate(template: VideoStyleTemplate): VideoStyleTemplate {
+  const portrait = template.height >= template.width
+  const width = portrait ? 1080 : 1920
+  const height = portrait ? 1920 : 1080
+  return {
+    ...template,
+    width,
+    height,
+    fps: Math.min(template.fps, 12)
+  }
+}
+
 export function normalizeImagePaths(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   const normalized = value
@@ -244,17 +256,18 @@ async function isImageReadable(imagePath: string, cache?: Map<string, boolean>):
   }
 }
 
-async function resolveLowLoadImageProxyPath(options: {
+async function resolveImageProxyPath(options: {
   sourcePath: string
   template: VideoStyleTemplate
   cacheDir: string
+  quality: number
   cacheMap?: Map<string, string>
 }): Promise<string> {
-  const { sourcePath, template, cacheDir, cacheMap } = options
+  const { sourcePath, template, cacheDir, quality, cacheMap } = options
   const sourceStat = await stat(sourcePath).catch(() => null)
   if (!sourceStat || !sourceStat.isFile()) return sourcePath
 
-  const cacheKey = `${sourcePath}|${sourceStat.mtimeMs}|${sourceStat.size}|${template.width}x${template.height}`
+  const cacheKey = `${sourcePath}|${sourceStat.mtimeMs}|${sourceStat.size}|${template.width}x${template.height}|q${quality}`
   const cachedPath = cacheMap?.get(cacheKey)
   if (cachedPath && existsSync(cachedPath)) return cachedPath
 
@@ -268,7 +281,7 @@ async function resolveLowLoadImageProxyPath(options: {
         position: 'centre'
       })
       .jpeg({
-        quality: 68,
+        quality,
         mozjpeg: true,
         chromaSubsampling: '4:2:0'
       })
@@ -286,6 +299,18 @@ async function prepareLowLoadImagesForRender(
   seed: number,
   template: VideoStyleTemplate,
   runtimeOptions: ComposeVideoRuntimeOptions
+): Promise<{ usedImages: string[]; renderImages: string[] }> {
+  return prepareProxyImagesForRender(selectedImages, poolImages, minRequired, seed, template, runtimeOptions, 64)
+}
+
+async function prepareProxyImagesForRender(
+  selectedImages: string[],
+  poolImages: string[],
+  minRequired: number,
+  seed: number,
+  template: VideoStyleTemplate,
+  runtimeOptions: ComposeVideoRuntimeOptions,
+  quality: number
 ): Promise<{ usedImages: string[]; renderImages: string[] }> {
   const targetCount = selectedImages.length
   const cacheDir = runtimeOptions.lowLoadCacheDir?.trim() || join(app.getPath('temp'), 'super-cms-video-lowload-cache')
@@ -317,10 +342,11 @@ async function prepareLowLoadImagesForRender(
     if (!readable) continue
 
     try {
-      const proxyPath = await resolveLowLoadImageProxyPath({
+      const proxyPath = await resolveImageProxyPath({
         sourcePath: imagePath,
         template,
         cacheDir,
+        quality,
         cacheMap: runtimeOptions.lowLoadImageProxyCache
       })
       usedImages.push(imagePath)
@@ -339,37 +365,10 @@ async function prepareStandardImagesForRender(
   poolImages: string[],
   minRequired: number,
   seed: number,
+  template: VideoStyleTemplate,
   runtimeOptions: ComposeVideoRuntimeOptions
 ): Promise<{ usedImages: string[]; renderImages: string[] }> {
-  const targetCount = selectedImages.length
-  const visited = new Set<string>()
-  const orderedCandidates: string[] = []
-  for (const imagePath of selectedImages) {
-    if (!imagePath || visited.has(imagePath)) continue
-    visited.add(imagePath)
-    orderedCandidates.push(imagePath)
-  }
-
-  const fallbackPool = poolImages.filter((item) => item && !visited.has(item))
-  const random = mulberry32((seed ^ 0xa5a5a5a5) >>> 0)
-  for (let index = fallbackPool.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(random() * (index + 1))
-    const temp = fallbackPool[index]
-    fallbackPool[index] = fallbackPool[swapIndex]
-    fallbackPool[swapIndex] = temp
-  }
-  orderedCandidates.push(...fallbackPool)
-
-  const usedImages: string[] = []
-  for (const imagePath of orderedCandidates) {
-    if (usedImages.length >= targetCount) break
-    const readable = await isImageReadable(imagePath, runtimeOptions.imageReadableCache)
-    if (!readable) continue
-    usedImages.push(imagePath)
-  }
-
-  if (usedImages.length < minRequired) return { usedImages: [], renderImages: [] }
-  return { usedImages, renderImages: usedImages.slice() }
+  return prepareProxyImagesForRender(selectedImages, poolImages, minRequired, seed, template, runtimeOptions, 72)
 }
 
 function resolveOutputPath(rawPath: unknown): string {
@@ -404,11 +403,12 @@ async function renderVideo(options: {
   bgmPath: string | null
   videoEncoder: VideoEncoder
   lowLoadMode: boolean
+  imagesPreprocessed: boolean
   onProgress?: (progress: ComposeVideoProgress) => void
 }): Promise<void> {
   ensureFfmpegConfigured()
 
-  const { images, outputPath, template, bgmPath, videoEncoder, lowLoadMode, onProgress } = options
+  const { images, outputPath, template, bgmPath, videoEncoder, lowLoadMode, imagesPreprocessed, onProgress } = options
   if (images.length === 0) throw new Error('[videoComposer] no images selected.')
 
   const totalDuration = clampNumber(template.totalDurationSec, 1, 120)
@@ -422,7 +422,7 @@ async function renderVideo(options: {
 
   const filterLines: string[] = []
   for (let index = 0; index < images.length; index += 1) {
-    if (lowLoadMode) {
+    if (imagesPreprocessed) {
       filterLines.push(
         `[${index}:v]setsar=1,format=yuv420p,trim=duration=${toFixed3(finalClipDuration)},setpts=PTS-STARTPTS[v${index}]`
       )
@@ -552,7 +552,9 @@ export async function composeVideoFromPreparedImagePool(
   runtimeOptions: ComposeVideoRuntimeOptions = {}
 ): Promise<ComposeVideoFromImagesResult> {
   const normalizedTemplate = normalizeTemplate(payload?.template)
-  const template = runtimeOptions.lowLoadMode ? toLowLoadTemplate(normalizedTemplate) : normalizedTemplate
+  const isLowLoadMode = runtimeOptions.lowLoadMode === true
+  const isHdMode = runtimeOptions.lowLoadMode === false
+  const template = isLowLoadMode ? toLowLoadTemplate(normalizedTemplate) : isHdMode ? toHdTemplate(normalizedTemplate) : normalizedTemplate
   const sourceImages = payload.sourceImages
   if (sourceImages.length === 0) {
     return { success: false, error: '[videoComposer] 至少需要一张可读图片。' }
@@ -570,9 +572,9 @@ export async function composeVideoFromPreparedImagePool(
 
   let usedImages: string[] = []
   try {
-    const prepared = runtimeOptions.lowLoadMode
+    const prepared = isLowLoadMode
       ? await prepareLowLoadImagesForRender(selectedImages, sourceImages, minRequired, seed, template, runtimeOptions)
-      : await prepareStandardImagesForRender(selectedImages, sourceImages, minRequired, seed, runtimeOptions)
+      : await prepareStandardImagesForRender(selectedImages, sourceImages, minRequired, seed, template, runtimeOptions)
 
     usedImages = prepared.usedImages
     const renderImages = prepared.renderImages
@@ -588,7 +590,8 @@ export async function composeVideoFromPreparedImagePool(
         template,
         bgmPath,
         videoEncoder: preferredEncoder,
-        lowLoadMode: runtimeOptions.lowLoadMode === true,
+        lowLoadMode: isLowLoadMode,
+        imagesPreprocessed: true,
         onProgress: runtimeOptions.onProgress
       })
     } catch (firstError) {
@@ -609,7 +612,8 @@ export async function composeVideoFromPreparedImagePool(
         template,
         bgmPath,
         videoEncoder: 'libx264',
-        lowLoadMode: runtimeOptions.lowLoadMode === true,
+        lowLoadMode: isLowLoadMode,
+        imagesPreprocessed: true,
         onProgress: runtimeOptions.onProgress
       })
     }
