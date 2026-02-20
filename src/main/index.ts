@@ -21,7 +21,7 @@ import { TaskManager } from './taskManager'
 import { WorkspaceService } from './services/workspaceService'
 import { performBackup } from './services/backupService'
 import { cleanupTempPreviews, prepareVideoPreview } from './services/videoProcessor'
-import { composeVideoFromImages } from './services/videoComposer'
+import { composeVideoFromImages, composeVideoFromPreparedImagePool, normalizeImagePaths } from './services/videoComposer'
 import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinHotMusic'
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
@@ -1787,7 +1787,143 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('media:composeVideoFromImages', async (_event, payload: unknown) => {
-    return composeVideoFromImages((payload ?? {}) as Record<string, unknown>)
+    const body = (payload ?? {}) as Record<string, unknown>
+    const batchIndexRaw = Number(body.batchIndex)
+    const batchTotalRaw = Number(body.batchTotal)
+    const batchIndex = Number.isFinite(batchIndexRaw) ? Math.max(1, Math.floor(batchIndexRaw)) : 1
+    const batchTotal = Number.isFinite(batchTotalRaw) ? Math.max(1, Math.floor(batchTotalRaw)) : 1
+
+    return composeVideoFromImages(body, {
+      onProgress: (progress) => {
+        _event.sender.send('media:composeVideoFromImagesProgress', {
+          percent: progress.percent,
+          batchIndex,
+          batchTotal
+        })
+      }
+    })
+  })
+
+  ipcMain.handle('media:composeVideoBatchFromImages', async (_event, payload: unknown) => {
+    const body = (payload ?? {}) as Record<string, unknown>
+    const batchCountRaw = Number(body.batchCount)
+    const batchCount = Number.isFinite(batchCountRaw) ? Math.max(1, Math.min(20, Math.floor(batchCountRaw))) : 1
+    const sourceRootPath = typeof body.sourceRootPath === 'string' ? body.sourceRootPath.trim() : ''
+    const lowLoadMode = body.lowLoadMode !== false
+
+    let sourceImages = normalizeImagePaths(body.sourceImages)
+    if (sourceImages.length === 0 && sourceRootPath) {
+      _event.sender.send('media:composeVideoFromImagesProgress', {
+        percent: 0,
+        batchIndex: 0,
+        batchTotal: batchCount,
+        message: '正在扫描图片目录...'
+      })
+      sourceImages = await scanDirectoryRecursive(sourceRootPath)
+    }
+
+    sourceImages = normalizeImagePaths(sourceImages)
+    if (sourceImages.length === 0) {
+      return {
+        success: false,
+        successCount: 0,
+        failedCount: 1,
+        sourceImageCount: 0,
+        outputs: [],
+        failures: [{ index: 1, error: '[videoComposer] 未找到可用图片素材。' }]
+      }
+    }
+
+    const bgmModeRaw = typeof body.bgmMode === 'string' ? body.bgmMode.trim().toLowerCase() : 'none'
+    const bgmMode: 'none' | 'fixed' | 'random' =
+      bgmModeRaw === 'fixed' || bgmModeRaw === 'random' ? bgmModeRaw : 'none'
+    const fixedBgmPath = typeof body.bgmPath === 'string' ? body.bgmPath.trim() : ''
+    const bgmOptions = Array.isArray(body.bgmOptions)
+      ? Array.from(
+          new Set(
+            body.bgmOptions
+              .map((item) => (typeof item === 'string' ? item.trim() : ''))
+              .filter((item) => item && existsSync(item))
+          )
+        )
+      : []
+
+    const seedBaseRaw = Number(body.seedBase)
+    const seedBase = Number.isFinite(seedBaseRaw) ? Math.floor(seedBaseRaw) : Date.now()
+    const outputs: string[] = []
+    const failures: Array<{ index: number; error: string }> = []
+    const lowLoadImageProxyCache = new Map<string, string>()
+    const imageReadableCache = new Map<string, boolean>()
+    const lowLoadCacheDir = join(
+      app.getPath('temp'),
+      `super-cms-video-lowload-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`
+    )
+
+    if (lowLoadMode) {
+      await mkdir(lowLoadCacheDir, { recursive: true }).catch(() => void 0)
+    }
+
+    try {
+      for (let index = 0; index < batchCount; index += 1) {
+        const batchIndex = index + 1
+        const seed = seedBase + index
+
+        let effectiveBgmPath: string | undefined
+        if (bgmMode === 'fixed') {
+          if (fixedBgmPath && existsSync(fixedBgmPath)) effectiveBgmPath = fixedBgmPath
+        } else if (bgmMode === 'random' && bgmOptions.length > 0) {
+          const selectedIndex = Math.abs(Math.floor(seed)) % bgmOptions.length
+          effectiveBgmPath = bgmOptions[selectedIndex]
+        }
+
+        _event.sender.send('media:composeVideoFromImagesProgress', {
+          percent: 0,
+          batchIndex,
+          batchTotal: batchCount
+        })
+
+        const result = await composeVideoFromPreparedImagePool(
+          {
+            sourceImages,
+            template: (body.template ?? {}) as Record<string, unknown>,
+            bgmPath: effectiveBgmPath,
+            seed
+          },
+          {
+            lowLoadMode,
+            lowLoadCacheDir,
+            lowLoadImageProxyCache,
+            imageReadableCache,
+            onProgress: (progress) => {
+              _event.sender.send('media:composeVideoFromImagesProgress', {
+                percent: progress.percent,
+                batchIndex,
+                batchTotal: batchCount
+              })
+            }
+          }
+        )
+
+        if (result.success && result.outputPath) {
+          outputs.push(result.outputPath)
+        } else {
+          failures.push({ index: batchIndex, error: result.error ?? '未知错误' })
+        }
+      }
+    } finally {
+      if (lowLoadMode) {
+        await rm(lowLoadCacheDir, { recursive: true, force: true }).catch(() => void 0)
+      }
+    }
+
+    return {
+      success: outputs.length > 0,
+      successCount: outputs.length,
+      failedCount: failures.length,
+      sourceImageCount: sourceImages.length,
+      outputs,
+      failures
+    }
   })
 
   ipcMain.handle('media:syncDouyinHotMusic', async (_event, payload: unknown) => {

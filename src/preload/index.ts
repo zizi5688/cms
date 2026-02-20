@@ -54,6 +54,22 @@ type ListDouyinHotMusicResult = {
   error?: string
 }
 
+type ComposeVideoProgressPayload = {
+  percent?: number
+  batchIndex?: number
+  batchTotal?: number
+  message?: string
+}
+
+type ComposeVideoBatchFromImagesResult = {
+  success: boolean
+  successCount: number
+  failedCount: number
+  sourceImageCount: number
+  outputs: string[]
+  failures: Array<{ index: number; error: string }>
+}
+
 // 渲染进程自定义 API（后续通过 IPC 扩展）
 const api = {
   cms: {
@@ -542,6 +558,8 @@ const electronAPI = {
     bgmPath?: string
     outputPath?: string
     seed?: number
+    batchIndex?: number
+    batchTotal?: number
   }): Promise<{
     success: boolean
     outputPath?: string
@@ -549,6 +567,48 @@ const electronAPI = {
     seed?: number
     error?: string
   }> => ipcRenderer.invoke('media:composeVideoFromImages', payload),
+  composeVideoBatchFromImages: (payload: {
+    sourceRootPath?: string
+    sourceImages?: string[]
+    template: {
+      name?: string
+      totalDurationSec: number
+      imageCountMin: number
+      imageCountMax: number
+      width: number
+      height: number
+      fps: number
+      transitionType: 'none' | 'fade' | 'slideleft'
+      transitionDurationSec: number
+      bgmVolume: number
+    }
+    batchCount: number
+    bgmMode?: 'none' | 'fixed' | 'random'
+    bgmPath?: string
+    bgmOptions?: string[]
+    seedBase?: number
+    lowLoadMode?: boolean
+  }): Promise<ComposeVideoBatchFromImagesResult> => ipcRenderer.invoke('media:composeVideoBatchFromImages', payload),
+  onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      if (!payload || typeof payload !== 'object') return
+      const record = payload as Record<string, unknown>
+      const percent = Number(record.percent)
+      const batchIndex = Number(record.batchIndex)
+      const batchTotal = Number(record.batchTotal)
+      const message = typeof record.message === 'string' ? record.message : undefined
+      listener({
+        percent: Number.isFinite(percent) ? percent : undefined,
+        batchIndex: Number.isFinite(batchIndex) ? Math.floor(batchIndex) : undefined,
+        batchTotal: Number.isFinite(batchTotal) ? Math.floor(batchTotal) : undefined,
+        message
+      })
+    }
+    ipcRenderer.on('media:composeVideoFromImagesProgress', handler)
+    return () => {
+      ipcRenderer.off('media:composeVideoFromImagesProgress', handler)
+    }
+  },
   syncDouyinHotMusic: (payload?: {
     outputDir?: string
     limit?: number

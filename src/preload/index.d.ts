@@ -75,6 +75,15 @@ declare global {
     error?: string
   }
 
+  type ComposeVideoBatchFromImagesResult = {
+    success: boolean
+    successCount: number
+    failedCount: number
+    sourceImageCount: number
+    outputs: string[]
+    failures: Array<{ index: number; error: string }>
+  }
+
   type SyncDouyinHotMusicResult = {
     success: boolean
     outputDir: string
@@ -94,6 +103,13 @@ declare global {
     outputDir: string
     files: string[]
     error?: string
+  }
+
+  type ComposeVideoProgressPayload = {
+    percent?: number
+    batchIndex?: number
+    batchTotal?: number
+    message?: string
   }
 
   type MediaSelectionItem = {
@@ -521,7 +537,21 @@ declare global {
       bgmPath?: string
       outputPath?: string
       seed?: number
+      batchIndex?: number
+      batchTotal?: number
     }) => Promise<ComposeVideoFromImagesResult>
+    composeVideoBatchFromImages: (payload: {
+      sourceRootPath?: string
+      sourceImages?: string[]
+      template: VideoStyleTemplate
+      batchCount: number
+      bgmMode?: 'none' | 'fixed' | 'random'
+      bgmPath?: string
+      bgmOptions?: string[]
+      seedBase?: number
+      lowLoadMode?: boolean
+    }) => Promise<ComposeVideoBatchFromImagesResult>
+    onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void) => () => void
     syncDouyinHotMusic: (payload?: {
       outputDir?: string
       limit?: number

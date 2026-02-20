@@ -44,13 +44,14 @@ const DEFAULT_TEMPLATE: VideoStyleTemplate = {
   imageCountMax: 10,
   width: 1080,
   height: 1920,
-  fps: 30,
+  fps: 24,
   transitionType: 'fade',
   transitionDurationSec: 0.3,
   bgmVolume: 0.28
 }
 
 const TEMPLATE_STORAGE_KEY = 'cms.videoComposer.template.v1'
+const RANDOM_BGM_VALUE = '__RANDOM_BGM__'
 
 function toSafeNumber(value: unknown, fallback: number): number {
   const parsed = Number(value)
@@ -84,7 +85,7 @@ function normalizeTemplateFromUnknown(raw: unknown): VideoStyleTemplate {
     imageCountMax: max,
     width: toSafeInt(source.width, DEFAULT_TEMPLATE.width, 360, 4096),
     height: toSafeInt(source.height, DEFAULT_TEMPLATE.height, 360, 4096),
-    fps: toSafeInt(source.fps, DEFAULT_TEMPLATE.fps, 12, 60),
+    fps: toSafeInt(source.fps, DEFAULT_TEMPLATE.fps, 12, 24),
     transitionType,
     transitionDurationSec: clampNumber(
       toSafeNumber(source.transitionDurationSec, DEFAULT_TEMPLATE.transitionDurationSec),
@@ -150,6 +151,9 @@ function VideoComposerPanel(): React.JSX.Element {
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isScanningRoot, setIsScanningRoot] = useState(false)
+  const [lowLoadMode, setLowLoadMode] = useState(true)
+  const [generateProgressPercent, setGenerateProgressPercent] = useState(0)
+  const [generateProgressText, setGenerateProgressText] = useState('')
   const [isSyncingHotMusic, setIsSyncingHotMusic] = useState(false)
   const [isLoadingBgmList, setIsLoadingBgmList] = useState(false)
   const [bgmOptions, setBgmOptions] = useState<string[]>([])
@@ -160,6 +164,8 @@ function VideoComposerPanel(): React.JSX.Element {
   const canGenerate = sourceImages.length > 0 && !isGenerating && !isScanningRoot
   const normalizedMin = Math.max(1, Math.floor(Number(template.imageCountMin) || 1))
   const normalizedMax = Math.max(normalizedMin, Math.floor(Number(template.imageCountMax) || normalizedMin))
+  const selectedBgmValue = bgmPath && bgmPath.trim() ? bgmPath : bgmOptions.length > 0 ? RANDOM_BGM_VALUE : ''
+  const isRandomBgmMode = selectedBgmValue === RANDOM_BGM_VALUE
 
   const updateTemplateNumber = (field: keyof VideoStyleTemplate, value: string): void => {
     const parsed = Number(value)
@@ -215,7 +221,7 @@ function VideoComposerPanel(): React.JSX.Element {
 
         setBgmOptions(result.files)
         setHotMusicOutputDir(result.outputDir)
-        if (bgmPath && !result.files.includes(bgmPath)) {
+        if (bgmPath && bgmPath !== RANDOM_BGM_VALUE && !result.files.includes(bgmPath)) {
           setBgmPath('')
         }
         return
@@ -235,7 +241,7 @@ function VideoComposerPanel(): React.JSX.Element {
       const audioFiles = files.filter((filePath) => isAudioFile(filePath))
       setBgmOptions(audioFiles)
       setHotMusicOutputDir(fallbackRoot)
-      if (bgmPath && !audioFiles.includes(bgmPath)) {
+      if (bgmPath && bgmPath !== RANDOM_BGM_VALUE && !audioFiles.includes(bgmPath)) {
         setBgmPath('')
       }
     } catch (err) {
@@ -280,6 +286,26 @@ function VideoComposerPanel(): React.JSX.Element {
   useEffect(() => {
     void loadHotMusicBgmOptions()
   }, [])
+
+  useEffect(() => {
+    if (typeof window.electronAPI.onComposeVideoProgress !== 'function') return
+    return window.electronAPI.onComposeVideoProgress((payload) => {
+      if (!isGenerating) return
+      const message = typeof payload.message === 'string' ? payload.message.trim() : ''
+      const batchTotal = Math.max(1, Math.floor(Number(payload.batchTotal) || 1))
+      const batchIndex = Math.min(batchTotal, Math.max(1, Math.floor(Number(payload.batchIndex) || 1)))
+      const percent = clampNumber(Number(payload.percent) || 0, 0, 1)
+
+      if (message && (!payload.batchIndex || Number(payload.batchIndex) <= 0)) {
+        setGenerateProgressText(message)
+        return
+      }
+
+      const overall = clampNumber(((batchIndex - 1) + percent) / batchTotal, 0, 1)
+      setGenerateProgressPercent(Math.round(overall * 100))
+      setGenerateProgressText(`第 ${batchIndex}/${batchTotal} 条：${Math.round(percent * 100)}%`)
+    })
+  }, [isGenerating])
 
   const revealInFolder = async (filePath: string): Promise<void> => {
     const normalized = String(filePath ?? '').trim()
@@ -333,40 +359,46 @@ function VideoComposerPanel(): React.JSX.Element {
 
     const count = Math.max(1, Math.min(20, Math.floor(Number(batchCount) || 1)))
     setError(null)
+    setGenerateProgressPercent(0)
+    setGenerateProgressText(`第 1/${count} 条：0%`)
     setIsGenerating(true)
-    const nextOutputs: string[] = []
-    let successCount = 0
 
     try {
-      for (let index = 0; index < count; index += 1) {
-        const seed = Date.now() + index
-        const result = await window.electronAPI.composeVideoFromImages({
-          sourceImages,
-          template: {
-            ...template,
-            imageCountMin: normalizedMin,
-            imageCountMax: normalizedMax
-          },
-          bgmPath: bgmPath.trim() || undefined,
-          seed
-        })
+      const bgmMode: 'none' | 'fixed' | 'random' =
+        selectedBgmValue === RANDOM_BGM_VALUE ? 'random' : selectedBgmValue.trim() ? 'fixed' : 'none'
+      const result = await window.electronAPI.composeVideoBatchFromImages({
+        sourceImages,
+        template: {
+          ...template,
+          imageCountMin: normalizedMin,
+          imageCountMax: normalizedMax
+        },
+        batchCount: count,
+        bgmMode,
+        bgmPath: bgmMode === 'fixed' ? selectedBgmValue.trim() : undefined,
+        bgmOptions: bgmMode === 'random' ? bgmOptions : undefined,
+        seedBase: Date.now(),
+        lowLoadMode
+      })
 
-        if (result.success && result.outputPath) {
-          successCount += 1
-          nextOutputs.push(result.outputPath)
-          addLog(
-            `[视频处理] ${index + 1}/${count} 生成成功：${result.outputPath}（使用 ${result.usedImages?.length ?? 0} 张，seed=${result.seed ?? seed}）`
-          )
-        } else {
-          addLog(`[视频处理] ${index + 1}/${count} 生成失败：${result.error ?? '未知错误'}`)
-        }
-      }
-
-      if (successCount === 0) {
+      if (result.successCount === 0) {
         setError('本轮生成全部失败，请检查模板参数和素材。')
       }
-      if (nextOutputs.length > 0) {
-        setGeneratedVideos((prev) => [...nextOutputs.reverse(), ...prev].slice(0, 80))
+
+      if (result.outputs.length > 0) {
+        setGeneratedVideos((prev) => [...result.outputs.slice().reverse(), ...prev].slice(0, 80))
+      }
+
+      addLog(
+        `[视频处理] 批量生成完成：成功 ${result.successCount}，失败 ${result.failedCount}，素材池 ${result.sourceImageCount} 张`
+      )
+      if (result.failures.length > 0) {
+        addLog(
+          `[视频处理] 失败示例：${result.failures
+            .slice(0, 3)
+            .map((item) => `${item.index}/${count} ${item.error}`)
+            .join(' | ')}`
+        )
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -374,6 +406,10 @@ function VideoComposerPanel(): React.JSX.Element {
       addLog(`[视频处理] 生成中断：${message}`)
     } finally {
       setIsGenerating(false)
+      if (count > 0) {
+        setGenerateProgressPercent(100)
+        setGenerateProgressText(`第 ${count}/${count} 条：100%`)
+      }
     }
   }
 
@@ -550,7 +586,7 @@ function VideoComposerPanel(): React.JSX.Element {
             <div className="mb-2 text-xs text-zinc-400">背景音乐</div>
             <div className="mb-2">
               <select
-                value={bgmPath}
+                value={selectedBgmValue}
                 onChange={(event) => setBgmPath(event.target.value)}
                 disabled={isGenerating || isSyncingHotMusic || isLoadingBgmList || bgmOptions.length === 0}
                 className="h-10 w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
@@ -558,7 +594,7 @@ function VideoComposerPanel(): React.JSX.Element {
                 {bgmOptions.length === 0 ? (
                   <option value="">暂无可用音乐，请先点击“一键刷新音乐榜”</option>
                 ) : (
-                  <option value="">不使用背景音乐</option>
+                  <option value={RANDOM_BGM_VALUE}>随机一首背景音乐</option>
                 )}
                 {bgmOptions.map((filePath) => (
                   <option key={filePath} value={filePath}>
@@ -604,18 +640,18 @@ function VideoComposerPanel(): React.JSX.Element {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setBgmPath('')}
-                disabled={isGenerating || !bgmPath}
+                onClick={() => setBgmPath(RANDOM_BGM_VALUE)}
+                disabled={isGenerating || bgmOptions.length === 0 || isRandomBgmMode}
               >
-                清空 BGM
+                设为随机
               </Button>
-              {bgmPath ? (
+              {selectedBgmValue && selectedBgmValue !== RANDOM_BGM_VALUE ? (
                 <Button
                   type="button"
                   variant="outline"
                   size="icon"
                   className="h-9 w-9"
-                  onClick={() => void revealInFolder(bgmPath)}
+                  onClick={() => void revealInFolder(selectedBgmValue)}
                   aria-label="打开 BGM 所在目录"
                 >
                   <FolderOpen className="h-4 w-4" />
@@ -634,7 +670,11 @@ function VideoComposerPanel(): React.JSX.Element {
                 </Button>
               ) : null}
             </div>
-            <div className="mt-2 truncate text-xs text-zinc-500">{bgmPath || '未选择背景音乐（将输出无音轨视频）'}</div>
+            <div className="mt-2 truncate text-xs text-zinc-500">
+              {selectedBgmValue === RANDOM_BGM_VALUE
+                ? '随机一首背景音乐（每条视频随机抽取）'
+                : selectedBgmValue || '未选择背景音乐（将输出无音轨视频）'}
+            </div>
             {hotMusicSummary ? <div className="mt-1 text-xs text-zinc-500">{hotMusicSummary}</div> : null}
             {hotMusicOutputDir ? (
               <div className="mt-1 truncate text-xs text-zinc-500">音乐榜目录：{hotMusicOutputDir}</div>
@@ -646,6 +686,15 @@ function VideoComposerPanel(): React.JSX.Element {
               <div className="text-xs text-zinc-400">本次生成数量</div>
               <Input value={batchCount} onChange={(e) => setBatchCount(e.target.value)} />
             </div>
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <input
+                type="checkbox"
+                checked={lowLoadMode}
+                onChange={(event) => setLowLoadMode(event.target.checked)}
+                disabled={isGenerating}
+              />
+              低占用模式（推荐）
+            </label>
             <Button type="button" onClick={() => void startGenerate()} disabled={!canGenerate}>
               {isGenerating ? (
                 <span className="flex items-center gap-2">
@@ -661,8 +710,22 @@ function VideoComposerPanel(): React.JSX.Element {
             </Button>
             <div className="text-xs text-zinc-500">
               抽样规则：每条视频随机使用 {normalizedMin}-{normalizedMax} 张图
+              {lowLoadMode ? '（低占用：720p / 12fps / 轻转场）' : ''}
             </div>
           </div>
+          {isGenerating ? (
+            <div className="space-y-2">
+              <div className="h-2 w-full overflow-hidden rounded bg-zinc-800">
+                <div
+                  className="h-full bg-emerald-400 transition-all duration-150"
+                  style={{ width: `${clampNumber(generateProgressPercent, 0, 100)}%` }}
+                />
+              </div>
+              <div className="text-xs text-zinc-400">
+                {generateProgressText || `总进度：${generateProgressPercent}%`}
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
