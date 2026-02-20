@@ -21,7 +21,12 @@ import { TaskManager } from './taskManager'
 import { WorkspaceService } from './services/workspaceService'
 import { performBackup } from './services/backupService'
 import { cleanupTempPreviews, prepareVideoPreview } from './services/videoProcessor'
-import { composeVideoFromImages, composeVideoFromPreparedImagePool, normalizeImagePaths } from './services/videoComposer'
+import {
+  composeVideoFromImages,
+  composeVideoFromPreparedImagePool,
+  normalizeImagePaths,
+  type VideoOutputAspect
+} from './services/videoComposer'
 import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinHotMusic'
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
@@ -1812,6 +1817,8 @@ app.whenReady().then(async () => {
     const sourceRootPath = typeof body.sourceRootPath === 'string' ? body.sourceRootPath.trim() : ''
     const renderModeRaw = typeof body.renderMode === 'string' ? body.renderMode.trim().toLowerCase() : ''
     const lowLoadMode = renderModeRaw === 'hd' ? false : body.lowLoadMode !== false
+    const outputAspectRaw = typeof body.outputAspect === 'string' ? body.outputAspect.trim() : ''
+    const outputAspect: VideoOutputAspect = outputAspectRaw === '3:4' ? '3:4' : '9:16'
 
     let sourceImages = normalizeImagePaths(body.sourceImages)
     if (sourceImages.length === 0 && sourceRootPath) {
@@ -1891,6 +1898,7 @@ app.whenReady().then(async () => {
           },
           {
             lowLoadMode,
+            hdAspect: outputAspect,
             lowLoadCacheDir: imageProxyCacheDir,
             lowLoadImageProxyCache,
             imageReadableCache,

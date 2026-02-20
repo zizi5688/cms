@@ -151,6 +151,7 @@ function VideoComposerPanel(): React.JSX.Element {
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isScanningRoot, setIsScanningRoot] = useState(false)
+  const [outputAspect, setOutputAspect] = useState<'9:16' | '3:4'>('9:16')
   const [generateProgressPercent, setGenerateProgressPercent] = useState(0)
   const [generateProgressText, setGenerateProgressText] = useState('')
   const [isSyncingHotMusic, setIsSyncingHotMusic] = useState(false)
@@ -164,6 +165,7 @@ function VideoComposerPanel(): React.JSX.Element {
   const normalizedMin = Math.max(1, Math.floor(Number(template.imageCountMin) || 1))
   const normalizedMax = Math.max(normalizedMin, Math.floor(Number(template.imageCountMax) || normalizedMin))
   const renderMode: 'hd' = 'hd'
+  const outputSizeLabel = outputAspect === '3:4' ? '1080x1440' : '1080x1920'
   const selectedBgmValue = bgmPath && bgmPath.trim() ? bgmPath : bgmOptions.length > 0 ? RANDOM_BGM_VALUE : ''
   const isRandomBgmMode = selectedBgmValue === RANDOM_BGM_VALUE
 
@@ -378,7 +380,8 @@ function VideoComposerPanel(): React.JSX.Element {
         bgmPath: bgmMode === 'fixed' ? selectedBgmValue.trim() : undefined,
         bgmOptions: bgmMode === 'random' ? bgmOptions : undefined,
         seedBase: Date.now(),
-        renderMode
+        renderMode,
+        outputAspect
       })
 
       if (result.successCount === 0) {
@@ -686,7 +689,18 @@ function VideoComposerPanel(): React.JSX.Element {
               <div className="text-xs text-zinc-400">本次生成数量</div>
               <Input value={batchCount} onChange={(e) => setBatchCount(e.target.value)} />
             </div>
-            <div className="text-xs text-zinc-500">生成模式：高清 1080p</div>
+            <div className="flex min-w-[220px] flex-col gap-1">
+              <div className="text-xs text-zinc-400">输出尺寸比例</div>
+              <select
+                value={outputAspect}
+                onChange={(event) => setOutputAspect(event.target.value as '9:16' | '3:4')}
+                disabled={isGenerating}
+                className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
+              >
+                <option value="9:16">9:16（1080x1920）</option>
+                <option value="3:4">3:4（1080x1440）</option>
+              </select>
+            </div>
             <Button type="button" onClick={() => void startGenerate()} disabled={!canGenerate}>
               {isGenerating ? (
                 <span className="flex items-center gap-2">
@@ -702,7 +716,7 @@ function VideoComposerPanel(): React.JSX.Element {
             </Button>
             <div className="text-xs text-zinc-500">
               抽样规则：每条视频随机使用 {normalizedMin}-{normalizedMax} 张图
-              （高清：1080p / 12fps / 轻转场）
+              （高清：{outputSizeLabel} / 12fps / 轻转场 / 中心裁切）
             </div>
           </div>
           {isGenerating ? (

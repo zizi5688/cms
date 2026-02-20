@@ -46,11 +46,14 @@ export type ComposeVideoProgress = {
   percent: number
 }
 
+export type VideoOutputAspect = '9:16' | '3:4'
+
 type VideoEncoder = 'libx264' | 'h264_videotoolbox'
 
 type ComposeVideoRuntimeOptions = {
   onProgress?: (progress: ComposeVideoProgress) => void
   lowLoadMode?: boolean
+  hdAspect?: VideoOutputAspect
   lowLoadCacheDir?: string
   lowLoadImageProxyCache?: Map<string, string>
   imageReadableCache?: Map<string, boolean>
@@ -179,10 +182,9 @@ function toLowLoadTemplate(template: VideoStyleTemplate): VideoStyleTemplate {
   }
 }
 
-function toHdTemplate(template: VideoStyleTemplate): VideoStyleTemplate {
-  const portrait = template.height >= template.width
-  const width = portrait ? 1080 : 1920
-  const height = portrait ? 1920 : 1080
+function toHdTemplate(template: VideoStyleTemplate, aspect: VideoOutputAspect): VideoStyleTemplate {
+  const width = 1080
+  const height = aspect === '3:4' ? 1440 : 1920
   return {
     ...template,
     width,
@@ -555,7 +557,12 @@ export async function composeVideoFromPreparedImagePool(
   const normalizedTemplate = normalizeTemplate(payload?.template)
   const isLowLoadMode = runtimeOptions.lowLoadMode === true
   const isHdMode = runtimeOptions.lowLoadMode === false
-  const template = isLowLoadMode ? toLowLoadTemplate(normalizedTemplate) : isHdMode ? toHdTemplate(normalizedTemplate) : normalizedTemplate
+  const hdAspect: VideoOutputAspect = runtimeOptions.hdAspect === '3:4' ? '3:4' : '9:16'
+  const template = isLowLoadMode
+    ? toLowLoadTemplate(normalizedTemplate)
+    : isHdMode
+      ? toHdTemplate(normalizedTemplate, hdAspect)
+      : normalizedTemplate
   const sourceImages = payload.sourceImages
   if (sourceImages.length === 0) {
     return { success: false, error: '[videoComposer] 至少需要一张可读图片。' }

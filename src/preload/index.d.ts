@@ -556,6 +556,7 @@ declare global {
       seedBase?: number
       lowLoadMode?: boolean
       renderMode?: 'low' | 'hd'
+      outputAspect?: '9:16' | '3:4'
     }) => Promise<ComposeVideoBatchFromImagesResult>
     onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void) => () => void
     syncDouyinHotMusic: (payload?: {

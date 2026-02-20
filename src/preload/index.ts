@@ -594,6 +594,7 @@ const electronAPI = {
     seedBase?: number
     lowLoadMode?: boolean
     renderMode?: 'low' | 'hd'
+    outputAspect?: '9:16' | '3:4'
   }): Promise<ComposeVideoBatchFromImagesResult> => ipcRenderer.invoke('media:composeVideoBatchFromImages', payload),
   onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
