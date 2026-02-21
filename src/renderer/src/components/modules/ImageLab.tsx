@@ -163,6 +163,37 @@ function ImageLab(): React.JSX.Element {
 
   const isProcessing = isWatermarking || isUpscaling || isSplitting || isAutoRunning || isVideoPreparing
 
+  const resetMaterialPageToInitial = (): void => {
+    try {
+      videoRef.current?.pause()
+    } catch {
+      void 0
+    }
+    setSourceFiles([])
+    setSourceRevision((prev) => prev + 1)
+    setGeneratedTiles([])
+    setTilesRevision((prev) => prev + 1)
+    setPreviewImage(null)
+    setIsVideoMode(false)
+    setIsVideoPreparing(false)
+    setVideoPreview(null)
+    setRows('3')
+    setCols('3')
+    setIsWatermarking(false)
+    setIsUpscaling(false)
+    setIsSplitting(false)
+    setIsAutoRunning(false)
+    setError(null)
+    setProcessLogLines([])
+    setIsLogOpen(false)
+    setIsWatermarkBoxOpen(false)
+    setCrop(undefined)
+    setCropImageSize(null)
+    setCoverPath(null)
+    setCoverRevision((prev) => prev + 1)
+    setActivePanel('image')
+  }
+
   const revealInFolder = async (filePath: string): Promise<void> => {
     const normalized = String(filePath ?? '').trim()
     if (!normalized) return
@@ -673,6 +704,23 @@ function ImageLab(): React.JSX.Element {
     setWorkshopImport('video', previewPath || originalPath, coverPath)
     setActiveModule('workshop')
     addLog(`[素材处理] 已将视频导入数据工坊：${previewPath || originalPath}`)
+    resetMaterialPageToInitial()
+  }
+
+  const handleSendTilesToWorkshop = (): void => {
+    if (isProcessing) return
+    const firstPath = generatedTiles[0]
+    const folderPath = firstPath ? dirNameFromPath(firstPath).trim() : ''
+    if (!folderPath) {
+      addLog('[素材处理] 无法解析切片所在目录，请确认生成结果路径有效。')
+      return
+    }
+
+    setWorkshopImport('image', folderPath)
+    setDataWorkshopFolderPath(folderPath)
+    setActiveModule('workshop')
+    addLog(`[素材处理] 已将切片目录填入数据工坊：${folderPath}`)
+    resetMaterialPageToInitial()
   }
 
   return (
@@ -732,19 +780,7 @@ function ImageLab(): React.JSX.Element {
               </Button>
               <Button
                 variant="outline"
-                onClick={() => {
-                  setSourceFiles([])
-                  setGeneratedTiles([])
-                  setError(null)
-                  setProcessLogLines([])
-                  setIsLogOpen(false)
-                  setIsVideoMode(false)
-                  setIsVideoPreparing(false)
-                  setVideoPreview(null)
-                  setPreviewImage(null)
-                  setCoverPath(null)
-                  setCoverRevision((prev) => prev + 1)
-                }}
+                onClick={resetMaterialPageToInitial}
                 disabled={isProcessing}
               >
                 清空
@@ -1060,19 +1096,7 @@ function ImageLab(): React.JSX.Element {
                     📤 导出结果
                   </Button>
                   <Button
-                    onClick={() => {
-                      const firstPath = generatedTiles[0]
-                      const folderPath = firstPath ? dirNameFromPath(firstPath).trim() : ''
-                      if (!folderPath) {
-                        addLog('[素材处理] 无法解析切片所在目录，请确认生成结果路径有效。')
-                        return
-                      }
-
-                      setWorkshopImport('image', folderPath)
-                      setDataWorkshopFolderPath(folderPath)
-                      setActiveModule('workshop')
-                      addLog(`[素材处理] 已将切片目录填入数据工坊：${folderPath}`)
-                    }}
+                    onClick={handleSendTilesToWorkshop}
                     disabled={isProcessing}
                   >
                     🚀 发送到数据工坊

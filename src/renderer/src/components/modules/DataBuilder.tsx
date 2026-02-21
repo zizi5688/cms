@@ -129,6 +129,7 @@ function DataBuilder(): React.JSX.Element {
   const workshopImport = useCmsStore((s) => s.workshopImport)
   const setCsvContent = useCmsStore((s) => s.setCsvContent)
   const setDataWorkshopFolderPath = useCmsStore((s) => s.setDataWorkshopFolderPath)
+  const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
   const workspacePath = useCmsStore((s) => s.workspacePath)
 
   const importedVideoPaths = useMemo(() => {
@@ -539,29 +540,7 @@ function DataBuilder(): React.JSX.Element {
 
   const handleReset = (): void => {
     if (!window.confirm('确定要清空当前所有输入和预览吗？')) return
-
-    setCsvContent('')
-    setDataWorkshopFolderPath('')
-    setGroupCount('0')
-    setMaxReuse('2')
-    setMinImages('3')
-    setMaxImages('5')
-
-    setTasks([])
-    setUploadTasks([])
-    setSelectedImageIds(new Set())
-    setQueuedTaskIds(new Set())
-    setDispatchProgress(null)
-    setToastMessage('')
-    lastScannedPathRef.current = ''
-    setImageFiles([])
-    setVideoCoverProgress('')
-    setIsSavingManualCover(false)
-    setIsManualCoverEditorPreparing(false)
-    setIsManualCoverEditorPlaying(false)
-    setManualCoverEditorVideoPath('')
-    setManualCoverEditorPlayablePath('')
-    setManualCoverEditorTimeSec(0)
+    resetDataBuilderToInitial()
   }
 
 
@@ -630,6 +609,37 @@ function DataBuilder(): React.JSX.Element {
     const timer = window.setTimeout(() => setToastMessage(''), 2200)
     return () => window.clearTimeout(timer)
   }, [toastMessage])
+
+  const resetDataBuilderToInitial = useCallback((): void => {
+    setCsvContent('')
+    setDataWorkshopFolderPath('')
+    setWorkshopImport(null, null)
+    setGroupCount('0')
+    setMaxReuse('2')
+    setMinImages('3')
+    setMaxImages('5')
+    setSelectedProductId('')
+
+    setTasks([])
+    setUploadTasks([])
+    setSelectedImageIds(new Set())
+    setQueuedTaskIds(new Set())
+    setDispatchProgress(null)
+    setToastMessage('')
+    lastScannedPathRef.current = ''
+    setImageFiles([])
+    setVideoCoverMode('auto-first-frame')
+    setManualCoverMap({})
+    setVideoCoverProgress('')
+    setIsPreparingVideoCover(false)
+    setIsSavingManualCover(false)
+    setIsManualCoverEditorPreparing(false)
+    setIsManualCoverEditorPlaying(false)
+    setManualCoverEditorVideoPath('')
+    setManualCoverEditorPlayablePath('')
+    setManualCoverEditorTimeSec(0)
+    videoCoverCacheRef.current.clear()
+  }, [setCsvContent, setDataWorkshopFolderPath, setWorkshopImport, setTasks, setUploadTasks])
 
   const toggleSelected = (taskId: string): void => {
     setSelectedImageIds((prev) => {
@@ -716,20 +726,8 @@ function DataBuilder(): React.JSX.Element {
         })),
         { requestId }
       )
-      setQueuedTaskIds((prev) => {
-        const next = new Set(prev)
-        for (const task of selectedTasks) next.add(task.id)
-        return next
-      })
-      setSelectedImageIds(new Set())
-      setDispatchProgress({
-        processed: selectedTasks.length,
-        total: selectedTasks.length,
-        created: created.length,
-        message: `派发完成：${created.length} 条任务`
-      })
-      setToastMessage('已加入队列')
       addLog(`[Super CMS] 已派发 ${created.length} 条任务到账号队列。`)
+      resetDataBuilderToInitial()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setDispatchProgress((prev) => ({

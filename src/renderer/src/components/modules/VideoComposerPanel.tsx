@@ -175,6 +175,26 @@ function VideoComposerPanel(): React.JSX.Element {
   const hasSelectedGenerated = selectedGeneratedCount > 0
   const isAllGeneratedSelected = generatedVideos.length > 0 && selectedGeneratedVideos.size === generatedVideos.length
 
+  const resetVideoComposerToInitial = (): void => {
+    setSourceImages([])
+    setSourceRootPath('')
+    setTemplate(INITIAL_SAVED_TEMPLATE?.template ?? DEFAULT_TEMPLATE)
+    setTemplateSavedAt(INITIAL_SAVED_TEMPLATE?.savedAt ?? 0)
+    setBgmPath('')
+    setBatchCount('1')
+    setGeneratedVideos([])
+    setSelectedGeneratedVideos(new Set())
+    setIsGenerating(false)
+    setIsScanningRoot(false)
+    setOutputAspect('9:16')
+    setGenerateProgressPercent(0)
+    setGenerateProgressText('')
+    setIsSyncingHotMusic(false)
+    setIsLoadingBgmList(false)
+    setHotMusicSummary('')
+    setError(null)
+  }
+
   const updateTemplateNumber = (field: keyof VideoStyleTemplate, value: string): void => {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return
@@ -331,6 +351,7 @@ function VideoComposerPanel(): React.JSX.Element {
     setWorkshopImport('video', firstPath, null, selectedPaths)
     setActiveModule('workshop')
     addLog(`[视频处理] 已将 ${selectedPaths.length} 条视频导入数据工坊。`)
+    resetVideoComposerToInitial()
   }
 
   const toggleSelectAllGenerated = (): void => {
