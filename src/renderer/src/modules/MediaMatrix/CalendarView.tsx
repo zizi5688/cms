@@ -847,13 +847,13 @@ function CalendarView({
       </div>
 
       {remixPicker ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-5xl rounded-xl border border-zinc-700 bg-zinc-950 p-4 shadow-2xl">
+        <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/70 p-4 md:items-center">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 p-4 shadow-2xl">
             <div className="mb-3 text-sm font-semibold text-zinc-100">
               选择命中批次并确认裂变
             </div>
-            <div className="grid max-h-[70vh] grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)]">
-              <div className="min-h-0 overflow-auto rounded-lg border border-zinc-800 bg-zinc-900/30 p-2">
+            <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]">
+              <div className="min-h-0 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/30 p-2">
                 <div className="mb-2 px-1 text-xs text-zinc-400">
                   候选批次 {remixPicker.candidates.length}（近14天）
                 </div>
@@ -883,7 +883,7 @@ function CalendarView({
                 </div>
               </div>
 
-              <div className="min-h-0 rounded-lg border border-zinc-800 bg-zinc-900/20 p-3">
+              <div className="flex min-h-0 flex-col rounded-lg border border-zinc-800 bg-zinc-900/20 p-3">
                 {remixPreview ? (
                   <>
                     <div className="text-xs text-zinc-300">
@@ -900,7 +900,7 @@ function CalendarView({
                       </div>
                     ) : null}
 
-                    <div className="mt-3 max-h-[360px] space-y-2 overflow-auto pr-1">
+                    <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                       {remixPreview.payloads.map((payload, index) => (
                         <div
                           key={`${remixPreview.sessionId}-${index}`}
