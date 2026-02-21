@@ -9,6 +9,9 @@ type CmsPublishTask = {
   id: string
   accountId: string
   status: CmsPublishTaskStatus
+  mediaType: 'image' | 'video'
+  videoPath?: string
+  videoPreviewPath?: string
   images: string[]
   title: string
   content: string
@@ -16,6 +19,10 @@ type CmsPublishTask = {
   productId?: string
   productName?: string
   publishMode: 'immediate'
+  transformPolicy?: 'none' | 'remix_v1'
+  remixSessionId?: string
+  remixSourceTaskIds?: string[]
+  remixSeed?: string
   isRaw?: boolean
   scheduledAt?: number
   publishedAt: string | null
@@ -200,6 +207,10 @@ const api = {
           mediaType?: 'image' | 'video'
           videoPath?: string
           videoPreviewPath?: string
+          transformPolicy?: 'none' | 'remix_v1'
+          remixSessionId?: string
+          remixSourceTaskIds?: string[]
+          remixSeed?: string
         }>,
         options?: { requestId?: string }
       ): Promise<CmsPublishTask[]> =>
@@ -223,6 +234,11 @@ const api = {
       cancelSchedule: (
         taskIds: string[]
       ): Promise<CmsPublishTask[]> => ipcRenderer.invoke('cms.task.cancelSchedule', taskIds),
+      deleteByRemixSession: (
+        sessionId: string,
+        accountId?: string
+      ): Promise<{ deleted: number; deletedIds: string[] }> =>
+        ipcRenderer.invoke('cms.task.deleteByRemixSession', { sessionId, accountId }),
       deleteBatch: (ids: string[]): Promise<{ deleted: number; deletedIds: string[] }> => ipcRenderer.invoke('cms.task.deleteBatch', ids),
       delete: (taskId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('cms.task.delete', taskId),
       importImages: (filePaths: string[]): Promise<string[]> =>

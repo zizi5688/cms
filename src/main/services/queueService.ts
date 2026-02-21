@@ -134,6 +134,7 @@ export class QueueService {
 
     const images = parseJsonStringArray(row.images)
     const tags = parseJsonStringArray(row.tags)
+    const remixSourceTaskIds = parseJsonStringArray(row.remixSourceTaskIds)
 
     const task: QueuedTask = {
       id: String(row.id ?? ''),
@@ -150,6 +151,13 @@ export class QueueService {
       productId: typeof row.productId === 'string' && row.productId.trim() ? String(row.productId) : undefined,
       productName: typeof row.productName === 'string' && row.productName.trim() ? String(row.productName) : undefined,
       publishMode: 'immediate',
+      transformPolicy: row.transformPolicy === 'remix_v1' ? 'remix_v1' : 'none',
+      remixSessionId:
+        typeof row.remixSessionId === 'string' && row.remixSessionId.trim()
+          ? String(row.remixSessionId)
+          : undefined,
+      remixSourceTaskIds: remixSourceTaskIds.length > 0 ? remixSourceTaskIds : undefined,
+      remixSeed: typeof row.remixSeed === 'string' && row.remixSeed.trim() ? String(row.remixSeed) : undefined,
       isRaw: Number(row.isRaw ?? 0) === 1,
       scheduledAt: row.scheduledAt == null ? null : Number(row.scheduledAt),
       publishedAt: row.publishedAt == null ? null : String(row.publishedAt),

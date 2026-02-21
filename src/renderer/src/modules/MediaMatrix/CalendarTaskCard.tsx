@@ -33,7 +33,9 @@ function CalendarTaskCard({
   const isPublished = task.status === 'published'
   const isFailed = task.status === 'failed' || task.status === 'publish_failed'
   const canDrag = !isPublished
-  const isRemix = Boolean(task.tags?.includes('remix') || task.tags?.includes('裂变'))
+  const isRemix = Boolean(
+    task.transformPolicy === 'remix_v1' || task.tags?.includes('remix') || task.tags?.includes('裂变')
+  )
 
   const scheduledAtDate = useMemo(() => {
     return typeof task.scheduledAt === 'number' && Number.isFinite(task.scheduledAt)
