@@ -153,7 +153,6 @@ export class SqliteService {
       CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
       CREATE INDEX IF NOT EXISTS idx_tasks_scheduledAt ON tasks (scheduledAt);
       CREATE INDEX IF NOT EXISTS idx_tasks_createdAt ON tasks (createdAt);
-      CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);
 
       CREATE TRIGGER IF NOT EXISTS trg_accounts_delete_tasks
       AFTER DELETE ON accounts
