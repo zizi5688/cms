@@ -99,7 +99,7 @@ function CalendarHeader({
       </div>
 
       <div className="min-w-0 flex-1 px-2 text-center text-sm font-semibold text-zinc-100">
-        {showPublished ? '滚动日程（显示已发布）' : '滚动日程（隐藏已发布）'}
+        滚动日程
       </div>
 
       <div className="flex items-center gap-2">

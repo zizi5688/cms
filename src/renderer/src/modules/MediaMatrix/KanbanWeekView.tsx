@@ -107,14 +107,14 @@ function KanbanWeekView({
   )
 }
 
-function getRollingColumnLabel(date: Date): string {
-  const offset = moment(date).startOf('day').diff(moment().startOf('day'), 'day')
-  if (offset === 0) return '今天'
-  if (offset === 1) return '明天'
-  if (offset === 2) return '后天'
-  if (offset === 3) return '大后天'
-  if (offset > 3) return `+${offset}天`
-  return moment(date).format('ddd')
+function getRollingColumnHeader(date: Date): string {
+  const day = moment(date)
+  const offset = day.clone().startOf('day').diff(moment().startOf('day'), 'day')
+  const dateText = day.format('MM-DD')
+  const weekdayCn = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][day.day()] ?? '星期'
+  if (offset === 0) return `今天 ${dateText}`
+  if (offset === 1) return `明天 ${dateText}`
+  return `${weekdayCn} ${dateText}`
 }
 
 function DayColumn({
@@ -276,7 +276,7 @@ function DayColumn({
     dropRef(columnRef)
   }, [dropRef])
 
-  const headerText = `${getRollingColumnLabel(date)} ${moment(date).format('M/DD')}`
+  const headerText = getRollingColumnHeader(date)
   const isActive = isOver && canDrop
   const isBlocked = isOver && !canDrop
   const handleSelect = (event: React.MouseEvent, taskId: string): void => {

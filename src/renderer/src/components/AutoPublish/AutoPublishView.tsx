@@ -80,9 +80,9 @@ function AutoPublishView(): React.JSX.Element {
   const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
   const [activeAccountId, setActiveAccountId] = useState('')
   const [tasks, setTasks] = useState<CmsPublishTask[]>([])
-  const [viewMode, setViewMode] = useState<'list' | 'schedule'>('schedule')
+  const viewMode: 'schedule' = 'schedule'
   const [viewSpan, setViewSpan] = useState<4 | 7>(4)
-  const isScheduleMode = viewMode === 'schedule'
+  const isScheduleMode = true
   const [activeStage, setActiveStage] = useState<'pending' | 'published'>('pending')
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false)
@@ -640,6 +640,36 @@ function AutoPublishView(): React.JSX.Element {
                       </option>
                     ))}
                   </select>
+                  {activeAccount ? (
+                    <div className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/60 px-2">
+                      <span
+                        className={cn(
+                          'h-2.5 w-2.5 rounded-full',
+                          activeAccount.lastLoginTime !== null ? 'bg-emerald-400' : 'bg-red-400'
+                        )}
+                      />
+                      <span className="text-xs text-zinc-400">
+                        {activeAccount.lastLoginTime !== null ? '在线' : '离线'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleLogin(activeAccount.id)}
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-transparent px-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:bg-zinc-900/40 hover:text-zinc-200"
+                        aria-label="登录"
+                      >
+                        <LogIn className="h-3.5 w-3.5" />
+                        登录
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteAccount(activeAccount.id)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-zinc-500 transition hover:border-zinc-700 hover:bg-zinc-900/40 hover:text-red-400"
+                        aria-label="删除账号"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="flex shrink-0 items-center gap-2">
                     <Button
                       variant="outline"
@@ -655,12 +685,6 @@ function AutoPublishView(): React.JSX.Element {
                     </Button>
                   </div>
                 </div>
-                <div className="min-w-0">
-                  <CardTitle className="truncate">滚动日程</CardTitle>
-                  <CardDescription className="truncate">
-                    {activeAccount ? `当前账号：${activeAccount.name}` : '请选择账号查看滚动日程。'}
-                  </CardDescription>
-                </div>
               </div>
             ) : (
               <div className="min-w-0">
@@ -671,32 +695,6 @@ function AutoPublishView(): React.JSX.Element {
               </div>
             )}
             <div className="flex shrink-0 items-center gap-2">
-              <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-950">
-                <button
-                  type="button"
-                  onClick={() => setViewMode('schedule')}
-                  className={cn(
-                    'px-3 py-1.5 text-sm transition',
-                    viewMode === 'schedule'
-                      ? 'bg-zinc-900/50 text-zinc-100'
-                      : 'text-zinc-400 hover:bg-zinc-900/30 hover:text-zinc-200'
-                  )}
-                >
-                  日程
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('list')}
-                  className={cn(
-                    'px-3 py-1.5 text-sm transition',
-                    viewMode === 'list'
-                      ? 'bg-zinc-900/50 text-zinc-100'
-                      : 'text-zinc-400 hover:bg-zinc-900/30 hover:text-zinc-200'
-                  )}
-                >
-                  列表
-                </button>
-              </div>
               <Button
                 variant="outline"
                 onClick={() => void loadTasks(activeAccountId)}
@@ -709,7 +707,7 @@ function AutoPublishView(): React.JSX.Element {
                 <>
                   <Button variant="outline" onClick={() => void handleSyncProducts()} disabled={isSyncingProducts}>
                     <RefreshCw className={cn('h-4 w-4', isSyncingProducts ? 'animate-spin' : '')} />
-                    同步
+                    同步商品
                   </Button>
                 </>
               ) : null}
