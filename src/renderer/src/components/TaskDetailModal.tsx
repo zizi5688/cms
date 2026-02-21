@@ -128,7 +128,8 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
   const safeActiveIndex = Math.min(Math.max(0, activeIndex), Math.max(0, resolvedImages.length - 1))
   const activeSrc = resolvedImages[safeActiveIndex] ?? ''
   const isVideo = task?.mediaType === 'video'
-  const activePosterSrc = resolvedImages[safeActiveIndex] ?? resolvedImages[0] ?? ''
+  const videoCoverSrc = resolvedImages[0] ?? ''
+  const activePosterSrc = videoCoverSrc || resolvedImages[safeActiveIndex] || ''
   const videoSrc = useMemo(() => {
     const raw = task?.videoPreviewPath ? String(task.videoPreviewPath) : task?.videoPath ? String(task.videoPath) : ''
     return raw ? resolveLocalImage(raw, workspacePath) : ''
@@ -212,6 +213,34 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       window.alert(`添加图片失败：${msg}`)
+    }
+  }
+
+  const handleReplaceVideoCover = async (): Promise<void> => {
+    try {
+      const result = await window.electronAPI.openMediaFiles({ accept: 'image' })
+      if (!result) return
+      const items = Array.isArray(result) ? result : [result]
+      const picked = items.find((item) => item && item.mediaType === 'image') || null
+      const filePath = picked?.originalPath ? String(picked.originalPath).trim() : ''
+      if (!filePath) return
+
+      const relativePaths = await window.api.cms.task.importImages([filePath])
+      const nextCover = relativePaths[0] ? String(relativePaths[0]).trim() : ''
+      if (!nextCover) throw new Error('导入封面失败')
+
+      setDraftImages((prev) => {
+        if (prev.length === 0) return [nextCover]
+        const next = [...prev]
+        next[0] = nextCover
+        return next
+      })
+      setActiveIndex(0)
+      setMainLoaded(false)
+      setThumbLoaded(new Set())
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      window.alert(`更换封面失败：${msg}`)
     }
   }
 
@@ -373,6 +402,30 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
                     </div>
                   </SortableContext>
                 </DndContext>
+              </div>
+            ) : isEditable && isVideo ? (
+              <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                <div className="mb-2 text-xs font-semibold text-zinc-300">视频封面</div>
+                <div className="flex items-center gap-3">
+                  <div className="h-16 w-24 shrink-0 overflow-hidden rounded border border-zinc-800 bg-zinc-950">
+                    {videoCoverSrc ? (
+                      <img src={videoCoverSrc} alt="" loading="lazy" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-[11px] text-zinc-500">未设置</div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1 text-[11px] text-zinc-500">
+                    双击任务后可在这里修改视频封面，保存后会同步到待排期池卡片与发布流程。
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/10 px-2.5 text-xs text-purple-200 transition hover:bg-purple-500/20"
+                    onClick={() => void handleReplaceVideoCover()}
+                  >
+                    <ImagePlus className="h-3.5 w-3.5" />
+                    更换封面
+                  </button>
+                </div>
               </div>
             ) : resolvedImages.length > 1 ? (
               <div className="mt-3 grid grid-cols-6 gap-2">
