@@ -80,8 +80,9 @@ function AutoPublishView(): React.JSX.Element {
   const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
   const [activeAccountId, setActiveAccountId] = useState('')
   const [tasks, setTasks] = useState<CmsPublishTask[]>([])
-  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('calendar')
-  const isCalendarMode = viewMode === 'calendar'
+  const [viewMode, setViewMode] = useState<'list' | 'schedule'>('schedule')
+  const [viewSpan, setViewSpan] = useState<4 | 7>(4)
+  const isScheduleMode = viewMode === 'schedule'
   const [activeStage, setActiveStage] = useState<'pending' | 'published'>('pending')
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false)
@@ -503,7 +504,7 @@ function AutoPublishView(): React.JSX.Element {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
-        {isCalendarMode ? null : (
+        {isScheduleMode ? null : (
           <Card className="flex min-h-0 flex-col lg:basis-1/4">
             <CardHeader className="flex-row items-start justify-between gap-4">
               <div className="min-w-0">
@@ -619,9 +620,9 @@ function AutoPublishView(): React.JSX.Element {
           </Card>
         )}
 
-        <Card className={cn('flex min-h-0 flex-1 flex-col', isCalendarMode ? 'lg:basis-full' : 'lg:basis-3/4')}>
+        <Card className={cn('flex min-h-0 flex-1 flex-col', isScheduleMode ? 'lg:basis-full' : 'lg:basis-3/4')}>
           <CardHeader className="flex-row flex-wrap items-start justify-between gap-3">
-            {isCalendarMode ? (
+            {isScheduleMode ? (
               <div className="min-w-0 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <select
@@ -655,9 +656,9 @@ function AutoPublishView(): React.JSX.Element {
                   </div>
                 </div>
                 <div className="min-w-0">
-                  <CardTitle className="truncate">排期日历</CardTitle>
+                  <CardTitle className="truncate">滚动日程</CardTitle>
                   <CardDescription className="truncate">
-                    {activeAccount ? `当前账号：${activeAccount.name}` : '请选择账号查看日历。'}
+                    {activeAccount ? `当前账号：${activeAccount.name}` : '请选择账号查看滚动日程。'}
                   </CardDescription>
                 </div>
               </div>
@@ -673,15 +674,15 @@ function AutoPublishView(): React.JSX.Element {
               <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-950">
                 <button
                   type="button"
-                  onClick={() => setViewMode('calendar')}
+                  onClick={() => setViewMode('schedule')}
                   className={cn(
                     'px-3 py-1.5 text-sm transition',
-                    viewMode === 'calendar'
+                    viewMode === 'schedule'
                       ? 'bg-zinc-900/50 text-zinc-100'
                       : 'text-zinc-400 hover:bg-zinc-900/30 hover:text-zinc-200'
                   )}
                 >
-                  日历
+                  日程
                 </button>
                 <button
                   type="button"
@@ -715,16 +716,18 @@ function AutoPublishView(): React.JSX.Element {
             </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            {viewMode === 'calendar' ? (
+            {viewMode === 'schedule' ? (
               !activeAccountId ? (
                 <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-400">
-                  请选择账号查看队列。
+                  请选择账号查看滚动日程。
                 </div>
               ) : (
                 <div className="h-full min-h-0 flex-1">
                   <CalendarView
                     tasks={tasks}
                     workspacePath={workspacePath}
+                    viewSpan={viewSpan}
+                    onViewSpanChange={setViewSpan}
                     onTasksUpdated={patchTasksInState}
                     onTasksCreated={(created) => {
                       if (created.length === 0) return
