@@ -51,6 +51,10 @@ export class SqliteService {
     const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name?: unknown }>
     const hasLockedAt = columns.some((col) => col?.name === 'locked_at')
     const hasRetryCount = columns.some((col) => col?.name === 'retry_count')
+    const hasTransformPolicy = columns.some((col) => col?.name === 'transformPolicy')
+    const hasRemixSessionId = columns.some((col) => col?.name === 'remixSessionId')
+    const hasRemixSourceTaskIds = columns.some((col) => col?.name === 'remixSourceTaskIds')
+    const hasRemixSeed = columns.some((col) => col?.name === 'remixSeed')
 
     if (!hasLockedAt) {
       db.exec(`ALTER TABLE tasks ADD COLUMN locked_at INTEGER;`)
@@ -58,6 +62,19 @@ export class SqliteService {
     if (!hasRetryCount) {
       db.exec(`ALTER TABLE tasks ADD COLUMN retry_count INTEGER DEFAULT 0;`)
     }
+    if (!hasTransformPolicy) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN transformPolicy TEXT NOT NULL DEFAULT 'none';`)
+    }
+    if (!hasRemixSessionId) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN remixSessionId TEXT;`)
+    }
+    if (!hasRemixSourceTaskIds) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN remixSourceTaskIds TEXT;`)
+    }
+    if (!hasRemixSeed) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN remixSeed TEXT;`)
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
   }
 
   async init(workspacePath: string): Promise<{
@@ -119,6 +136,10 @@ export class SqliteService {
         productId TEXT,
         productName TEXT,
         publishMode TEXT NOT NULL,
+        transformPolicy TEXT NOT NULL DEFAULT 'none',
+        remixSessionId TEXT,
+        remixSourceTaskIds TEXT,
+        remixSeed TEXT,
         scheduledAt INTEGER,
         publishedAt TEXT,
         createdAt INTEGER NOT NULL,
@@ -148,6 +169,7 @@ export class SqliteService {
 
     this.db = db
     this.dbPath = targetPath
+    this.ensureQueueColumns()
 
     let migrationResult: { migrated: boolean; inserted: { accounts: number; tasks: number; products: number }; source: string } | undefined
 
@@ -169,7 +191,6 @@ export class SqliteService {
         void 0
       }
     }
-    this.ensureQueueColumns()
     return { migrationResult }
   }
 
@@ -241,11 +262,13 @@ export class SqliteService {
     const insertTask = db.prepare(
       `INSERT OR IGNORE INTO tasks (
         id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-        title, content, tags, productId, productName, publishMode,
+        title, content, tags, productId, productName, publishMode, transformPolicy,
+        remixSessionId, remixSourceTaskIds, remixSeed,
         scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
       ) VALUES (
         @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath,
-        @title, @content, @tags, @productId, @productName, @publishMode,
+        @title, @content, @tags, @productId, @productName, @publishMode, @transformPolicy,
+        @remixSessionId, @remixSourceTaskIds, @remixSeed,
         @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
       )`
     )
@@ -353,6 +376,13 @@ export class SqliteService {
           void raw
           return 'immediate'
         })()
+        const transformPolicy = normalizeString(t.transformPolicy) === 'remix_v1' ? 'remix_v1' : 'none'
+        const remixSessionId = normalizeOptionalString(t.remixSessionId)
+        const remixSourceTaskIds = (() => {
+          const ids = normalizeStringArray(t.remixSourceTaskIds)
+          return ids.length > 0 ? toJsonText(ids) : null
+        })()
+        const remixSeed = normalizeOptionalString(t.remixSeed)
 
         const createdAt = (() => {
           const num = normalizeTimestampOrNull(t.createdAt)
@@ -386,6 +416,10 @@ export class SqliteService {
             productId: normalizeOptionalString(t.productId),
             productName: normalizeOptionalString(t.productName),
             publishMode,
+            transformPolicy,
+            remixSessionId,
+            remixSourceTaskIds,
+            remixSeed,
             scheduledAt,
             publishedAt,
             createdAt,
@@ -411,6 +445,10 @@ export class SqliteService {
           productId: normalizeOptionalString(t.productId),
           productName: normalizeOptionalString(t.productName),
           publishMode,
+          transformPolicy,
+          remixSessionId,
+          remixSourceTaskIds,
+          remixSeed,
           scheduledAt,
           publishedAt,
           createdAt,

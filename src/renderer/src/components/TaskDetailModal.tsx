@@ -165,7 +165,9 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
 
   if (!isOpen || !task) return null
 
-  const isRemix = Boolean(task.tags?.includes('remix') || task.tags?.includes('裂变'))
+  const isRemix = Boolean(
+    task.transformPolicy === 'remix_v1' || task.tags?.includes('remix') || task.tags?.includes('裂变')
+  )
   const status = formatStatus(task.status)
   const scheduledAtText =
     typeof task.scheduledAt === 'number' && Number.isFinite(task.scheduledAt)

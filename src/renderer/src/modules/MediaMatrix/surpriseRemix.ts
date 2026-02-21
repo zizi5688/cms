@@ -14,11 +14,14 @@ type RemixOptions = {
   similarityThreshold?: number
   prefix?: string
   publishedImageSignatures?: Set<string>
+  seed?: string | number
+  sessionId?: string
+  selectedBatch?: CmsPublishTask[]
 }
 
 const EMOJI_PREFIXES = ['🔥', '💫', '✨', '🌟', '💖', '🎀', '🍃', '🌈', '💎', '🎯']
 
-type CmsTaskCreatePayload = {
+export type SurpriseRemixCreatePayload = {
   accountId: string
   images: string[]
   title: string
@@ -27,6 +30,21 @@ type CmsTaskCreatePayload = {
   productId?: string
   productName?: string
   publishMode?: 'immediate'
+  transformPolicy?: 'none' | 'remix_v1'
+  remixSessionId?: string
+  remixSourceTaskIds?: string[]
+  remixSeed?: string
+}
+
+export type SurpriseRemixCandidateBatch = {
+  id: string
+  sampleTitle: string
+  taskCount: number
+  imagePoolCount: number
+  coverImage: string | null
+  createdAtStart: number
+  createdAtEnd: number
+  tasks: CmsPublishTask[]
 }
 
 function normalizeTitle(value: string): string {
@@ -110,15 +128,44 @@ function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-function pickOne<T>(list: T[]): T | null {
+type RandomSource = () => number
+
+function normalizeSeedInput(seed: string | number | undefined): string {
+  if (typeof seed === 'number' && Number.isFinite(seed)) return String(Math.floor(seed))
+  const text = typeof seed === 'string' ? seed.trim() : ''
+  return text || `seed-${Date.now()}`
+}
+
+function hashSeedToUint32(seedText: string): number {
+  let hash = 2166136261
+  const text = String(seedText ?? '')
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function createSeededRandom(seedText: string): RandomSource {
+  let state = hashSeedToUint32(seedText) || 0x6d2b79f5
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function pickOne<T>(list: T[], random: RandomSource): T | null {
   if (!list || list.length === 0) return null
-  const index = Math.floor(Math.random() * list.length)
+  const index = Math.floor(random() * list.length)
   return list[index] ?? null
 }
 
-function shuffleInPlace<T>(items: T[]): T[] {
+function shuffleInPlace<T>(items: T[], random: RandomSource): T[] {
   for (let i = items.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1))
+    const j = Math.floor(random() * (i + 1))
     const temp = items[i]
     items[i] = items[j] as T
     items[j] = temp as T
@@ -126,13 +173,13 @@ function shuffleInPlace<T>(items: T[]): T[] {
   return items
 }
 
-function sampleUnique<T>(items: T[], count: number): T[] {
+function sampleUnique<T>(items: T[], count: number, random: RandomSource): T[] {
   const target = Math.min(Math.max(0, Math.floor(count)), items.length)
   if (target <= 0) return []
   const pool = items.slice()
   const picked: T[] = []
   for (let i = 0; i < target; i += 1) {
-    const index = Math.floor(Math.random() * pool.length)
+    const index = Math.floor(random() * pool.length)
     picked.push(pool[index] as T)
     pool.splice(index, 1)
   }
@@ -170,6 +217,47 @@ function filterRecentTasks(tasks: CmsPublishTask[], lookbackDays: number): CmsPu
   const days = Number.isFinite(lookbackDays) ? lookbackDays : 14
   const since = Date.now() - Math.max(1, days) * 24 * 60 * 60 * 1000
   return (tasks ?? []).filter((t) => isNumber(t.createdAt) && t.createdAt >= since)
+}
+
+function pickBatchCoverImage(tasks: CmsPublishTask[]): string | null {
+  for (const task of tasks ?? []) {
+    const cover = (task.images ?? []).find((image) => Boolean(image))
+    if (cover) return cover
+  }
+  return null
+}
+
+export function listSurpriseRemixBatches(
+  tasks: CmsPublishTask[],
+  options?: Pick<RemixOptions, 'lookbackDays' | 'timeWindowMs' | 'similarityThreshold'>
+): SurpriseRemixCandidateBatch[] {
+  const lookbackDays = options?.lookbackDays ?? 14
+  const timeWindowMs = options?.timeWindowMs ?? 5 * 60 * 1000
+  const similarityThreshold = options?.similarityThreshold ?? 0.3
+  const recent = filterRecentTasks(tasks ?? [], lookbackDays)
+  const batches = smartClustering(recent, { timeWindowMs, similarityThreshold })
+  return batches
+    .map((batch, idx) => {
+      const imagePool = Array.from(
+        new Set(batch.flatMap((task) => (task.images ?? []).filter((v) => Boolean(v))))
+      )
+      const first = batch[0]
+      const last = batch[batch.length - 1]
+      const createdAtStart = isNumber(first?.createdAt) ? first.createdAt : 0
+      const createdAtEnd = isNumber(last?.createdAt) ? last.createdAt : createdAtStart
+      return {
+        id: `batch-${createdAtStart}-${createdAtEnd}-${idx + 1}`,
+        sampleTitle: shortenForToast(first?.title ?? '', 18),
+        taskCount: batch.length,
+        imagePoolCount: imagePool.length,
+        coverImage: pickBatchCoverImage(batch),
+        createdAtStart,
+        createdAtEnd,
+        tasks: batch
+      } satisfies SurpriseRemixCandidateBatch
+    })
+    .filter((batch) => batch.taskCount >= 3 && batch.imagePoolCount > 0)
+    .sort((a, b) => b.createdAtEnd - a.createdAtEnd)
 }
 
 export function smartClustering(
@@ -236,14 +324,14 @@ export function smartClustering(
 }
 
 /** 均匀展开图片张数，例如 pool=7,min=3,max=7,count=5 → [3,4,5,6,7] (shuffled) */
-function spreadImageCounts(count: number, min: number, max: number): number[] {
+function spreadImageCounts(count: number, min: number, max: number, random: RandomSource): number[] {
   if (min >= max) return Array.from({ length: count }, () => min)
   const span = max - min + 1
   const result: number[] = []
   for (let i = 0; i < count; i += 1) {
     result.push(min + (i % span))
   }
-  return shuffleInPlace(result)
+  return shuffleInPlace(result, random)
 }
 
 /** 计算两组图片路径集合的 Jaccard 相似度 */
@@ -259,23 +347,37 @@ export function buildSurpriseRemix(
 ): {
   selectedBatch: CmsPublishTask[]
   sampleTitle: string
-  payloads: CmsTaskCreatePayload[]
+  payloads: SurpriseRemixCreatePayload[]
+  seed: string
+  sessionId: string
 } | null {
   const count = options?.count ?? 5
   const lookbackDays = options?.lookbackDays ?? 14
   const timeWindowMs = options?.timeWindowMs ?? 5 * 60 * 1000
   const similarityThreshold = options?.similarityThreshold ?? 0.3
   const remixTag = 'remix'
-
-  const recent = filterRecentTasks(tasks ?? [], lookbackDays)
-  const batches = smartClustering(recent, { timeWindowMs, similarityThreshold })
-  const selectedBatch = pickOne(batches)
-  if (!selectedBatch) return null
+  const seed = normalizeSeedInput(options?.seed)
+  const random = createSeededRandom(seed)
+  const sessionId = String(options?.sessionId ?? '').trim() || `remix-${seed}`
+  const selectedBatchFromOptions =
+    Array.isArray(options?.selectedBatch) && options.selectedBatch.length > 0
+      ? options.selectedBatch
+      : null
+  const selectedBatch =
+    selectedBatchFromOptions ??
+    pickOne(
+      listSurpriseRemixBatches(tasks, { lookbackDays, timeWindowMs, similarityThreshold }).map(
+        (candidate) => candidate.tasks
+      ),
+      random
+    )
+  if (!selectedBatch || selectedBatch.length === 0) return null
 
   const allImagesPool = Array.from(
     new Set(selectedBatch.flatMap((task) => (task.images ?? []).filter((v) => Boolean(v))))
   )
   if (allImagesPool.length === 0) return null
+  const selectedBatchIds = selectedBatch.map((task) => task.id)
 
   const imgCounts = selectedBatch.map((t) => (t.images ?? []).length).filter((n) => n > 0)
   const baselineMin = imgCounts.length > 0 ? Math.min(...imgCounts) : 0
@@ -314,26 +416,26 @@ export function buildSurpriseRemix(
   const contentSources = selectedBatch.filter((t) => String(t.content ?? '').trim())
 
   // Step 2a: 标题/正文来源轮换 — shuffle 后 i%length 轮换取值
-  const shuffledTitleSources = shuffleInPlace(titleSources.slice())
-  const shuffledContentSources = shuffleInPlace(contentSources.slice())
+  const shuffledTitleSources = shuffleInPlace(titleSources.slice(), random)
+  const shuffledContentSources = shuffleInPlace(contentSources.slice(), random)
 
   // Step 4a: 图片张数均匀展开
-  const targetCounts = spreadImageCounts(count, minImgCount, maxImgCount)
+  const targetCounts = spreadImageCounts(count, minImgCount, maxImgCount, random)
 
   const createdKeys = new Set<string>()
   const createdImageSets = new Set<string>()
   const usedCovers = new Set<string>()
   const acceptedImageLists: string[][] = []
-  const payloads: CmsTaskCreatePayload[] = []
+  const payloads: SurpriseRemixCreatePayload[] = []
 
   for (let i = 0; i < count; i += 1) {
     // Step 2: 标题/正文轮换选择（在 retry 循环外）
     const titleTask = shuffledTitleSources.length > 0
       ? shuffledTitleSources[i % shuffledTitleSources.length]
-      : pickOne(selectedBatch)
+      : pickOne(selectedBatch, random)
     const contentTask = shuffledContentSources.length > 0
       ? shuffledContentSources[i % shuffledContentSources.length]
-      : pickOne(selectedBatch)
+      : pickOne(selectedBatch, random)
     if (!titleTask || !contentTask) break
 
     const rawTitleBase = normalizeTitle(titleTask.title ?? '') || '(未命名)'
@@ -345,13 +447,13 @@ export function buildSurpriseRemix(
     // Step 4a: 使用均匀展开的张数
     const targetCount = targetCounts[i] ?? minImgCount
 
-    let payload: CmsTaskCreatePayload | null = null
+    let payload: SurpriseRemixCreatePayload | null = null
     let key = ''
     for (let attempt = 0; attempt < 24; attempt += 1) {
-      const baseTask = pickOne(imageSources) ?? pickOne(selectedBatch)
+      const baseTask = pickOne(imageSources, random) ?? pickOne(selectedBatch, random)
       if (!baseTask) break
 
-      const selectedImages = shuffleInPlace(sampleUnique(allImagesPool, targetCount))
+      const selectedImages = shuffleInPlace(sampleUnique(allImagesPool, targetCount, random), random)
       const signature = imagesSignature(selectedImages)
       const shouldEnforceUniqueImages = enforceUniqueImageSets && attempt < 12
       if (shouldEnforceUniqueImages) {
@@ -390,7 +492,11 @@ export function buildSurpriseRemix(
         tags: [remixTag],
         productId: baseTask.productId,
         productName: baseTask.productName,
-        publishMode: 'immediate'
+        publishMode: 'immediate',
+        transformPolicy: 'remix_v1',
+        remixSessionId: sessionId,
+        remixSourceTaskIds: selectedBatchIds,
+        remixSeed: seed
       }
 
       key = comboKey({
@@ -418,6 +524,8 @@ export function buildSurpriseRemix(
   return {
     selectedBatch,
     sampleTitle: shortenForToast(selectedBatch[0]?.title ?? '', 18),
-    payloads
+    payloads,
+    seed,
+    sessionId
   }
 }

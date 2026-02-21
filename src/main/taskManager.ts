@@ -11,6 +11,7 @@ import { SqliteService } from './services/sqliteService'
 export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
 
 export type PublishTaskMode = 'immediate'
+export type TaskTransformPolicy = 'none' | 'remix_v1'
 
 export type PublishTask = {
   id: string
@@ -26,6 +27,10 @@ export type PublishTask = {
   productId?: string
   productName?: string
   publishMode: PublishTaskMode
+  transformPolicy: TaskTransformPolicy
+  remixSessionId?: string
+  remixSourceTaskIds?: string[]
+  remixSeed?: string
   isRaw?: boolean
   scheduledAt?: number
   publishedAt: string | null
@@ -73,6 +78,10 @@ function normalizePublishMode(value: unknown): PublishTaskMode {
   return 'immediate'
 }
 
+function normalizeTransformPolicy(value: unknown): TaskTransformPolicy {
+  return value === 'remix_v1' ? 'remix_v1' : 'none'
+}
+
 function normalizeMediaType(value: unknown): 'image' | 'video' {
   return value === 'video' ? 'video' : 'image'
 }
@@ -103,16 +112,6 @@ function normalizeAssetRelativePath(value: string): string {
   if (!raw) return ''
   const normalized = raw.replace(/\\/g, '/')
   return normalized
-}
-
-function isRemixTags(tags: string[]): boolean {
-  for (const tag of tags) {
-    const t = String(tag ?? '').trim()
-    if (!t) continue
-    if (t === '裂变') return true
-    if (t.toLowerCase() === 'remix') return true
-  }
-  return false
 }
 
 function countXhsTitleChars(value: unknown): number {
@@ -327,7 +326,8 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode,
+          title, content, tags, productId, productName, publishMode, transformPolicy,
+          remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         ORDER BY createdAt DESC`
@@ -347,7 +347,8 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode,
+          title, content, tags, productId, productName, publishMode, transformPolicy,
+          remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE accountId = ?
@@ -371,7 +372,8 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode,
+          title, content, tags, productId, productName, publishMode, transformPolicy,
+          remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE scheduledAt IS NOT NULL
@@ -389,6 +391,7 @@ export class TaskManager {
       accountId: string
       images?: string[]
       imagePath?: string
+      tags?: string[]
       mediaType?: 'image' | 'video'
       videoPath?: string
       title?: string
@@ -396,6 +399,10 @@ export class TaskManager {
       productId?: string
       productName?: string
       publishMode?: PublishTaskMode
+      transformPolicy?: TaskTransformPolicy
+      remixSessionId?: string
+      remixSourceTaskIds?: string[]
+      remixSeed?: string
     }>,
     options?: { requestId?: string; onProgress?: (payload: CreateBatchProgress) => void }
   ): Promise<PublishTask[]> {
@@ -464,7 +471,25 @@ export class TaskManager {
       const tags = Array.isArray(record.tags)
         ? (record.tags as unknown[]).map((v) => normalizeText(v)).filter(Boolean)
         : []
-      const isRemix = isRemixTags(tags)
+      const transformPolicy = normalizeTransformPolicy(record.transformPolicy)
+      const isRemix = transformPolicy === 'remix_v1'
+      const remixSessionId =
+        typeof record.remixSessionId === 'string' ? normalizeText(record.remixSessionId) || undefined : undefined
+      const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
+        ? Array.from(
+            new Set(
+              (record.remixSourceTaskIds as unknown[])
+                .map((v) => normalizeText(v))
+                .filter(Boolean)
+            )
+          )
+        : undefined
+      const remixSeed =
+        typeof record.remixSeed === 'string'
+          ? normalizeText(record.remixSeed) || undefined
+          : Number.isFinite(record.remixSeed)
+            ? String(Math.floor(record.remixSeed as number))
+            : undefined
 
       const imagesFromArray = Array.isArray(record.images)
         ? (record.images as unknown[]).map((v) => normalizeText(v)).filter(Boolean)
@@ -687,6 +712,10 @@ export class TaskManager {
         productId: normalizeText(record.productId) || undefined,
         productName: normalizeText(record.productName) || undefined,
         publishMode: 'immediate',
+        transformPolicy,
+        remixSessionId: remixSessionId || undefined,
+        remixSourceTaskIds: remixSourceTaskIds && remixSourceTaskIds.length > 0 ? remixSourceTaskIds : undefined,
+        remixSeed,
         scheduledAt: Number.isFinite(record.scheduledAt) ? Math.floor(record.scheduledAt as number) : undefined,
         publishedAt: null,
         errorMsg: '',
@@ -707,11 +736,13 @@ export class TaskManager {
     const insert = db.prepare(
       `INSERT INTO tasks (
         id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-        title, content, tags, productId, productName, publishMode,
+        title, content, tags, productId, productName, publishMode, transformPolicy,
+        remixSessionId, remixSourceTaskIds, remixSeed,
         scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
       ) VALUES (
         @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath,
-        @title, @content, @tags, @productId, @productName, @publishMode,
+        @title, @content, @tags, @productId, @productName, @publishMode, @transformPolicy,
+        @remixSessionId, @remixSourceTaskIds, @remixSeed,
         @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
       )`
     )
@@ -769,6 +800,33 @@ export class TaskManager {
 
     const tx = db.transaction(() => {
       db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...unique)
+    })
+    tx()
+
+    return { deleted: deletedIds.length, deletedIds }
+  }
+
+  deleteByRemixSession(
+    remixSessionId: string,
+    options?: { accountId?: string }
+  ): { deleted: number; deletedIds: string[] } {
+    const sessionId = normalizeText(remixSessionId)
+    if (!sessionId) return { deleted: 0, deletedIds: [] }
+    const accountId = normalizeText(options?.accountId)
+    const db = this.sqlite.tryGetConnection()
+    if (!db) return { deleted: 0, deletedIds: [] }
+
+    const where = accountId
+      ? `WHERE remixSessionId = ? AND accountId = ?`
+      : `WHERE remixSessionId = ?`
+    const params = accountId ? [sessionId, accountId] : [sessionId]
+
+    const rows = db.prepare(`SELECT id FROM tasks ${where}`).all(...params) as Array<{ id?: unknown }>
+    const deletedIds = rows.map((row) => (typeof row.id === 'string' ? row.id : '')).filter(Boolean)
+    if (deletedIds.length === 0) return { deleted: 0, deletedIds: [] }
+
+    const tx = db.transaction(() => {
+      db.prepare(`DELETE FROM tasks ${where}`).run(...params)
     })
     tx()
 
@@ -1034,6 +1092,11 @@ export class TaskManager {
     const productId = typeof row.productId === 'string' && row.productId.trim() ? row.productId : undefined
     const productName = typeof row.productName === 'string' && row.productName.trim() ? row.productName : undefined
     const publishMode = normalizePublishMode(row.publishMode)
+    const transformPolicy = normalizeTransformPolicy(row.transformPolicy)
+    const remixSessionId =
+      typeof row.remixSessionId === 'string' && row.remixSessionId.trim() ? row.remixSessionId : undefined
+    const remixSourceTaskIds = this.parseJsonStringArray(row.remixSourceTaskIds)
+    const remixSeed = typeof row.remixSeed === 'string' && row.remixSeed.trim() ? row.remixSeed : undefined
     const scheduledAt = typeof row.scheduledAt === 'number' && Number.isFinite(row.scheduledAt) ? row.scheduledAt : undefined
     const publishedAt = typeof row.publishedAt === 'string' && row.publishedAt.trim() ? row.publishedAt : null
     const createdAt = typeof row.createdAt === 'number' && Number.isFinite(row.createdAt) ? row.createdAt : Date.now()
@@ -1055,6 +1118,10 @@ export class TaskManager {
       productId,
       productName,
       publishMode,
+      transformPolicy,
+      remixSessionId,
+      remixSourceTaskIds: remixSourceTaskIds.length > 0 ? remixSourceTaskIds : undefined,
+      remixSeed,
       isRaw,
       scheduledAt,
       publishedAt,
@@ -1079,6 +1146,13 @@ export class TaskManager {
       productId: task.productId ?? null,
       productName: task.productName ?? null,
       publishMode: task.publishMode,
+      transformPolicy: task.transformPolicy,
+      remixSessionId: task.remixSessionId ?? null,
+      remixSourceTaskIds:
+        task.remixSourceTaskIds && task.remixSourceTaskIds.length > 0
+          ? JSON.stringify(task.remixSourceTaskIds)
+          : null,
+      remixSeed: task.remixSeed ?? null,
       scheduledAt: typeof task.scheduledAt === 'number' ? task.scheduledAt : null,
       publishedAt: task.publishedAt ?? null,
       createdAt: task.createdAt,
@@ -1095,7 +1169,8 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode,
+          title, content, tags, productId, productName, publishMode, transformPolicy,
+          remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE id = ?
@@ -1116,7 +1191,8 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode,
+          title, content, tags, productId, productName, publishMode, transformPolicy,
+          remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE id IN (${placeholders})`

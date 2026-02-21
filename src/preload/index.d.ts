@@ -36,6 +36,10 @@ declare global {
     productId?: string
     productName?: string
     publishMode: 'immediate'
+    transformPolicy?: 'none' | 'remix_v1'
+    remixSessionId?: string
+    remixSourceTaskIds?: string[]
+    remixSeed?: string
     isRaw?: boolean
     scheduledAt?: number
     publishedAt: string | null
@@ -469,6 +473,10 @@ declare global {
             mediaType?: 'image' | 'video'
             videoPath?: string
             videoPreviewPath?: string
+            transformPolicy?: 'none' | 'remix_v1'
+            remixSessionId?: string
+            remixSourceTaskIds?: string[]
+            remixSeed?: string
           }>,
           options?: { requestId?: string }
         ) => Promise<CmsPublishTask[]>
@@ -511,6 +519,10 @@ declare global {
         ): Promise<CmsPublishTask[]>
         importImages: (filePaths: string[]) => Promise<string[]>
         cancelSchedule: (taskIds: string[]) => Promise<CmsPublishTask[]>
+        deleteByRemixSession: (
+          sessionId: string,
+          accountId?: string
+        ) => Promise<{ deleted: number; deletedIds: string[] }>
         deleteBatch: (ids: string[]) => Promise<{ deleted: number; deletedIds: string[] }>
         delete: (taskId: string) => Promise<{ success: boolean }>
         updateStatus: (taskId: string, status: CmsPublishTaskStatus) => Promise<CmsPublishTask | null>

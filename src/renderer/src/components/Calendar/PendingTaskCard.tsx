@@ -44,7 +44,9 @@ function PendingTaskCard({
   const cover = task.images?.[0]
   const resolvedCover = cover ? resolveLocalImage(cover, workspacePath) : null
   const imageCount = Array.isArray(task.images) ? task.images.length : 0
-  const isRemix = Boolean(task.tags?.includes('remix') || task.tags?.includes('裂变'))
+  const isRemix = Boolean(
+    task.transformPolicy === 'remix_v1' || task.tags?.includes('remix') || task.tags?.includes('裂变')
+  )
   const isVideo = task.mediaType === 'video'
   const isFailed = task.status === 'failed' || task.status === 'publish_failed'
   const errorText = (task.errorMsg || task.errorMessage || '').trim()

@@ -1468,6 +1468,17 @@ app.whenReady().then(async () => {
         }
         const videoPath = (explicitVideoPath || inferredVideoPath).trim()
         const mediaType = record.mediaType === 'video' || Boolean(videoPath) ? 'video' : 'image'
+        const transformPolicy = record.transformPolicy === 'remix_v1' ? 'remix_v1' : 'none'
+        const remixSessionId = typeof record.remixSessionId === 'string' ? record.remixSessionId.trim() : ''
+        const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
+          ? record.remixSourceTaskIds.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+          : undefined
+        const remixSeed =
+          typeof record.remixSeed === 'string'
+            ? record.remixSeed.trim()
+            : Number.isFinite(record.remixSeed)
+              ? String(Math.floor(record.remixSeed as number))
+              : ''
         return {
           accountId: typeof record.accountId === 'string' ? record.accountId : '',
           images,
@@ -1478,6 +1489,10 @@ app.whenReady().then(async () => {
           productId: typeof record.productId === 'string' ? record.productId : undefined,
           productName: typeof record.productName === 'string' ? record.productName : undefined,
           publishMode: 'immediate',
+          transformPolicy,
+          remixSessionId: remixSessionId || undefined,
+          remixSourceTaskIds,
+          remixSeed: remixSeed || undefined,
           mediaType,
           videoPath: videoPath || undefined,
           videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined
@@ -1523,6 +1538,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('cms.task.deleteBatch', async (_event, payload: unknown) => {
     const ids = Array.isArray(payload) ? payload.filter((v): v is string => typeof v === 'string') : []
     return taskManager.deleteBatch(ids)
+  })
+
+  ipcMain.handle('cms.task.deleteByRemixSession', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+    const accountId = typeof body.accountId === 'string' ? body.accountId : ''
+    return taskManager.deleteByRemixSession(sessionId, { accountId: accountId || undefined })
   })
 
   ipcMain.handle('cms.task.delete', async (_event, taskId: unknown) => {

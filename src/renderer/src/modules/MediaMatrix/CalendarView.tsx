@@ -32,7 +32,12 @@ import './react-big-calendar.dark.css'
 import { CalendarHeader } from './CalendarHeader'
 import { KanbanWeekView } from './KanbanWeekView'
 import { getTaskDisplayTime, setDateKeepingTime, withDefaultStartTime } from './calendarUtils'
-import { buildSurpriseRemix } from './surpriseRemix'
+import {
+  buildSurpriseRemix,
+  listSurpriseRemixBatches,
+  type SurpriseRemixCandidateBatch,
+  type SurpriseRemixCreatePayload
+} from './surpriseRemix'
 import {
   PENDING_POOL_TITLE_LIMIT,
   getTitleLengthIssue,
@@ -53,6 +58,21 @@ type CalendarEvent = {
   start: Date
   end: Date
   resource: CmsPublishTask
+}
+
+type SurpriseRemixPreview = {
+  sessionId: string
+  seed: string
+  sampleTitle: string
+  selectedBatch: CmsPublishTask[]
+  payloads: SurpriseRemixCreatePayload[]
+}
+
+type SurpriseRemixPickerState = {
+  seed: string
+  publishedImageSignatures: Set<string>
+  candidates: SurpriseRemixCandidateBatch[]
+  selectedBatchId: string
 }
 
 moment.locale('zh-cn')
@@ -101,7 +121,9 @@ function CalendarMonthEventItem({
   const cover = task.images?.[0]
   const resolvedCover = cover ? resolveLocalImage(cover, workspacePath) : null
   const timeText = moment(event.start).format('HH:mm')
-  const isRemix = Boolean(task.tags?.includes('remix') || task.tags?.includes('裂变'))
+  const isRemix = Boolean(
+    task.transformPolicy === 'remix_v1' || task.tags?.includes('remix') || task.tags?.includes('裂变')
+  )
   const isVideo = task.mediaType === 'video'
 
   return (
@@ -154,6 +176,15 @@ function CalendarView({
   const [toastMessage, setToastMessage] = useState<string>('')
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
   const [isRemixing, setIsRemixing] = useState(false)
+  const [isRollingBackRemix, setIsRollingBackRemix] = useState(false)
+  const [remixPicker, setRemixPicker] = useState<SurpriseRemixPickerState | null>(null)
+  const [remixPreview, setRemixPreview] = useState<SurpriseRemixPreview | null>(null)
+  const [lastRemixSession, setLastRemixSession] = useState<{
+    sessionId: string
+    accountId: string
+    seed: string
+    createdCount: number
+  } | null>(null)
   const [flashingTaskIds, setFlashingTaskIds] = useState<Set<string>>(() => new Set())
   const [activeTask, setActiveTask] = useState<CmsPublishTask | null>(null)
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false)
@@ -466,8 +497,33 @@ function CalendarView({
     return () => window.clearTimeout(timer)
   }, [flashingTaskIds])
 
-  const handleSurpriseRemix = async (): Promise<void> => {
-    if (isRemixing) return
+  const buildRemixSeed = (): string => {
+    if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
+      return window.crypto.randomUUID()
+    }
+    return `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`
+  }
+
+  const buildRemixPreviewByBatch = (
+    picker: SurpriseRemixPickerState,
+    batchId: string
+  ): SurpriseRemixPreview | null => {
+    const candidate = picker.candidates.find((item) => item.id === batchId)
+    if (!candidate) return null
+    const scopedSeed = `${picker.seed}:${batchId}`
+    const remix = buildSurpriseRemix(tasks, {
+      count: 5,
+      lookbackDays: 14,
+      publishedImageSignatures: picker.publishedImageSignatures,
+      seed: scopedSeed,
+      sessionId: `remix-${scopedSeed}`,
+      selectedBatch: candidate.tasks
+    })
+    return remix
+  }
+
+  const handleSurpriseRemix = (): void => {
+    if (isRemixing || isRollingBackRemix || remixPicker) return
     // Step 3: 计算已发布任务的图片签名集合用于跨历史去重
     const publishedImageSignatures = new Set<string>()
     for (const t of tasks) {
@@ -477,24 +533,93 @@ function CalendarView({
         publishedImageSignatures.add(unique.join('|'))
       }
     }
-    const remix = buildSurpriseRemix(tasks, { count: 5, lookbackDays: 14, publishedImageSignatures })
-    if (!remix) {
+    const candidates = listSurpriseRemixBatches(tasks, { lookbackDays: 14 })
+    if (candidates.length === 0) {
       setToastMessage('🎲 没有可混剪的批次（近14天、每批≥3条）')
       return
     }
+    const picker: SurpriseRemixPickerState = {
+      seed: buildRemixSeed(),
+      publishedImageSignatures,
+      candidates,
+      selectedBatchId: candidates[0]!.id
+    }
+    const preview = buildRemixPreviewByBatch(picker, picker.selectedBatchId)
+    if (!preview) {
+      setToastMessage('🎲 当前候选批次无法生成预览，请更换批次')
+      return
+    }
+    setRemixPicker(picker)
+    setRemixPreview(preview)
+  }
+
+  const handleSelectRemixBatch = (batchId: string): void => {
+    if (!remixPicker || remixPicker.selectedBatchId === batchId) return
+    const nextPicker: SurpriseRemixPickerState = { ...remixPicker, selectedBatchId: batchId }
+    const nextPreview = buildRemixPreviewByBatch(nextPicker, batchId)
+    if (!nextPreview) {
+      setToastMessage('🎲 该批次当前无法生成预览，请选择其他批次')
+      return
+    }
+    setRemixPicker(nextPicker)
+    setRemixPreview(nextPreview)
+  }
+
+  const handleConfirmSurpriseRemix = async (): Promise<void> => {
+    if (!remixPreview || !remixPicker || isRemixing) return
+    const preview = remixPreview
     setIsRemixing(true)
     try {
-      const created = await window.api.cms.task.createBatch(remix.payloads)
+      const created = await window.api.cms.task.createBatch(preview.payloads, {
+        requestId: preview.sessionId
+      })
+      if (created.length === 0) {
+        setToastMessage('🎲 预览已确认，但没有生成新任务')
+        setRemixPicker(null)
+        setRemixPreview(null)
+        return
+      }
       onTasksCreated?.(created)
       setFlashingTaskIds(new Set(created.map((t) => t.id)))
+      setLastRemixSession({
+        sessionId: preview.sessionId,
+        accountId: preview.payloads[0]?.accountId ?? preview.selectedBatch[0]?.accountId ?? '',
+        seed: preview.seed,
+        createdCount: created.length
+      })
       setToastMessage(
-        `🎲 命中批次："${remix.sampleTitle}" (共${remix.selectedBatch.length}个素材)，已为您生成 ${created.length} 条新任务！`
+        `🎲 命中批次："${preview.sampleTitle}" (共${preview.selectedBatch.length}个素材)，已生成 ${created.length} 条（seed: ${preview.seed}）`
       )
+      setRemixPicker(null)
+      setRemixPreview(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`混剪失败：${message}`)
     } finally {
       setIsRemixing(false)
+    }
+  }
+
+  const handleRollbackLastRemix = async (): Promise<void> => {
+    if (!lastRemixSession || isRollingBackRemix) return
+    const confirmed = window.confirm(
+      `确定撤销上次裂变吗？将删除本次生成的任务（最多 ${lastRemixSession.createdCount} 条）。`
+    )
+    if (!confirmed) return
+    setIsRollingBackRemix(true)
+    try {
+      const result = await window.api.cms.task.deleteByRemixSession(
+        lastRemixSession.sessionId,
+        lastRemixSession.accountId || undefined
+      )
+      if (result.deletedIds.length > 0) onTasksDeleted(result.deletedIds)
+      setToastMessage(`已撤销上次裂变，删除 ${result.deleted} 条任务`)
+      setLastRemixSession(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`撤销失败：${message}`)
+    } finally {
+      setIsRollingBackRemix(false)
     }
   }
 
@@ -504,6 +629,10 @@ function CalendarView({
     if (panel.isCollapsed()) panel.expand()
     else panel.collapse()
   }
+
+  const activeRemixCandidate = remixPicker
+    ? remixPicker.candidates.find((candidate) => candidate.id === remixPicker.selectedBatchId) ?? null
+    : null
 
   return (
     <DndProvider backend={HTML5Backend}>
@@ -532,11 +661,15 @@ function CalendarView({
                   <div className="text-xs text-zinc-400">{unscheduledPool.length}</div>
                   <button
                     type="button"
-                    title="随机选取历史某一批次素材进行裂变生成"
+                    title="选择历史批次后进行裂变生成"
                     className={cn(
                       'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition',
                       'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15',
-                      (isRemixing || tasks.length === 0) && 'opacity-60 pointer-events-none'
+                      (isRemixing ||
+                        isRollingBackRemix ||
+                        Boolean(remixPicker) ||
+                        tasks.length === 0) &&
+                        'opacity-60 pointer-events-none'
                     )}
                     onClick={() => void handleSurpriseRemix()}
                     aria-busy={isRemixing}
@@ -544,6 +677,21 @@ function CalendarView({
                     <span className={cn(isRemixing ? 'animate-pulse' : '')}>🎲</span>
                     <span>{isRemixing ? '生成中' : '随便来5个'}</span>
                   </button>
+                  {lastRemixSession ? (
+                    <button
+                      type="button"
+                      title={`撤销 session: ${lastRemixSession.sessionId}`}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition',
+                        'border-cyan-500/40 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/15',
+                        (isRemixing || isRollingBackRemix) && 'opacity-60 pointer-events-none'
+                      )}
+                      onClick={() => void handleRollbackLastRemix()}
+                      aria-busy={isRollingBackRemix}
+                    >
+                      <span>{isRollingBackRemix ? '撤销中' : '撤销上次'}</span>
+                    </button>
+                  ) : null}
                 </div>
               </div>
               {unscheduledTitleIssueById.size > 0 ? (
@@ -697,6 +845,129 @@ function CalendarView({
           </Panel>
         </Group>
       </div>
+
+      {remixPicker ? (
+        <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/70 p-4 md:items-center">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 p-4 shadow-2xl">
+            <div className="mb-3 text-sm font-semibold text-zinc-100">
+              选择命中批次并确认裂变
+            </div>
+            <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]">
+              <div className="min-h-0 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/30 p-2">
+                <div className="mb-2 px-1 text-xs text-zinc-400">
+                  候选批次 {remixPicker.candidates.length}（近14天）
+                </div>
+                <div className="space-y-2">
+                  {remixPicker.candidates.map((candidate) => {
+                    const cover = candidate.coverImage ? resolveLocalImage(candidate.coverImage, workspacePath) : null
+                    return (
+                      <button
+                        key={candidate.id}
+                        type="button"
+                        className={cn(
+                          'w-full rounded-md border px-2 py-2 text-left transition',
+                          candidate.id === remixPicker.selectedBatchId
+                            ? 'border-amber-500/60 bg-amber-500/10'
+                            : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900/70'
+                        )}
+                        onClick={() => handleSelectRemixBatch(candidate.id)}
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className="h-12 w-12 shrink-0 overflow-hidden rounded border border-zinc-800 bg-zinc-950">
+                            {cover ? <img src={cover} alt="" className="h-full w-full object-cover" /> : null}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-semibold text-zinc-100">{candidate.sampleTitle}</div>
+                            <div className="mt-1 text-[11px] text-zinc-400">
+                              素材 {candidate.taskCount} · 图池 {candidate.imagePoolCount}
+                            </div>
+                            <div className="mt-1 text-[10px] text-zinc-500">
+                              {moment(candidate.createdAtStart).format('MM/DD HH:mm')} -{' '}
+                              {moment(candidate.createdAtEnd).format('MM/DD HH:mm')}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-col rounded-lg border border-zinc-800 bg-zinc-900/20 p-3">
+                {remixPreview ? (
+                  <>
+                    <div className="text-xs text-zinc-300">
+                      命中批次：「{remixPreview.sampleTitle}」 · 候选素材 {remixPreview.selectedBatch.length} · 将创建{' '}
+                      {remixPreview.payloads.length} 条
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-500">
+                      session: {remixPreview.sessionId} · seed: {remixPreview.seed}
+                    </div>
+                    {activeRemixCandidate ? (
+                      <div className="mt-1 text-[11px] text-zinc-500">
+                        批次时间：{moment(activeRemixCandidate.createdAtStart).format('YYYY-MM-DD HH:mm')} -{' '}
+                        {moment(activeRemixCandidate.createdAtEnd).format('YYYY-MM-DD HH:mm')}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                      {remixPreview.payloads.map((payload, index) => (
+                        <div
+                          key={`${remixPreview.sessionId}-${index}`}
+                          className="rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2"
+                        >
+                          <div className="text-xs font-semibold text-zinc-100">
+                            #{index + 1} {payload.title || '(未命名)'}
+                          </div>
+                          <div className="mt-1 text-[11px] text-zinc-400">
+                            图片 {payload.images.length} 张 · 商品 {payload.productName || '未绑定商品'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-zinc-500">当前批次无法生成预览，请选择其他批次。</div>
+                )}
+              </div>
+            </div>
+
+            {remixPreview && remixPreview.payloads.length < 5 ? (
+              <div className="mt-3 text-xs text-amber-200">
+                当前素材约束下仅能生成 {remixPreview.payloads.length} 条（已应用去重保护）。
+              </div>
+            ) : null}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800/60"
+                onClick={() => {
+                  setRemixPreview(null)
+                  setRemixPicker(null)
+                }}
+                disabled={isRemixing}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'rounded-md border px-3 py-1.5 text-xs font-medium',
+                  'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20',
+                  isRemixing && 'opacity-60 pointer-events-none'
+                )}
+                onClick={() => void handleConfirmSurpriseRemix()}
+                disabled={isRemixing || !remixPreview || remixPreview.payloads.length === 0}
+              >
+                {isRemixing
+                  ? '生成中…'
+                  : `确认生成 ${remixPreview ? remixPreview.payloads.length : 0} 条`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {toastMessage ? (
         <div className="fixed bottom-[24px] left-1/2 z-50 -translate-x-1/2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 shadow-lg">
