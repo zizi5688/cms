@@ -1,6 +1,6 @@
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -9,6 +9,10 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 
 type CalendarHeaderProps = {
   viewSpan: 4 | 7
+  weekLabel: string
+  canShiftWeek?: boolean
+  onShiftWeekBackward?: () => void
+  onShiftWeekForward?: () => void
   onViewSpanChange: (next: 4 | 7) => void
   showPublished: boolean
   isSidebarCollapsed?: boolean
@@ -18,6 +22,10 @@ type CalendarHeaderProps = {
 
 function CalendarHeader({
   viewSpan,
+  weekLabel,
+  canShiftWeek = false,
+  onShiftWeekBackward,
+  onShiftWeekForward,
   onViewSpanChange,
   showPublished,
   isSidebarCollapsed,
@@ -98,8 +106,34 @@ function CalendarHeader({
         </div>
       </div>
 
-      <div className="min-w-0 flex-1 px-2 text-center text-sm font-semibold text-zinc-100">
-        滚动日程
+      <div className="min-w-0 flex-1 px-2 text-center">
+        <div className="inline-flex items-center gap-2">
+          {canShiftWeek ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onShiftWeekBackward}
+              aria-label="上一周"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          ) : null}
+          <span className="text-sm font-semibold text-zinc-100">{weekLabel}</span>
+          {canShiftWeek ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onShiftWeekForward}
+              aria-label="下一周"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       <div className="flex items-center gap-2">

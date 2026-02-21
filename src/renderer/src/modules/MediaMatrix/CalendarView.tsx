@@ -82,6 +82,7 @@ function CalendarView({
   const [activeTask, setActiveTask] = useState<CmsPublishTask | null>(null)
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [weekOffset, setWeekOffset] = useState(0)
   const defaultStartTime = useCmsStore((s) => s.preferences.defaultStartTime)
   const defaultInterval = useCmsStore((s) => s.preferences.defaultInterval)
   const batchScheduleTasks = useCmsStore((s) => s.batchScheduleTasks)
@@ -178,6 +179,16 @@ function CalendarView({
     const withTime = tasks.filter((task) => getTaskDisplayTime(task) != null)
     return showPublished ? withTime : withTime.filter((task) => task.status !== 'published')
   }, [showPublished, tasks])
+
+  const calendarStartDate = useMemo(() => {
+    if (viewSpan === 7) return moment().startOf('day').add(weekOffset * 7, 'day').toDate()
+    return moment().startOf('day').toDate()
+  }, [viewSpan, weekOffset])
+
+  const weekLabel = useMemo(() => {
+    const base = viewSpan === 7 ? moment(calendarStartDate) : moment()
+    return `${base.isoWeekYear()} 第 ${base.isoWeek()} 周`
+  }, [calendarStartDate, viewSpan])
 
   const saveTaskSchedule = async (
     task: CmsPublishTask,
@@ -718,6 +729,10 @@ function CalendarView({
             <div className="min-h-0 flex h-full flex-col gap-3">
               <CalendarHeader
                 viewSpan={viewSpan}
+                weekLabel={weekLabel}
+                canShiftWeek={viewSpan === 7}
+                onShiftWeekBackward={() => setWeekOffset((prev) => prev - 1)}
+                onShiftWeekForward={() => setWeekOffset((prev) => prev + 1)}
                 onViewSpanChange={onViewSpanChange}
                 showPublished={showPublished}
                 isSidebarCollapsed={isSidebarCollapsed}
@@ -732,6 +747,7 @@ function CalendarView({
                       tasks={calendarTasks}
                       workspacePath={workspacePath}
                       viewSpan={viewSpan}
+                      startDate={calendarStartDate}
                       showPublished={showPublished}
                       defaultStartTime={defaultStartTime}
                       defaultInterval={defaultInterval}

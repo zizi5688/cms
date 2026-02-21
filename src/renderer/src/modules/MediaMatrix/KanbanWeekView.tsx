@@ -16,6 +16,7 @@ type KanbanWeekViewProps = {
   tasks: CmsPublishTask[]
   workspacePath: string
   viewSpan: 4 | 7
+  startDate: Date
   showPublished: boolean
   defaultStartTime: string
   defaultInterval: number
@@ -36,6 +37,7 @@ function KanbanWeekView({
   tasks,
   workspacePath,
   viewSpan,
+  startDate,
   showPublished,
   defaultStartTime,
   defaultInterval,
@@ -49,9 +51,9 @@ function KanbanWeekView({
   }, [showPublished, tasks])
 
   const days = useMemo(() => {
-    const todayStart = moment().startOf('day')
-    return Array.from({ length: viewSpan }, (_, idx) => todayStart.clone().add(idx, 'day').toDate())
-  }, [viewSpan])
+    const base = moment(startDate).startOf('day')
+    return Array.from({ length: viewSpan }, (_, idx) => base.clone().add(idx, 'day').toDate())
+  }, [startDate, viewSpan])
 
   const tasksByDay = useMemo(() => {
     const dayBuckets = new Map<number, CmsPublishTask[]>()
