@@ -2141,10 +2141,289 @@ function findConfirmButtonInScope(scope: ParentNode): HTMLElement | null {
   return null
 }
 
-type CoverTarget =
-  | { strategy: 'A'; fileInput: HTMLInputElement }
-  | { strategy: 'B'; coverContainer: HTMLElement }
-  | { strategy: 'C'; coverContainer: HTMLElement }
+function findClickableAncestor(el: HTMLElement | null): HTMLElement | null {
+  if (!el) return null
+  const clickable =
+    (el.closest('button, [role="button"], a, div[tabindex], span[tabindex], .ant-btn, label') as HTMLElement | null) || el
+  if (!clickable) return null
+  if (!isVisible(clickable)) return isVisible(el) ? el : null
+  return clickable
+}
+
+function rectToPlain(rect: DOMRect): { top: number; left: number; width: number; height: number } {
+  return {
+    top: Math.round(rect.top),
+    left: Math.round(rect.left),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height)
+  }
+}
+
+function markDebugTarget(el: HTMLElement | null, label: string): void {
+  if (!el) return
+  try {
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'nearest' })
+    } catch (error) {
+      void error
+    }
+
+    const rect = el.getBoundingClientRect()
+    const prevOutline = el.style.outline
+    const prevOutlineOffset = el.style.outlineOffset
+    const prevBoxShadow = el.style.boxShadow
+    const prevBorderRadius = el.style.borderRadius
+
+    el.style.outline = '4px solid #ff2d2d'
+    el.style.outlineOffset = '2px'
+    el.style.boxShadow = '0 0 0 2px rgba(255,45,45,0.35)'
+    el.style.borderRadius = '6px'
+
+    const overlay = document.createElement('div')
+    overlay.setAttribute('data-cms-xhs-cover-debug', '1')
+    overlay.style.position = 'fixed'
+    overlay.style.left = `${Math.max(0, rect.left - 3)}px`
+    overlay.style.top = `${Math.max(0, rect.top - 3)}px`
+    overlay.style.width = `${Math.max(14, rect.width + 6)}px`
+    overlay.style.height = `${Math.max(14, rect.height + 6)}px`
+    overlay.style.border = '3px solid #ff2d2d'
+    overlay.style.background = 'rgba(255,45,45,0.06)'
+    overlay.style.borderRadius = '8px'
+    overlay.style.pointerEvents = 'none'
+    overlay.style.zIndex = '2147483647'
+
+    const badge = document.createElement('div')
+    badge.textContent = label
+    badge.style.position = 'absolute'
+    badge.style.left = '0'
+    badge.style.top = '-24px'
+    badge.style.maxWidth = '320px'
+    badge.style.padding = '2px 6px'
+    badge.style.whiteSpace = 'nowrap'
+    badge.style.overflow = 'hidden'
+    badge.style.textOverflow = 'ellipsis'
+    badge.style.color = '#fff'
+    badge.style.background = '#ff2d2d'
+    badge.style.fontSize = '12px'
+    badge.style.fontWeight = '700'
+    badge.style.lineHeight = '18px'
+    badge.style.borderRadius = '4px'
+    overlay.appendChild(badge)
+    document.body.appendChild(overlay)
+
+    logPlain(`[封面Debug] 红框定位: ${label}`, { element: describeElement(el), rect: rectToPlain(rect) })
+    window.setTimeout(() => {
+      try {
+        el.style.outline = prevOutline
+        el.style.outlineOffset = prevOutlineOffset
+        el.style.boxShadow = prevBoxShadow
+        el.style.borderRadius = prevBorderRadius
+        overlay.remove()
+      } catch (error) {
+        void error
+      }
+    }, 2200)
+  } catch (error) {
+    void error
+  }
+}
+
+function findCoverSectionRoot(): { root: HTMLElement; anchor: HTMLElement } | null {
+  const anchor =
+    findLeafByTextIncludes('设置封面', document.body) ||
+    findLeafByTextIncludes('智能推荐封面', document.body) ||
+    findLeafByTextIncludes('推荐封面', document.body) ||
+    null
+  if (!anchor) return null
+
+  const scoped =
+    (anchor.closest('#publish-container') as HTMLElement | null) ||
+    (anchor.closest('section, article, form, main') as HTMLElement | null) ||
+    (anchor.closest('div') as HTMLElement | null) ||
+    document.body
+
+  return { root: scoped, anchor }
+}
+
+function collectCoverFrameCandidates(root: ParentNode): HTMLElement[] {
+  const selector = [
+    '[class*="cover-item"]',
+    '[class*="coverItem"]',
+    '[class*="cover_item"]',
+    '[class*="cover-frame"]',
+    '[class*="coverFrame"]',
+    '[class*="cover"] img',
+    '[class*="Cover"] img',
+    '[class*="cover"] canvas',
+    '[class*="Cover"] canvas',
+    '[class*="thumbnail"]',
+    '[class*="Thumbnail"]',
+    '[class*="poster"]',
+    '[class*="Poster"]',
+    '[data-testid*="cover"]',
+    '[data-test*="cover"]'
+  ].join(', ')
+  const nodes = Array.from(root.querySelectorAll(selector)).filter((el): el is HTMLElement => el instanceof HTMLElement)
+  const picked: HTMLElement[] = []
+  const seen = new Set<HTMLElement>()
+
+  for (const node of nodes) {
+    const isMediaNode = node.tagName === 'IMG' || node.tagName === 'CANVAS' || node.tagName === 'VIDEO'
+    const rawTarget = isMediaNode
+      ? ((node.closest(
+          '[class*="cover-item"], [class*="coverItem"], [class*="cover_item"], [class*="cover"], [class*="Cover"], [class*="thumbnail"], [class*="poster"], li'
+        ) as HTMLElement | null) ||
+        (node.parentElement as HTMLElement | null) ||
+        node)
+      : node
+    const target = findClickableAncestor(rawTarget) || rawTarget
+    if (!target || seen.has(target)) continue
+    if (!isVisible(target)) continue
+    if (target.closest('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')) continue
+    if (target.closest('header, nav, aside, footer')) continue
+
+    const rect = target.getBoundingClientRect()
+    if (rect.width < 56 || rect.height < 56) continue
+    if (rect.width > 420 || rect.height > 420) continue
+    if (rect.bottom < 0 || rect.top > window.innerHeight + 200) continue
+
+    seen.add(target)
+    picked.push(target)
+  }
+  return picked
+}
+
+function scoreCoverFrameCandidate(target: HTMLElement, anchorRect: DOMRect | null): number {
+  const rect = target.getBoundingClientRect()
+  const classNames = `${String(target.className || '')} ${String(target.parentElement?.className || '')}`.toLowerCase()
+  const text = normalizeText(target.innerText || target.textContent || '')
+  const aspect = rect.width / Math.max(1, rect.height)
+  const area = rect.width * rect.height
+  let score = 0
+
+  if (classNames.includes('cover')) score += 360
+  if (classNames.includes('recommend')) score += 120
+  if (classNames.includes('poster') || classNames.includes('thumbnail')) score += 120
+  if (text.includes('修改封面') || text.includes('替换封面') || text.includes('更换封面')) score += 320
+  if (target.closest('#publish-container')) score += 120
+  if (rect.top >= 20 && rect.top <= window.innerHeight + 120) score += 90
+  if (rect.left >= 0 && rect.left <= window.innerWidth + 60) score += 40
+  if (area >= 4_000 && area <= 120_000) score += 120
+  if (aspect >= 0.45 && aspect <= 1.8) score += 60
+  if (target.closest('[role="list"], ul, ol, [class*="list"], [class*="List"]')) score += 50
+  if (target.querySelector('img, canvas, video')) score += 40
+  if (target.closest('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')) score -= 480
+  if (target.closest('header, nav, aside, footer')) score -= 420
+
+  if (anchorRect) {
+    const dy = rect.top - anchorRect.top
+    if (dy >= -30) score += 120
+    if (dy >= -30 && dy <= 900) score += 150
+    const distance = Math.abs(rect.top - anchorRect.bottom)
+    score += Math.max(0, 600 - distance) * 0.2
+  }
+
+  return score
+}
+
+function pickFirstCoverFrameCandidate(candidates: HTMLElement[], anchorRect: DOMRect | null): HTMLElement | null {
+  const scored = candidates
+    .map((target) => ({ target, rect: target.getBoundingClientRect(), score: scoreCoverFrameCandidate(target, anchorRect) }))
+    .filter((item) => item.score > 0)
+
+  if (scored.length === 0) return null
+  scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.rect.top !== b.rect.top ? a.rect.top - b.rect.top : a.rect.left - b.rect.left))
+
+  const bestScore = scored[0]?.score ?? 0
+  const nearBest = scored.filter((item) => item.score >= bestScore - 120)
+  nearBest.sort((a, b) => (a.rect.top !== b.rect.top ? a.rect.top - b.rect.top : a.rect.left - b.rect.left))
+  return nearBest[0]?.target ?? scored[0]?.target ?? null
+}
+
+function summarizeCoverCandidates(candidates: HTMLElement[]): Array<{ element: Record<string, unknown> | null; rect: { top: number; left: number; width: number; height: number } }> {
+  return candidates.slice(0, 6).map((target) => ({ element: describeElement(target), rect: rectToPlain(target.getBoundingClientRect()) }))
+}
+
+function findFirstCoverFrameUnderSettingSection(): HTMLElement | null {
+  const section = findCoverSectionRoot()
+  const anchorRect = section?.anchor?.getBoundingClientRect?.() || null
+  const searchRoots = [section?.root || null, document.querySelector('#publish-container') as HTMLElement | null, document.body]
+  const visited = new Set<ParentNode>()
+
+  for (const root of searchRoots) {
+    if (!root || visited.has(root)) continue
+    visited.add(root)
+    const candidates = collectCoverFrameCandidates(root)
+    const picked = pickFirstCoverFrameCandidate(candidates, anchorRect)
+    if (picked) return picked
+  }
+  return null
+}
+
+function findCoverModalUploadButton(modalRoot: HTMLElement): HTMLElement | null {
+  const directLeaf = findLeafByTextIncludes('上传图片', modalRoot)
+  if (directLeaf) {
+    const clickable = findClickableAncestor(directLeaf)
+    if (clickable && isVisible(clickable) && !isDisabledLike(clickable)) return clickable
+  }
+
+  const candidates = Array.from(
+    modalRoot.querySelectorAll('button, [role="button"], a, div[tabindex], span[tabindex], .ant-btn')
+  ).filter((el): el is HTMLElement => el instanceof HTMLElement && isVisible(el))
+
+  const scored = candidates
+    .map((el) => {
+      const text = normalizeText(el.innerText || el.textContent || '').replace(/\s+/g, '')
+      if (!text) return null
+      if (!text.includes('上传图片')) return null
+      if (isDisabledLike(el)) return null
+      const rect = el.getBoundingClientRect()
+      const className = typeof el.className === 'string' ? el.className : ''
+      let score = 0
+      if (text === '上传图片' || text === '+上传图片') score += 400
+      if (className.includes('upload') || className.includes('Upload')) score += 120
+      if (className.includes('btn') || className.includes('Btn')) score += 60
+      if (rect.width >= 80 && rect.width <= 260) score += 40
+      score += Math.max(0, 2000 - rect.top) * 0.01
+      return { el, score }
+    })
+    .filter((x): x is { el: HTMLElement; score: number } => Boolean(x))
+
+  scored.sort((a, b) => b.score - a.score)
+  return scored[0]?.el ?? null
+}
+
+function findCoverModalConfirmButton(modalRoot: HTMLElement): HTMLElement | null {
+  const candidates = Array.from(modalRoot.querySelectorAll('button, [role="button"], a, div[tabindex], span[tabindex]')).filter(
+    (el): el is HTMLElement => el instanceof HTMLElement && isVisible(el)
+  )
+
+  const scored = candidates
+    .map((el) => {
+      const text = normalizeText(el.innerText || el.textContent || '')
+      if (!text) return null
+      if (!(text.includes('确定') || text.includes('完成') || text.includes('保存'))) return null
+      if (text.includes('取消')) return null
+      if (isDisabledLike(el)) return null
+      const className = typeof el.className === 'string' ? el.className : ''
+      let score = 0
+      if (text === '确定') score += 500
+      else if (text.includes('确定')) score += 320
+      else if (text.includes('完成')) score += 220
+      else if (text.includes('保存')) score += 180
+      if (className.includes('primary') || className.includes('Primary') || className.includes('ant-btn-primary')) score += 260
+      if (isLikelyRedButton(el)) score += 240
+      const rect = el.getBoundingClientRect()
+      // 通常在弹窗底部靠右
+      score += Math.max(0, rect.top) * 0.01
+      score += Math.max(0, rect.left) * 0.01
+      return { el, score }
+    })
+    .filter((x): x is { el: HTMLElement; score: number } => Boolean(x))
+
+  scored.sort((a, b) => b.score - a.score)
+  return scored[0]?.el ?? null
+}
 
 function stringifyUnknownError(error: unknown): string {
   if (error instanceof Error) return error.message || String(error)
@@ -2155,21 +2434,6 @@ function stringifyUnknownError(error: unknown): string {
     void e
   }
   return String(error)
-}
-
-function isInsideRichTextEditor(el: Element | null): boolean {
-  if (!el) return false
-  const hit =
-    el.closest('[contenteditable="true"]') ||
-    el.closest('[data-slate-editor="true"]') ||
-    el.closest('[data-lexical-editor="true"]') ||
-    el.closest('.ql-editor') ||
-    el.closest('.ProseMirror') ||
-    el.closest('[class*="RichText"]') ||
-    el.closest('[class*="richText"]') ||
-    el.closest('[class*="rich-text"]') ||
-    null
-  return Boolean(hit)
 }
 
 function dispatchHoverEventChain(target: HTMLElement): void {
@@ -2194,266 +2458,210 @@ function dispatchHoverEventChain(target: HTMLElement): void {
   }
 }
 
-function findCoverFileInputDirect(): HTMLInputElement | null {
-  const inputs = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[]
-  const candidates = inputs
-    .filter((el) => {
-      if (!el) return false
-      if (el.disabled) return false
-      if (el.getAttribute('aria-disabled') === 'true') return false
-      const accept = String(el.getAttribute('accept') || '').toLowerCase()
-      if (!accept) return false
-      if (accept.includes('video')) return false
-      if (!(accept.includes('image') || accept.includes('.jpg') || accept.includes('.jpeg') || accept.includes('.png') || accept.includes('.webp'))) return false
-      if (isInsideRichTextEditor(el)) return false
-      return true
-    })
-    .map((el) => {
-      const accept = String(el.getAttribute('accept') || '')
-      const own = normalizeText(`${el.getAttribute('id') || ''} ${el.getAttribute('name') || ''} ${el.getAttribute('class') || ''}`)
-      const scope = (el.closest('section, main, form, article, [role="dialog"], div') as HTMLElement | null) || document.body
-      const scopeText = normalizeText(scope.innerText || scope.textContent || '')
-      const scopeClass = typeof scope.className === 'string' ? scope.className : ''
-      let score = 0
-      if (/(cover|封面)/i.test(own)) score += 8
-      if (/(cover|Cover)/.test(scopeClass)) score += 10
-      if (/(preview|Preview)/.test(scopeClass)) score += 4
-      if (scopeText.includes('封面')) score += 6
-      if (accept.toLowerCase().includes('image')) score += 2
-      return { el, score }
-    })
-    .filter(({ score }) => score >= 8)
-    .sort((a, b) => b.score - a.score)
-
-  return candidates[0]?.el || null
+function getElementCenterPoint(target: HTMLElement): { x: number; y: number } {
+  const rect = target.getBoundingClientRect()
+  return {
+    x: Math.round(rect.left + rect.width / 2),
+    y: Math.round(rect.top + rect.height / 2)
+  }
 }
 
-function findCoverContainerByStructure(): HTMLElement | null {
-  const nodes = Array.from(
-    document.querySelectorAll<HTMLElement>('[class*="cover"], [class*="Cover"], [class*="preview"], [class*="Preview"]')
+type CoverModalUploadSnapshot = {
+  text: string
+  imageSources: string[]
+  selectedFileCount: number
+  fileValues: string[]
+}
+
+function normalizeImageSrcForCompare(src: string): string {
+  const raw = String(src ?? '').trim()
+  if (!raw) return ''
+  return raw.replace(/[?#].*$/, '')
+}
+
+function snapshotCoverModalUploadState(modalRoot: HTMLElement): CoverModalUploadSnapshot {
+  const text = normalizeText(modalRoot.innerText || modalRoot.textContent || '').toLowerCase()
+  const imageSources = Array.from(modalRoot.querySelectorAll('img'))
+    .filter((el): el is HTMLImageElement => el instanceof HTMLImageElement)
+    .map((img) => normalizeImageSrcForCompare(String(img.currentSrc || img.src || '')))
+    .filter(Boolean)
+    .slice(0, 40)
+  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(
+    (el): el is HTMLInputElement => el instanceof HTMLInputElement
   )
-  const candidates = nodes
-    .filter((el) => el instanceof HTMLElement && isVisible(el))
-    .filter((el) => !isInsideRichTextEditor(el))
-    .filter((el) => Boolean(el.querySelector('img')))
-    .map((el) => {
-      const className = typeof el.className === 'string' ? el.className : ''
-      const text = normalizeText(el.innerText || el.textContent || '')
-      const img = el.querySelector('img') as HTMLImageElement | null
-      const rect = img?.getBoundingClientRect() || el.getBoundingClientRect()
-      const areaScore = Math.min(12, Math.max(0, (rect.width * rect.height) / 20_000))
-      let score = 0
-      if (className.includes('cover') || className.includes('Cover')) score += 8
-      if (className.includes('preview') || className.includes('Preview')) score += 5
-      if ((className.includes('cover') || className.includes('Cover')) && (className.includes('preview') || className.includes('Preview'))) score += 4
-      if (text.includes('封面')) score += 4
-      score += areaScore
-      return { el, score }
-    })
-    .filter(({ score }) => score >= 10)
-    .sort((a, b) => b.score - a.score)
-
-  return candidates[0]?.el || null
+  const selectedFileCount = fileInputs.reduce((sum, input) => sum + (input.files?.length ?? 0), 0)
+  const fileValues = fileInputs
+    .map((input) => String(input.value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .slice(0, 20)
+  return { text, imageSources, selectedFileCount, fileValues }
 }
 
-function findCoverContainerByTextFallback(): HTMLElement | null {
-  const anchor =
-    findLeafByTextIncludes('智能推荐封面', document.body) ||
-    findLeafByTextIncludes('推荐封面', document.body) ||
-    findLeafByTextIncludes('设置封面', document.body) ||
-    null
-  if (!anchor) return null
-  const anchorRect = anchor.getBoundingClientRect()
-  const root = (anchor.closest('section, main, form, article, div') as HTMLElement | null) || document.body
-  const images = Array.from(root.querySelectorAll('img')).filter((el): el is HTMLImageElement => el instanceof HTMLImageElement && isVisible(el))
-  const candidates = images
-    .map((img) => ({ img, rect: img.getBoundingClientRect() }))
-    .filter(({ rect }) => rect.width >= 60 && rect.height >= 60)
-    .filter(({ rect }) => rect.top >= anchorRect.top - 30)
-    .filter(({ rect }) => Math.abs(rect.top - anchorRect.bottom) <= 1000 || Math.abs(rect.top - anchorRect.top) <= 900)
-    .sort((a, b) => (a.rect.top - b.rect.top ? a.rect.top - b.rect.top : a.rect.left - b.rect.left))
+function hasCoverSelectionSignal(modalRoot: HTMLElement, coverAbsPath: string, baseline: CoverModalUploadSnapshot): boolean {
+  const now = snapshotCoverModalUploadState(modalRoot)
+  const coverBase = path.basename(coverAbsPath).toLowerCase()
+  const coverStem = coverBase.includes('.') ? coverBase.slice(0, coverBase.lastIndexOf('.')) : coverBase
 
-  const picked = candidates[0]?.img || null
-  if (!picked) return null
-  const container =
-    (picked.closest('.cover-item, [class*="cover-item"], [class*="coverItem"], [class*="cover_item"]') as HTMLElement | null) ||
-    (picked.closest('[class*="cover"], [class*="Cover"], [class*="preview"], [class*="Preview"]') as HTMLElement | null) ||
-    (picked.closest('li, div') as HTMLElement | null) ||
-    (picked.parentElement as HTMLElement | null) ||
-    (picked as unknown as HTMLElement)
+  if (now.selectedFileCount > baseline.selectedFileCount) return true
+  if (coverBase && now.fileValues.some((v) => v.includes(coverBase))) return true
+  if (coverBase && now.text.includes(coverBase)) return true
+  if (coverStem && coverStem.length >= 6 && now.text.includes(coverStem)) return true
 
-  if (!container || !isVisible(container)) return null
-  if (isInsideRichTextEditor(container)) return null
-  return container
-}
+  const imageChanged = now.imageSources.join('|') !== baseline.imageSources.join('|')
+  const textChanged = now.text !== baseline.text
+  const uploadWords = ['上传中', '处理中', '已上传', '上传成功', '重新上传', '替换', '更换']
+  if (uploadWords.some((w) => now.text.includes(w)) && (imageChanged || textChanged)) return true
 
-function findCoverTarget(): CoverTarget | null {
-  const fileInput = findCoverFileInputDirect()
-  if (fileInput) return { strategy: 'A', fileInput }
-  const structural = findCoverContainerByStructure()
-  if (structural) return { strategy: 'B', coverContainer: structural }
-  const textFallback = findCoverContainerByTextFallback()
-  if (textFallback) return { strategy: 'C', coverContainer: textFallback }
-  return null
+  return false
 }
 
 async function setVideoCover(coverImagePath: string): Promise<void> {
   const coverPath = String(coverImagePath ?? '').trim()
   if (!coverPath) return
 
-  const deadline = Date.now() + 10_000
+  const deadline = Date.now() + 25_000
   const timeLeft = (): number => Math.max(0, deadline - Date.now())
   const ensureTime = (): void => {
     if (timeLeft() <= 0) throw new Error('封面设置超时')
   }
 
   try {
-    const dt = await createDataTransferForImages([coverPath])
+    const resolvedCoverPath = await resolveWorkspaceFilePath(coverPath)
+    if (!resolvedCoverPath || isHttpUrl(resolvedCoverPath)) {
+      throw new Error(`封面路径无效: ${coverPath}`)
+    }
     ensureTime()
 
-    const target = await waitFor(() => findCoverTarget() || null, {
-      timeoutMs: Math.min(3000, timeLeft()),
-      intervalMs: 150,
-      timeoutMessage: '未找到封面目标（将转为人工接管）。'
+    const firstCoverEntry = await waitFor(() => findFirstCoverFrameUnderSettingSection() || null, {
+      timeoutMs: Math.min(10_000, timeLeft()),
+      intervalMs: 180,
+      timeoutMessage: '未找到“设置封面”区域下第一个封面框。'
+    }).catch((error) => {
+      const debugCandidates = summarizeCoverCandidates(collectCoverFrameCandidates(document.body))
+      logPlain('[封面Debug] 首个封面框定位失败', {
+        error: stringifyUnknownError(error),
+        candidates: debugCandidates
+      })
+      throw error
     })
     ensureTime()
-
-    if (target.strategy === 'A') {
-      dispatchUploadEventsToInput(target.fileInput, dt)
-      await sleep(Math.min(700, Math.max(120, timeLeft())))
-
-      const modal =
-        ((target.fileInput.closest('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]') as HTMLElement | null) || null) ||
-        findTopMostVisibleModal()
-      if (modal && isVisible(modal)) {
-        const btn = findConfirmButtonInScope(modal)
-        if (btn) {
-          await SyncHumanizer.click(btn, '封面弹窗确认按钮（策略A）')
-          await waitFor(() => (isVisible(modal) ? null : true), {
-            timeoutMs: Math.min(1500, timeLeft()),
-            intervalMs: 150,
-            timeoutMessage: '封面弹窗未关闭（策略A）。'
-          }).catch(() => void 0)
-        }
-      }
-      return
-    }
-
-    const coverItem = target.coverContainer
     try {
-      coverItem.scrollIntoView({ block: 'center', inline: 'nearest' })
+      firstCoverEntry.scrollIntoView({ block: 'center', inline: 'nearest' })
     } catch (error) {
       void error
     }
+    markDebugTarget(firstCoverEntry, '设置封面区域第一个封面框')
     await Humanizer.sleep(120, Math.min(420, Math.max(120, timeLeft())))
     ensureTime()
 
-    dispatchHoverEventChain(coverItem)
+    dispatchHoverEventChain(firstCoverEntry)
     await Humanizer.sleep(180, Math.min(520, Math.max(180, timeLeft())))
     ensureTime()
+    await SyncHumanizer.click(firstCoverEntry, '首个封面框（触发修改封面）')
 
-    const findCoverAction = (): HTMLElement | null => {
-      const keywords = ['修改封面', '替换封面', '更换封面', '修改', '替换']
-      for (const kw of keywords) {
-        const leaf = findLeafByTextIncludes(kw, coverItem) || null
-        if (!leaf) continue
-        const btn = (leaf.closest('button, [role="button"], a, div[tabindex], span[tabindex]') as HTMLElement | null) || leaf
-        if (btn && isVisible(btn)) return btn
+    const modalRoot = await waitFor(
+      () => {
+        const modal = findTopMostVisibleModal()
+        if (!modal || !isVisible(modal)) return null
+        if (findCoverModalUploadButton(modal)) return modal
+        if (findImageFileInputInScope(modal)) return modal
+        return null
+      },
+      {
+        timeoutMs: Math.min(8_000, timeLeft()),
+        intervalMs: 180,
+        timeoutMessage: '未出现封面弹窗（含上传图片入口）。'
+      }
+    )
+    ensureTime()
+
+    const uploadBtn = await waitFor(() => findCoverModalUploadButton(modalRoot) || null, {
+      timeoutMs: Math.min(5_000, timeLeft()),
+      intervalMs: 180,
+      timeoutMessage: '未找到“上传图片”按钮。'
+    })
+    markDebugTarget(uploadBtn, '封面弹窗上传图片按钮')
+    const beforeUploadState = snapshotCoverModalUploadState(modalRoot)
+    let lastPickResult: unknown = null
+    let nativePickSuccess = false
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      dispatchHoverEventChain(uploadBtn)
+      await Humanizer.sleep(90, Math.min(260, Math.max(90, timeLeft())))
+      ensureTime()
+
+      const point = getElementCenterPoint(uploadBtn)
+      const nativeClickOk = await ipcRenderer
+        .invoke('cms.xhs.nativeClickAt', { x: point.x, y: point.y })
+        .catch(() => false)
+      logPlain(`[封面] 上传按钮点击尝试 #${attempt}`, {
+        nativeClickOk,
+        point,
+        element: describeElement(uploadBtn)
+      })
+
+      if (!nativeClickOk) {
+        await SyncHumanizer.click(uploadBtn, `封面弹窗上传图片按钮（备用点击 #${attempt}）`)
+        clickElement(uploadBtn)
       }
 
-      const coverRect = coverItem.getBoundingClientRect()
-      const expanded = {
-        left: coverRect.left - 100,
-        right: coverRect.right + 100,
-        top: coverRect.top - 100,
-        bottom: coverRect.bottom + 100
-      }
-      const isNear = (r: DOMRect): boolean =>
-        r.right >= expanded.left && r.left <= expanded.right && r.bottom >= expanded.top && r.top <= expanded.bottom
+      await Humanizer.sleep(150, Math.min(520, Math.max(150, timeLeft())))
+      ensureTime()
 
-      const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, div[tabindex], span[tabindex], span, div')).filter(
-        (el): el is HTMLElement => el instanceof HTMLElement && isVisible(el)
+      const pickResult = await ipcRenderer
+        .invoke('cms.xhs.nativeDialogPickFile', { filePath: resolvedCoverPath })
+        .catch((error) => ({ ok: false, reason: 'ipc-error', detail: stringifyUnknownError(error) }))
+      lastPickResult = pickResult
+      const pickOk = Boolean(pickResult && typeof pickResult === 'object' && (pickResult as { ok?: unknown }).ok === true)
+
+      if (pickOk) {
+        nativePickSuccess = true
+        logPlain('[封面] 系统文件选择器已自动按路径完成选图。', { attempt, pickResult })
+        break
+      }
+
+      logPlain(`[封面] 系统选图尝试 #${attempt} 未成功，将重试一次点击。`, pickResult)
+      await sleep(Math.min(380, Math.max(180, timeLeft())))
+      ensureTime()
+    }
+
+    if (!nativePickSuccess) {
+      throw new Error(
+        `系统文件选择器自动选图失败：${stringifyUnknownError(lastPickResult)}。请检查“系统设置 > 隐私与安全性 > 辅助功能/自动化”是否允许 Super CMS 控制 System Events。`
       )
+    }
 
-      let best: { el: HTMLElement; score: number } | null = null
-      for (const el of candidates) {
-        const t = normalizeText(el.innerText || el.textContent || '')
-        if (!t) continue
-        if (t.length > 16) continue
-        if (!(t.includes('修改') || t.includes('替换') || t.includes('封面'))) continue
-        const rect = el.getBoundingClientRect()
-        if (!isNear(rect)) continue
-        const cx = rect.left + rect.width / 2
-        const cy = rect.top + rect.height / 2
-        const tx = coverRect.left + coverRect.width / 2
-        const ty = coverRect.top + coverRect.height / 2
-        const dist = Math.hypot(cx - tx, cy - ty)
-        if (!best || dist < best.score) best = { el, score: dist }
+    const selectionReady = await waitFor(
+      () => (hasCoverSelectionSignal(modalRoot, resolvedCoverPath, beforeUploadState) ? true : null),
+      {
+        timeoutMs: Math.min(7_000, timeLeft()),
+        intervalMs: 180,
+        timeoutMessage: '系统文件选择器未确认选中封面文件，停止点击确定。'
       }
-
-      if (best?.el) return best.el
-      return null
+    ).catch(() => null)
+    if (!selectionReady) {
+      throw new Error('系统文件选择器未确认封面已选中，已停止后续“确定”点击。')
     }
+    logPlain('[封面] 已检测到封面文件选中信号，继续点击确定。')
 
-    const actionEl = findCoverAction()
-    if (actionEl) {
-      await SyncHumanizer.click(actionEl, `修改/替换封面入口（策略${target.strategy}）`)
-    } else {
-      await SyncHumanizer.click(coverItem, `封面预览图容器（策略${target.strategy}）`)
-    }
-
-    await Humanizer.sleep(180, Math.min(650, Math.max(180, timeLeft())))
+    await sleep(Math.min(900, Math.max(320, timeLeft())))
     ensureTime()
 
-    const modalRoot = await waitFor(() => findTopMostVisibleModal(), {
-      timeoutMs: Math.min(2500, timeLeft()),
-      intervalMs: 150,
-      timeoutMessage: '封面弹窗未出现。'
+    const confirmBtn = await waitFor(() => findCoverModalConfirmButton(modalRoot) || findConfirmButtonInScope(modalRoot) || null, {
+      timeoutMs: Math.min(6_000, timeLeft()),
+      intervalMs: 180,
+      timeoutMessage: '未找到封面弹窗“确定”按钮。'
     })
-    ensureTime()
-
-    const findTabByText = (keyword: string): HTMLElement | null => {
-      const wanted = normalizeText(keyword)
-      if (!wanted) return null
-      const candidates = Array.from(modalRoot.querySelectorAll('[role="tab"], .ant-tabs-tab, [class*="tab"], [class*="Tab"]')).filter(
-        (el): el is HTMLElement => el instanceof HTMLElement && isVisible(el)
-      )
-      const matched = candidates.filter((el) => normalizeText(el.innerText || el.textContent || '').includes(wanted))
-      if (matched.length === 0) return null
-      matched.sort((a, b) => normalizeText(a.innerText || a.textContent || '').length - normalizeText(b.innerText || b.textContent || '').length)
-      return matched[0] || null
-    }
-
-    const uploadTab = findTabByText('上传封面') || findTabByText('上传图片') || null
-    if (uploadTab) {
-      await SyncHumanizer.click(uploadTab, '封面弹窗：上传封面 Tab')
-      await Humanizer.sleep(120, Math.min(450, Math.max(120, timeLeft())))
-    }
-    ensureTime()
-
-    const fileInput = await waitFor(() => findImageFileInputInScope(modalRoot) || findImageFileInput() || null, {
-      timeoutMs: Math.min(2500, timeLeft()),
-      intervalMs: 150,
-      timeoutMessage: '未找到封面上传 input。'
-    })
-    dispatchUploadEventsToInput(fileInput, dt)
-    await sleep(Math.min(700, Math.max(180, timeLeft())))
-    ensureTime()
-
-    const confirmBtn = await waitFor(() => findConfirmButtonInScope(modalRoot) || null, {
-      timeoutMs: Math.min(2500, timeLeft()),
-      intervalMs: 150,
-      timeoutMessage: '未找到封面弹窗“确定/完成”按钮。'
-    })
+    markDebugTarget(confirmBtn, '封面弹窗确定按钮')
     await SyncHumanizer.click(confirmBtn, '封面弹窗确认按钮')
 
     await waitFor(() => (isVisible(modalRoot) ? null : true), {
-      timeoutMs: Math.min(2500, timeLeft()),
-      intervalMs: 150,
+      timeoutMs: Math.min(8_000, timeLeft()),
+      intervalMs: 180,
       timeoutMessage: '封面弹窗未关闭。'
     }).catch(() => void 0)
   } catch (error) {
-    logPlain(`[Warning] 封面设置失败，转为人工接管`, { error: stringifyUnknownError(error) })
+    logPlain('[Warning] 封面设置失败，转为人工接管', { error: stringifyUnknownError(error) })
     return
   }
 }
@@ -2752,15 +2960,9 @@ async function publishVideoTask(
     await switchToVideoUploadTab()
   })
 
-  await runStep('上传视频并等待进入“设置封面”阶段', async () => {
+  await runStep('上传视频', async () => {
     await robustVideoUpload(videoPath)
-    await waitFor(
-      () =>
-        findByText('设置封面', { selector: 'div, span, h1, h2, h3, h4, p, label', match: 'contains' }) ||
-        findLeafByTextIncludes('设置封面', document.body) ||
-        null,
-      { timeoutMs: 120_000, intervalMs: 500, timeoutMessage: '视频上传后未出现“设置封面”（可能页面结构变化或处理过慢）。' }
-    )
+    await sleep(350)
   })
 
   await runStep('上传视频封面（先封面后文案）', async () => {

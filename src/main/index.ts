@@ -98,6 +98,111 @@ function sleepMs(ms: number): Promise<void> {
   })
 }
 
+type NativeDialogSelectResult = {
+  ok: boolean
+  reason?: string
+  detail?: string
+}
+
+async function pickFileInMacNativeDialog(filePath: string): Promise<NativeDialogSelectResult> {
+  if (process.platform !== 'darwin') {
+    return { ok: false, reason: 'unsupported-platform', detail: process.platform }
+  }
+
+  const normalizedPath = resolve(String(filePath ?? '').trim())
+  if (!normalizedPath) return { ok: false, reason: 'empty-path' }
+  if (!existsSync(normalizedPath)) return { ok: false, reason: 'file-not-found', detail: normalizedPath }
+  try {
+    const info = statSync(normalizedPath)
+    if (!info.isFile()) return { ok: false, reason: 'not-a-file', detail: normalizedPath }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, reason: 'stat-failed', detail: message }
+  }
+
+  const scriptLines = [
+    'set targetPath to system attribute "CMS_XHS_DIALOG_FILE_PATH"',
+    'set the clipboard to targetPath',
+    'tell application "System Events"',
+    '  delay 0.35',
+    '  keystroke "g" using {command down, shift down}',
+    '  delay 0.45',
+    '  keystroke "v" using {command down}',
+    '  delay 0.25',
+    '  key code 36',
+    '  delay 0.55',
+    '  set didClickOpen to false',
+    '  set frontProc to first process whose frontmost is true',
+    '  tell frontProc',
+    '    try',
+    '      click button "打开" of window 1',
+    '      set didClickOpen to true',
+    '    on error',
+    '      try',
+    '        click button "Open" of window 1',
+    '        set didClickOpen to true',
+    '      on error',
+    '        try',
+    '          click button "打开" of sheet 1 of window 1',
+    '          set didClickOpen to true',
+    '        on error',
+    '          try',
+    '            click button "Open" of sheet 1 of window 1',
+    '            set didClickOpen to true',
+    '          on error',
+    '            set didClickOpen to false',
+    '          end try',
+    '        end try',
+    '      end try',
+    '    end try',
+    '  end tell',
+    '  if didClickOpen is false then key code 36',
+    'end tell'
+  ]
+  const args = scriptLines.flatMap((line) => ['-e', line])
+
+  const result = await new Promise<NativeDialogSelectResult>((resolvePromise) => {
+    const child = spawn('osascript', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CMS_XHS_DIALOG_FILE_PATH: normalizedPath }
+    })
+
+    let stdout = ''
+    let stderr = ''
+    const timeout = setTimeout(() => {
+      try {
+        child.kill('SIGKILL')
+      } catch (error) {
+        void error
+      }
+      resolvePromise({ ok: false, reason: 'timeout' })
+    }, 8_000)
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk ?? '')
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk ?? '')
+    })
+    child.on('error', (error) => {
+      clearTimeout(timeout)
+      const message = error instanceof Error ? error.message : String(error)
+      resolvePromise({ ok: false, reason: 'spawn-failed', detail: message })
+    })
+    child.on('exit', (code) => {
+      clearTimeout(timeout)
+      if (code === 0) {
+        resolvePromise({ ok: true })
+        return
+      }
+      const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join(' | ')
+      resolvePromise({ ok: false, reason: `osascript-exit-${code ?? 'null'}`, detail })
+    })
+  })
+
+  return result
+}
+
 function appendCoverFetchDebugLog(line: string): void {
   try {
     const ts = new Date().toISOString()
@@ -1687,6 +1792,23 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle('cms.xhs.nativeClickAt', async (event, payload: { x?: unknown; y?: unknown }) => {
+    const x = Number(payload?.x)
+    const y = Number(payload?.y)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+    const ix = Math.max(0, Math.round(x))
+    const iy = Math.max(0, Math.round(y))
+    try {
+      event.sender.sendInputEvent({ type: 'mouseMove', x: ix, y: iy })
+      event.sender.sendInputEvent({ type: 'mouseDown', x: ix, y: iy, button: 'left', clickCount: 1 })
+      event.sender.sendInputEvent({ type: 'mouseUp', x: ix, y: iy, button: 'left', clickCount: 1 })
+      return true
+    } catch (error) {
+      void error
+      return false
+    }
+  })
+
   ipcMain.on('cms.xhs.paste', (event, text: unknown) => {
     const payload = typeof text === 'string' ? text : ''
     clipboard.writeText(payload)
@@ -1695,6 +1817,12 @@ app.whenReady().then(async () => {
     } catch (error) {
       void error
     }
+  })
+
+  ipcMain.handle('cms.xhs.nativeDialogPickFile', async (_event, payload: { filePath?: unknown }) => {
+    const filePath = typeof payload?.filePath === 'string' ? payload.filePath.trim() : ''
+    if (!filePath) return { ok: false, reason: 'empty-path' }
+    return pickFileInMacNativeDialog(filePath)
   })
 
   ipcMain.handle('dialog:openDirectory', async (event) => {
