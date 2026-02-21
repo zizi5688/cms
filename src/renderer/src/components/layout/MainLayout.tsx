@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type * as React from 'react'
 
 import { ConsolePanel } from '@renderer/components/layout/ConsolePanel'
@@ -46,20 +46,23 @@ function MainLayout(): React.JSX.Element {
   const isHeatboard = active === 'heatboard'
   const [mountedModules, setMountedModules] = useState<Set<SidebarItemKey>>(() => new Set([active]))
 
-  // Keep visited modules mounted so in-flight local task state survives module switching.
-  useEffect(() => {
-    setMountedModules((prev) => {
-      if (prev.has(active)) return prev
-      const next = new Set(prev)
-      next.add(active)
-      return next
-    })
-  }, [active])
+  const handleModuleChange = useCallback(
+    (next: SidebarItemKey): void => {
+      setActive(next)
+      setMountedModules((prev) => {
+        if (prev.has(next)) return prev
+        const updated = new Set(prev)
+        updated.add(next)
+        return updated
+      })
+    },
+    [setActive]
+  )
 
   return (
     <div className="flex h-full min-h-screen flex-col bg-zinc-950 text-zinc-50">
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <Sidebar active={active} onChange={setActive} />
+        <Sidebar active={active} onChange={handleModuleChange} />
         <main
           className={cn(
             'min-h-0 flex-1',
