@@ -10,22 +10,12 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 
 import { CalendarTaskCard } from './CalendarTaskCard'
 import { type CalendarDragItem, calendarDndTypes } from './calendarDnd'
-import { getTaskDisplayTime, getWeekDates, setDateKeepingTime, withDefaultStartTime } from './calendarUtils'
-
-const weekMap: Record<number, string> = {
-  0: '周日',
-  1: '周一',
-  2: '周二',
-  3: '周三',
-  4: '周四',
-  5: '周五',
-  6: '周六'
-}
+import { getTaskDisplayTime, setDateKeepingTime, withDefaultStartTime } from './calendarUtils'
 
 type KanbanWeekViewProps = {
   tasks: CmsPublishTask[]
   workspacePath: string
-  baseDate: Date
+  viewSpan: 4 | 7
   showPublished: boolean
   defaultStartTime: string
   defaultInterval: number
@@ -45,7 +35,7 @@ type KanbanWeekViewProps = {
 function KanbanWeekView({
   tasks,
   workspacePath,
-  baseDate,
+  viewSpan,
   showPublished,
   defaultStartTime,
   defaultInterval,
@@ -54,25 +44,23 @@ function KanbanWeekView({
   onBatchScheduleTasks,
   onUnscheduleTask
 }: KanbanWeekViewProps): React.JSX.Element {
-  const days = useMemo(() => getWeekDates(baseDate), [baseDate])
-
   const filteredTasks = useMemo(() => {
     return showPublished ? tasks : tasks.filter((t) => t.status !== 'published')
   }, [showPublished, tasks])
 
+  const days = useMemo(() => {
+    const todayStart = moment().startOf('day')
+    return Array.from({ length: viewSpan }, (_, idx) => todayStart.clone().add(idx, 'day').toDate())
+  }, [viewSpan])
+
   const tasksByDay = useMemo(() => {
     const dayBuckets = new Map<number, CmsPublishTask[]>()
-    for (const day of days) dayBuckets.set(day.getTime(), [])
+    for (const day of days) dayBuckets.set(moment(day).startOf('day').valueOf(), [])
 
     for (const task of filteredTasks) {
       const displayAt = getTaskDisplayTime(task)
       if (displayAt == null) continue
-      const scheduledMoment = moment(displayAt)
-      const start = moment(baseDate).startOf('week').startOf('day')
-      const end = moment(start).add(7, 'day')
-      if (scheduledMoment.isBefore(start) || !scheduledMoment.isBefore(end)) continue
-
-      const dayKey = scheduledMoment.startOf('day').toDate().getTime()
+      const dayKey = moment(displayAt).startOf('day').valueOf()
       const bucket = dayBuckets.get(dayKey)
       if (bucket) bucket.push(task)
     }
@@ -86,12 +74,18 @@ function KanbanWeekView({
       dayBuckets.set(key, bucket)
     }
     return dayBuckets
-  }, [baseDate, days, filteredTasks])
+  }, [days, filteredTasks])
 
   return (
-    <div className="grid grid-cols-7 h-full divide-x divide-zinc-800">
+    <div
+      className="grid h-full divide-x divide-zinc-800"
+      style={{
+        gridTemplateColumns:
+          viewSpan === 7 ? 'repeat(7, minmax(200px, 1fr))' : 'repeat(4, 1fr)'
+      }}
+    >
       {days.map((day) => {
-        const key = day.getTime()
+        const key = moment(day).startOf('day').valueOf()
         const bucket = tasksByDay.get(key) ?? []
         return (
           <DayColumn
@@ -99,6 +93,7 @@ function KanbanWeekView({
             date={day}
             tasks={bucket}
             workspacePath={workspacePath}
+            compact={viewSpan === 7}
             defaultStartTime={defaultStartTime}
             defaultInterval={defaultInterval}
             onTaskDoubleClick={onTaskDoubleClick}
@@ -112,10 +107,21 @@ function KanbanWeekView({
   )
 }
 
+function getRollingColumnHeader(date: Date): string {
+  const day = moment(date)
+  const offset = day.clone().startOf('day').diff(moment().startOf('day'), 'day')
+  const dateText = day.format('MM-DD')
+  const weekdayCn = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][day.day()] ?? '星期'
+  if (offset === 0) return `今天 ${dateText}`
+  if (offset === 1) return `明天 ${dateText}`
+  return `${weekdayCn} ${dateText}`
+}
+
 function DayColumn({
   date,
   tasks,
   workspacePath,
+  compact,
   defaultStartTime,
   defaultInterval,
   onTaskDoubleClick,
@@ -126,6 +132,7 @@ function DayColumn({
   date: Date
   tasks: CmsPublishTask[]
   workspacePath: string
+  compact: boolean
   defaultStartTime: string
   defaultInterval: number
   onTaskDoubleClick?: (task: CmsPublishTask) => void
@@ -269,7 +276,7 @@ function DayColumn({
     dropRef(columnRef)
   }, [dropRef])
 
-  const headerText = `${weekMap[date.getDay()] ?? '周'} ${moment(date).format('M/DD')}`
+  const headerText = getRollingColumnHeader(date)
   const isActive = isOver && canDrop
   const isBlocked = isOver && !canDrop
   const handleSelect = (event: React.MouseEvent, taskId: string): void => {
@@ -321,6 +328,7 @@ function DayColumn({
             <CalendarTaskCard
               task={task}
               workspacePath={workspacePath}
+              compact={compact}
               isSelected={selectedTaskIds.includes(task.id)}
               onUnschedule={onUnscheduleTask}
               onChangeScheduledAt={(t, nextScheduledAt) => onScheduleTask(t, nextScheduledAt)}

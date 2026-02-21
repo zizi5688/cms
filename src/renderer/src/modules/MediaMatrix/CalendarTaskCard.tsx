@@ -13,6 +13,7 @@ import { calendarDndTypes, type ScheduledTaskDragItem } from './calendarDnd'
 type CalendarTaskCardProps = {
   task: CmsPublishTask
   workspacePath: string
+  compact?: boolean
   isSelected?: boolean
   onUnschedule: (task: CmsPublishTask) => void | Promise<void>
   onChangeScheduledAt: (task: CmsPublishTask, nextScheduledAt: number) => void | Promise<void>
@@ -21,6 +22,7 @@ type CalendarTaskCardProps = {
 function CalendarTaskCard({
   task,
   workspacePath,
+  compact = false,
   isSelected,
   onUnschedule,
   onChangeScheduledAt
@@ -156,7 +158,8 @@ function CalendarTaskCard({
     <div
       ref={cardRef}
       className={cn(
-        'group relative flex min-h-[88px] items-start gap-3 rounded-md border p-3 text-xs text-zinc-100',
+        'group relative flex items-start rounded-md border text-xs text-zinc-100',
+        compact ? 'min-h-[74px] gap-2 p-2' : 'min-h-[88px] gap-3 p-3',
         isPublished
           ? 'border-emerald-900/50 bg-emerald-950/20 opacity-75'
           : isFailed
@@ -174,18 +177,28 @@ function CalendarTaskCard({
       )}
       title={tooltipText}
     >
-      <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md bg-zinc-950">
+      <div
+        className={cn(
+          'relative shrink-0 overflow-hidden rounded-md bg-zinc-950',
+          compact ? 'h-12 w-12' : 'h-16 w-16'
+        )}
+      >
         {resolvedCover ? (
           <img src={resolvedCover} className="h-full w-full object-cover" alt="" />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-400">
-            {isVideo ? <Video className="h-6 w-6" /> : null}
+            {isVideo ? <Video className={cn(compact ? 'h-4 w-4' : 'h-6 w-6')} /> : null}
           </div>
         )}
         {isVideo ? (
-          <div className="absolute right-1 top-1 inline-flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+          <div
+            className={cn(
+              'absolute right-1 top-1 inline-flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 font-semibold text-white',
+              compact ? 'text-[9px]' : 'text-[10px]'
+            )}
+          >
             <Video className="h-3 w-3" />
-            <span>视频</span>
+            {!compact ? <span>视频</span> : null}
           </div>
         ) : null}
         {isRemix ? (
@@ -246,18 +259,25 @@ function CalendarTaskCard({
           )}
         </div>
 
-        <div className="mt-1 min-w-0 font-semibold text-zinc-100 break-words whitespace-normal overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
+        <div
+          className={cn(
+            'mt-1 min-w-0 font-semibold text-zinc-100 break-words whitespace-normal overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical]',
+            compact ? 'text-[11px] [-webkit-line-clamp:1]' : '[-webkit-line-clamp:2]'
+          )}
+        >
           {displayTitle}
         </div>
 
-        <div
-          className={cn(
-            'mt-1 truncate text-[11px]',
-            isPublished ? 'text-emerald-200/50' : 'text-zinc-500'
-          )}
-        >
-          {task.productName || '未绑定商品'}
-        </div>
+        {!compact ? (
+          <div
+            className={cn(
+              'mt-1 truncate text-[11px]',
+              isPublished ? 'text-emerald-200/50' : 'text-zinc-500'
+            )}
+          >
+            {task.productName || '未绑定商品'}
+          </div>
+        ) : null}
       </div>
 
       {task.status !== 'published' ? (

@@ -2,19 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 
 import moment from 'moment'
 import 'moment/locale/zh-cn'
-import { Video } from 'lucide-react'
-import {
-  Calendar as ReactBigCalendar,
-  momentLocalizer,
-  type EventProps as ReactBigCalendarEventProps,
-  type Formats,
-  type Messages,
-  type stringOrDate
-} from 'react-big-calendar'
-import withDragAndDrop, {
-  type DragFromOutsideItemArgs,
-  type EventInteractionArgs
-} from 'react-big-calendar/lib/addons/dragAndDrop'
 import { DndProvider } from 'react-dnd'
 import { HTML5Backend } from 'react-dnd-html5-backend'
 import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from 'react-resizable-panels'
@@ -25,13 +12,9 @@ import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
-import 'react-big-calendar/lib/css/react-big-calendar.css'
-import 'react-big-calendar/lib/addons/dragAndDrop/styles.css'
-import './react-big-calendar.dark.css'
-
 import { CalendarHeader } from './CalendarHeader'
 import { KanbanWeekView } from './KanbanWeekView'
-import { getTaskDisplayTime, setDateKeepingTime, withDefaultStartTime } from './calendarUtils'
+import { getTaskDisplayTime, withDefaultStartTime } from './calendarUtils'
 import {
   buildSurpriseRemix,
   listSurpriseRemixBatches,
@@ -47,17 +30,11 @@ import {
 type CalendarViewProps = {
   tasks: CmsPublishTask[]
   workspacePath: string
+  viewSpan: 4 | 7
+  onViewSpanChange: (next: 4 | 7) => void
   onTasksUpdated: (updated: CmsPublishTask[]) => void
   onTasksDeleted: (deletedIds: string[]) => void
   onTasksCreated?: (created: CmsPublishTask[]) => void
-}
-
-type CalendarEvent = {
-  id: string
-  title: string
-  start: Date
-  end: Date
-  resource: CmsPublishTask
 }
 
 type SurpriseRemixPreview = {
@@ -77,101 +54,17 @@ type SurpriseRemixPickerState = {
 
 moment.locale('zh-cn')
 
-const localizer = momentLocalizer(moment)
-const DragAndDropCalendar = withDragAndDrop<CalendarEvent, object>(ReactBigCalendar)
-
-const messages: Messages = {
-  today: '今天',
-  previous: '上周',
-  next: '下周',
-  month: '月',
-  week: '周',
-  day: '日',
-  agenda: '议程',
-  date: '日期',
-  time: '时间',
-  event: '任务',
-  noEventsInRange: '当前范围内没有任务',
-  showMore: (total) => `+${total} 更多`
-}
-
-const formats: Formats = {
-  monthHeaderFormat: (date) => moment(date).format('YYYY年 M月'),
-  weekdayFormat: (date) => moment(date).format('dd'),
-  dayFormat: (date) => moment(date).format('ddd M/D'),
-  dayHeaderFormat: (date) => moment(date).format('YYYY年 M月 D日 dddd'),
-  dayRangeHeaderFormat: (range) => {
-    const start = moment(range.start)
-    const end = moment(range.end)
-    const startText = start.format('YYYY年 M月 D日')
-    const endText = start.isSame(end, 'month') ? end.format('D日') : end.format('M月 D日')
-    return `${startText} - ${endText}`
-  }
-}
-
-function toDate(value: stringOrDate): Date {
-  return value instanceof Date ? value : new Date(value)
-}
-
-function CalendarMonthEventItem({
-  event,
-  workspacePath
-}: ReactBigCalendarEventProps<CalendarEvent> & { workspacePath: string }): React.JSX.Element {
-  const task = event.resource
-  const cover = task.images?.[0]
-  const resolvedCover = cover ? resolveLocalImage(cover, workspacePath) : null
-  const timeText = moment(event.start).format('HH:mm')
-  const isRemix = Boolean(
-    task.transformPolicy === 'remix_v1' || task.tags?.includes('remix') || task.tags?.includes('裂变')
-  )
-  const isVideo = task.mediaType === 'video'
-
-  return (
-    <div className="group relative mb-1 flex min-w-0 flex-col gap-1 rounded-md border border-zinc-800 bg-zinc-900/80 p-2">
-      {isRemix ? (
-        <div
-          className="absolute right-1 top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-semibold text-amber-200"
-          title="该任务由 AI 裂变生成，请检查文案"
-        >
-          🎲
-        </div>
-      ) : null}
-      <div className="flex min-w-0 items-start gap-2">
-        <div className="h-8 w-8 shrink-0 overflow-hidden rounded bg-zinc-950">
-          {resolvedCover ? <img src={resolvedCover} className="h-full w-full object-cover" alt="" /> : null}
-          {!resolvedCover && isVideo ? (
-            <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-400">
-              <Video className="h-4 w-4" />
-            </div>
-          ) : null}
-        </div>
-        <div className="min-w-0 text-xs text-zinc-200 break-words whitespace-normal overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">
-          {task.title || '(未命名)'}
-        </div>
-      </div>
-      {isVideo ? (
-        <div className="inline-flex w-fit items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-          <Video className="h-3 w-3" />
-          <span>视频</span>
-        </div>
-      ) : null}
-      <div className="text-[10px] text-zinc-500">{timeText}</div>
-    </div>
-  )
-}
-
 function CalendarView({
   tasks,
   workspacePath,
+  viewSpan,
+  onViewSpanChange,
   onTasksUpdated,
   onTasksDeleted,
   onTasksCreated
 }: CalendarViewProps): React.JSX.Element {
-  const [draggingTask, setDraggingTask] = useState<CmsPublishTask | null>(null)
   const [draggingBatchIds, setDraggingBatchIds] = useState<string[]>([])
   const [isSaving, setIsSaving] = useState(false)
-  const [activeDate, setActiveDate] = useState<Date>(() => new Date())
-  const [view, setView] = useState<'week' | 'month'>('week')
   const [showPublished, setShowPublished] = useState(false)
   const [toastMessage, setToastMessage] = useState<string>('')
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
@@ -192,9 +85,10 @@ function CalendarView({
   const defaultStartTime = useCmsStore((s) => s.preferences.defaultStartTime)
   const defaultInterval = useCmsStore((s) => s.preferences.defaultInterval)
   const batchScheduleTasks = useCmsStore((s) => s.batchScheduleTasks)
-  const selectedTaskIds = useCmsStore((s) => s.selectedPublishTaskIds)
-  const setSelectedTaskIds = useCmsStore((s) => s.setSelectedPublishTaskIds)
-  const clearSelectedTaskIds = useCmsStore((s) => s.clearSelectedPublishTaskIds)
+  const selectedPublishTaskIds = useCmsStore((s) => s.selectedPublishTaskIds)
+  const selectedPendingTaskIds = useCmsStore((s) => s.selectedPendingTaskIds)
+  const setSelectedPendingTaskIds = useCmsStore((s) => s.setSelectedPendingTaskIds)
+  const clearSelectedPendingTaskIds = useCmsStore((s) => s.clearSelectedPendingTaskIds)
   const sidebarPanelRef = usePanelRef()
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({ id: 'cms-layout-persistence' })
 
@@ -212,17 +106,21 @@ function CalendarView({
   }, [unscheduledPool])
 
   useEffect(() => {
-    const allIds = new Set(tasks.map((t) => t.id))
-    const nextSelected = selectedTaskIds.filter((id) => allIds.has(id))
-    if (nextSelected.length !== selectedTaskIds.length) setSelectedTaskIds(nextSelected)
-    setSelectionAnchorId((prev) => (prev && allIds.has(prev) ? prev : null))
-  }, [selectedTaskIds, setSelectedTaskIds, tasks])
+    const allPendingIds = new Set(unscheduledPool.map((t) => t.id))
+    const nextSelected = selectedPendingTaskIds.filter((id) => allPendingIds.has(id))
+    if (nextSelected.length !== selectedPendingTaskIds.length) setSelectedPendingTaskIds(nextSelected)
+    setSelectionAnchorId((prev) => (prev && allPendingIds.has(prev) ? prev : null))
+  }, [selectedPendingTaskIds, setSelectedPendingTaskIds, unscheduledPool])
 
   const orderedSelectedTasks = useMemo(() => {
-    if (selectedTaskIds.length === 0) return []
-    const selected = new Set(selectedTaskIds)
+    if (selectedPendingTaskIds.length === 0) return []
+    const selected = new Set(selectedPendingTaskIds)
     return unscheduledPool.filter((t) => selected.has(t.id))
-  }, [selectedTaskIds, unscheduledPool])
+  }, [selectedPendingTaskIds, unscheduledPool])
+
+  const keyboardSelectedTaskIds = useMemo(() => {
+    return Array.from(new Set([...selectedPublishTaskIds, ...selectedPendingTaskIds]))
+  }, [selectedPendingTaskIds, selectedPublishTaskIds])
 
   const notifyTitleTooLong = (task: CmsPublishTask, issue: TitleLengthIssue): void => {
     const title = (task.title || '').trim()
@@ -241,36 +139,38 @@ function CalendarView({
       const b = orderedIds.indexOf(taskId)
       if (a >= 0 && b >= 0) {
         const [start, end] = a <= b ? [a, b] : [b, a]
-        setSelectedTaskIds(orderedIds.slice(start, end + 1))
+        setSelectedPendingTaskIds(orderedIds.slice(start, end + 1))
         setSelectionAnchorId(taskId)
         return
       }
     }
 
     if (isRange) {
-      setSelectedTaskIds([taskId])
+      setSelectedPendingTaskIds([taskId])
       setSelectionAnchorId(taskId)
       return
     }
 
     if (isToggle) {
-      if (selectedTaskIds.includes(taskId)) {
-        setSelectedTaskIds(selectedTaskIds.filter((id) => id !== taskId))
+      if (selectedPendingTaskIds.includes(taskId)) {
+        setSelectedPendingTaskIds(selectedPendingTaskIds.filter((id) => id !== taskId))
       } else {
-        setSelectedTaskIds([...selectedTaskIds, taskId])
+        setSelectedPendingTaskIds([...selectedPendingTaskIds, taskId])
       }
       setSelectionAnchorId(taskId)
       return
     }
 
-    if (!selectedTaskIds.includes(taskId)) {
-      setSelectedTaskIds([taskId])
+    if (!selectedPendingTaskIds.includes(taskId)) {
+      setSelectedPendingTaskIds([taskId])
       setSelectionAnchorId(taskId)
     }
   }
 
   const ensureSingleSelectionForDrag = (taskId: string): void => {
-    setSelectedTaskIds(selectedTaskIds.includes(taskId) ? selectedTaskIds : [taskId])
+    setSelectedPendingTaskIds(
+      selectedPendingTaskIds.includes(taskId) ? selectedPendingTaskIds : [taskId]
+    )
     setSelectionAnchorId(taskId)
   }
 
@@ -278,18 +178,6 @@ function CalendarView({
     const withTime = tasks.filter((task) => getTaskDisplayTime(task) != null)
     return showPublished ? withTime : withTime.filter((task) => task.status !== 'published')
   }, [showPublished, tasks])
-
-  const events = useMemo<CalendarEvent[]>(() => {
-    return calendarTasks
-      .map((task) => {
-        const displayAt = getTaskDisplayTime(task)
-        if (displayAt == null) return null
-        const start = new Date(displayAt)
-        const end = moment(displayAt).add(1, 'hour').toDate()
-        return { id: task.id, title: task.title, start, end, resource: task }
-      })
-      .filter((v): v is CalendarEvent => Boolean(v))
-  }, [calendarTasks])
 
   const saveTaskSchedule = async (
     task: CmsPublishTask,
@@ -358,28 +246,6 @@ function CalendarView({
     }
   }
 
-  const handleDropFromOutside = ({ start }: DragFromOutsideItemArgs): void => {
-    if (!draggingTask) return
-    const droppedAt = toDate(start)
-    const hasTime =
-      droppedAt.getHours() !== 0 ||
-      droppedAt.getMinutes() !== 0 ||
-      droppedAt.getSeconds() !== 0 ||
-      droppedAt.getMilliseconds() !== 0
-    const scheduledAt = (
-      hasTime ? droppedAt : withDefaultStartTime(droppedAt, defaultStartTime)
-    ).getTime()
-    void saveTaskSchedule(draggingTask, scheduledAt, { forcePending: true })
-  }
-
-  const handleEventDrop = ({ event, start }: EventInteractionArgs<CalendarEvent>): void => {
-    const task = event.resource
-    if (task.status === 'published') return
-    const previous = task.scheduledAt != null ? new Date(task.scheduledAt) : event.start
-    const scheduledAt = setDateKeepingTime(toDate(start), previous).getTime()
-    void saveTaskSchedule(task, scheduledAt)
-  }
-
   const deleteTask = async (task: CmsPublishTask): Promise<void> => {
     try {
       const result = await window.api.cms.task.delete(task.id)
@@ -446,16 +312,76 @@ function CalendarView({
     }
   }
 
+  const quickAssignPendingTasks = async (
+    dayOffset: 0 | 1,
+    label: '今天' | '明天'
+  ): Promise<void> => {
+    if (isSaving) return
+    if (selectedPendingTaskIds.length === 0) return
+
+    const selectedSet = new Set(selectedPendingTaskIds)
+    const pendingTasks = unscheduledPool.filter((task) => selectedSet.has(task.id))
+    if (pendingTasks.length === 0) return
+
+    const firstInvalid = pendingTasks.find((task) => unscheduledTitleIssueById.has(task.id))
+    if (firstInvalid) {
+      const issue = unscheduledTitleIssueById.get(firstInvalid.id)
+      if (issue) notifyTitleTooLong(firstInvalid, issue)
+      return
+    }
+
+    const intervalMinutes =
+      typeof defaultInterval === 'number' && Number.isFinite(defaultInterval)
+        ? Math.max(0, defaultInterval)
+        : 0
+    const intervalMs = intervalMinutes * 60 * 1000
+    const targetDay = moment().startOf('day').add(dayOffset, 'day')
+    const dayStart = targetDay.valueOf()
+    const dayEnd = targetDay.clone().endOf('day').valueOf()
+
+    const lastScheduledAt = tasks.reduce<number | null>((latest, task) => {
+      const scheduledAt =
+        typeof task.scheduledAt === 'number' && Number.isFinite(task.scheduledAt) ? task.scheduledAt : null
+      if (scheduledAt == null || scheduledAt < dayStart || scheduledAt > dayEnd) return latest
+      return latest == null ? scheduledAt : Math.max(latest, scheduledAt)
+    }, null)
+
+    const firstSlot =
+      lastScheduledAt != null
+        ? lastScheduledAt + intervalMs
+        : withDefaultStartTime(targetDay.toDate(), defaultStartTime).getTime()
+
+    const updates = pendingTasks.map((task, index) => ({
+      id: task.id,
+      scheduledAt: firstSlot + index * intervalMs,
+      status: 'pending' as const
+    }))
+
+    setIsSaving(true)
+    try {
+      const updated = await batchScheduleTasks(updates)
+      onTasksUpdated(updated)
+      clearSelectedPendingTaskIds()
+      setSelectionAnchorId(null)
+      setToastMessage(`已排入${label}：${updates.length} 条`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`批量排期失败：${message}`)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedTaskIds.length === 0) return
+        if (keyboardSelectedTaskIds.length === 0) return
 
         const scheduledIds: string[] = []
         const pendingIds: string[] = []
 
-        for (const id of selectedTaskIds) {
+        for (const id of keyboardSelectedTaskIds) {
           const task = tasks.find((t) => t.id === id)
           if (!task) continue
           if (task.status === 'published') continue
@@ -489,7 +415,7 @@ function CalendarView({
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleBatchDelete, handleBatchUnschedule, selectedTaskIds, tasks])
+  }, [handleBatchDelete, handleBatchUnschedule, keyboardSelectedTaskIds, tasks])
 
   useEffect(() => {
     if (flashingTaskIds.size === 0) return
@@ -646,15 +572,15 @@ function CalendarView({
           <Panel
             id="pending-pool"
             panelRef={sidebarPanelRef}
-            defaultSize="20%"
-            minSize="15%"
-            maxSize="40%"
+            defaultSize="24%"
+            minSize="14%"
+            maxSize="55%"
             collapsible
             collapsedSize="0%"
             onResize={(size) => setIsSidebarCollapsed(size.asPercentage < 0.5)}
             className="min-h-0 pr-4"
           >
-            <div className="flex h-full min-h-0 flex-col gap-3 rounded-xl border border-zinc-800 bg-zinc-900/10 p-3">
+            <div className="relative flex h-full min-h-0 flex-col gap-3 rounded-xl border border-zinc-800 bg-zinc-900/10 p-3">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold">待排期池</div>
                 <div className="flex items-center gap-2">
@@ -699,12 +625,16 @@ function CalendarView({
                   检测到 {unscheduledTitleIssueById.size} 个任务标题超 {PENDING_POOL_TITLE_LIMIT}，请先修改标题后再排期
                 </div>
               ) : null}
+              <div className="text-[11px] text-zinc-500">支持 Shift 连选，支持 Cmd/Ctrl 点选。</div>
               <div
-                className="min-h-0 flex-1 space-y-2 overflow-auto pr-1"
+                className={cn(
+                  'min-h-0 flex-1 space-y-2 overflow-auto pr-1',
+                  selectedPendingTaskIds.length > 0 && 'pb-20'
+                )}
                 onMouseDown={(e) => {
                   if (e.button !== 0) return
                   if (e.target !== e.currentTarget) return
-                  clearSelectedTaskIds()
+                  clearSelectedPendingTaskIds()
                   setSelectionAnchorId(null)
                 }}
               >
@@ -725,14 +655,14 @@ function CalendarView({
                       <PendingTaskCard
                         task={task}
                         workspacePath={workspacePath}
-                        isSelected={selectedTaskIds.includes(task.id)}
+                        isSelected={selectedPendingTaskIds.includes(task.id)}
                         isFlashing={flashingTaskIds.has(task.id)}
                         isGroupDragging={draggingBatchIds.includes(task.id)}
-                        selectedCount={selectedTaskIds.length}
-                        selectedTaskIds={selectedTaskIds}
+                        selectedCount={selectedPendingTaskIds.length}
+                        selectedTaskIds={selectedPendingTaskIds}
                         orderedSelectedTasks={orderedSelectedTasks}
                         titleLengthIssue={unscheduledTitleIssueById.get(task.id) || null}
-                        onDraggingChange={setDraggingTask}
+                        onDraggingChange={() => undefined}
                         onDraggingBatchIdsChange={setDraggingBatchIds}
                         onBeforeDragUnselected={ensureSingleSelectionForDrag}
                         onSelect={handleTaskClick}
@@ -742,6 +672,41 @@ function CalendarView({
                   ))
                 )}
               </div>
+              {selectedPendingTaskIds.length > 0 ? (
+                <div className="pointer-events-none absolute bottom-3 left-3 right-3">
+                  <div className="pointer-events-auto rounded-xl border border-zinc-700/80 bg-zinc-950/95 px-3 py-2 shadow-xl backdrop-blur">
+                    <div className="mb-2 text-xs text-zinc-300">已选 {selectedPendingTaskIds.length} 条任务</div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-100 transition hover:bg-zinc-800/80 disabled:opacity-60"
+                        disabled={isSaving}
+                        onClick={() => void quickAssignPendingTasks(0, '今天')}
+                      >
+                        排入今天
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-100 transition hover:bg-zinc-800/80 disabled:opacity-60"
+                        disabled={isSaving}
+                        onClick={() => void quickAssignPendingTasks(1, '明天')}
+                      >
+                        排入明天
+                      </button>
+                      <button
+                        type="button"
+                        className="ml-auto inline-flex items-center rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:bg-zinc-800/80 hover:text-zinc-200"
+                        onClick={() => {
+                          clearSelectedPendingTaskIds()
+                          setSelectionAnchorId(null)
+                        }}
+                      >
+                        清空选择
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </Panel>
 
@@ -752,94 +717,34 @@ function CalendarView({
           <Panel id="calendar" minSize="30%" className="min-h-0 pl-4">
             <div className="min-h-0 flex h-full flex-col gap-3">
               <CalendarHeader
-                view={view}
-                date={activeDate}
+                viewSpan={viewSpan}
+                onViewSpanChange={onViewSpanChange}
                 showPublished={showPublished}
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onShowPublishedChange={setShowPublished}
-                onChangeView={setView}
-                onNavigateToday={() => setActiveDate(new Date())}
-                onNavigatePrev={() => {
-                  setActiveDate((prev) =>
-                    view === 'week'
-                      ? moment(prev).subtract(7, 'day').toDate()
-                      : moment(prev).subtract(1, 'month').toDate()
-                  )
-                }}
-                onNavigateNext={() => {
-                  setActiveDate((prev) =>
-                    view === 'week'
-                      ? moment(prev).add(7, 'day').toDate()
-                      : moment(prev).add(1, 'month').toDate()
-                  )
-                }}
               />
 
               <div className="min-h-0 flex-1 rounded-xl border border-zinc-800 bg-zinc-900/10 p-3">
-                {view === 'week' ? (
-                  <div className="h-full w-full overflow-x-auto overflow-y-hidden">
-                    <div className="h-full min-w-[1120px]">
-                      <KanbanWeekView
-                        tasks={calendarTasks}
-                        workspacePath={workspacePath}
-                        baseDate={activeDate}
-                        showPublished={showPublished}
-                        defaultStartTime={defaultStartTime}
-                        defaultInterval={defaultInterval}
-                        onScheduleTask={saveTaskSchedule}
-                        onBatchScheduleTasks={saveBatchTaskSchedule}
-                        onUnscheduleTask={unscheduleTask}
-                        onTaskDoubleClick={(task) => {
-                          setActiveTask(task)
-                          setIsDetailModalOpen(true)
-                        }}
-                      />
-                    </div>
+                <div className="h-full w-full overflow-x-auto overflow-y-hidden">
+                  <div className="h-full min-w-[980px]">
+                    <KanbanWeekView
+                      tasks={calendarTasks}
+                      workspacePath={workspacePath}
+                      viewSpan={viewSpan}
+                      showPublished={showPublished}
+                      defaultStartTime={defaultStartTime}
+                      defaultInterval={defaultInterval}
+                      onScheduleTask={saveTaskSchedule}
+                      onBatchScheduleTasks={saveBatchTaskSchedule}
+                      onUnscheduleTask={unscheduleTask}
+                      onTaskDoubleClick={(task) => {
+                        setActiveTask(task)
+                        setIsDetailModalOpen(true)
+                      }}
+                    />
                   </div>
-                ) : (
-                  <DragAndDropCalendar
-                    localizer={localizer}
-                    view="month"
-                    views={['month']}
-                    date={activeDate}
-                    onNavigate={(date) => setActiveDate(date)}
-                    culture="zh-cn"
-                    popup
-                    showAllEvents
-                    events={events}
-                    startAccessor="start"
-                    endAccessor="end"
-                    selectable={false}
-                    resizable={false}
-                    toolbar={false}
-                    draggableAccessor={(event) => event.resource.status !== 'published'}
-                    onEventDrop={handleEventDrop}
-                    onDropFromOutside={handleDropFromOutside}
-                    dragFromOutsideItem={
-                      draggingTask
-                        ? () => {
-                            const now = new Date()
-                            return {
-                              id: draggingTask.id,
-                              title: draggingTask.title,
-                              start: now,
-                              end: moment(now).add(1, 'hour').toDate(),
-                              resource: draggingTask
-                            }
-                          }
-                        : undefined
-                    }
-                    components={{
-                      event: (props) => (
-                        <CalendarMonthEventItem {...props} workspacePath={workspacePath} />
-                      )
-                    }}
-                    messages={messages}
-                    formats={formats}
-                    style={{ height: '100%' }}
-                  />
-                )}
+                </div>
               </div>
             </div>
           </Panel>

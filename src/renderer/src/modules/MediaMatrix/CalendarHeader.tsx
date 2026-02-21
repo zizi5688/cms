@@ -1,7 +1,5 @@
 import type * as React from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-
-import moment from 'moment'
+import { useEffect, useRef, useState } from 'react'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
@@ -9,32 +7,22 @@ import { Input } from '@renderer/components/ui/input'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
-import { getWeekLabel } from './calendarUtils'
-
 type CalendarHeaderProps = {
-  view: 'week' | 'month'
-  date: Date
+  viewSpan: 4 | 7
+  onViewSpanChange: (next: 4 | 7) => void
   showPublished: boolean
   isSidebarCollapsed?: boolean
   onToggleSidebar?: () => void
   onShowPublishedChange: (next: boolean) => void
-  onChangeView: (next: 'week' | 'month') => void
-  onNavigateToday: () => void
-  onNavigatePrev: () => void
-  onNavigateNext: () => void
 }
 
 function CalendarHeader({
-  view,
-  date,
+  viewSpan,
+  onViewSpanChange,
   showPublished,
   isSidebarCollapsed,
   onToggleSidebar,
-  onShowPublishedChange,
-  onChangeView,
-  onNavigateToday,
-  onNavigatePrev,
-  onNavigateNext
+  onShowPublishedChange
 }: CalendarHeaderProps): React.JSX.Element {
   const preferences = useCmsStore((s) => s.preferences)
   const updatePreferences = useCmsStore((s) => s.updatePreferences)
@@ -64,11 +52,6 @@ function CalendarHeader({
     return () => window.clearTimeout(handle)
   }, [addLog, preferences.defaultInterval, preferences.defaultStartTime])
 
-  const label = useMemo(() => {
-    if (view === 'week') return getWeekLabel(date)
-    return moment(date).format('YYYY年 M月')
-  }, [date, view])
-
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-zinc-900/10 px-3 py-2">
       <div className="flex items-center gap-2">
@@ -87,49 +70,39 @@ function CalendarHeader({
             )}
           </Button>
         ) : null}
-        <Button variant="ghost" size="sm" onClick={onNavigateToday} className="h-8">
-          今天
-        </Button>
-        <Button variant="ghost" size="icon" onClick={onNavigatePrev} aria-label="上一页">
-          ‹
-        </Button>
-        <Button variant="ghost" size="icon" onClick={onNavigateNext} aria-label="下一页">
-          ›
-        </Button>
+        <div className="inline-flex rounded-md border border-zinc-700 bg-zinc-900/60">
+          <button
+            type="button"
+            onClick={() => onViewSpanChange(4)}
+            className={cn(
+              'px-3 py-1.5 text-xs transition',
+              viewSpan === 4
+                ? 'bg-zinc-800 text-zinc-100'
+                : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
+            )}
+          >
+            4日
+          </button>
+          <button
+            type="button"
+            onClick={() => onViewSpanChange(7)}
+            className={cn(
+              'px-3 py-1.5 text-xs transition',
+              viewSpan === 7
+                ? 'bg-zinc-800 text-zinc-100'
+                : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
+            )}
+          >
+            7日
+          </button>
+        </div>
       </div>
 
       <div className="min-w-0 flex-1 px-2 text-center text-sm font-semibold text-zinc-100">
-        {label}
+        滚动日程
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="inline-flex h-9 rounded-lg border border-zinc-800 bg-zinc-950">
-          <button
-            type="button"
-            onClick={() => onChangeView('week')}
-            className={cn(
-              'h-full px-3 text-sm transition',
-              view === 'week'
-                ? 'bg-zinc-900/50 text-zinc-100'
-                : 'text-zinc-400 hover:bg-zinc-900/30 hover:text-zinc-200'
-            )}
-          >
-            周
-          </button>
-          <button
-            type="button"
-            onClick={() => onChangeView('month')}
-            className={cn(
-              'h-full px-3 text-sm transition',
-              view === 'month'
-                ? 'bg-zinc-900/50 text-zinc-100'
-                : 'text-zinc-400 hover:bg-zinc-900/30 hover:text-zinc-200'
-            )}
-          >
-            月
-          </button>
-        </div>
-
         <label
           className={cn(
             'flex h-9 cursor-pointer select-none items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900/50 px-3 text-sm',

@@ -80,6 +80,7 @@ export interface CmsState {
   selectedKeywordId: string | null
   selectedProductId: string | null
   selectedPublishTaskIds: string[]
+  selectedPendingTaskIds: string[]
   addLog: (msg: string) => void
   clearLogs: () => void
   setTasks: (tasks: Task[]) => void
@@ -100,6 +101,8 @@ export interface CmsState {
   setSelectedProductId: (id: string | null) => void
   setSelectedPublishTaskIds: (ids: string[]) => void
   clearSelectedPublishTaskIds: () => void
+  setSelectedPendingTaskIds: (ids: string[]) => void
+  clearSelectedPendingTaskIds: () => void
   deleteTasks: (ids: string[]) => Promise<string[]>
   updateTaskStatus: (id: string, status: TaskStatus) => void
   updateTask: (taskId: string, payload: Partial<Task>) => void
@@ -148,6 +151,7 @@ const useCmsStore = create<CmsState>((set) => ({
   selectedKeywordId: null,
   selectedProductId: null,
   selectedPublishTaskIds: [],
+  selectedPendingTaskIds: [],
   addLog: (msg) => set((state) => ({ logs: [...state.logs, msg] })),
   clearLogs: () => set(() => ({ logs: [] })),
   setTasks: (tasks) => set(() => ({ tasks })),
@@ -217,6 +221,13 @@ const useCmsStore = create<CmsState>((set) => ({
       )
     })),
   clearSelectedPublishTaskIds: () => set(() => ({ selectedPublishTaskIds: [] })),
+  setSelectedPendingTaskIds: (ids) =>
+    set(() => ({
+      selectedPendingTaskIds: Array.from(
+        new Set((ids ?? []).map((id) => String(id ?? '').trim()).filter(Boolean))
+      )
+    })),
+  clearSelectedPendingTaskIds: () => set(() => ({ selectedPendingTaskIds: [] })),
   deleteTasks: async (ids) => {
     const normalized = Array.from(
       new Set((ids ?? []).map((id) => String(id ?? '').trim()).filter(Boolean))
@@ -225,7 +236,7 @@ const useCmsStore = create<CmsState>((set) => ({
     const result = await window.api.cms.task.deleteBatch(normalized)
     const deletedIds = Array.isArray(result?.deletedIds) ? result.deletedIds : []
     window.dispatchEvent(new CustomEvent('cms.publishTasks.deleted', { detail: { deletedIds } }))
-    set(() => ({ selectedPublishTaskIds: [] }))
+    set(() => ({ selectedPublishTaskIds: [], selectedPendingTaskIds: [] }))
     return deletedIds
   },
   updateTaskStatus: (id, status) =>
@@ -275,7 +286,9 @@ const useCmsStore = create<CmsState>((set) => ({
       workshopImport: { type: null, path: null, source: null },
       uploadFiles: [],
       selectedKeywordId: null,
-      selectedProductId: null
+      selectedProductId: null,
+      selectedPublishTaskIds: [],
+      selectedPendingTaskIds: []
     })),
   updateConfig: (newConfig) =>
     set((state) => ({
