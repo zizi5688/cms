@@ -858,28 +858,38 @@ function CalendarView({
                   候选批次 {remixPicker.candidates.length}（近14天）
                 </div>
                 <div className="space-y-2">
-                  {remixPicker.candidates.map((candidate) => (
-                    <button
-                      key={candidate.id}
-                      type="button"
-                      className={cn(
-                        'w-full rounded-md border px-2 py-2 text-left transition',
-                        candidate.id === remixPicker.selectedBatchId
-                          ? 'border-amber-500/60 bg-amber-500/10'
-                          : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900/70'
-                      )}
-                      onClick={() => handleSelectRemixBatch(candidate.id)}
-                    >
-                      <div className="text-xs font-semibold text-zinc-100">{candidate.sampleTitle}</div>
-                      <div className="mt-1 text-[11px] text-zinc-400">
-                        素材 {candidate.taskCount} · 图池 {candidate.imagePoolCount}
-                      </div>
-                      <div className="mt-1 text-[10px] text-zinc-500">
-                        {moment(candidate.createdAtStart).format('MM/DD HH:mm')} -{' '}
-                        {moment(candidate.createdAtEnd).format('MM/DD HH:mm')}
-                      </div>
-                    </button>
-                  ))}
+                  {remixPicker.candidates.map((candidate) => {
+                    const cover = candidate.coverImage ? resolveLocalImage(candidate.coverImage, workspacePath) : null
+                    return (
+                      <button
+                        key={candidate.id}
+                        type="button"
+                        className={cn(
+                          'w-full rounded-md border px-2 py-2 text-left transition',
+                          candidate.id === remixPicker.selectedBatchId
+                            ? 'border-amber-500/60 bg-amber-500/10'
+                            : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900/70'
+                        )}
+                        onClick={() => handleSelectRemixBatch(candidate.id)}
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className="h-12 w-12 shrink-0 overflow-hidden rounded border border-zinc-800 bg-zinc-950">
+                            {cover ? <img src={cover} alt="" className="h-full w-full object-cover" /> : null}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-semibold text-zinc-100">{candidate.sampleTitle}</div>
+                            <div className="mt-1 text-[11px] text-zinc-400">
+                              素材 {candidate.taskCount} · 图池 {candidate.imagePoolCount}
+                            </div>
+                            <div className="mt-1 text-[10px] text-zinc-500">
+                              {moment(candidate.createdAtStart).format('MM/DD HH:mm')} -{' '}
+                              {moment(candidate.createdAtEnd).format('MM/DD HH:mm')}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 

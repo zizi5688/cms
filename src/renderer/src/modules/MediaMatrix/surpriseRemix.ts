@@ -41,6 +41,7 @@ export type SurpriseRemixCandidateBatch = {
   sampleTitle: string
   taskCount: number
   imagePoolCount: number
+  coverImage: string | null
   createdAtStart: number
   createdAtEnd: number
   tasks: CmsPublishTask[]
@@ -218,6 +219,14 @@ function filterRecentTasks(tasks: CmsPublishTask[], lookbackDays: number): CmsPu
   return (tasks ?? []).filter((t) => isNumber(t.createdAt) && t.createdAt >= since)
 }
 
+function pickBatchCoverImage(tasks: CmsPublishTask[]): string | null {
+  for (const task of tasks ?? []) {
+    const cover = (task.images ?? []).find((image) => Boolean(image))
+    if (cover) return cover
+  }
+  return null
+}
+
 export function listSurpriseRemixBatches(
   tasks: CmsPublishTask[],
   options?: Pick<RemixOptions, 'lookbackDays' | 'timeWindowMs' | 'similarityThreshold'>
@@ -241,6 +250,7 @@ export function listSurpriseRemixBatches(
         sampleTitle: shortenForToast(first?.title ?? '', 18),
         taskCount: batch.length,
         imagePoolCount: imagePool.length,
+        coverImage: pickBatchCoverImage(batch),
         createdAtStart,
         createdAtEnd,
         tasks: batch
