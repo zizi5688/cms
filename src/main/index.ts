@@ -757,12 +757,16 @@ function resolveBundledResourcePath(...parts: string[]): string {
   return join(process.resourcesPath, ...parts)
 }
 
+function resolvePlatformExecutableName(baseName: string): string {
+  return process.platform === 'win32' ? `${baseName}.exe` : baseName
+}
+
 function resolveCmsEngineExecutablePath(): string {
-  return resolveBundledResourcePath('cms_engine')
+  return resolveBundledResourcePath(resolvePlatformExecutableName('cms_engine'))
 }
 
 function resolveRealEsrganExecutablePath(): string {
-  return resolveBundledResourcePath('realesrgan', 'realesrgan-ncnn-vulkan')
+  return resolveBundledResourcePath('realesrgan', resolvePlatformExecutableName('realesrgan-ncnn-vulkan'))
 }
 
 async function createWindow(): Promise<void> {

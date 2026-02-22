@@ -13,16 +13,6 @@
     "!{.env,.env.*,.npmrc,pnpm-lock.yaml}",
     "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
   ],
-  "extraResources": [
-    {
-      "from": "dist/cms_engine",
-      "to": "cms_engine"
-    },
-    {
-      "from": "AI_Tools/realesrgan-ncnn-vulkan-20220424-macos",
-      "to": "realesrgan"
-    }
-  ],
   "asarUnpack": [
     "resources/**",
     "**/node_modules/sharp/**",
@@ -32,7 +22,17 @@
     "**/node_modules/ffprobe-static/**"
   ],
   "win": {
-    "executableName": "super-cms"
+    "executableName": "super-cms",
+    "extraResources": [
+      {
+        "from": "dist/cms_engine.exe",
+        "to": "cms_engine.exe"
+      },
+      {
+        "from": "AI_Tools/realesrgan-ncnn-vulkan-20220424-windows",
+        "to": "realesrgan"
+      }
+    ]
   },
   "nsis": {
     "artifactName": "${name}-${version}-setup.${ext}",
@@ -55,7 +55,17 @@
         "NSDownloadsFolderUsageDescription": "Application requests access to the user's Downloads folder."
       }
     ],
-    "notarize": false
+    "notarize": false,
+    "extraResources": [
+      {
+        "from": "dist/cms_engine",
+        "to": "cms_engine"
+      },
+      {
+        "from": "AI_Tools/realesrgan-ncnn-vulkan-20220424-macos",
+        "to": "realesrgan"
+      }
+    ]
   },
   "dmg": {
     "artifactName": "${name}-${version}.${ext}"
