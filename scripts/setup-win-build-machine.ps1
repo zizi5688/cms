@@ -1,6 +1,3 @@
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-
 param(
   [string]$WorkspaceRoot = "C:\build",
   [string]$RepoUrl = "https://github.com/zizi5688/cms.git",
@@ -8,6 +5,9 @@ param(
   [string]$RepoDirName = "CMS-2.0",
   [switch]$SkipBuild
 )
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 function Require-Admin {
   $current = [Security.Principal.WindowsIdentity]::GetCurrent()
