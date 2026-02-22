@@ -445,6 +445,65 @@ async function ensureImageReadableWithRetry(
   throw new Error(`[ImageLab] ${stageLabel} 输出不可读：${normalizedPath} (${message})`)
 }
 
+type ImageLumaSample = {
+  mean: number
+  maxStdDev: number
+}
+
+async function readImageLumaSample(filePath: string): Promise<ImageLumaSample> {
+  const stats = await sharp(filePath, { failOn: 'none' }).stats()
+  const channels = Array.isArray(stats.channels) ? stats.channels.slice(0, 3) : []
+  if (channels.length === 0) {
+    throw new Error('image stats unavailable')
+  }
+
+  const means = channels.map((channel) => Number(channel.mean ?? 0)).filter((value) => Number.isFinite(value))
+  const stdDevs = channels.map((channel) => Number(channel.stdev ?? 0)).filter((value) => Number.isFinite(value))
+  if (means.length === 0 || stdDevs.length === 0) {
+    throw new Error('invalid image stats')
+  }
+
+  const mean = means.reduce((sum, value) => sum + value, 0) / means.length
+  const maxStdDev = Math.max(...stdDevs)
+  return { mean, maxStdDev }
+}
+
+async function ensureImageNotNearBlackWithRetry(
+  filePath: string,
+  stageLabel: string,
+  sendLog?: ProcessLogFn,
+  attempts = 3,
+  retryDelayMs = 180
+): Promise<void> {
+  const rawPath = String(filePath ?? '').trim()
+  if (!rawPath) throw new Error(`[ImageLab] ${stageLabel} 输出质量异常：路径为空。`)
+  const normalizedPath = resolve(rawPath)
+
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const luma = await readImageLumaSample(normalizedPath)
+      const isNearBlack = luma.mean <= 4 && luma.maxStdDev <= 6
+      if (isNearBlack) {
+        throw new Error(`image is near-black (mean=${luma.mean.toFixed(2)} stdev=${luma.maxStdDev.toFixed(2)})`)
+      }
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) {
+        sendLog?.(
+          'info',
+          `[ImageLab] ${stageLabel} 质量校验重试 ${attempt}/${attempts - 1}：${basename(normalizedPath)}`
+        )
+        await sleepMs(retryDelayMs)
+      }
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : String(lastError)
+  throw new Error(`[ImageLab] ${stageLabel} 输出质量异常：${normalizedPath} (${message})`)
+}
+
 function sendLogToRenderer(type: 'info' | 'warn' | 'error', message: string): void {
   if (!is.dev) return
   const payload = { type, message, timestamp: Date.now() }
@@ -2349,9 +2408,14 @@ app.whenReady().then(async () => {
           event.sender.send('process-log', { level, message, timestamp: Date.now() })
         }
 
-        const runOne = async (inputPath: string, outputPath: string): Promise<void> => {
+        const runOne = async (inputPath: string, outputPath: string, mode: 'gpu' | 'cpu'): Promise<void> => {
           await new Promise<void>((resolve, reject) => {
-            const child = spawn(resolvedExePath, ['-i', inputPath, '-o', outputPath, '-n', 'realesrgan-x4plus'], {
+            const args = ['-i', inputPath, '-o', outputPath, '-n', 'realesrgan-x4plus']
+            if (mode === 'cpu') {
+              args.push('-g', '-1')
+            }
+
+            const child = spawn(resolvedExePath, args, {
               cwd: exeDir,
               stdio: ['ignore', 'pipe', 'pipe']
             })
@@ -2383,7 +2447,7 @@ app.whenReady().then(async () => {
             })
 
             child.on('error', (error) => {
-              sendLog('error', `[HD Upscale] 进程启动失败：${error.message}`)
+              sendLog('error', `[HD Upscale] ${mode.toUpperCase()} 进程启动失败：${error.message}`)
               reject(error)
             })
 
@@ -2394,7 +2458,9 @@ app.whenReady().then(async () => {
                 resolve()
                 return
               }
-              reject(new Error(`[HD Upscale] 处理失败：exit=${code ?? 'null'} signal=${signal ?? 'null'}`))
+              reject(
+                new Error(`[HD Upscale] ${mode.toUpperCase()} 处理失败：exit=${code ?? 'null'} signal=${signal ?? 'null'}`)
+              )
             })
           })
         }
@@ -2416,16 +2482,46 @@ app.whenReady().then(async () => {
           const processingPlan = await createLocalProcessingPlan(inputPath, outPath, '画质重生', sendLog)
           try {
             sendLog('info', `[HD Upscale] 处理：${basename(inputPath)} -> ${basename(outPath)}`)
-            await runOne(processingPlan.inputPath, processingPlan.outputPath)
-            if (!existsSync(processingPlan.outputPath)) {
-              await new Promise((r) => setTimeout(r, 500))
+            const validateProcessingOutput = async (): Promise<void> => {
               if (!existsSync(processingPlan.outputPath)) {
-                throw new Error(`[ImageLab] HD Upscale output missing: ${outPath}`)
+                await new Promise((r) => setTimeout(r, 500))
+                if (!existsSync(processingPlan.outputPath)) {
+                  throw new Error(`[ImageLab] HD Upscale output missing: ${outPath}`)
+                }
+              }
+              await ensureImageReadableWithRetry(processingPlan.outputPath, '画质重生', sendLog)
+              await ensureImageNotNearBlackWithRetry(processingPlan.outputPath, '画质重生', sendLog)
+            }
+
+            let shouldFallbackToCpu = false
+            try {
+              await runOne(processingPlan.inputPath, processingPlan.outputPath, 'gpu')
+            } catch (error) {
+              shouldFallbackToCpu = true
+              const message = error instanceof Error ? error.message : String(error)
+              sendLog('error', `[HD Upscale] GPU 处理失败，回退 CPU：${message}`)
+            }
+
+            if (!shouldFallbackToCpu) {
+              try {
+                await validateProcessingOutput()
+              } catch (error) {
+                shouldFallbackToCpu = true
+                const message = error instanceof Error ? error.message : String(error)
+                sendLog('error', `[HD Upscale] GPU 输出异常，回退 CPU：${message}`)
               }
             }
-            await ensureImageReadableWithRetry(processingPlan.outputPath, '画质重生', sendLog)
+
+            if (shouldFallbackToCpu) {
+              await unlink(processingPlan.outputPath).catch(() => void 0)
+              await runOne(processingPlan.inputPath, processingPlan.outputPath, 'cpu')
+              await validateProcessingOutput()
+              sendLog('info', `[HD Upscale] CPU 回退成功：${basename(outPath)}`)
+            }
+
             await processingPlan.commit()
             await ensureImageReadableWithRetry(outPath, '画质重生', sendLog)
+            await ensureImageNotNearBlackWithRetry(outPath, '画质重生', sendLog)
             outputs.push(outPath)
             sendLog('info', `[HD Upscale] 完成：${basename(outPath)}`)
           } finally {

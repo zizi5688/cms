@@ -13,6 +13,26 @@ DEFAULT_X = 0.905
 DEFAULT_Y = 0.927
 DEFAULT_W = 0.055
 DEFAULT_H = 0.05
+DEVICE_CHOICES = ('cpu', 'cuda', 'mps')
+
+
+def _resolve_default_device() -> str:
+  env_device = str(os.environ.get('CMS_ENGINE_DEVICE') or '').strip().lower()
+  if env_device in DEVICE_CHOICES:
+    return env_device
+  if env_device:
+    print(f"[cms_engine] Ignore invalid CMS_ENGINE_DEVICE={env_device}, fallback to platform default.")
+  return 'mps' if sys.platform == 'darwin' else 'cpu'
+
+
+def _normalize_device(device: str) -> str:
+  normalized = str(device or '').strip().lower()
+  if normalized not in DEVICE_CHOICES:
+    return _resolve_default_device()
+  if normalized == 'mps' and sys.platform != 'darwin':
+    print('[cms_engine] mps is only supported on macOS, fallback to cpu.')
+    return 'cpu'
+  return normalized
 
 
 def _get_model_dir() -> str | None:
@@ -170,14 +190,16 @@ def process_image(input_path: str, output_path: str, box_args: str | None, devic
 
 
 def main() -> int:
+  default_device = _resolve_default_device()
   parser = argparse.ArgumentParser()
   parser.add_argument('-i', '--input', required=True)
   parser.add_argument('-o', '--output', required=True)
   parser.add_argument('--box', default='')
-  parser.add_argument('--device', default=os.environ.get('CMS_ENGINE_DEVICE') or 'mps', choices=['cpu', 'cuda', 'mps'])
+  parser.add_argument('--device', default=default_device, choices=list(DEVICE_CHOICES))
 
   args = parser.parse_args()
-  ok = process_image(args.input, args.output, args.box, args.device)
+  selected_device = _normalize_device(args.device)
+  ok = process_image(args.input, args.output, args.box, selected_device)
   return 0 if ok else 1
 
 
