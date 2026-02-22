@@ -128,10 +128,16 @@ Write-Host "[setup] Installing Python build dependencies ..."
 
 Write-Host "[setup] Installing Node dependencies ..."
 & $npmCmd ci
+if ($LASTEXITCODE -ne 0) {
+  throw "npm ci failed with exit code $LASTEXITCODE"
+}
 
 if (-not $SkipBuild) {
   Write-Host "[setup] Building Windows installer ..."
   & $npmCmd run build:win
+  if ($LASTEXITCODE -ne 0) {
+    throw "npm run build:win failed with exit code $LASTEXITCODE"
+  }
   Write-Host "[setup] Build done. Installer is under: $repoPath\release"
 } else {
   Write-Host "[setup] Build skipped. Run 'npm run build:win' manually later."

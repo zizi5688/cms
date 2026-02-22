@@ -1,6 +1,15 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Resolve-RealEsrganExecutable {
+  param(
+    [Parameter(Mandatory = $true)][string]$SearchRoot
+  )
+
+  return Get-ChildItem -Path $SearchRoot -Recurse -Filter "realesrgan-ncnn-vulkan.exe" -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 Set-Location $repoRoot
@@ -66,6 +75,20 @@ if (-not (Test-Path $realEsrganExe)) {
   }
 
   Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
+}
+
+if (-not (Test-Path $realEsrganExe)) {
+  $discoveredExe = Resolve-RealEsrganExecutable -SearchRoot (Join-Path $repoRoot "AI_Tools")
+  if ($discoveredExe) {
+    $sourceDir = Split-Path -Parent $discoveredExe.FullName
+    if ($sourceDir -and $sourceDir -ne $realEsrganDir) {
+      if (Test-Path $realEsrganDir) {
+        Remove-Item -Recurse -Force $realEsrganDir
+      }
+      New-Item -ItemType Directory -Path $realEsrganDir -Force | Out-Null
+      Copy-Item -Path (Join-Path $sourceDir "*") -Destination $realEsrganDir -Recurse -Force
+    }
+  }
 }
 
 if (-not (Test-Path $realEsrganExe)) {
