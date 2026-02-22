@@ -65,30 +65,26 @@ $realEsrganExe = Join-Path $realEsrganDir "realesrgan-ncnn-vulkan.exe"
 if (-not (Test-Path $realEsrganExe)) {
   $downloadUrl = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
   $archivePath = Join-Path $env:TEMP "realesrgan-ncnn-vulkan-20220424-windows.zip"
-  $extractRoot = Join-Path $repoRoot "AI_Tools"
+  $extractRoot = Join-Path $env:TEMP ("realesrgan-unpack-" + [Guid]::NewGuid().ToString("N"))
 
   Write-Host "[build:win] Downloading Real-ESRGAN Windows bundle..."
   Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
 
+  New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+  Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
+
+  $discoveredExe = Resolve-RealEsrganExecutable -SearchRoot $extractRoot
+  if (-not $discoveredExe) {
+    throw "Missing Real-ESRGAN executable in downloaded archive."
+  }
+
+  $sourceDir = Split-Path -Parent $discoveredExe.FullName
   if (Test-Path $realEsrganDir) {
     Remove-Item -Recurse -Force $realEsrganDir
   }
-
-  Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
-}
-
-if (-not (Test-Path $realEsrganExe)) {
-  $discoveredExe = Resolve-RealEsrganExecutable -SearchRoot (Join-Path $repoRoot "AI_Tools")
-  if ($discoveredExe) {
-    $sourceDir = Split-Path -Parent $discoveredExe.FullName
-    if ($sourceDir -and $sourceDir -ne $realEsrganDir) {
-      if (Test-Path $realEsrganDir) {
-        Remove-Item -Recurse -Force $realEsrganDir
-      }
-      New-Item -ItemType Directory -Path $realEsrganDir -Force | Out-Null
-      Copy-Item -Path (Join-Path $sourceDir "*") -Destination $realEsrganDir -Recurse -Force
-    }
-  }
+  New-Item -ItemType Directory -Path $realEsrganDir -Force | Out-Null
+  Copy-Item -Path (Join-Path $sourceDir "*") -Destination $realEsrganDir -Recurse -Force
+  Remove-Item -Recurse -Force $extractRoot -ErrorAction SilentlyContinue
 }
 
 if (-not (Test-Path $realEsrganExe)) {
