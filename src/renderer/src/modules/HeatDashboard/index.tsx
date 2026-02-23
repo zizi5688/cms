@@ -41,17 +41,31 @@ type PotentialProduct = {
   keyword: string
   productName: string
   productUrl: string | null
+  shopUrl: string | null
   cachedImageUrl: string | null
   price: number | null
   addCart24hValue: number
   prevAddCart24hValue: number | null
+  prev_cart_value: number | null
   deltaAddCart24h: number | null
+  totalSales: string | null
+  recent_3m_sales: string | null
+  cart_tag: string | null
+  fav_tag: string | null
+  imported_at: string | null
+  shopSales: string | null
+  productRating: number | null
+  shopRating: number | null
   isNew: boolean
   firstSeenAt: number
   lastUpdatedAt: number
   positiveReviewTag: string | null
   shopName: string | null
   shopFans: string | null
+  scout_strategy_tag: 'flawed_hot' | 'exploding_new' | null
+  shop_dna_tag: 'viral_product' | null
+  lifecycle_status: 'exploding' | 'mature' | 'declining' | 'new'
+  isAlert?: boolean
   potentialScore: number
   suggestedAction: '优先种草' | '继续观察' | '暂缓'
 }
@@ -164,6 +178,15 @@ type CoverDebugState = {
   logPath: string
 }
 
+type ProductFilterKey = 'all' | 'alert' | 'flawed_hot' | 'exploding_new'
+
+const FILTER_PILLS: Array<{ key: ProductFilterKey; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'alert', label: '异动预警' },
+  { key: 'flawed_hot', label: '低分热销' },
+  { key: 'exploding_new', label: '飙升新品' }
+]
+
 const PRODUCT_PLACEHOLDER_IMAGE =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='640' viewBox='0 0 640 640'%3E%3Cdefs%3E%3ClinearGradient id='bg' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f3f4f6'/%3E%3Cstop offset='100%25' stop-color='%23e5e7eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='640' height='640' fill='url(%23bg)'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='Arial' font-size='28'%3ENo Image%3C/text%3E%3C/svg%3E"
 
@@ -199,6 +222,7 @@ function HeatDashboard(): React.JSX.Element {
   const [coverDebugLines, setCoverDebugLines] = useState<string[]>([])
   const [isCoverDebugPanelOpen, setIsCoverDebugPanelOpen] = useState(false)
   const [isCoverDebugUpdating, setIsCoverDebugUpdating] = useState(false)
+  const [activeFilter, setActiveFilter] = useState<ProductFilterKey>('all')
   const [sourcingMarked, setSourcingMarked] = useState<MarkedProduct | null>(null)
   const [sourcingSearchCandidates, setSourcingSearchCandidates] = useState<SourcingSupplierCandidate[] | null>(null)
   const [sourcingEmptyState, setSourcingEmptyState] = useState<SourcingEmptyState | null>(null)
@@ -444,8 +468,29 @@ function HeatDashboard(): React.JSX.Element {
     return map
   }, [markedProducts])
 
+  const keywordAlertMap = useMemo(() => {
+    const map = new Map<string, boolean>()
+    for (const item of keywordHeat) {
+      map.set(item.keyword, item.isAlert)
+    }
+    return map
+  }, [keywordHeat])
+
+  const filteredPotentialProducts = useMemo(() => {
+    if (activeFilter === 'all') return potentialProducts
+    return potentialProducts.filter((item) => {
+      const isAlert = typeof item.isAlert === 'boolean' ? item.isAlert : (keywordAlertMap.get(item.keyword) ?? false)
+      if (activeFilter === 'alert') return isAlert
+      if (activeFilter === 'flawed_hot') return item.scout_strategy_tag === 'flawed_hot'
+      return item.scout_strategy_tag === 'exploding_new'
+    })
+  }, [activeFilter, keywordAlertMap, potentialProducts])
+  const activeFilterLabel = useMemo(() => {
+    return FILTER_PILLS.find((pill) => pill.key === activeFilter)?.label ?? '全部'
+  }, [activeFilter])
+
   const productCards = useMemo<ProductCardModel[]>(() => {
-    return potentialProducts.map((item) => {
+    return filteredPotentialProducts.map((item) => {
       const marked = markedByProductKey.get(item.productKey)
       const bestSupplier = pickBestSupplier(marked)
       const rawProfit = bestSupplier.profit ?? marked?.bestProfitAmount ?? item.potentialScore * 10
@@ -469,7 +514,7 @@ function HeatDashboard(): React.JSX.Element {
         potential: item
       }
     })
-  }, [markedByProductKey, potentialProducts, queuedImageMap])
+  }, [filteredPotentialProducts, markedByProductKey, queuedImageMap])
 
   const enqueueMissingCoverFetch = useCallback((productId: string, xiaohongshuUrl: string): void => {
     const normalizedProductId = String(productId ?? '').trim()
@@ -862,6 +907,22 @@ function HeatDashboard(): React.JSX.Element {
     setStatusText('已重新提交封面抓取任务，请稍候再重试搜同款')
   }, [enqueueMissingCoverFetch, selectedProduct])
 
+  const handleOpenExternalLink = useCallback(
+    async (targetUrl: string | null, label: '商品' | '店铺'): Promise<void> => {
+      const target = String(targetUrl ?? '').trim()
+      if (!target) {
+        setStatusText(`当前${label}暂无可打开链接`)
+        return
+      }
+      try {
+        await window.api.cms.system.openExternal(target)
+      } catch {
+        setStatusText(`打开${label}链接失败`)
+      }
+    },
+    []
+  )
+
   const handleCopyProductLink = useCallback(async (productUrl: string | null): Promise<void> => {
     const target = String(productUrl ?? '').trim()
     if (!target) {
@@ -1158,6 +1219,39 @@ function HeatDashboard(): React.JSX.Element {
             </div>
             {statusText && <div className="mt-1 text-xs text-zinc-400">{statusText}</div>}
             <div className="mt-2 flex flex-wrap items-center gap-2">
+              {FILTER_PILLS.map((pill) => (
+                <button
+                  key={pill.key}
+                  type="button"
+                  className={cn(
+                    'rounded-full px-3 py-1 text-[11px] font-semibold transition-colors',
+                    activeFilter === pill.key
+                      ? 'bg-gray-800 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  )}
+                  onClick={() => setActiveFilter(pill.key)}
+                >
+                  {pill.label}
+                </button>
+              ))}
+              <div className="group relative inline-flex items-center">
+                <span className="ml-2 inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-gray-400 text-xs text-gray-400">
+                  ?
+                </span>
+                <div className="invisible absolute top-full z-50 mt-2 w-64 rounded bg-gray-800 p-3 text-xs text-white opacity-0 shadow-xl transition-all group-hover:visible group-hover:opacity-100">
+                  <div className="space-y-2">
+                    <p>🚀 爆发期：24h加购环比增长 &gt; 50%</p>
+                    <p>👑 成熟期：环比波动在 -20% 至 50% 之间</p>
+                    <p>🥀 衰退期：24h加购环比下跌 &gt; 20%</p>
+                    <p>🌱 测款期：首次被系统抓取的新商品</p>
+                  </div>
+                </div>
+              </div>
+              <span className="text-[11px] text-zinc-400">
+                已显示 {productCards.length} / {potentialProducts.length}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
@@ -1232,7 +1326,9 @@ function HeatDashboard(): React.JSX.Element {
           <div className="p-4">
             {productCards.length === 0 && !isLoadingProducts ? (
               <div className="rounded-xl border border-zinc-700 bg-zinc-900/40 p-6 text-sm text-zinc-400">
-                当前关键词暂无商品数据
+                {potentialProducts.length === 0
+                  ? '当前关键词暂无商品数据'
+                  : `筛选「${activeFilterLabel}」下暂无商品`}
               </div>
             ) : (
               <div
@@ -1249,6 +1345,10 @@ function HeatDashboard(): React.JSX.Element {
                     focused={card.id === selectedProductId}
                     onSelect={() => setSelectedProductId(card.id)}
                     onQuickLook={() => setQuickLookProductId(card.id)}
+                    onOpenProductLink={() => void handleOpenExternalLink(card.productUrl, '商品')}
+                    onOpenShopLink={() =>
+                      void handleOpenExternalLink(card.potential.shopUrl || card.bestSupplierUrl, '店铺')
+                    }
                     onCopyLink={() => void handleCopyProductLink(card.productUrl)}
                     onSameStyle={() => {
                       setSelectedProductId(card.id)
@@ -1435,6 +1535,8 @@ type ProductCardProps = {
   focused: boolean
   onSelect: () => void
   onQuickLook: () => void
+  onOpenProductLink: () => void
+  onOpenShopLink: () => void
   onCopyLink: () => void
   onSameStyle: () => void
   onCompetitorAnalysis: () => void
@@ -1449,6 +1551,8 @@ function ProductCard({
   focused,
   onSelect,
   onQuickLook,
+  onOpenProductLink,
+  onOpenShopLink,
   onCopyLink,
   onSameStyle,
   onCompetitorAnalysis,
@@ -1472,14 +1576,31 @@ function ProductCard({
     const addCart24h = Number.isFinite(card.potential.addCart24hValue) ? card.potential.addCart24hValue : 0
     return {
       title: card.name,
+      productUrl: card.productUrl,
       price: Number.isFinite(card.price) ? Number(card.price) : 0,
       velocity24h: Math.max(0, Math.round(addCart24h)),
-      totalSales: estimateTotalSales(card.potential.addCart24hValue, card.potential.prevAddCart24hValue),
-      shopName: card.bestSupplierName || card.potential.shopName || '待绑定店铺',
-      shopScore: toShopScore(card.profitLevel),
+      prevCartValue: card.potential.prev_cart_value ?? card.potential.prevAddCart24hValue,
+      productSales: card.potential.totalSales,
+      recent3mSales: card.potential.recent_3m_sales,
+      cartTag: card.potential.cart_tag,
+      favTag: card.potential.fav_tag,
+      shopSales: card.potential.shopSales,
+      productRating: card.potential.productRating,
+      shopName: card.potential.shopName || card.bestSupplierName || '待绑定店铺',
+      shopUrl: card.potential.shopUrl || card.bestSupplierUrl || null,
+      shopRating: card.potential.shopRating,
       isNewArrival: card.potential.isNew,
       positiveReviewTag: card.potential.positiveReviewTag,
       shopFans: card.potential.shopFans,
+      scout_strategy_tag: card.potential.scout_strategy_tag,
+      shop_dna_tag: card.potential.shop_dna_tag,
+      lifecycle_status: card.potential.lifecycle_status,
+      importedAt: Number.isFinite(card.potential.firstSeenAt)
+        ? card.potential.firstSeenAt
+        : Number.isFinite(card.potential.lastUpdatedAt)
+          ? card.potential.lastUpdatedAt
+          : null,
+      importedAtLabel: card.potential.imported_at,
       imageUrl: readyImageUrl
     }
   }, [card, readyImageUrl])
@@ -1507,6 +1628,8 @@ function ProductCard({
         <div className="relative">
           <OperationalProductCard
             product={operationalProduct}
+            onOpenProduct={card.productUrl ? onOpenProductLink : undefined}
+            onOpenShop={operationalProduct.shopUrl ? onOpenShopLink : undefined}
             onCopyLink={onCopyLink}
             onSameStyle={onSameStyle}
             onCompetitorAnalysis={onCompetitorAnalysis}
@@ -2061,20 +2184,6 @@ function toProfitLevel(raw: number | null): 'high' | 'medium' | 'low' {
   if (value >= 15) return 'high'
   if (value >= 8) return 'medium'
   return 'low'
-}
-
-function estimateTotalSales(addCart24h: number, prevAddCart24h: number | null): number {
-  const current = Number.isFinite(addCart24h) ? Math.max(0, addCart24h) : 0
-  const previous =
-    prevAddCart24h == null || !Number.isFinite(prevAddCart24h) ? null : Math.max(0, prevAddCart24h)
-  if (previous == null) return Math.round(current * 12)
-  return Math.round(Math.max(current, (current + previous) * 6))
-}
-
-function toShopScore(level: 'high' | 'medium' | 'low'): number {
-  if (level === 'high') return 4.8
-  if (level === 'medium') return 4.6
-  return 4.4
 }
 
 function isLikelyXhsGoodsDetailUrl(url: string | null): boolean {

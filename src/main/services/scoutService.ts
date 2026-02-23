@@ -113,17 +113,30 @@ export type ScoutPotentialProductRecord = {
   keyword: string
   productName: string
   productUrl: string | null
+  shopUrl: string | null
   cachedImageUrl: string | null
   price: number | null
   addCart24hValue: number
   prevAddCart24hValue: number | null
+  prev_cart_value: number | null
   deltaAddCart24h: number | null
+  totalSales: string | null
+  recent_3m_sales: string | null
+  cart_tag: string | null
+  fav_tag: string | null
+  imported_at: string | null
+  shopSales: string | null
+  productRating: number | null
+  shopRating: number | null
   isNew: boolean
   firstSeenAt: number
   lastUpdatedAt: number
   positiveReviewTag: string | null
   shopName: string | null
   shopFans: string | null
+  scout_strategy_tag: 'flawed_hot' | 'exploding_new' | null
+  shop_dna_tag: 'viral_product' | null
+  lifecycle_status: 'exploding' | 'mature' | 'declining' | 'new'
   potentialScore: number
   suggestedAction: '优先种草' | '继续观察' | '暂缓'
 }
@@ -172,6 +185,12 @@ export type ScoutDashboardTrendQuery = {
   days?: number
   keyword?: string
   limit?: number
+}
+
+type ScoutCategoryBaseline = {
+  averageAddCart24hValue: number
+  p80AddCart24hValue: number
+  sampleSize: number
 }
 
 export type ScoutMarkedProductPayload = {
@@ -323,9 +342,11 @@ function enqueueScout1688Search<T>(task: () => Promise<T>): Promise<T> {
 
 export class ScoutService {
   private sqlite: SqliteService
+  private categoryBaselineCache: Map<string, Map<string, ScoutCategoryBaseline>>
 
   constructor(sqlite?: SqliteService) {
     this.sqlite = sqlite ?? SqliteService.getInstance()
+    this.categoryBaselineCache = new Map()
   }
 
   // ==============================================================
@@ -394,6 +415,7 @@ export class ScoutService {
         product_name TEXT NOT NULL DEFAULT '',
         product_url TEXT,
         shop_name TEXT,
+        category_tag TEXT,
         first_seen_at INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL
       );
@@ -484,6 +506,15 @@ export class ScoutService {
     if (!hasPositiveReviewTag) {
       db.exec(`ALTER TABLE scout_dashboard_snapshot_rows ADD COLUMN positive_review_tag TEXT`)
     }
+
+    const mapColumns = db
+      .prepare(`PRAGMA table_info(scout_dashboard_product_map)`)
+      .all() as Array<{ name?: unknown }>
+    const hasCategoryTag = mapColumns.some((col) => normalizeText(col.name) === 'category_tag')
+    if (!hasCategoryTag) {
+      db.exec(`ALTER TABLE scout_dashboard_product_map ADD COLUMN category_tag TEXT`)
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scout_dash_map_category ON scout_dashboard_product_map(category_tag)`)
 
     try {
       this.reconcileDashboardSnapshotDatesBySourceFile()
@@ -841,6 +872,7 @@ export class ScoutService {
     if (!snapshotDateFromFile) {
       throw new Error(`文件名未包含可识别日期，需包含 YYYYMMDD：${sourceFile}`)
     }
+    const sourceCategoryTag = extractCategoryTagFromSourceFile(sourceFile)
     const snapshotDates = new Set<string>()
     const keywords = new Set<string>()
 
@@ -871,22 +903,25 @@ export class ScoutService {
       productName: string
       productUrl: string | null
       shopName: string | null
+      categoryTag: string | null
       firstSeenAt: number
       lastSeenAt: number
     }
 
     const candidateRows = new Map<string, CandidateRow>()
     const productMapBuffer = new Map<string, ProductMapInfo>()
-    const primaryKeywordCache = new Map<string, string>()
+    const productMapCache = new Map<string, { primaryKeyword: string; categoryTag: string | null }>()
 
-    const selectPrimaryKeyword = db.prepare(
-      `SELECT primary_keyword FROM scout_dashboard_product_map WHERE product_key = ?`
+    const selectProductMap = db.prepare(
+      `SELECT primary_keyword, category_tag FROM scout_dashboard_product_map WHERE product_key = ?`
     )
 
     for (const worksheet of workbook.worksheets) {
       const keyword = String(worksheet.name ?? '').trim()
       if (!keyword) continue
       keywords.add(keyword)
+      const sheetCategoryTag = extractCategoryTagFromSheetName(keyword)
+      const inferredCategoryTag = sourceCategoryTag ?? sheetCategoryTag ?? normalizeCategoryTag(keyword)
 
       const headerIndex = buildHeaderIndex(worksheet.getRow(1).values as Array<unknown>)
       if (headerIndex.size === 0) continue
@@ -915,13 +950,21 @@ export class ScoutService {
 
         snapshotDates.add(snapshotDate)
 
-        const cachedPrimaryKeyword = primaryKeywordCache.get(productKey)
-        let primaryKeyword = cachedPrimaryKeyword ?? ''
+        const cachedMapping = productMapCache.get(productKey)
+        let primaryKeyword = cachedMapping?.primaryKeyword ?? ''
+        let categoryTag = cachedMapping?.categoryTag ?? null
         if (!primaryKeyword) {
-          const mapped = selectPrimaryKeyword.get(productKey) as { primary_keyword?: unknown } | undefined
+          const mapped = selectProductMap.get(productKey) as
+            | { primary_keyword?: unknown; category_tag?: unknown }
+            | undefined
           primaryKeyword = normalizeText(mapped?.primary_keyword) || keyword
-          primaryKeywordCache.set(productKey, primaryKeyword)
+          categoryTag = normalizeCategoryTag(mapped?.category_tag)
+          productMapCache.set(productKey, {
+            primaryKeyword,
+            categoryTag
+          })
         }
+        categoryTag = categoryTag ?? inferredCategoryTag
 
         const price = parseNumber(getVal('价格'))
         const addCart24hValue = toInt(getVal('24h加购'))
@@ -941,6 +984,8 @@ export class ScoutService {
         const rawPayload = JSON.stringify({
           关键词: keyword,
           主关键词: primaryKeyword,
+          品类标签: categoryTag,
+          categoryTag,
           快照日期: snapshotDate,
           SKU_ID: skuId,
           商品名称: productName,
@@ -1002,6 +1047,7 @@ export class ScoutService {
             productName,
             productUrl,
             shopName,
+            categoryTag,
             firstSeenAt,
             lastSeenAt: lastUpdatedAt
           })
@@ -1010,6 +1056,7 @@ export class ScoutService {
           if (!mapInfo.productName && productName) mapInfo.productName = productName
           if (!mapInfo.productUrl && productUrl) mapInfo.productUrl = productUrl
           if (!mapInfo.shopName && shopName) mapInfo.shopName = shopName
+          if (!mapInfo.categoryTag && categoryTag) mapInfo.categoryTag = categoryTag
           mapInfo.firstSeenAt = Math.min(mapInfo.firstSeenAt, firstSeenAt)
         }
       }
@@ -1017,9 +1064,9 @@ export class ScoutService {
 
     const upsertMap = db.prepare(`
       INSERT INTO scout_dashboard_product_map (
-        product_key, primary_keyword, product_name, product_url, shop_name, first_seen_at, last_seen_at
+        product_key, primary_keyword, product_name, product_url, shop_name, category_tag, first_seen_at, last_seen_at
       ) VALUES (
-        @productKey, @primaryKeyword, @productName, @productUrl, @shopName, @firstSeenAt, @lastSeenAt
+        @productKey, @primaryKeyword, @productName, @productUrl, @shopName, @categoryTag, @firstSeenAt, @lastSeenAt
       )
       ON CONFLICT(product_key) DO UPDATE SET
         product_name = CASE
@@ -1028,6 +1075,10 @@ export class ScoutService {
         END,
         product_url = COALESCE(excluded.product_url, scout_dashboard_product_map.product_url),
         shop_name = COALESCE(excluded.shop_name, scout_dashboard_product_map.shop_name),
+        category_tag = CASE
+          WHEN excluded.category_tag IS NOT NULL AND TRIM(excluded.category_tag) != '' THEN excluded.category_tag
+          ELSE scout_dashboard_product_map.category_tag
+        END,
         first_seen_at = MIN(excluded.first_seen_at, scout_dashboard_product_map.first_seen_at),
         last_seen_at = MAX(excluded.last_seen_at, scout_dashboard_product_map.last_seen_at)
     `)
@@ -1115,9 +1166,11 @@ export class ScoutService {
       )
     })
     tx()
+    const importedDates = Array.from(snapshotDates).sort()
+    this.invalidateCategoryBaselineCache(importedDates)
 
     return {
-      snapshotDates: Array.from(snapshotDates).sort(),
+      snapshotDates: importedDates,
       rowsUpserted: candidateRows.size,
       productsMapped: productMapBuffer.size,
       keywordsCount: keywords.size,
@@ -1250,7 +1303,13 @@ export class ScoutService {
       } satisfies ScoutDashboardDeleteSnapshotResult
     })
 
-    return result()
+    const output = result()
+    const invalidateDates =
+      output.affectedSnapshotDates.length > 0
+        ? output.affectedSnapshotDates
+        : [output.snapshotDate]
+    this.invalidateCategoryBaselineCache(invalidateDates)
+    return output
   }
 
   deleteDashboardSnapshotKeyword(snapshotDate: string, keyword: string): ScoutDashboardDeleteKeywordSnapshotResult {
@@ -1362,7 +1421,9 @@ export class ScoutService {
       } satisfies ScoutDashboardDeleteKeywordSnapshotResult
     })
 
-    return result()
+    const output = result()
+    this.invalidateCategoryBaselineCache([output.snapshotDate])
+    return output
   }
 
   getDashboardMeta(): ScoutDashboardMeta {
@@ -1423,6 +1484,11 @@ export class ScoutService {
 
     const prevMap = this.getKeywordHeatMap(base.prevDate, keywordFilter)
     const prev2Map = this.getKeywordHeatMap(base.prev2Date, keywordFilter)
+    const keywordAlertMap = this.getKeywordAlertMapByCategoryBaseline(
+      base.currentDate,
+      base.prevDate,
+      keywordFilter || undefined
+    )
 
     const list: ScoutKeywordHeatRecord[] = currentRows.map((row) => {
       const keyword = normalizeText(row.keyword)
@@ -1431,10 +1497,7 @@ export class ScoutService {
       const prev2Heat = keyword ? prev2Map.get(keyword) ?? null : null
       const deltaHeat = prevHeat == null ? null : todayHeat - prevHeat
       const growthRate = prevHeat == null || prevHeat <= 0 ? null : deltaHeat! / prevHeat
-      const hitRules = Number(deltaHeat != null && deltaHeat >= 600) +
-        Number(growthRate != null && growthRate >= 0.2) +
-        Number(todayHeat >= 2000)
-      const isAlert = prevHeat != null && hitRules >= 1
+      const isAlert = keyword ? (keywordAlertMap.get(keyword) ?? false) : false
       const isRising2d =
         prevHeat != null && prev2Heat != null && todayHeat > prevHeat && prevHeat > prev2Heat
 
@@ -1466,28 +1529,61 @@ export class ScoutService {
     const db = this.sqlite.connection
     const base = this.resolveSnapshotWindow(query.snapshotDate)
     if (!base.currentDate) return []
+    const categoryBaselines = this.calculateCategoryBaselines(base.currentDate)
 
     const snapshotColumns = db
       .prepare(`PRAGMA table_info(scout_dashboard_snapshot_rows)`)
       .all() as Array<{ name?: unknown }>
     const hasPositiveReviewTag = snapshotColumns.some((col) => normalizeText(col.name) === 'positive_review_tag')
+    const hasThreeMonthBuyers = snapshotColumns.some((col) => normalizeText(col.name) === 'three_month_buyers')
+    const hasImportedAt = snapshotColumns.some((col) => normalizeText(col.name) === 'imported_at')
     const positiveReviewSelect = hasPositiveReviewTag
-      ? 'positive_review_tag'
+      ? 's.positive_review_tag AS positive_review_tag'
       : 'NULL AS positive_review_tag'
+    const recent3mSalesSelect = hasThreeMonthBuyers
+      ? 's.three_month_buyers AS recent_3m_sales'
+      : 'NULL AS recent_3m_sales'
+    const importedAtSelect = hasImportedAt ? 's.imported_at AS imported_at_raw' : 's.first_seen_at AS imported_at_raw'
 
     const keywordFilter = normalizeText(query.keyword)
     const whereCurrent = keywordFilter
-      ? `WHERE snapshot_date = ? AND primary_keyword = ?`
-      : `WHERE snapshot_date = ?`
+      ? `WHERE s.snapshot_date = ? AND s.primary_keyword = ?`
+      : `WHERE s.snapshot_date = ?`
     const currentRows = db
       .prepare(
         `SELECT
-          product_key, primary_keyword, product_name, product_url, price, add_cart_24h_value,
-          first_seen_at, last_updated_at, ${positiveReviewSelect}, shop_name, shop_fans, raw_payload
-         FROM scout_dashboard_snapshot_rows
+          s.product_key,
+          s.primary_keyword,
+          s.product_name,
+          s.product_url,
+          s.price,
+          s.add_cart_24h_value,
+          prev.add_cart_24h_value AS prev_cart_value,
+          s.total_sales,
+          ${recent3mSalesSelect},
+          s.product_rating,
+          s.shop_rating,
+          s.first_seen_at,
+          s.last_updated_at,
+          ${importedAtSelect},
+          ${positiveReviewSelect},
+          s.shop_name,
+          s.shop_fans,
+          s.raw_payload,
+          COALESCE(NULLIF(TRIM(m.category_tag), ''), NULLIF(TRIM(s.primary_keyword), ''), '未分类') AS category_tag
+         FROM scout_dashboard_snapshot_rows s
+         LEFT JOIN scout_dashboard_product_map m
+           ON m.product_key = s.product_key
+         LEFT JOIN scout_dashboard_snapshot_rows prev
+           ON prev.product_key = s.product_key
+          AND prev.snapshot_date = ?
          ${whereCurrent}`
       )
-      .all(...(keywordFilter ? [base.currentDate, keywordFilter] : [base.currentDate])) as Array<Record<string, unknown>>
+      .all(
+        ...(keywordFilter
+          ? [base.prevDate, base.currentDate, keywordFilter]
+          : [base.prevDate, base.currentDate])
+      ) as Array<Record<string, unknown>>
     if (currentRows.length === 0) return []
 
     const cacheMap = new Map<string, string | null>()
@@ -1510,13 +1606,15 @@ export class ScoutService {
       }
     }
 
-    const prevMap = this.getProductHeatMap(base.prevDate)
     const currentDateStart = parseDateMs(`${base.currentDate} 00:00:00`) ?? Date.now()
+    const scoreMetaByProductKey = new Map<string, { categoryTag: string; reviewCount: number }>()
 
     const mapped: ScoutPotentialProductRecord[] = currentRows.map((row) => {
       const productKey = normalizeText(row.product_key)
       const addCart24hValue = toInt(row.add_cart_24h_value)
-      const prevAddCart24hValue = productKey ? prevMap.get(productKey) ?? null : null
+      const prevRaw = row.prev_cart_value
+      const prevAddCart24hValue =
+        prevRaw == null || normalizeText(prevRaw) === '' ? null : Math.max(0, toInt(prevRaw))
       const deltaAddCart24h =
         prevAddCart24hValue == null ? null : addCart24hValue - prevAddCart24hValue
       const firstSeenAt = toInt(row.first_seen_at)
@@ -1525,24 +1623,89 @@ export class ScoutService {
         firstSeenAt > 0 &&
         firstSeenAt <= currentDateStart + dayMs &&
         currentDateStart - firstSeenAt <= 7 * dayMs
+      const rawPayload = parseRawPayloadObject(row.raw_payload)
       const positiveReviewTag =
-        normalizeNullable(row.positive_review_tag) ?? extractPositiveReviewTagFromRawPayload(row.raw_payload)
+        normalizeNullable(row.positive_review_tag) ??
+        readRawPayloadNullable(rawPayload, '好评标签', 'positiveReviewTag', 'positive_review_tag')
+      const totalSales =
+        normalizeNullable(row.total_sales) ??
+        readRawPayloadNullable(rawPayload, '销量', 'totalSales', 'total_sales')
+      const recent3mSales =
+        normalizeNullable(row.recent_3m_sales) ??
+        readRawPayloadNullable(rawPayload, '3个月购买人数', 'threeMonthBuyers', 'three_month_buyers')
+      const cartTag =
+        positiveReviewTag ??
+        readRawPayloadNullable(rawPayload, '好评标签', 'positiveReviewTag', 'positive_review_tag')
+      const favTag = readRawPayloadNullable(
+        rawPayload,
+        '收藏标签',
+        'collectionTag',
+        'collection_tag',
+        'favTag',
+        'fav_tag'
+      )
+      const shopUrl = readRawPayloadNullable(rawPayload, '店铺链接', 'shopUrl', 'shop_url')
+      const shopFans =
+        normalizeNullable(row.shop_fans) ??
+        readRawPayloadNullable(rawPayload, '店铺粉丝', 'shopFans', 'shop_fans')
+      const importedAtRaw = toInt(row.imported_at_raw)
+      const importedAt =
+        formatDateYmdLocal(importedAtRaw > 0 ? importedAtRaw : firstSeenAt) || null
+      const shopFansValue = parseMetricCount(shopFans)
+      const fanBase = shopFansValue > 0 ? shopFansValue : 1
+      const cartToFanRatio = addCart24hValue / fanBase
+      const shopDnaTag =
+        shopFansValue < 5000 && cartToFanRatio > 0.5 ? 'viral_product' : null
+      const shopSales = readRawPayloadNullable(rawPayload, '店铺销量', 'shopSales', 'shop_sales')
+      const productRating =
+        parseNumber(row.product_rating) ??
+        readRawPayloadNumber(rawPayload, '商品评分', 'productRating', 'product_rating')
+      const shopRating =
+        parseNumber(row.shop_rating) ??
+        readRawPayloadNumber(rawPayload, '店铺评分', 'shopRating', 'shop_rating')
+      const reviewCount = parseMetricCount(
+        readRawPayloadNumber(rawPayload, '评价数', 'reviewCount', 'review_count') ??
+          readRawPayloadNullable(rawPayload, '评价数', 'reviewCount', 'review_count')
+      )
+      const categoryTag =
+        normalizeCategoryTag(row.category_tag) ??
+        normalizeCategoryTag(row.primary_keyword) ??
+        '未分类'
+      if (productKey) {
+        scoreMetaByProductKey.set(productKey, {
+          categoryTag,
+          reviewCount
+        })
+      }
       return {
         productKey,
         keyword: normalizeText(row.primary_keyword),
         productName: normalizeText(row.product_name),
         productUrl: normalizeNullable(row.product_url),
+        shopUrl,
         cachedImageUrl: cacheMap.get(productKey) ?? null,
         price: parseNumber(row.price),
         addCart24hValue,
         prevAddCart24hValue,
+        prev_cart_value: prevAddCart24hValue,
         deltaAddCart24h,
+        totalSales,
+        recent_3m_sales: recent3mSales,
+        cart_tag: cartTag,
+        fav_tag: favTag,
+        imported_at: importedAt,
+        shopSales,
+        productRating,
+        shopRating,
         isNew,
         firstSeenAt,
         lastUpdatedAt: toInt(row.last_updated_at),
         positiveReviewTag,
         shopName: normalizeNullable(row.shop_name),
-        shopFans: normalizeNullable(row.shop_fans),
+        shopFans,
+        scout_strategy_tag: null,
+        shop_dna_tag: shopDnaTag,
+        lifecycle_status: resolveLifecycleStatus(addCart24hValue, prevAddCart24hValue),
         potentialScore: 0,
         suggestedAction: '暂缓'
       }
@@ -1551,21 +1714,53 @@ export class ScoutService {
     const filteredByNew = query.onlyNew ? mapped.filter((item) => item.isNew) : mapped
     if (filteredByNew.length === 0) return []
 
-    let maxHeat = 0
-    let maxDelta = 0
     for (const item of filteredByNew) {
-      if (item.addCart24hValue > maxHeat) maxHeat = item.addCart24hValue
-      const delta = Math.max(item.deltaAddCart24h ?? 0, 0)
-      if (delta > maxDelta) maxDelta = delta
-    }
-    maxHeat = maxHeat || 1
-    maxDelta = maxDelta || 1
+      const meta = scoreMetaByProductKey.get(item.productKey)
+      const categoryTag = meta?.categoryTag ?? normalizeCategoryTag(item.keyword) ?? '未分类'
+      const reviewCount = meta?.reviewCount ?? 0
+      const baseline = categoryBaselines.get(categoryTag)
+      const baselineThreshold =
+        baseline && baseline.p80AddCart24hValue > 0
+          ? baseline.p80AddCart24hValue
+          : baseline && baseline.averageAddCart24hValue > 0
+            ? baseline.averageAddCart24hValue
+            : 0
 
-    for (const item of filteredByNew) {
-      const normHeat = item.addCart24hValue / maxHeat
-      const normDelta = Math.max(item.deltaAddCart24h ?? 0, 0) / maxDelta
-      const novelty = item.isNew ? 1 : 0
-      item.potentialScore = Number(((0.6 * normHeat + 0.3 * normDelta + 0.1 * novelty) * 100).toFixed(2))
+      const baselineScore =
+        baselineThreshold > 0
+          ? clamp(item.addCart24hValue / baselineThreshold, 0, 1) * 40
+          : item.addCart24hValue > 0
+            ? 40
+            : 0
+
+      const totalSalesValue = parseMetricCount(item.totalSales)
+      const conversionScore =
+        totalSalesValue <= 0 ? 30 : clamp(item.addCart24hValue / totalSalesValue, 0, 1) * 30
+
+      const ratingValue = item.productRating ?? null
+      let blueOceanScore = 0
+      if ((ratingValue != null && ratingValue <= 4.4) || reviewCount < 50) {
+        blueOceanScore = 30
+      } else {
+        const ratingFactor = clamp((5 - clamp(ratingValue ?? 5, 4.4, 5)) / (5 - 4.4), 0, 1)
+        const reviewFactor = clamp((300 - clamp(reviewCount, 50, 300)) / (300 - 50), 0, 1)
+        blueOceanScore = ((ratingFactor + reviewFactor) / 2) * 30
+      }
+
+      const shopDnaBonus = item.shop_dna_tag === 'viral_product' ? 10 : 0
+      item.potentialScore = Number(
+        clamp(baselineScore + conversionScore + blueOceanScore + shopDnaBonus, 0, 100).toFixed(2)
+      )
+      const isFlawedHot =
+        baseline && baseline.averageAddCart24hValue > 0 &&
+        item.addCart24hValue > baseline.averageAddCart24hValue * 2 &&
+        ratingValue != null &&
+        ratingValue <= 4.4
+      const isExplodingNew =
+        baseline && baseline.p80AddCart24hValue > 0 &&
+        item.addCart24hValue > baseline.p80AddCart24hValue &&
+        reviewCount <= 10
+      item.scout_strategy_tag = isFlawedHot ? 'flawed_hot' : isExplodingNew ? 'exploding_new' : null
       item.suggestedAction = resolveSuggestedAction(item)
     }
 
@@ -2213,6 +2408,158 @@ export class ScoutService {
     return map
   }
 
+  private getKeywordAlertMapByCategoryBaseline(
+    snapshotDate: string,
+    prevDate: string | null,
+    keyword?: string
+  ): Map<string, boolean> {
+    const db = this.sqlite.connection
+    const date = normalizeText(snapshotDate)
+    if (!date) return new Map<string, boolean>()
+
+    const categoryBaselines = this.calculateCategoryBaselines(date)
+    const prevProductHeatMap = this.getProductHeatMap(prevDate)
+    const normalizedKeyword = normalizeText(keyword)
+    const where = normalizedKeyword
+      ? `WHERE s.snapshot_date = ? AND s.primary_keyword = ?`
+      : `WHERE s.snapshot_date = ?`
+
+    const rows = db
+      .prepare(
+        `SELECT
+          s.primary_keyword AS keyword,
+          s.product_key AS product_key,
+          s.add_cart_24h_value AS add_cart_24h_value,
+          COALESCE(NULLIF(TRIM(m.category_tag), ''), NULLIF(TRIM(s.primary_keyword), ''), '未分类') AS category_tag
+         FROM scout_dashboard_snapshot_rows s
+         LEFT JOIN scout_dashboard_product_map m
+           ON m.product_key = s.product_key
+         ${where}`
+      )
+      .all(...(normalizedKeyword ? [date, normalizedKeyword] : [date])) as Array<Record<string, unknown>>
+
+    const alertMap = new Map<string, boolean>()
+    for (const row of rows) {
+      const keywordName = normalizeText(row.keyword)
+      if (!keywordName) continue
+      if (!alertMap.has(keywordName)) alertMap.set(keywordName, false)
+
+      const categoryTag =
+        normalizeCategoryTag(row.category_tag) ??
+        normalizeCategoryTag(keywordName) ??
+        '未分类'
+      const baseline = categoryBaselines.get(categoryTag)
+      const threshold =
+        baseline && baseline.p80AddCart24hValue > 0
+          ? baseline.p80AddCart24hValue
+          : baseline && baseline.averageAddCart24hValue > 0
+            ? baseline.averageAddCart24hValue
+            : null
+      if (threshold == null || threshold <= 0) continue
+
+      const productKey = normalizeText(row.product_key)
+      const addCart24hValue = toInt(row.add_cart_24h_value)
+      const prevAddCart24hValue = productKey ? prevProductHeatMap.get(productKey) ?? 0 : 0
+      const growthRate =
+        prevAddCart24hValue > 0
+          ? (addCart24hValue - prevAddCart24hValue) / prevAddCart24hValue
+          : addCart24hValue > 0
+            ? 1
+            : 0
+
+      if (addCart24hValue > threshold && growthRate > 0.1) {
+        alertMap.set(keywordName, true)
+      }
+    }
+
+    return alertMap
+  }
+
+  private calculateCategoryBaselines(snapshotDate: string): Map<string, ScoutCategoryBaseline> {
+    const date = normalizeText(snapshotDate)
+    if (!date) return new Map<string, ScoutCategoryBaseline>()
+
+    const cached = this.categoryBaselineCache.get(date)
+    if (cached) return cached
+
+    const db = this.sqlite.connection
+    const rows = db
+      .prepare(
+        `WITH source AS (
+           SELECT
+             COALESCE(NULLIF(TRIM(m.category_tag), ''), NULLIF(TRIM(s.primary_keyword), ''), '未分类') AS category_tag,
+             s.add_cart_24h_value AS add_cart_24h_value
+           FROM scout_dashboard_snapshot_rows s
+           LEFT JOIN scout_dashboard_product_map m
+             ON m.product_key = s.product_key
+           WHERE s.snapshot_date = ?
+         ),
+         ranked AS (
+           SELECT
+             category_tag,
+             add_cart_24h_value,
+             ROW_NUMBER() OVER (
+               PARTITION BY category_tag
+               ORDER BY add_cart_24h_value
+             ) AS rn,
+             COUNT(*) OVER (
+               PARTITION BY category_tag
+             ) AS cnt
+           FROM source
+         ),
+         scoped AS (
+           SELECT
+             category_tag,
+             add_cart_24h_value,
+             rn,
+             cnt,
+             CAST(((cnt * 8) + 9) / 10 AS INTEGER) AS p80_rank
+           FROM ranked
+         )
+         SELECT
+           category_tag,
+           AVG(add_cart_24h_value) AS avg_value,
+           MIN(CASE WHEN rn >= p80_rank THEN add_cart_24h_value END) AS p80_value,
+           MAX(cnt) AS sample_size
+         FROM scoped
+         GROUP BY category_tag`
+      )
+      .all(date) as Array<{
+      category_tag?: unknown
+      avg_value?: unknown
+      p80_value?: unknown
+      sample_size?: unknown
+    }>
+
+    const baselineMap = new Map<string, ScoutCategoryBaseline>()
+    for (const row of rows) {
+      const categoryTag = normalizeCategoryTag(row.category_tag) ?? '未分类'
+      const averageAddCart24hValue = parseNumber(row.avg_value) ?? 0
+      const p80AddCart24hValue = toInt(row.p80_value)
+      const sampleSize = toInt(row.sample_size)
+      baselineMap.set(categoryTag, {
+        averageAddCart24hValue,
+        p80AddCart24hValue,
+        sampleSize
+      })
+    }
+
+    this.categoryBaselineCache.set(date, baselineMap)
+    return baselineMap
+  }
+
+  private invalidateCategoryBaselineCache(snapshotDates?: Iterable<string>): void {
+    if (!snapshotDates) {
+      this.categoryBaselineCache.clear()
+      return
+    }
+    for (const snapshotDate of snapshotDates) {
+      const normalized = normalizeText(snapshotDate)
+      if (!normalized) continue
+      this.categoryBaselineCache.delete(normalized)
+    }
+  }
+
 }
 
 // ----------------------------------------------------------------
@@ -2331,16 +2678,42 @@ function buildProductKey(
   return `name_shop:${name}|${shop}`
 }
 
-function extractPositiveReviewTagFromRawPayload(rawPayload: unknown): string | null {
+function parseRawPayloadObject(rawPayload: unknown): Record<string, unknown> | null {
   const rawText = normalizeText(rawPayload)
   if (!rawText) return null
   try {
-    const parsed = JSON.parse(rawText) as Record<string, unknown>
-    if (!parsed || typeof parsed !== 'object') return null
-    return normalizeNullable(parsed['好评标签'] ?? parsed['positiveReviewTag'] ?? parsed['positive_review_tag'])
+    const parsed = JSON.parse(rawText) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
   } catch {
     return null
   }
+}
+
+function readRawPayloadNullable(
+  rawPayload: Record<string, unknown> | null,
+  ...keys: string[]
+): string | null {
+  if (!rawPayload) return null
+  for (const key of keys) {
+    if (!(key in rawPayload)) continue
+    const normalized = normalizeNullable(rawPayload[key])
+    if (normalized != null) return normalized
+  }
+  return null
+}
+
+function readRawPayloadNumber(
+  rawPayload: Record<string, unknown> | null,
+  ...keys: string[]
+): number | null {
+  if (!rawPayload) return null
+  for (const key of keys) {
+    if (!(key in rawPayload)) continue
+    const parsed = parseNumber(rawPayload[key])
+    if (parsed != null) return parsed
+  }
+  return null
 }
 
 function getCellString(value: unknown): string {
@@ -2407,6 +2780,39 @@ function excelSerialToMs(serial: number): number {
   return Math.round(epoch + serial * 24 * 60 * 60 * 1000)
 }
 
+function normalizeCategoryTag(value: unknown): string | null {
+  const normalized = normalizeText(value)
+    .replace(/[\t\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return normalized ? normalized : null
+}
+
+function extractCategoryTagFromSheetName(sheetName: string): string | null {
+  const normalized = normalizeText(sheetName)
+    .replace(/[（(]\d+[)）]$/g, '')
+    .trim()
+  return normalizeCategoryTag(normalized)
+}
+
+function extractCategoryTagFromSourceFile(sourceFile: string): string | null {
+  const baseName = normalizeText(sourceFile).split(/[\\/]/).filter(Boolean).pop() ?? ''
+  let stem = baseName.replace(/\.[^.]+$/, '')
+  if (!stem) return null
+
+  stem = stem
+    .replace(/(20\d{2}[-_./]?\d{2}[-_./]?\d{2})/g, ' ')
+    .replace(/\b\d{8}\b/g, ' ')
+    .replace(/[【】\[\]（）()]/g, ' ')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b(?:snapshot|export|report|data)\b/gi, ' ')
+    .replace(/(?:快照|导出|报表|数据|看板)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return normalizeCategoryTag(stem)
+}
+
 function extractSnapshotDateFromSourceFile(sourceFile: string): string | null {
   const baseName = normalizeText(sourceFile).split(/[\\/]/).filter(Boolean).pop() ?? ''
   const stem = baseName.replace(/\.[^.]+$/, '')
@@ -2446,6 +2852,15 @@ function formatDateTimeLocal(ts: number): string {
   const mm = String(d.getMinutes()).padStart(2, '0')
   const ss = String(d.getSeconds()).padStart(2, '0')
   return `${y}-${m}-${day} ${hh}:${mm}:${ss}`
+}
+
+function formatDateYmdLocal(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return ''
+  const d = new Date(ts)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 function normalizeText(value: unknown): string {
@@ -4669,8 +5084,42 @@ function parseFansToNumber(value: string | null): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function parseMetricCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.round(value))
+  }
+  const text = normalizeText(value)
+  if (!text) return 0
+
+  const compact = text
+    .replace(/[,\s+]/g, '')
+    .replace(/(?:件已售|已售|销量|购买人数|购买|评价数|评价|粉丝|人次|笔|单|件)/g, '')
+  const matched = compact.match(/(-?\d+(?:\.\d+)?)([万亿]?)/)
+  if (!matched || !matched[1]) return 0
+
+  const num = Number(matched[1])
+  if (!Number.isFinite(num)) return 0
+  const unit = matched[2] ?? ''
+  const multiplier = unit === '亿' ? 100_000_000 : unit === '万' ? 10_000 : 1
+  return Math.max(0, Math.round(num * multiplier))
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
+}
+
+function resolveLifecycleStatus(
+  addCart24hValue: number,
+  prevCartValue: number | null
+): 'exploding' | 'mature' | 'declining' | 'new' {
+  if (prevCartValue == null) return 'new'
+  if (prevCartValue <= 0) {
+    return addCart24hValue > 0 ? 'exploding' : 'mature'
+  }
+  const cartGrowth = (addCart24hValue - prevCartValue) / prevCartValue
+  if (cartGrowth > 0.5) return 'exploding'
+  if (cartGrowth < -0.2) return 'declining'
+  return 'mature'
 }
 
 function resolveSuggestedAction(item: {

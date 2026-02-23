@@ -297,17 +297,30 @@ declare global {
             keyword: string
             productName: string
             productUrl: string | null
+            shopUrl: string | null
             cachedImageUrl: string | null
             price: number | null
             addCart24hValue: number
             prevAddCart24hValue: number | null
+            prev_cart_value: number | null
             deltaAddCart24h: number | null
+            totalSales: string | null
+            recent_3m_sales: string | null
+            cart_tag: string | null
+            fav_tag: string | null
+            imported_at: string | null
+            shopSales: string | null
+            productRating: number | null
+            shopRating: number | null
             isNew: boolean
             firstSeenAt: number
             lastUpdatedAt: number
             positiveReviewTag: string | null
             shopName: string | null
             shopFans: string | null
+            scout_strategy_tag: 'flawed_hot' | 'exploding_new' | null
+            shop_dna_tag: 'viral_product' | null
+            lifecycle_status: 'exploding' | 'mature' | 'declining' | 'new'
             potentialScore: number
             suggestedAction: '优先种草' | '继续观察' | '暂缓'
           }>>
