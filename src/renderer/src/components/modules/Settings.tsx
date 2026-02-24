@@ -10,6 +10,16 @@ function isNonEmpty(value: string): boolean {
   return value.trim().length > 0
 }
 
+function clampOpacity(value: number): number {
+  if (!Number.isFinite(value)) return 15
+  return Math.min(100, Math.max(0, Math.round(value)))
+}
+
+function clampSizePercent(value: number): number {
+  if (!Number.isFinite(value)) return 5
+  return Math.min(10, Math.max(2, Math.round(value)))
+}
+
 function Settings(): React.JSX.Element {
   const config = useCmsStore((s) => s.config)
   const addLog = useCmsStore((s) => s.addLog)
@@ -41,6 +51,9 @@ function Settings(): React.JSX.Element {
             realEsrganPath: savedTools.realEsrganPath ?? '',
             pythonPath: savedTools.pythonPath ?? '',
             watermarkScriptPath: savedTools.watermarkScriptPath ?? '',
+            dynamicWatermarkEnabled: savedTools.dynamicWatermarkEnabled === true,
+            dynamicWatermarkOpacity: clampOpacity(Number(savedTools.dynamicWatermarkOpacity)),
+            dynamicWatermarkSize: clampSizePercent(Number(savedTools.dynamicWatermarkSize)),
             scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
           })
           updatePreferences({
@@ -114,6 +127,9 @@ function Settings(): React.JSX.Element {
           realEsrganPath: config.realEsrganPath,
           pythonPath: config.pythonPath,
           watermarkScriptPath: config.watermarkScriptPath,
+          dynamicWatermarkEnabled: config.dynamicWatermarkEnabled,
+          dynamicWatermarkOpacity: clampOpacity(config.dynamicWatermarkOpacity),
+          dynamicWatermarkSize: clampSizePercent(config.dynamicWatermarkSize),
           scoutDashboardAutoImportDir: config.scoutDashboardAutoImportDir,
           defaultStartTime: preferences.defaultStartTime,
           defaultInterval: preferences.defaultInterval
@@ -131,6 +147,9 @@ function Settings(): React.JSX.Element {
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
+    config.dynamicWatermarkEnabled,
+    config.dynamicWatermarkOpacity,
+    config.dynamicWatermarkSize,
     config.scoutDashboardAutoImportDir,
     config.watermarkScriptPath,
     preferences.defaultInterval,
@@ -256,6 +275,65 @@ function Settings(): React.JSX.Element {
           </label>
           <div className="text-xs text-amber-400">
             开启后，源文件将被移动到工作区，原位置文件不再保留。请谨慎开启。
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>素材水印预设</CardTitle>
+          <CardDescription>在数据工坊派发阶段为图片动态注入账号水印。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="mb-2 text-xs text-zinc-400">全局开关</div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={config.dynamicWatermarkEnabled}
+              onClick={() => updateConfig({ dynamicWatermarkEnabled: !config.dynamicWatermarkEnabled })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                config.dynamicWatermarkEnabled ? 'bg-emerald-500' : 'bg-zinc-700'
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                  config.dynamicWatermarkEnabled ? 'translate-x-5' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="mb-2 flex items-center justify-between text-xs text-zinc-400">
+              <span>透明度</span>
+              <span>{clampOpacity(config.dynamicWatermarkOpacity)}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={clampOpacity(config.dynamicWatermarkOpacity)}
+              onChange={(e) => updateConfig({ dynamicWatermarkOpacity: clampOpacity(Number(e.target.value)) })}
+              className="w-full accent-zinc-200"
+            />
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="mb-2 flex items-center justify-between text-xs text-zinc-400">
+              <span>水印大小占比（%）</span>
+              <span>{clampSizePercent(config.dynamicWatermarkSize)}</span>
+            </div>
+            <input
+              type="range"
+              min={2}
+              max={10}
+              step={1}
+              value={clampSizePercent(config.dynamicWatermarkSize)}
+              onChange={(e) => updateConfig({ dynamicWatermarkSize: clampSizePercent(Number(e.target.value)) })}
+              className="w-full accent-zinc-200"
+            />
           </div>
         </CardContent>
       </Card>

@@ -666,6 +666,9 @@ const electronAPI = {
     realEsrganPath: string
     pythonPath: string
     watermarkScriptPath: string
+    dynamicWatermarkEnabled: boolean
+    dynamicWatermarkOpacity: number
+    dynamicWatermarkSize: number
     scoutDashboardAutoImportDir: string
     watermarkBox: { x: number; y: number; width: number; height: number }
     defaultStartTime: string
@@ -676,6 +679,9 @@ const electronAPI = {
     realEsrganPath?: string
     pythonPath?: string
     watermarkScriptPath?: string
+    dynamicWatermarkEnabled?: boolean
+    dynamicWatermarkOpacity?: number
+    dynamicWatermarkSize?: number
     scoutDashboardAutoImportDir?: string
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string

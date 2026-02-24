@@ -519,6 +519,9 @@ if (is.dev) {
 }
 
 const defaultWatermarkBox = { x: 0.905, y: 0.927, width: 0.055, height: 0.05 }
+const defaultDynamicWatermarkEnabled = false
+const defaultDynamicWatermarkOpacity = 15
+const defaultDynamicWatermarkSize = 5
 
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
   if (!value || typeof value !== 'object') return false
@@ -531,11 +534,31 @@ function isValidWatermarkBox(value: unknown): value is { x: number; y: number; w
   )
 }
 
+function normalizeDynamicWatermarkEnabled(value: unknown): boolean {
+  if (typeof value !== 'boolean') return defaultDynamicWatermarkEnabled
+  return value
+}
+
+function normalizeDynamicWatermarkOpacity(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return defaultDynamicWatermarkOpacity
+  return Math.max(0, Math.min(100, Math.round(parsed)))
+}
+
+function normalizeDynamicWatermarkSize(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return defaultDynamicWatermarkSize
+  return Math.max(2, Math.min(10, Math.round(parsed)))
+}
+
 const configStore = new StoreCtor<{
   feishuConfig: { appId: string; appSecret: string; baseToken: string; tableId: string }
   realEsrganPath: string
   pythonPath: string
   watermarkScriptPath: string
+  dynamicWatermarkEnabled?: boolean
+  dynamicWatermarkOpacity?: number
+  dynamicWatermarkSize?: number
   scoutDashboardAutoImportDir?: string
   scoutDashboardAutoImportSince?: number
   watermarkBox: { x: number; y: number; width: number; height: number }
@@ -1183,7 +1206,15 @@ app.whenReady().then(async () => {
   const productManager = new ProductManager()
   const taskManager = new TaskManager(undefined, {
     workspacePath: workspaceInit.status === 'initialized' ? workspaceInit.path : '',
-    configStore
+    configStore,
+    resolveAccountNameById: (accountId: string) => {
+      try {
+        const account = accountManager.getAccount(accountId)
+        return account?.name ?? null
+      } catch {
+        return null
+      }
+    }
   })
   if (sqliteReady) {
     const migrated = taskManager.normalizeLegacyDraftTasks()
@@ -1607,6 +1638,9 @@ app.whenReady().then(async () => {
         requestId: requestId || undefined,
         onProgress: (progress) => {
           event.sender.send('cms.task.createBatch.progress', progress)
+        },
+        onLog: (level, message) => {
+          sendLogToRenderer(level, message)
         }
       }
     )
@@ -2701,6 +2735,21 @@ app.whenReady().then(async () => {
     if (storedDefaultInterval !== defaultInterval) {
       configStore.set('defaultInterval', defaultInterval)
     }
+    const storedDynamicWatermarkEnabled = configStore.get('dynamicWatermarkEnabled')
+    const dynamicWatermarkEnabled = normalizeDynamicWatermarkEnabled(storedDynamicWatermarkEnabled)
+    if (storedDynamicWatermarkEnabled !== dynamicWatermarkEnabled) {
+      configStore.set('dynamicWatermarkEnabled', dynamicWatermarkEnabled)
+    }
+    const storedDynamicWatermarkOpacity = configStore.get('dynamicWatermarkOpacity')
+    const dynamicWatermarkOpacity = normalizeDynamicWatermarkOpacity(storedDynamicWatermarkOpacity)
+    if (storedDynamicWatermarkOpacity !== dynamicWatermarkOpacity) {
+      configStore.set('dynamicWatermarkOpacity', dynamicWatermarkOpacity)
+    }
+    const storedDynamicWatermarkSize = configStore.get('dynamicWatermarkSize')
+    const dynamicWatermarkSize = normalizeDynamicWatermarkSize(storedDynamicWatermarkSize)
+    if (storedDynamicWatermarkSize !== dynamicWatermarkSize) {
+      configStore.set('dynamicWatermarkSize', dynamicWatermarkSize)
+    }
     const storedAutoImportDir = configStore.get('scoutDashboardAutoImportDir')
     const scoutDashboardAutoImportDir = typeof storedAutoImportDir === 'string' ? storedAutoImportDir.trim() : ''
     if (storedAutoImportDir !== scoutDashboardAutoImportDir) {
@@ -2734,6 +2783,9 @@ app.whenReady().then(async () => {
       watermarkBox,
       defaultStartTime,
       defaultInterval,
+      dynamicWatermarkEnabled,
+      dynamicWatermarkOpacity,
+      dynamicWatermarkSize,
       queueConfig
     }
   })
@@ -2748,6 +2800,9 @@ app.whenReady().then(async () => {
             realEsrganPath?: string
             pythonPath?: string
             watermarkScriptPath?: string
+            dynamicWatermarkEnabled?: boolean
+            dynamicWatermarkOpacity?: number
+            dynamicWatermarkSize?: number
             scoutDashboardAutoImportDir?: string
             watermarkBox?: { x: number; y: number; width: number; height: number }
             defaultStartTime?: string
@@ -2778,6 +2833,15 @@ app.whenReady().then(async () => {
       typeof patch?.watermarkScriptPath === 'string' ? patch.watermarkScriptPath.trim() : undefined
     if (nextWatermarkScriptPath !== undefined) {
       configStore.set('watermarkScriptPath', nextWatermarkScriptPath)
+    }
+    if (typeof patch?.dynamicWatermarkEnabled === 'boolean') {
+      configStore.set('dynamicWatermarkEnabled', patch.dynamicWatermarkEnabled)
+    }
+    if (typeof patch?.dynamicWatermarkOpacity === 'number' && Number.isFinite(patch.dynamicWatermarkOpacity)) {
+      configStore.set('dynamicWatermarkOpacity', normalizeDynamicWatermarkOpacity(patch.dynamicWatermarkOpacity))
+    }
+    if (typeof patch?.dynamicWatermarkSize === 'number' && Number.isFinite(patch.dynamicWatermarkSize)) {
+      configStore.set('dynamicWatermarkSize', normalizeDynamicWatermarkSize(patch.dynamicWatermarkSize))
     }
     const nextScoutDashboardAutoImportDir =
       typeof patch?.scoutDashboardAutoImportDir === 'string'

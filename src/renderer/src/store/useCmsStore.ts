@@ -61,6 +61,9 @@ export interface CmsConfig {
   realEsrganPath: string
   pythonPath: string
   watermarkScriptPath: string
+  dynamicWatermarkEnabled: boolean
+  dynamicWatermarkOpacity: number
+  dynamicWatermarkSize: number
   scoutDashboardAutoImportDir: string
   watermarkBox: WatermarkBox
 }
@@ -127,6 +130,9 @@ const initialConfig: CmsConfig = {
   realEsrganPath: '',
   pythonPath: '',
   watermarkScriptPath: '',
+  dynamicWatermarkEnabled: false,
+  dynamicWatermarkOpacity: 15,
+  dynamicWatermarkSize: 5,
   scoutDashboardAutoImportDir: '',
   watermarkBox: { x: 0.905, y: 0.927, width: 0.055, height: 0.05 }
 }
