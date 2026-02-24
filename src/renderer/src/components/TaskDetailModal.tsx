@@ -34,6 +34,33 @@ type TaskDetailModalProps = {
   onTaskUpdated?: (task: CmsPublishTask) => void
 }
 
+function isHttpUrl(value: string): boolean {
+  return /^https?:[/]{2}/i.test(String(value ?? '').trim())
+}
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(String(value ?? '').trim())
+}
+
+function isAbsolutePathLike(value: string): boolean {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return false
+  if (normalized.startsWith('/')) return true
+  if (isWindowsAbsolutePath(normalized)) return true
+  return false
+}
+
+function toAbsoluteFilePath(rawPath: string, workspacePath?: string): string {
+  const normalizedRaw = String(rawPath ?? '').trim()
+  if (!normalizedRaw) return ''
+  if (isHttpUrl(normalizedRaw)) return ''
+  if (isAbsolutePathLike(normalizedRaw)) return normalizedRaw
+  const ws = String(workspacePath ?? '').trim()
+  if (!ws) return ''
+  const normalizedRel = normalizedRaw.replace(/\\/g, '/').replace(/^[/]+/, '')
+  return `${ws.replace(/[\\/]+$/, '')}/${normalizedRel}`
+}
+
 function formatStatus(status: CmsPublishTaskStatus): { label: string; className: string } {
   if (status === 'published') return { label: '已发布', className: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' }
   if (status === 'processing') return { label: '处理中', className: 'border-sky-500/20 bg-sky-500/10 text-sky-300' }
@@ -44,12 +71,16 @@ function formatStatus(status: CmsPublishTaskStatus): { label: string; className:
 }
 
 function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }: TaskDetailModalProps): React.JSX.Element | null {
+  const addLog = useCmsStore((s) => s.addLog)
   const deleteTasks = useCmsStore((s) => s.deleteTasks)
   const [activeIndex, setActiveIndex] = useState(0)
   const [mainLoaded, setMainLoaded] = useState(false)
   const [thumbLoaded, setThumbLoaded] = useState<Set<number>>(() => new Set())
   const [isDeleting, setIsDeleting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [playableVideoSrc, setPlayableVideoSrc] = useState('')
+  const [didFallbackToOriginalVideo, setDidFallbackToOriginalVideo] = useState(false)
+  const [resolvedWorkspacePath, setResolvedWorkspacePath] = useState('')
 
   // ----- 编辑状态 -----
   const isEditable = task?.status === 'pending' || task?.status === 'scheduled'
@@ -123,17 +154,30 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
   )
 
   // 使用 draftImages (可编辑) 或 task.images (只读)
+  const effectiveWorkspacePath = useMemo(() => {
+    const fromProp = String(workspacePath ?? '').trim()
+    if (fromProp) return fromProp
+    return String(resolvedWorkspacePath ?? '').trim()
+  }, [workspacePath, resolvedWorkspacePath])
   const displayImages = isEditable ? draftImages : (Array.isArray(task?.images) ? task!.images : [])
-  const resolvedImages = useMemo(() => displayImages.map((p) => resolveLocalImage(p, workspacePath)), [displayImages, workspacePath])
+  const resolvedImages = useMemo(
+    () => displayImages.map((p) => resolveLocalImage(p, effectiveWorkspacePath)),
+    [displayImages, effectiveWorkspacePath]
+  )
   const safeActiveIndex = Math.min(Math.max(0, activeIndex), Math.max(0, resolvedImages.length - 1))
   const activeSrc = resolvedImages[safeActiveIndex] ?? ''
   const isVideo = task?.mediaType === 'video'
   const videoCoverSrc = resolvedImages[0] ?? ''
   const activePosterSrc = videoCoverSrc || resolvedImages[safeActiveIndex] || ''
-  const videoSrc = useMemo(() => {
-    const raw = task?.videoPreviewPath ? String(task.videoPreviewPath) : task?.videoPath ? String(task.videoPath) : ''
-    return raw ? resolveLocalImage(raw, workspacePath) : ''
-  }, [task?.videoPath, task?.videoPreviewPath, workspacePath])
+  const rawVideoPath = useMemo(() => {
+    return task?.videoPath ? String(task.videoPath).trim() : ''
+  }, [task?.videoPath])
+  const absoluteVideoPath = useMemo(() => {
+    return toAbsoluteFilePath(rawVideoPath, effectiveWorkspacePath)
+  }, [rawVideoPath, effectiveWorkspacePath])
+  const resolvedOriginalVideoSrc = useMemo(() => {
+    return rawVideoPath ? resolveLocalImage(rawVideoPath, effectiveWorkspacePath) : ''
+  }, [rawVideoPath, effectiveWorkspacePath])
 
   useEffect(() => {
     if (!isOpen) return
@@ -141,6 +185,80 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     setMainLoaded(false)
     setThumbLoaded(new Set())
   }, [isOpen, task?.id])
+
+  useEffect(() => {
+    if (!isOpen) return
+    if (effectiveWorkspacePath) return
+    let canceled = false
+    void (async () => {
+      try {
+        const workspace = await window.electronAPI.getWorkspacePath()
+        if (canceled) return
+        const next = workspace && typeof workspace.path === 'string' ? workspace.path.trim() : ''
+        if (next) setResolvedWorkspacePath(next)
+      } catch {
+        void 0
+      }
+    })()
+    return () => {
+      canceled = true
+    }
+  }, [isOpen, effectiveWorkspacePath])
+
+  useEffect(() => {
+    if (!isOpen || !task || !isVideo) {
+      setPlayableVideoSrc('')
+      setDidFallbackToOriginalVideo(false)
+      return
+    }
+
+    const rawPreviewPath = task.videoPreviewPath ? String(task.videoPreviewPath).trim() : ''
+    const rawOriginalPath = task.videoPath ? String(task.videoPath).trim() : ''
+    const initialRaw = rawPreviewPath || rawOriginalPath
+    setPlayableVideoSrc(initialRaw ? resolveLocalImage(initialRaw, effectiveWorkspacePath) : '')
+    setDidFallbackToOriginalVideo(false)
+    setMainLoaded(false)
+
+    if (!absoluteVideoPath) return
+
+    let canceled = false
+    void (async () => {
+      try {
+        const prepared = await window.electronAPI.prepareVideoPreview(absoluteVideoPath)
+        if (canceled) return
+        const nextRaw =
+          typeof prepared?.previewPath === 'string' && prepared.previewPath.trim()
+            ? prepared.previewPath.trim()
+            : absoluteVideoPath
+        const nextResolved = resolveLocalImage(nextRaw, effectiveWorkspacePath)
+        setPlayableVideoSrc(nextResolved)
+      } catch (error) {
+        if (canceled) return
+        const message = error instanceof Error ? error.message : String(error)
+        addLog(`[媒体矩阵] 视频预览准备失败，回退原视频：${message}`)
+        setPlayableVideoSrc(resolveLocalImage(absoluteVideoPath, effectiveWorkspacePath))
+      }
+    })()
+
+    return () => {
+      canceled = true
+    }
+  }, [isOpen, task?.id, task?.videoPath, task?.videoPreviewPath, isVideo, absoluteVideoPath, effectiveWorkspacePath, addLog])
+
+  const handleVideoPreviewError = useCallback((): void => {
+    if (!resolvedOriginalVideoSrc) {
+      addLog('[媒体矩阵] 视频预览加载失败：缺少有效视频路径。')
+      return
+    }
+    if (didFallbackToOriginalVideo || playableVideoSrc === resolvedOriginalVideoSrc) {
+      addLog(`[媒体矩阵] 视频预览加载失败：已尝试回退原视频仍不可播放。src=${playableVideoSrc}`)
+      return
+    }
+    setDidFallbackToOriginalVideo(true)
+    setPlayableVideoSrc(resolvedOriginalVideoSrc)
+    setMainLoaded(false)
+    addLog(`[媒体矩阵] 视频预览加载失败，已自动回退原视频路径。src=${playableVideoSrc}`)
+  }, [addLog, didFallbackToOriginalVideo, playableVideoSrc, resolvedOriginalVideoSrc])
 
   // 关闭守卫
   const guardedClose = useCallback(() => {
@@ -334,15 +452,16 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
           <div className="col-span-3 border-r border-zinc-800 bg-black/20 p-4">
             <div className="relative aspect-square w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
               {isVideo ? (
-                videoSrc ? (
+                playableVideoSrc ? (
                   <video
-                    key={videoSrc}
+                    key={playableVideoSrc}
                     controls
                     preload="metadata"
-                    src={videoSrc}
+                    src={playableVideoSrc}
                     poster={activePosterSrc || undefined}
                     className="h-full w-full object-contain"
                     onLoadedData={() => setMainLoaded(true)}
+                    onError={handleVideoPreviewError}
                   />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-400">
@@ -361,7 +480,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
               ) : (
                 <div className="h-full w-full bg-zinc-900" />
               )}
-              {!mainLoaded && (isVideo ? videoSrc : activeSrc) ? <div className="absolute inset-0 animate-pulse bg-zinc-900/40" /> : null}
+              {!mainLoaded && (isVideo ? playableVideoSrc : activeSrc) ? <div className="absolute inset-0 animate-pulse bg-zinc-900/40" /> : null}
               {resolvedImages.length > 1 && !isVideo ? (
                 <div className="absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-[11px] text-white">
                   <Layers size={12} />
@@ -382,7 +501,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
                         <SortableImage
                           key={imgPath}
                           id={imgPath}
-                          src={resolveLocalImage(imgPath, workspacePath)}
+                          src={resolveLocalImage(imgPath, effectiveWorkspacePath)}
                           index={index}
                           onRemove={() => handleRemoveImage(index)}
                           onClick={() => {

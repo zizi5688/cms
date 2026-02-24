@@ -77,12 +77,17 @@ function hashPreviewKey(input: { filePath: string; size?: number; mtimeMs?: numb
   return hasher.digest('hex').slice(0, 16)
 }
 
-async function probeVideoStream(filePath: string): Promise<{ codecName: string; formatName: string } | null> {
+async function probeVideoStream(
+  filePath: string
+): Promise<{ codecName: string; formatName: string; videoStreamCount: number } | null> {
   ensureFfmpegConfigured()
   return await new Promise((resolve) => {
     ffmpeg.ffprobe(filePath, (error, metadata) => {
       if (error || !metadata) return resolve(null)
       const streams = Array.isArray(metadata.streams) ? metadata.streams : []
+      const videoStreams = streams.filter((stream) => (stream as { codec_type?: unknown })?.codec_type === 'video') as Array<{
+        codec_name?: unknown
+      }>
       const video = streams.find((stream) => (stream as { codec_type?: unknown })?.codec_type === 'video') as
         | { codec_name?: unknown }
         | undefined
@@ -92,7 +97,11 @@ async function probeVideoStream(filePath: string): Promise<{ codecName: string; 
           ? String((metadata.format as { format_name?: unknown }).format_name)
           : ''
       if (!codecName.trim()) return resolve(null)
-      resolve({ codecName: codecName.trim().toLowerCase(), formatName: formatName.trim().toLowerCase() })
+      resolve({
+        codecName: codecName.trim().toLowerCase(),
+        formatName: formatName.trim().toLowerCase(),
+        videoStreamCount: Math.max(0, videoStreams.length)
+      })
     })
   })
 }
@@ -105,7 +114,8 @@ export async function checkVideoCompatibility(filePath: string): Promise<VideoCo
   if (!stream) return { isCompatible: false }
 
   const codec = stream.codecName
-  const isCompatible = codec === 'h264' || codec === 'vp8' || codec === 'vp9'
+  const isSingleVideoStream = stream.videoStreamCount === 1
+  const isCompatible = isSingleVideoStream && (codec === 'h264' || codec === 'vp8' || codec === 'vp9')
   return { isCompatible, codecName: codec, formatName: stream.formatName }
 }
 
@@ -114,6 +124,8 @@ async function transcodeToH264AacMp4(inputPath: string, outputPath: string): Pro
   await new Promise<void>((resolve, reject) => {
     ffmpeg(inputPath)
       .outputOptions([
+        '-map 0:v:0',
+        '-map 0:a?',
         '-c:v libx264',
         '-preset ultrafast',
         '-pix_fmt yuv420p',

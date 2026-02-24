@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type * as React from 'react'
 
-import { Download, FolderOpen, Loader2, Sparkles, Video } from 'lucide-react'
+import { Download, FolderOpen, Loader2, Sparkles } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
@@ -12,6 +12,13 @@ function fileNameFromPath(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/')
   const parts = normalized.split('/')
   return parts[parts.length - 1] || filePath
+}
+
+function fileUrlFromPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  const withLeadingSlash = /^[A-Za-z]:[/]/.test(normalized) ? `/${normalized}` : normalized
+  const encoded = encodeURI(withLeadingSlash).replaceAll('#', '%23').replaceAll('?', '%3F')
+  return `safe-file://${encoded}`
 }
 
 function isImageFile(filePath: string): boolean {
@@ -159,6 +166,7 @@ function VideoComposerPanel(): React.JSX.Element {
   const [batchCount, setBatchCount] = useState('1')
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([])
   const [selectedGeneratedVideos, setSelectedGeneratedVideos] = useState<Set<string>>(() => new Set())
+  const [videoAspectRatioMap, setVideoAspectRatioMap] = useState<Record<string, number>>({})
   const [isGenerating, setIsGenerating] = useState(false)
   const [isScanningRoot, setIsScanningRoot] = useState(false)
   const [outputAspect, setOutputAspect] = useState<'9:16' | '3:4'>('9:16')
@@ -191,6 +199,7 @@ function VideoComposerPanel(): React.JSX.Element {
     setBatchCount('1')
     setGeneratedVideos([])
     setSelectedGeneratedVideos(new Set())
+    setVideoAspectRatioMap({})
     setIsGenerating(false)
     setIsScanningRoot(false)
     setOutputAspect('9:16')
@@ -387,6 +396,36 @@ function VideoComposerPanel(): React.JSX.Element {
       return next.size === prev.size ? prev : next
     })
   }, [generatedVideos])
+
+  useEffect(() => {
+    setVideoAspectRatioMap((prev) => {
+      const next: Record<string, number> = {}
+      let changed = false
+      for (const path of generatedVideos) {
+        const ratio = prev[path]
+        if (Number.isFinite(ratio) && ratio > 0) {
+          next[path] = ratio
+          continue
+        }
+        changed = true
+      }
+      if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev
+      return next
+    })
+  }, [generatedVideos])
+
+  const handleVideoMetadataLoaded = (videoPath: string, event: React.SyntheticEvent<HTMLVideoElement>): void => {
+    const element = event.currentTarget
+    const width = Number(element.videoWidth)
+    const height = Number(element.videoHeight)
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return
+    const ratio = width / height
+    setVideoAspectRatioMap((prev) => {
+      const current = Number(prev[videoPath])
+      if (Number.isFinite(current) && Math.abs(current - ratio) < 0.001) return prev
+      return { ...prev, [videoPath]: ratio }
+    })
+  }
 
   const handlePickImageRoot = async (): Promise<void> => {
     if (isGenerating || isScanningRoot) return
@@ -877,38 +916,48 @@ function VideoComposerPanel(): React.JSX.Element {
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {generatedVideos.map((videoPath) => (
-                  <div key={videoPath} className="group w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/40">
-                    <div className="aspect-[16/9] border-b border-zinc-800 bg-gradient-to-br from-zinc-900 via-zinc-950 to-zinc-900 p-3">
-                      <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-                        <Video className="h-7 w-7 text-zinc-300 opacity-50" />
-                        <div className="max-w-full truncate text-xs font-medium text-zinc-300">{fileNameFromPath(videoPath)}</div>
+                {generatedVideos.map((videoPath) => {
+                  const resolvedAspect = videoAspectRatioMap[videoPath]
+                  const fallbackAspect = outputAspect === '3:4' ? 3 / 4 : 9 / 16
+                  const previewAspect = Number.isFinite(resolvedAspect) && resolvedAspect > 0 ? resolvedAspect : fallbackAspect
+                  return (
+                    <div key={videoPath} className="group w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/40">
+                      <div className="border-b border-zinc-800 bg-black" style={{ aspectRatio: `${previewAspect}` }}>
+                        <video
+                          className="h-full w-full object-contain"
+                          src={fileUrlFromPath(videoPath)}
+                          preload="metadata"
+                          controls
+                          muted
+                          playsInline
+                          onLoadedMetadata={(event) => handleVideoMetadataLoaded(videoPath, event)}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2 p-3">
+                        <label className="flex shrink-0 items-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedGeneratedVideos.has(videoPath)}
+                            onChange={() => toggleSelectGenerated(videoPath)}
+                            className="h-4 w-4"
+                          />
+                          <span className="sr-only">选择视频</span>
+                        </label>
+                        <div className="min-w-0 flex-1 truncate text-center text-sm text-zinc-300">{fileNameFromPath(videoPath)}</div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 rounded-full border-zinc-700 bg-zinc-900/90"
+                          onClick={() => void revealInFolder(videoPath)}
+                          aria-label={`打开文件夹：${fileNameFromPath(videoPath)}`}
+                        >
+                          <FolderOpen className="h-4 w-4" />
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 p-3">
-                      <label className="flex shrink-0 items-center">
-                        <input
-                          type="checkbox"
-                          checked={selectedGeneratedVideos.has(videoPath)}
-                          onChange={() => toggleSelectGenerated(videoPath)}
-                          className="h-4 w-4"
-                        />
-                        <span className="sr-only">选择视频</span>
-                      </label>
-                      <div className="min-w-0 flex-1 truncate text-center text-sm text-zinc-300">{fileNameFromPath(videoPath)}</div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 rounded-full border-zinc-700 bg-zinc-900/90"
-                        onClick={() => void revealInFolder(videoPath)}
-                        aria-label={`打开文件夹：${fileNameFromPath(videoPath)}`}
-                      >
-                        <FolderOpen className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}

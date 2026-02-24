@@ -1392,6 +1392,7 @@ app.whenReady().then(async () => {
             const candidates: string[] = []
             for (const v of variants) {
               candidates.push(join(workspacePath, 'assets', 'images', v))
+              candidates.push(join(workspacePath, 'assets', 'videos', v))
               candidates.push(join(workspacePath, 'assets', v))
               candidates.push(join(userDataPath, 'generated_assets', v))
             }
@@ -1463,6 +1464,7 @@ app.whenReady().then(async () => {
             if (!exists && lookupKey) {
               const directDirs = [
                 join(workspacePath, 'assets', 'images'),
+                join(workspacePath, 'assets', 'videos'),
                 join(workspacePath, 'assets'),
                 join(userDataPath, 'generated_assets')
               ]
@@ -1510,7 +1512,10 @@ app.whenReady().then(async () => {
         headers.set('Content-Length', String(size))
         headers.set('Accept-Ranges', 'bytes')
         if (isHead) return new Response(null, { status: 200, headers })
-        return new Response(Readable.toWeb(createReadStream(resolvedFilePath)) as unknown as ReadableStream, { status: 200, headers })
+        return new Response(Readable.toWeb(createReadStream(resolvedFilePath)) as unknown as ReadableStream, {
+          status: 200,
+          headers
+        })
       }
 
       const match = /^bytes=(\d*)-(\d*)$/i.exec(range.trim())
