@@ -151,6 +151,22 @@ function normalizeDynamicWatermarkSize(value: unknown): number {
   return Math.max(2, Math.min(10, Math.round(parsed)))
 }
 
+type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+
+function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTrajectory {
+  const normalized = String(value ?? '').trim()
+  const available: DynamicWatermarkTrajectory[] = [
+    'smoothSine',
+    'figureEight',
+    'diagonalWrap',
+    'largeEllipse',
+    'pseudoRandom'
+  ]
+  return (available.includes(normalized as DynamicWatermarkTrajectory)
+    ? normalized
+    : 'pseudoRandom') as DynamicWatermarkTrajectory
+}
+
 function normalizeWatermarkAccountName(value: unknown, fallback: string): string {
   const raw = String(value ?? '').trim().replace(/^@+/, '')
   if (raw) return raw
@@ -506,6 +522,9 @@ export class TaskManager {
     const dynamicWatermarkEnabled = normalizeDynamicWatermarkEnabled(this.configStore?.get('dynamicWatermarkEnabled'))
     const dynamicWatermarkOpacity = normalizeDynamicWatermarkOpacity(this.configStore?.get('dynamicWatermarkOpacity'))
     const dynamicWatermarkSize = normalizeDynamicWatermarkSize(this.configStore?.get('dynamicWatermarkSize'))
+    const dynamicWatermarkTrajectory = normalizeDynamicWatermarkTrajectory(
+      this.configStore?.get('dynamicWatermarkTrajectory')
+    )
     const shouldLocalizeAssets = Boolean(workspacePath)
     const assetsImagesDir = shouldLocalizeAssets ? join(workspacePath, 'assets', 'images') : ''
     const assetsVideosDir = shouldLocalizeAssets ? join(workspacePath, 'assets', 'videos') : ''
@@ -547,7 +566,11 @@ export class TaskManager {
       }
       const shouldApplyDynamicWatermarkForTask = dynamicWatermarkEnabled && shouldLocalizeAssets && Boolean(watermarkAccountName)
       const watermarkSignature = shouldApplyDynamicWatermarkForTask
-        ? computeBufferHashSha1(Buffer.from(`${watermarkAccountName}|${dynamicWatermarkOpacity}|${dynamicWatermarkSize}`)).slice(0, 10)
+        ? computeBufferHashSha1(
+            Buffer.from(
+              `${watermarkAccountName}|${dynamicWatermarkOpacity}|${dynamicWatermarkSize}|${dynamicWatermarkTrajectory}`
+            )
+          ).slice(0, 10)
         : ''
       const applyWatermarkIfNeeded = async (targetPath: string, sourcePath: string): Promise<boolean> => {
         if (!shouldApplyDynamicWatermarkForTask) return true
@@ -586,7 +609,8 @@ export class TaskManager {
           await watermarkLimit(() =>
             applyVideoWatermark(normalizedTargetPath, normalizedTargetPath, watermarkAccountName, {
               opacity: dynamicWatermarkOpacity,
-              size: dynamicWatermarkSize
+              size: dynamicWatermarkSize,
+              trajectory: dynamicWatermarkTrajectory
             })
           )
           emitLog('info', `[数据工坊] 视频处理完成，已自动注入动态水印: @${watermarkAccountName}`)

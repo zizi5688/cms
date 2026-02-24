@@ -566,6 +566,8 @@ const defaultWatermarkBox = { x: 0.905, y: 0.927, width: 0.055, height: 0.05 }
 const defaultDynamicWatermarkEnabled = false
 const defaultDynamicWatermarkOpacity = 15
 const defaultDynamicWatermarkSize = 5
+const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
+type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
   if (!value || typeof value !== 'object') return false
@@ -595,6 +597,20 @@ function normalizeDynamicWatermarkSize(value: unknown): number {
   return Math.max(2, Math.min(10, Math.round(parsed)))
 }
 
+function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTrajectory {
+  const normalized = String(value ?? '').trim()
+  const available: DynamicWatermarkTrajectory[] = [
+    'smoothSine',
+    'figureEight',
+    'diagonalWrap',
+    'largeEllipse',
+    'pseudoRandom'
+  ]
+  return (available.includes(normalized as DynamicWatermarkTrajectory)
+    ? normalized
+    : defaultDynamicWatermarkTrajectory) as DynamicWatermarkTrajectory
+}
+
 const configStore = new StoreCtor<{
   feishuConfig: { appId: string; appSecret: string; baseToken: string; tableId: string }
   realEsrganPath: string
@@ -603,6 +619,7 @@ const configStore = new StoreCtor<{
   dynamicWatermarkEnabled?: boolean
   dynamicWatermarkOpacity?: number
   dynamicWatermarkSize?: number
+  dynamicWatermarkTrajectory?: DynamicWatermarkTrajectory
   scoutDashboardAutoImportDir?: string
   scoutDashboardAutoImportSince?: number
   watermarkBox: { x: number; y: number; width: number; height: number }
@@ -2822,6 +2839,11 @@ app.whenReady().then(async () => {
     if (storedDynamicWatermarkSize !== dynamicWatermarkSize) {
       configStore.set('dynamicWatermarkSize', dynamicWatermarkSize)
     }
+    const storedDynamicWatermarkTrajectory = configStore.get('dynamicWatermarkTrajectory')
+    const dynamicWatermarkTrajectory = normalizeDynamicWatermarkTrajectory(storedDynamicWatermarkTrajectory)
+    if (storedDynamicWatermarkTrajectory !== dynamicWatermarkTrajectory) {
+      configStore.set('dynamicWatermarkTrajectory', dynamicWatermarkTrajectory)
+    }
     const storedAutoImportDir = configStore.get('scoutDashboardAutoImportDir')
     const scoutDashboardAutoImportDir = typeof storedAutoImportDir === 'string' ? storedAutoImportDir.trim() : ''
     if (storedAutoImportDir !== scoutDashboardAutoImportDir) {
@@ -2858,6 +2880,7 @@ app.whenReady().then(async () => {
       dynamicWatermarkEnabled,
       dynamicWatermarkOpacity,
       dynamicWatermarkSize,
+      dynamicWatermarkTrajectory,
       queueConfig
     }
   })
@@ -2875,6 +2898,7 @@ app.whenReady().then(async () => {
             dynamicWatermarkEnabled?: boolean
             dynamicWatermarkOpacity?: number
             dynamicWatermarkSize?: number
+            dynamicWatermarkTrajectory?: DynamicWatermarkTrajectory
             scoutDashboardAutoImportDir?: string
             watermarkBox?: { x: number; y: number; width: number; height: number }
             defaultStartTime?: string
@@ -2914,6 +2938,9 @@ app.whenReady().then(async () => {
     }
     if (typeof patch?.dynamicWatermarkSize === 'number' && Number.isFinite(patch.dynamicWatermarkSize)) {
       configStore.set('dynamicWatermarkSize', normalizeDynamicWatermarkSize(patch.dynamicWatermarkSize))
+    }
+    if (typeof patch?.dynamicWatermarkTrajectory === 'string') {
+      configStore.set('dynamicWatermarkTrajectory', normalizeDynamicWatermarkTrajectory(patch.dynamicWatermarkTrajectory))
     }
     const nextScoutDashboardAutoImportDir =
       typeof patch?.scoutDashboardAutoImportDir === 'string'

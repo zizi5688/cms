@@ -17,6 +17,17 @@ function isValidWatermarkBox(
   )
 }
 
+function normalizeDynamicWatermarkTrajectory(value: unknown): 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom' {
+  const normalized = String(value ?? '').trim()
+  const available = ['smoothSine', 'figureEight', 'diagonalWrap', 'largeEllipse', 'pseudoRandom']
+  return (available.includes(normalized) ? normalized : 'pseudoRandom') as
+    | 'smoothSine'
+    | 'figureEight'
+    | 'diagonalWrap'
+    | 'largeEllipse'
+    | 'pseudoRandom'
+}
+
 function App(): React.JSX.Element {
   const updateConfig = useCmsStore((s) => s.updateConfig)
   const updatePreferences = useCmsStore((s) => s.updatePreferences)
@@ -55,7 +66,8 @@ function App(): React.JSX.Element {
             dynamicWatermarkSize:
               typeof saved.dynamicWatermarkSize === 'number'
                 ? Math.max(2, Math.min(10, Math.round(saved.dynamicWatermarkSize)))
-                : 5
+                : 5,
+            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(saved.dynamicWatermarkTrajectory)
           }
           if (isValidWatermarkBox(saved.watermarkBox)) {
             patch.watermarkBox = saved.watermarkBox

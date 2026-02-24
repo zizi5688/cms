@@ -10,7 +10,10 @@ import sharp from 'sharp'
 export type DynamicWatermarkConfig = {
   opacity?: number
   size?: number
+  trajectory?: VideoWatermarkTrajectory
 }
+
+export type VideoWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = typeof value === 'number' ? value : Number(value)
@@ -145,10 +148,34 @@ async function createVideoWatermarkSticker(accountName: string, config: DynamicW
   return stickerPath
 }
 
-async function runFloatingOverlay(inputVideoPath: string, stickerPath: string, outputVideoPath: string): Promise<void> {
+const FLOATING_ALGORITHMS = {
+  smoothSine: "x='mod(t*13.3333333, W-w)':y='(H-h)/2 + (H-h)*0.4*sin(t*0.5)'",
+  figureEight: "x='(W-w)/2 + (W-w)*0.4*cos(t*0.3333333)':y='(H-h)/2 + (H-h)*0.4*sin(t*0.6666667)'",
+  diagonalWrap: "x='mod(t*10, W-w)':y='mod(t*10*(H/W), H-h)'",
+  largeEllipse: "x='(W-w)/2 + (W-w)*0.45*cos(t*0.2666667)':y='(H-h)/2 + (H-h)*0.45*sin(t*0.2666667)'",
+  pseudoRandom:
+    "x='(W-w)/2 + (W-w)*0.25*sin(t*0.3666667) + (W-w)*0.15*cos(t*0.7666667)':y='(H-h)/2 + (H-h)*0.25*cos(t*0.4333333) + (H-h)*0.15*sin(t*0.9666667)'"
+} as const
+
+const DEFAULT_VIDEO_WATERMARK_TRAJECTORY: VideoWatermarkTrajectory = 'pseudoRandom'
+
+function normalizeVideoWatermarkTrajectory(value: unknown): VideoWatermarkTrajectory {
+  const normalized = String(value ?? '').trim()
+  if (normalized in FLOATING_ALGORITHMS) {
+    return normalized as VideoWatermarkTrajectory
+  }
+  return DEFAULT_VIDEO_WATERMARK_TRAJECTORY
+}
+
+async function runFloatingOverlay(
+  inputVideoPath: string,
+  stickerPath: string,
+  outputVideoPath: string,
+  trajectory: VideoWatermarkTrajectory
+): Promise<void> {
   ensureFfmpegConfigured()
-  const overlayFilter =
-    "[0:v][1:v]overlay=x='(W-w)-abs(mod(t*80,2*(W-w))-(W-w))':y='(H-h)-abs(mod(t*55,2*(H-h))-(H-h))'[wm]"
+  const overlayExpr = FLOATING_ALGORITHMS[normalizeVideoWatermarkTrajectory(trajectory)]
+  const overlayFilter = `[0:v][1:v]overlay=${overlayExpr}[wm]`
 
   await new Promise<void>((resolvePromise, rejectPromise) => {
     ffmpeg()
@@ -311,7 +338,12 @@ export async function applyVideoWatermark(
   const savePath = needsAtomicReplace ? tempOutputPath : normalizedOutputPath
 
   try {
-    await runFloatingOverlay(normalizedInputPath, stickerPath, savePath)
+    await runFloatingOverlay(
+      normalizedInputPath,
+      stickerPath,
+      savePath,
+      normalizeVideoWatermarkTrajectory(config?.trajectory)
+    )
     if (needsAtomicReplace) {
       await rename(savePath, normalizedOutputPath)
     }

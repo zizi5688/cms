@@ -682,6 +682,7 @@ const electronAPI = {
     dynamicWatermarkEnabled: boolean
     dynamicWatermarkOpacity: number
     dynamicWatermarkSize: number
+    dynamicWatermarkTrajectory: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
     scoutDashboardAutoImportDir: string
     watermarkBox: { x: number; y: number; width: number; height: number }
     defaultStartTime: string
@@ -695,6 +696,7 @@ const electronAPI = {
     dynamicWatermarkEnabled?: boolean
     dynamicWatermarkOpacity?: number
     dynamicWatermarkSize?: number
+    dynamicWatermarkTrajectory?: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
     scoutDashboardAutoImportDir?: string
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string

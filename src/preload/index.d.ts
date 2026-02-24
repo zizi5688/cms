@@ -631,6 +631,7 @@ declare global {
       dynamicWatermarkEnabled: boolean
       dynamicWatermarkOpacity: number
       dynamicWatermarkSize: number
+      dynamicWatermarkTrajectory: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
       scoutDashboardAutoImportDir: string
       watermarkBox: WatermarkBox
       defaultStartTime: string
@@ -644,6 +645,7 @@ declare global {
       dynamicWatermarkEnabled?: boolean
       dynamicWatermarkOpacity?: number
       dynamicWatermarkSize?: number
+      dynamicWatermarkTrajectory?: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
       scoutDashboardAutoImportDir?: string
       watermarkBox?: WatermarkBox
       defaultStartTime?: string
