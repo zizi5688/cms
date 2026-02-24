@@ -77,6 +77,18 @@ declare global {
     usedImages?: string[]
     seed?: number
     error?: string
+    debug?: {
+      errorName: string
+      errorMessage: string
+      stackTop?: string
+      runtime: {
+        platform: string
+        arch: string
+        isPackaged: boolean
+      }
+      ffmpeg: { rawPath: string; normalizedPath: string; exists: boolean }
+      ffprobe: { rawPath: string; normalizedPath: string; exists: boolean }
+    }
   }
 
   type ComposeVideoBatchFromImagesResult = {
@@ -85,7 +97,8 @@ declare global {
     failedCount: number
     sourceImageCount: number
     outputs: string[]
-    failures: Array<{ index: number; error: string }>
+    failures: Array<{ index: number; error: string; details?: string }>
+    debugLogPath?: string
   }
 
   type AppReleaseMeta = {

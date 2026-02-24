@@ -40,6 +40,26 @@ export type ComposeVideoFromImagesResult = {
   usedImages?: string[]
   seed?: number
   error?: string
+  debug?: ComposeVideoFailureDebug
+}
+
+type BinaryRuntimeDiagnostic = {
+  rawPath: string
+  normalizedPath: string
+  exists: boolean
+}
+
+export type ComposeVideoFailureDebug = {
+  errorName: string
+  errorMessage: string
+  stackTop?: string
+  runtime: {
+    platform: string
+    arch: string
+    isPackaged: boolean
+  }
+  ffmpeg: BinaryRuntimeDiagnostic
+  ffprobe: BinaryRuntimeDiagnostic
 }
 
 export type ComposeVideoProgress = {
@@ -96,20 +116,96 @@ function normalizePackagedBinaryPath(binaryPath: string): string {
   return normalized.includes('app.asar') ? normalized.replace('app.asar', 'app.asar.unpacked') : normalized
 }
 
-function resolveFfmpegPath(): string {
+function collectBinaryRuntimeDiagnostic(rawPath: unknown): BinaryRuntimeDiagnostic {
+  const original = typeof rawPath === 'string' ? rawPath.trim() : ''
+  const normalizedPath = normalizePackagedBinaryPath(original)
+  return {
+    rawPath: original,
+    normalizedPath,
+    exists: Boolean(normalizedPath && existsSync(normalizedPath))
+  }
+}
+
+function getFfmpegRuntimeDiagnostic(): BinaryRuntimeDiagnostic {
   const ffmpegStatic = resolveStaticModule(ffmpegStaticImport as unknown as string | null)
-  const raw = typeof ffmpegStatic === 'string' ? ffmpegStatic : ''
-  const resolved = normalizePackagedBinaryPath(raw)
-  if (!resolved) throw new Error('[videoComposer] ffmpeg-static path not found for current platform.')
-  return resolved
+  return collectBinaryRuntimeDiagnostic(typeof ffmpegStatic === 'string' ? ffmpegStatic : '')
+}
+
+function getFfprobeRuntimeDiagnostic(): BinaryRuntimeDiagnostic {
+  const ffprobeStatic = resolveStaticModule(ffprobeStaticImport as unknown as { path?: string } | null)
+  const rawPath = ffprobeStatic && typeof ffprobeStatic.path === 'string' ? ffprobeStatic.path : ''
+  return collectBinaryRuntimeDiagnostic(rawPath)
+}
+
+function toRuntimeLabel(): string {
+  return `${process.platform}/${process.arch} packaged=${app.isPackaged ? '1' : '0'}`
+}
+
+function normalizeErrorText(message: unknown): string {
+  const text = String(message ?? '').trim()
+  if (!text) return '[videoComposer] 未知错误'
+  return text.startsWith('[videoComposer]') ? text : `[videoComposer] ${text}`
+}
+
+function normalizeErrorForDebug(error: unknown): { name: string; message: string; stackTop?: string } {
+  if (error instanceof Error) {
+    const stackTop = error.stack
+      ?.split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(' | ')
+    return {
+      name: error.name || 'Error',
+      message: normalizeErrorText(error.message),
+      stackTop: stackTop || undefined
+    }
+  }
+
+  return {
+    name: 'NonErrorThrown',
+    message: normalizeErrorText(error)
+  }
+}
+
+function buildComposeFailureDebug(error: unknown): ComposeVideoFailureDebug {
+  const normalized = normalizeErrorForDebug(error)
+  return {
+    errorName: normalized.name,
+    errorMessage: normalized.message,
+    stackTop: normalized.stackTop,
+    runtime: {
+      platform: process.platform,
+      arch: process.arch,
+      isPackaged: app.isPackaged
+    },
+    ffmpeg: getFfmpegRuntimeDiagnostic(),
+    ffprobe: getFfprobeRuntimeDiagnostic()
+  }
+}
+
+function resolveFfmpegPath(): string {
+  const diagnostic = getFfmpegRuntimeDiagnostic()
+  if (!diagnostic.normalizedPath) {
+    throw new Error(`[videoComposer] ffmpeg-static 路径解析失败。runtime=${toRuntimeLabel()} raw=${diagnostic.rawPath || '<empty>'}`)
+  }
+  if (!diagnostic.exists) {
+    throw new Error(`[videoComposer] ffmpeg 二进制不存在：${diagnostic.normalizedPath}`)
+  }
+  return diagnostic.normalizedPath
 }
 
 function resolveFfprobePath(): string {
-  const ffprobeStatic = resolveStaticModule(ffprobeStaticImport as unknown as { path?: string } | null)
-  const raw = ffprobeStatic && typeof ffprobeStatic.path === 'string' ? ffprobeStatic.path : ''
-  const resolved = normalizePackagedBinaryPath(raw)
-  if (!resolved) throw new Error('[videoComposer] ffprobe-static path not found for current platform.')
-  return resolved
+  const diagnostic = getFfprobeRuntimeDiagnostic()
+  if (!diagnostic.normalizedPath) {
+    throw new Error(
+      `[videoComposer] ffprobe-static 路径解析失败。runtime=${toRuntimeLabel()} raw=${diagnostic.rawPath || '<empty>'}`
+    )
+  }
+  if (!diagnostic.exists) {
+    throw new Error(`[videoComposer] ffprobe 二进制不存在：${diagnostic.normalizedPath}`)
+  }
+  return diagnostic.normalizedPath
 }
 
 let didConfigureFfmpeg = false
@@ -565,7 +661,8 @@ export async function composeVideoFromPreparedImagePool(
       : normalizedTemplate
   const sourceImages = payload.sourceImages
   if (sourceImages.length === 0) {
-    return { success: false, error: '[videoComposer] 至少需要一张可读图片。' }
+    const error = '[videoComposer] 至少需要一张可读图片。'
+    return { success: false, error, debug: buildComposeFailureDebug(error) }
   }
 
   const seed = normalizeSeed(payload?.seed)
@@ -575,7 +672,8 @@ export async function composeVideoFromPreparedImagePool(
   const outputPath = resolveOutputPath(payload?.outputPath)
   const bgmPath = typeof payload?.bgmPath === 'string' && payload.bgmPath.trim() ? payload.bgmPath.trim() : null
   if (bgmPath && !existsSync(bgmPath)) {
-    return { success: false, seed, error: `[videoComposer] 背景音乐不存在: ${bgmPath}` }
+    const error = `[videoComposer] 背景音乐不存在: ${bgmPath}`
+    return { success: false, seed, error, debug: buildComposeFailureDebug(error) }
   }
 
   let usedImages: string[] = []
@@ -587,7 +685,8 @@ export async function composeVideoFromPreparedImagePool(
     usedImages = prepared.usedImages
     const renderImages = prepared.renderImages
     if (usedImages.length === 0 || renderImages.length === 0) {
-      return { success: false, seed, error: '[videoComposer] 可用图片数量不足或图片文件损坏。' }
+      const error = '[videoComposer] 可用图片数量不足或图片文件损坏。'
+      return { success: false, seed, error, debug: buildComposeFailureDebug(error) }
     }
 
     const preferredEncoder: VideoEncoder = process.platform === 'darwin' ? 'h264_videotoolbox' : 'libx264'
@@ -632,13 +731,14 @@ export async function composeVideoFromPreparedImagePool(
       seed
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const debug = buildComposeFailureDebug(error)
     return {
       success: false,
       outputPath,
       usedImages,
       seed,
-      error: `[videoComposer] ${message}`
+      error: debug.errorMessage,
+      debug
     }
   }
 }

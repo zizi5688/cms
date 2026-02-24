@@ -25,6 +25,7 @@ import {
   composeVideoFromImages,
   composeVideoFromPreparedImagePool,
   normalizeImagePaths,
+  type ComposeVideoFailureDebug,
   type VideoOutputAspect
 } from './services/videoComposer'
 import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinHotMusic'
@@ -214,6 +215,49 @@ function appendCoverFetchDebugLog(line: string): void {
 
 function getCoverFetchDebugLogPath(): string {
   return join(app.getPath('userData'), 'cover_fetch_debug.log')
+}
+
+function getVideoComposerDebugLogPath(): string {
+  return join(app.getPath('userData'), 'video_composer_debug.log')
+}
+
+function appendVideoComposerDebugLog(entry: string): void {
+  try {
+    const ts = new Date().toISOString()
+    appendFileSync(getVideoComposerDebugLogPath(), `[${ts}] ${entry}\n\n`, 'utf-8')
+  } catch {
+    // noop
+  }
+}
+
+function formatVideoComposerFailureDetails(options: {
+  batchIndex: number
+  batchTotal: number
+  seed: number
+  sourceImageCount: number
+  error: string
+  bgmPath?: string
+  debug?: ComposeVideoFailureDebug
+}): string {
+  const lines: string[] = []
+  lines.push(`batch=${options.batchIndex}/${options.batchTotal}`)
+  lines.push(`seed=${options.seed}`)
+  lines.push(`sourceImageCount=${options.sourceImageCount}`)
+  lines.push(`error=${options.error}`)
+  lines.push(`bgmPath=${options.bgmPath ? options.bgmPath : '<none>'}`)
+
+  const debug = options.debug
+  if (debug) {
+    lines.push(
+      `runtime=${debug.runtime.platform}/${debug.runtime.arch} packaged=${debug.runtime.isPackaged ? '1' : '0'}`
+    )
+    lines.push(`errorName=${debug.errorName}`)
+    lines.push(`ffmpeg=${debug.ffmpeg.normalizedPath || '<empty>'} exists=${debug.ffmpeg.exists ? '1' : '0'}`)
+    lines.push(`ffprobe=${debug.ffprobe.normalizedPath || '<empty>'} exists=${debug.ffprobe.exists ? '1' : '0'}`)
+    if (debug.stackTop) lines.push(`stackTop=${debug.stackTop}`)
+  }
+
+  return lines.join(' | ')
 }
 
 function parseOptionalBool(value: unknown): boolean | null {
@@ -2004,6 +2048,7 @@ app.whenReady().then(async () => {
     const body = (payload ?? {}) as Record<string, unknown>
     const batchCountRaw = Number(body.batchCount)
     const batchCount = Number.isFinite(batchCountRaw) ? Math.max(1, Math.min(20, Math.floor(batchCountRaw))) : 1
+    const debugLogPath = getVideoComposerDebugLogPath()
     const sourceRootPath = typeof body.sourceRootPath === 'string' ? body.sourceRootPath.trim() : ''
     const renderModeRaw = typeof body.renderMode === 'string' ? body.renderMode.trim().toLowerCase() : ''
     const lowLoadMode = renderModeRaw === 'hd' ? false : body.lowLoadMode !== false
@@ -2023,13 +2068,23 @@ app.whenReady().then(async () => {
 
     sourceImages = normalizeImagePaths(sourceImages)
     if (sourceImages.length === 0) {
+      const error = '[videoComposer] 未找到可用图片素材。'
+      const details = formatVideoComposerFailureDetails({
+        batchIndex: 1,
+        batchTotal: batchCount,
+        seed: 0,
+        sourceImageCount: 0,
+        error
+      })
+      appendVideoComposerDebugLog(details)
       return {
         success: false,
         successCount: 0,
         failedCount: 1,
         sourceImageCount: 0,
         outputs: [],
-        failures: [{ index: 1, error: '[videoComposer] 未找到可用图片素材。' }]
+        failures: [{ index: 1, error, details }],
+        debugLogPath
       }
     }
 
@@ -2050,7 +2105,7 @@ app.whenReady().then(async () => {
     const seedBaseRaw = Number(body.seedBase)
     const seedBase = Number.isFinite(seedBaseRaw) ? Math.floor(seedBaseRaw) : Date.now()
     const outputs: string[] = []
-    const failures: Array<{ index: number; error: string }> = []
+    const failures: Array<{ index: number; error: string; details?: string }> = []
     const lowLoadImageProxyCache = new Map<string, string>()
     const imageReadableCache = new Map<string, boolean>()
     const imageProxyCacheDir = join(
@@ -2105,7 +2160,18 @@ app.whenReady().then(async () => {
         if (result.success && result.outputPath) {
           outputs.push(result.outputPath)
         } else {
-          failures.push({ index: batchIndex, error: result.error ?? '未知错误' })
+          const error = result.error ?? '未知错误'
+          const details = formatVideoComposerFailureDetails({
+            batchIndex,
+            batchTotal: batchCount,
+            seed,
+            sourceImageCount: sourceImages.length,
+            error,
+            bgmPath: effectiveBgmPath,
+            debug: result.debug
+          })
+          failures.push({ index: batchIndex, error, details })
+          appendVideoComposerDebugLog(details)
         }
       }
     } finally {
@@ -2118,7 +2184,8 @@ app.whenReady().then(async () => {
       failedCount: failures.length,
       sourceImageCount: sourceImages.length,
       outputs,
-      failures
+      failures,
+      debugLogPath
     }
   })
 

@@ -137,6 +137,13 @@ function formatSavedAt(timestamp: number): string {
   }
 }
 
+function truncateDebugDetails(details?: string): string {
+  const normalized = typeof details === 'string' ? details.trim() : ''
+  if (!normalized) return ''
+  if (normalized.length <= 360) return normalized
+  return `${normalized.slice(0, 360)}...`
+}
+
 const INITIAL_SAVED_TEMPLATE = loadSavedTemplate()
 
 function VideoComposerPanel(): React.JSX.Element {
@@ -447,8 +454,10 @@ function VideoComposerPanel(): React.JSX.Element {
         outputAspect
       })
 
+      const firstFailure = result.failures[0]
       if (result.successCount === 0) {
-        setError('本轮生成全部失败，请检查模板参数和素材。')
+        const reason = firstFailure?.error?.trim() || '未知错误'
+        setError(`本轮生成全部失败：${reason}`)
       }
 
       if (result.outputs.length > 0) {
@@ -465,6 +474,13 @@ function VideoComposerPanel(): React.JSX.Element {
             .map((item) => `${item.index}/${count} ${item.error}`)
             .join(' | ')}`
         )
+        result.failures.slice(0, 3).forEach((item) => {
+          const details = truncateDebugDetails(item.details)
+          if (details) addLog(`[视频处理][debug] #${item.index} ${details}`)
+        })
+      }
+      if (result.debugLogPath) {
+        addLog(`[视频处理] 调试日志：${result.debugLogPath}`)
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

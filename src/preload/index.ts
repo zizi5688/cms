@@ -74,7 +74,8 @@ type ComposeVideoBatchFromImagesResult = {
   failedCount: number
   sourceImageCount: number
   outputs: string[]
-  failures: Array<{ index: number; error: string }>
+  failures: Array<{ index: number; error: string; details?: string }>
+  debugLogPath?: string
 }
 
 type AppReleaseMeta = {
@@ -589,6 +590,18 @@ const electronAPI = {
     usedImages?: string[]
     seed?: number
     error?: string
+    debug?: {
+      errorName: string
+      errorMessage: string
+      stackTop?: string
+      runtime: {
+        platform: string
+        arch: string
+        isPackaged: boolean
+      }
+      ffmpeg: { rawPath: string; normalizedPath: string; exists: boolean }
+      ffprobe: { rawPath: string; normalizedPath: string; exists: boolean }
+    }
   }> => ipcRenderer.invoke('media:composeVideoFromImages', payload),
   composeVideoBatchFromImages: (payload: {
     sourceRootPath?: string
