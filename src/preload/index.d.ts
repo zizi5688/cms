@@ -615,6 +615,9 @@ declare global {
       realEsrganPath: string
       pythonPath: string
       watermarkScriptPath: string
+      dynamicWatermarkEnabled: boolean
+      dynamicWatermarkOpacity: number
+      dynamicWatermarkSize: number
       scoutDashboardAutoImportDir: string
       watermarkBox: WatermarkBox
       defaultStartTime: string
@@ -625,6 +628,9 @@ declare global {
       realEsrganPath?: string
       pythonPath?: string
       watermarkScriptPath?: string
+      dynamicWatermarkEnabled?: boolean
+      dynamicWatermarkOpacity?: number
+      dynamicWatermarkSize?: number
       scoutDashboardAutoImportDir?: string
       watermarkBox?: WatermarkBox
       defaultStartTime?: string

@@ -46,7 +46,16 @@ function App(): React.JSX.Element {
             importStrategy: saved.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: saved.realEsrganPath ?? '',
             pythonPath: saved.pythonPath ?? '',
-            watermarkScriptPath: saved.watermarkScriptPath ?? ''
+            watermarkScriptPath: saved.watermarkScriptPath ?? '',
+            dynamicWatermarkEnabled: saved.dynamicWatermarkEnabled === true,
+            dynamicWatermarkOpacity:
+              typeof saved.dynamicWatermarkOpacity === 'number'
+                ? Math.max(0, Math.min(100, Math.round(saved.dynamicWatermarkOpacity)))
+                : 15,
+            dynamicWatermarkSize:
+              typeof saved.dynamicWatermarkSize === 'number'
+                ? Math.max(2, Math.min(10, Math.round(saved.dynamicWatermarkSize)))
+                : 5
           }
           if (isValidWatermarkBox(saved.watermarkBox)) {
             patch.watermarkBox = saved.watermarkBox

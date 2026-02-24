@@ -668,6 +668,14 @@ function AutoPublishView(): React.JSX.Element {
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => beginRename(activeAccount)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-zinc-500 transition hover:border-zinc-700 hover:bg-zinc-900/40 hover:text-zinc-200"
+                        aria-label="重命名账号"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   ) : null}
                   <div className="flex shrink-0 items-center gap-2">
@@ -685,6 +693,33 @@ function AutoPublishView(): React.JSX.Element {
                     </Button>
                   </div>
                 </div>
+                {activeAccount && editingAccountId === activeAccount.id ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      value={editingAccountName}
+                      onChange={(e) => setEditingAccountName(e.target.value)}
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void saveRename()
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault()
+                          cancelRename()
+                        }
+                      }}
+                      className="h-9 w-[280px] max-w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+                      placeholder="输入新的账号名称"
+                    />
+                    <Button type="button" variant="outline" onClick={() => void saveRename()}>
+                      保存
+                    </Button>
+                    <Button type="button" variant="outline" onClick={cancelRename}>
+                      取消
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="min-w-0">

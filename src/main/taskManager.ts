@@ -6,6 +6,7 @@ import { basename, dirname, extname, join, posix, resolve, sep } from 'path'
 import pLimit from 'p-limit'
 import { spinText } from './utils/textSpinner'
 import { mutateImage } from './services/imageMutator'
+import { applyDynamicWatermark } from './services/dynamicWatermark'
 import { SqliteService } from './services/sqliteService'
 
 export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
@@ -90,9 +91,29 @@ function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(String(value ?? '').trim())
 }
 
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv'])
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.heic',
+  '.heif',
+  '.avif',
+  '.bmp',
+  '.gif',
+  '.tif',
+  '.tiff'
+])
+
 function isVideoExt(filePath: string): boolean {
   const ext = extname(String(filePath ?? '')).toLowerCase()
-  return ext === '.mp4' || ext === '.mov'
+  return VIDEO_EXTENSIONS.has(ext)
+}
+
+function isSupportedImageExt(filePath: string): boolean {
+  const ext = extname(String(filePath ?? '')).toLowerCase()
+  return SUPPORTED_IMAGE_EXTENSIONS.has(ext)
 }
 
 function isWindowsAbsolutePath(value: string): boolean {
@@ -112,6 +133,34 @@ function normalizeAssetRelativePath(value: string): string {
   if (!raw) return ''
   const normalized = raw.replace(/\\/g, '/')
   return normalized
+}
+
+function normalizeDynamicWatermarkEnabled(value: unknown): boolean {
+  return value === true
+}
+
+function normalizeDynamicWatermarkOpacity(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return 15
+  return Math.max(0, Math.min(100, Math.round(parsed)))
+}
+
+function normalizeDynamicWatermarkSize(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return 5
+  return Math.max(2, Math.min(10, Math.round(parsed)))
+}
+
+function normalizeWatermarkAccountName(value: unknown, fallback: string): string {
+  const raw = String(value ?? '').trim().replace(/^@+/, '')
+  if (raw) return raw
+  return String(fallback ?? '').trim().replace(/^@+/, '')
+}
+
+function fallbackWatermarkNameFromAccountId(accountId: string): string {
+  const normalized = String(accountId ?? '').trim().replace(/^@+/, '')
+  if (!normalized) return ''
+  return normalized.slice(0, 8)
 }
 
 function countXhsTitleChars(value: unknown): number {
@@ -279,14 +328,20 @@ export class TaskManager {
   private sqlite: SqliteService
   private workspacePath: string | null
   private configStore: { get: (key: string) => unknown } | null
+  private resolveAccountNameById: ((accountId: string) => string | null) | null
 
   constructor(
     _store?: unknown,
-    options?: { workspacePath?: string; configStore?: { get: (key: string) => unknown } }
+    options?: {
+      workspacePath?: string
+      configStore?: { get: (key: string) => unknown }
+      resolveAccountNameById?: (accountId: string) => string | null
+    }
   ) {
     this.sqlite = SqliteService.getInstance()
     this.workspacePath = options?.workspacePath ? String(options.workspacePath).trim() : null
     this.configStore = options?.configStore ?? null
+    this.resolveAccountNameById = options?.resolveAccountNameById ?? null
   }
 
   normalizeLegacyDraftTasks(): { modeUpdated: number; statusUpdated: number } {
@@ -404,7 +459,11 @@ export class TaskManager {
       remixSourceTaskIds?: string[]
       remixSeed?: string
     }>,
-    options?: { requestId?: string; onProgress?: (payload: CreateBatchProgress) => void }
+    options?: {
+      requestId?: string
+      onProgress?: (payload: CreateBatchProgress) => void
+      onLog?: (level: 'info' | 'error', message: string) => void
+    }
   ): Promise<PublishTask[]> {
     const db = this.sqlite.tryGetConnection()
     if (!db) return []
@@ -431,11 +490,22 @@ export class TaskManager {
         void 0
       }
     }
+    const emitLog = (level: 'info' | 'error', message: string): void => {
+      if (!options?.onLog) return
+      try {
+        options.onLog(level, message)
+      } catch {
+        void 0
+      }
+    }
     emitProgress('start', total > 0 ? `开始派发（0/${total}）` : '没有可派发任务')
 
     const workspacePath = this.workspacePath ? this.workspacePath.trim() : ''
     const resolvedWorkspacePath = workspacePath ? resolve(workspacePath) : ''
     const importStrategy = this.configStore?.get('importStrategy') === 'move' ? 'move' : 'copy'
+    const dynamicWatermarkEnabled = normalizeDynamicWatermarkEnabled(this.configStore?.get('dynamicWatermarkEnabled'))
+    const dynamicWatermarkOpacity = normalizeDynamicWatermarkOpacity(this.configStore?.get('dynamicWatermarkOpacity'))
+    const dynamicWatermarkSize = normalizeDynamicWatermarkSize(this.configStore?.get('dynamicWatermarkSize'))
     const shouldLocalizeAssets = Boolean(workspacePath)
     const assetsImagesDir = shouldLocalizeAssets ? join(workspacePath, 'assets', 'images') : ''
     const assetsVideosDir = shouldLocalizeAssets ? join(workspacePath, 'assets', 'videos') : ''
@@ -454,6 +524,7 @@ export class TaskManager {
     let reusedImageSourceHits = 0
     let reusedVideoSourceHits = 0
     const mutateLimit = pLimit(3)
+    const watermarkLimit = pLimit(2)
     const generatedAssetsDir = resolveGeneratedAssetsDir()
     const isUnderWorkspace = (absPath: string): boolean => {
       if (!resolvedWorkspacePath) return false
@@ -468,6 +539,40 @@ export class TaskManager {
       const currentTaskIndex = Math.min(processed + 1, total)
       const record = raw as unknown as Record<string, unknown>
       const accountId = normalizeText(record.accountId)
+      const resolvedAccountName = normalizeWatermarkAccountName(this.resolveAccountNameById?.(accountId), '')
+      const fallbackAccountName = fallbackWatermarkNameFromAccountId(accountId)
+      const watermarkAccountName = resolvedAccountName || fallbackAccountName
+      if (dynamicWatermarkEnabled && shouldLocalizeAssets && !resolvedAccountName && fallbackAccountName) {
+        emitLog('error', `[数据工坊] 未找到账号名称，已回退账号ID片段用于动态水印：${fallbackAccountName}`)
+      }
+      const shouldApplyDynamicWatermarkForTask = dynamicWatermarkEnabled && shouldLocalizeAssets && Boolean(watermarkAccountName)
+      const watermarkSignature = shouldApplyDynamicWatermarkForTask
+        ? computeBufferHashSha1(Buffer.from(`${watermarkAccountName}|${dynamicWatermarkOpacity}|${dynamicWatermarkSize}`)).slice(0, 10)
+        : ''
+      const applyWatermarkIfNeeded = async (targetPath: string, sourcePath: string): Promise<void> => {
+        if (!shouldApplyDynamicWatermarkForTask) return
+        if (!targetPath || isHttpUrl(targetPath) || !isAbsoluteFilePath(targetPath)) return
+        if (!isSupportedImageExt(targetPath)) {
+          emitLog('error', `[数据工坊] 动态水印跳过（不支持格式）：${basename(sourcePath || targetPath)}`)
+          return
+        }
+        emitProgress(
+          'progress',
+          `派发处理中（${currentTaskIndex}/${Math.max(total, 1)}）注入水印：${basename(sourcePath || targetPath)}`
+        )
+        try {
+          await watermarkLimit(() =>
+            applyDynamicWatermark(targetPath, targetPath, watermarkAccountName, {
+              opacity: dynamicWatermarkOpacity,
+              size: dynamicWatermarkSize
+            })
+          )
+          emitLog('info', `[数据工坊] 图片处理完成，已自动注入动态水印: @${watermarkAccountName}`)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          emitLog('error', `[数据工坊] 动态水印注入失败（已跳过）：${basename(sourcePath || targetPath)} ${message}`)
+        }
+      }
       const tags = Array.isArray(record.tags)
         ? (record.tags as unknown[]).map((v) => normalizeText(v)).filter(Boolean)
         : []
@@ -507,6 +612,13 @@ export class TaskManager {
           inferredVideoPath = normalized
           continue
         }
+        if (!isHttpUrl(normalized)) {
+          const mediaExt = extname(normalized).toLowerCase()
+          if (mediaExt && !isSupportedImageExt(normalized)) {
+            emitLog('error', `[数据工坊] 跳过非图片素材：${basename(normalized)}`)
+            continue
+          }
+        }
         rawImages.push(normalized)
       }
 
@@ -523,35 +635,47 @@ export class TaskManager {
 
       const images: string[] = []
       if (isRemix) {
-        const mutated = await Promise.all(
-          rawImages
-            .map((imagePath) => normalizeText(imagePath))
-            .filter(Boolean)
-            .map(async (normalizedPath) => {
-              if (isHttpUrl(normalizedPath)) return normalizedPath
+        for (const imagePath of rawImages) {
+          const normalizedPath = normalizeText(imagePath)
+          if (!normalizedPath) continue
+          if (isHttpUrl(normalizedPath)) {
+            images.push(normalizedPath)
+            continue
+          }
 
-              const isRelativeAsset = normalizedPath.startsWith('assets/') || normalizedPath.startsWith('assets\\')
-              if (isRelativeAsset) {
-                if (!shouldLocalizeAssets) return normalizeAssetRelativePath(normalizedPath)
-                const rel = normalizeAssetRelativePath(normalizedPath)
-                const abs = join(workspacePath, ...rel.split('/').filter(Boolean))
-                try {
-                  return await mutateLimit(() => mutateImage(abs))
-                } catch {
-                  return rel
-                }
-              }
+          const isRelativeAsset = normalizedPath.startsWith('assets/') || normalizedPath.startsWith('assets\\')
+          if (isRelativeAsset) {
+            if (!shouldLocalizeAssets) {
+              images.push(normalizeAssetRelativePath(normalizedPath))
+              continue
+            }
+            const rel = normalizeAssetRelativePath(normalizedPath)
+            const abs = join(workspacePath, ...rel.split('/').filter(Boolean))
+            let nextPath = rel
+            try {
+              nextPath = await mutateLimit(() => mutateImage(abs))
+            } catch {
+              nextPath = rel
+            }
+            await applyWatermarkIfNeeded(nextPath, normalizedPath)
+            images.push(nextPath)
+            continue
+          }
 
-              if (!isAbsoluteFilePath(normalizedPath)) return normalizedPath
+          if (!isAbsoluteFilePath(normalizedPath)) {
+            images.push(normalizedPath)
+            continue
+          }
 
-              try {
-                return await mutateLimit(() => mutateImage(normalizedPath))
-              } catch {
-                return normalizedPath
-              }
-            })
-        )
-        images.push(...mutated.filter(Boolean))
+          let nextPath = normalizedPath
+          try {
+            nextPath = await mutateLimit(() => mutateImage(normalizedPath))
+          } catch {
+            nextPath = normalizedPath
+          }
+          await applyWatermarkIfNeeded(nextPath, normalizedPath)
+          images.push(nextPath)
+        }
       } else {
         for (const imagePath of rawImages) {
           const normalizedPath = normalizeText(imagePath)
@@ -577,7 +701,8 @@ export class TaskManager {
             continue
           }
 
-          const cachedLocalizedImage = localizedImageSourceCache.get(normalizedPath)
+          const localizedCacheKey = watermarkSignature ? `${normalizedPath}::${watermarkSignature}` : normalizedPath
+          const cachedLocalizedImage = localizedImageSourceCache.get(localizedCacheKey)
           if (cachedLocalizedImage) {
             images.push(cachedLocalizedImage)
             reusedImageSourceHits += 1
@@ -612,14 +737,19 @@ export class TaskManager {
               fileHashCache.set(normalizedPath, fileHash)
             }
           }
-          const fileName = isHeic ? `${fileHash}.jpg` : `${fileHash}${extLower}`
+          const baseName = isHeic ? `${fileHash}.jpg` : `${fileHash}${extLower}`
+          const fileName = watermarkSignature
+            ? baseName.replace(/(\.[^.]*)$/, `_wm_${watermarkSignature}$1`)
+            : baseName
           const destAbsPath = join(assetsImagesDir, fileName)
+          let needsWatermarkInjection = false
           if (!existsSync(destAbsPath)) {
             if (isHeic) {
               await writeFile(destAbsPath, heicJpeg!)
             } else {
               await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 25_000 })
             }
+            needsWatermarkInjection = true
           } else {
             const info = await stat(destAbsPath)
             if (!info.isFile() || info.size <= 0) {
@@ -628,13 +758,15 @@ export class TaskManager {
               } else {
                 await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 25_000 })
               }
+              needsWatermarkInjection = true
             }
           }
+          if (needsWatermarkInjection) await applyWatermarkIfNeeded(destAbsPath, normalizedPath)
           if (importStrategy === 'move' && !isUnderWorkspace(normalizedPath)) {
             sourcesToDelete.add(normalizedPath)
           }
           const rel = normalizeAssetRelativePath(posix.join('assets', 'images', fileName))
-          localizedImageSourceCache.set(normalizedPath, rel)
+          localizedImageSourceCache.set(localizedCacheKey, rel)
           localizedImageSourceCount += 1
           images.push(rel)
         }
