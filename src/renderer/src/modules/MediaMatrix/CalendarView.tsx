@@ -346,6 +346,7 @@ function CalendarView({
         ? Math.max(0, defaultInterval)
         : 0
     const intervalMs = intervalMinutes * 60 * 1000
+    const nowMs = Date.now()
     const targetDay = moment().startOf('day').add(dayOffset, 'day')
     const dayStart = targetDay.valueOf()
     const dayEnd = targetDay.clone().endOf('day').valueOf()
@@ -357,10 +358,15 @@ function CalendarView({
       return latest == null ? scheduledAt : Math.max(latest, scheduledAt)
     }, null)
 
-    const firstSlot =
+    const baseFirstSlot =
       lastScheduledAt != null
         ? lastScheduledAt + intervalMs
         : withDefaultStartTime(targetDay.toDate(), defaultStartTime).getTime()
+    const catchUpFirstSlot = nowMs + intervalMs
+    const firstSlot =
+      dayOffset === 0
+        ? Math.max(baseFirstSlot, catchUpFirstSlot)
+        : baseFirstSlot
 
     const updates = pendingTasks.map((task, index) => ({
       id: task.id,
