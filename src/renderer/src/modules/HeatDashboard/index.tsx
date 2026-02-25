@@ -1251,75 +1251,79 @@ function HeatDashboard(): React.JSX.Element {
                 已显示 {productCards.length} / {potentialProducts.length}
               </span>
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
-                onClick={() => setIsCoverDebugPanelOpen((prev) => !prev)}
-              >
-                {isCoverDebugPanelOpen ? '收起抓取调试' : '抓取调试'}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
-                  coverDebugState?.visual
-                    ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
-                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
-                )}
-                onClick={() =>
-                  void handleUpdateCoverDebugState({
-                    visual: !(coverDebugState?.visual === true)
-                  })
-                }
-                disabled={isCoverDebugUpdating}
-              >
-                可视抓取: {coverDebugState?.visual ? '开' : '关'}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
-                  coverDebugState?.keepWindowOpen
-                    ? 'border-amber-400/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
-                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
-                )}
-                onClick={() =>
-                  void handleUpdateCoverDebugState({
-                    keepWindowOpen: !(coverDebugState?.keepWindowOpen === true)
-                  })
-                }
-                disabled={isCoverDebugUpdating}
-              >
-                保留窗口: {coverDebugState?.keepWindowOpen ? '开' : '关'}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
-                  coverDebugState?.openDevTools
-                    ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
-                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
-                )}
-                onClick={() =>
-                  void handleUpdateCoverDebugState({
-                    openDevTools: !(coverDebugState?.openDevTools === true)
-                  })
-                }
-                disabled={isCoverDebugUpdating}
-              >
-                DevTools: {coverDebugState?.openDevTools ? '开' : '关'}
-              </button>
-            </div>
-            {isCoverDebugPanelOpen && (
-              <div className="mt-2 rounded-md border border-zinc-700 bg-black/35 p-2">
-                <div className="mb-1 text-[11px] text-zinc-400">
-                  实时日志：{coverDebugState?.logPath ? coverDebugState.logPath : '-'}
+            {import.meta.env.DEV && (
+              <>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
+                    onClick={() => setIsCoverDebugPanelOpen((prev) => !prev)}
+                  >
+                    {isCoverDebugPanelOpen ? '收起抓取调试' : '抓取调试'}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                      coverDebugState?.visual
+                        ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                        : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                    )}
+                    onClick={() =>
+                      void handleUpdateCoverDebugState({
+                        visual: !(coverDebugState?.visual === true)
+                      })
+                    }
+                    disabled={isCoverDebugUpdating}
+                  >
+                    可视抓取: {coverDebugState?.visual ? '开' : '关'}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                      coverDebugState?.keepWindowOpen
+                        ? 'border-amber-400/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
+                        : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                    )}
+                    onClick={() =>
+                      void handleUpdateCoverDebugState({
+                        keepWindowOpen: !(coverDebugState?.keepWindowOpen === true)
+                      })
+                    }
+                    disabled={isCoverDebugUpdating}
+                  >
+                    保留窗口: {coverDebugState?.keepWindowOpen ? '开' : '关'}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                      coverDebugState?.openDevTools
+                        ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
+                        : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                    )}
+                    onClick={() =>
+                      void handleUpdateCoverDebugState({
+                        openDevTools: !(coverDebugState?.openDevTools === true)
+                      })
+                    }
+                    disabled={isCoverDebugUpdating}
+                  >
+                    DevTools: {coverDebugState?.openDevTools ? '开' : '关'}
+                  </button>
                 </div>
-                <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-zinc-300">
-                  {coverDebugLines.length > 0 ? coverDebugLines.join('\n') : '暂无日志'}
-                </pre>
-              </div>
+                {isCoverDebugPanelOpen && (
+                  <div className="mt-2 rounded-md border border-zinc-700 bg-black/35 p-2">
+                    <div className="mb-1 text-[11px] text-zinc-400">
+                      实时日志：{coverDebugState?.logPath ? coverDebugState.logPath : '-'}
+                    </div>
+                    <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-zinc-300">
+                      {coverDebugLines.length > 0 ? coverDebugLines.join('\n') : '暂无日志'}
+                    </pre>
+                  </div>
+                )}
+              </>
             )}
           </header>
 
@@ -1635,12 +1639,12 @@ function ProductCard({
             onCompetitorAnalysis={onCompetitorAnalysis}
           />
           {isImageFetching && !hasValidImageUrl(card.imageUrl) && (
-            <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/70 px-2 py-1 text-[11px] text-white">
+            <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-[11px] text-white">
               封面抓取中...
             </div>
           )}
           {!isImageFetching && !hasValidImageUrl(card.imageUrl) && imageFetchError && (
-            <div className="pointer-events-none absolute right-2 top-2 rounded bg-rose-700/85 px-2 py-1 text-[11px] text-white">
+            <div className="pointer-events-none absolute left-2 top-2 rounded bg-rose-700/85 px-2 py-1 text-[11px] text-white">
               {formatImageFetchErrorLabel(imageFetchError)}
             </div>
           )}

@@ -447,6 +447,19 @@ export class ScoutService {
       CREATE INDEX IF NOT EXISTS idx_scout_dash_keyword_date ON scout_dashboard_snapshot_rows(primary_keyword, snapshot_date);
       CREATE INDEX IF NOT EXISTS idx_scout_dash_product_date ON scout_dashboard_snapshot_rows(product_key, snapshot_date);
 
+      CREATE TABLE IF NOT EXISTS scout_dashboard_keyword_hits (
+        snapshot_date TEXT NOT NULL,
+        product_key TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        source_file TEXT,
+        imported_at INTEGER NOT NULL,
+        PRIMARY KEY (snapshot_date, product_key, keyword)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scout_dash_hit_date ON scout_dashboard_keyword_hits(snapshot_date);
+      CREATE INDEX IF NOT EXISTS idx_scout_dash_hit_keyword_date ON scout_dashboard_keyword_hits(keyword, snapshot_date);
+      CREATE INDEX IF NOT EXISTS idx_scout_dash_hit_product_date ON scout_dashboard_keyword_hits(product_key, snapshot_date);
+
       CREATE TABLE IF NOT EXISTS scout_dashboard_watchlist (
         id TEXT PRIMARY KEY,
         snapshot_date TEXT NOT NULL,
@@ -516,6 +529,25 @@ export class ScoutService {
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_scout_dash_map_category ON scout_dashboard_product_map(category_tag)`)
 
+    const keywordHitColumns = db
+      .prepare(`PRAGMA table_info(scout_dashboard_keyword_hits)`)
+      .all() as Array<{ name?: unknown }>
+    const hasHitSourceFile = keywordHitColumns.some((col) => normalizeText(col.name) === 'source_file')
+    const hasHitImportedAt = keywordHitColumns.some((col) => normalizeText(col.name) === 'imported_at')
+    if (!hasHitSourceFile) {
+      db.exec(`ALTER TABLE scout_dashboard_keyword_hits ADD COLUMN source_file TEXT`)
+    }
+    if (!hasHitImportedAt) {
+      db.exec(`ALTER TABLE scout_dashboard_keyword_hits ADD COLUMN imported_at INTEGER NOT NULL DEFAULT 0`)
+    }
+    db.prepare(
+      `INSERT OR IGNORE INTO scout_dashboard_keyword_hits (
+         snapshot_date, product_key, keyword, source_file, imported_at
+       )
+       SELECT snapshot_date, product_key, keyword, source_file, imported_at
+       FROM scout_dashboard_snapshot_rows`
+    ).run()
+
     try {
       this.reconcileDashboardSnapshotDatesBySourceFile()
     } catch (error) {
@@ -565,6 +597,31 @@ export class ScoutService {
              AND t.product_key = scout_dashboard_snapshot_rows.product_key
          )`
     )
+    const moveKeywordHitRows = db.prepare(
+      `UPDATE scout_dashboard_keyword_hits
+       SET snapshot_date = ?
+       WHERE source_file = ?
+         AND snapshot_date != ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM scout_dashboard_keyword_hits AS t
+           WHERE t.snapshot_date = ?
+             AND t.product_key = scout_dashboard_keyword_hits.product_key
+             AND t.keyword = scout_dashboard_keyword_hits.keyword
+         )`
+    )
+    const deleteKeywordHitDupRows = db.prepare(
+      `DELETE FROM scout_dashboard_keyword_hits
+       WHERE source_file = ?
+         AND snapshot_date != ?
+         AND EXISTS (
+           SELECT 1
+           FROM scout_dashboard_keyword_hits AS t
+           WHERE t.snapshot_date = ?
+             AND t.product_key = scout_dashboard_keyword_hits.product_key
+             AND t.keyword = scout_dashboard_keyword_hits.keyword
+         )`
+    )
     const moveWatchlistRows = db.prepare(
       `UPDATE scout_dashboard_watchlist
        SET snapshot_date = ?
@@ -604,6 +661,8 @@ export class ScoutService {
 
         moveSnapshotRows.run(normalizedDate, sourceFile, normalizedDate, normalizedDate)
         deleteSnapshotDupRows.run(sourceFile, normalizedDate, normalizedDate)
+        moveKeywordHitRows.run(normalizedDate, sourceFile, normalizedDate, normalizedDate)
+        deleteKeywordHitDupRows.run(sourceFile, normalizedDate, normalizedDate)
 
         for (const pair of movedPairs) {
           const oldDate = normalizeText(pair.snapshot_date)
@@ -908,9 +967,16 @@ export class ScoutService {
       lastSeenAt: number
     }
 
+    type KeywordHitRow = {
+      snapshotDate: string
+      productKey: string
+      keyword: string
+    }
+
     const candidateRows = new Map<string, CandidateRow>()
     const productMapBuffer = new Map<string, ProductMapInfo>()
     const productMapCache = new Map<string, { primaryKeyword: string; categoryTag: string | null }>()
+    const keywordHitRows = new Map<string, KeywordHitRow>()
 
     const selectProductMap = db.prepare(
       `SELECT primary_keyword, category_tag FROM scout_dashboard_product_map WHERE product_key = ?`
@@ -949,6 +1015,14 @@ export class ScoutService {
         if (!productKey) continue
 
         snapshotDates.add(snapshotDate)
+        const keywordHitKey = `${snapshotDate}::${productKey}::${keyword}`
+        if (!keywordHitRows.has(keywordHitKey)) {
+          keywordHitRows.set(keywordHitKey, {
+            snapshotDate,
+            productKey,
+            keyword
+          })
+        }
 
         const cachedMapping = productMapCache.get(productKey)
         let primaryKeyword = cachedMapping?.primaryKeyword ?? ''
@@ -1130,6 +1204,16 @@ export class ScoutService {
         OR scout_dashboard_snapshot_rows.last_updated_at != excluded.last_updated_at
         OR COALESCE(scout_dashboard_snapshot_rows.raw_payload, '') != COALESCE(excluded.raw_payload, '')
     `)
+    const upsertKeywordHit = db.prepare(`
+      INSERT INTO scout_dashboard_keyword_hits (
+        snapshot_date, product_key, keyword, source_file, imported_at
+      ) VALUES (
+        @snapshotDate, @productKey, @keyword, @sourceFile, @importedAt
+      )
+      ON CONFLICT(snapshot_date, product_key, keyword) DO UPDATE SET
+        source_file = excluded.source_file,
+        imported_at = excluded.imported_at
+    `)
 
     const tx = db.transaction(() => {
       const importedDates = Array.from(snapshotDates).sort()
@@ -1137,6 +1221,10 @@ export class ScoutService {
         const placeholders = importedDates.map(() => '?').join(',')
         db.prepare(
           `DELETE FROM scout_dashboard_snapshot_rows
+           WHERE source_file = ? AND snapshot_date IN (${placeholders})`
+        ).run(sourceFile, ...importedDates)
+        db.prepare(
+          `DELETE FROM scout_dashboard_keyword_hits
            WHERE source_file = ? AND snapshot_date IN (${placeholders})`
         ).run(sourceFile, ...importedDates)
       }
@@ -1147,6 +1235,13 @@ export class ScoutService {
 
       for (const row of candidateRows.values()) {
         upsertSnapshot.run({
+          ...row,
+          sourceFile,
+          importedAt: now
+        })
+      }
+      for (const row of keywordHitRows.values()) {
+        upsertKeywordHit.run({
           ...row,
           sourceFile,
           importedAt: now
@@ -1243,6 +1338,9 @@ export class ScoutService {
           db
             .prepare(`DELETE FROM scout_dashboard_snapshot_rows WHERE imported_at IN (${placeholders})`)
             .run(...batchIds).changes ?? 0
+        db.prepare(`DELETE FROM scout_dashboard_keyword_hits WHERE imported_at IN (${placeholders})`).run(
+          ...batchIds
+        )
       }
 
       const deletedWatchlistRows =
@@ -1335,25 +1433,62 @@ export class ScoutService {
       const touchedRows = db
         .prepare(
           `SELECT DISTINCT product_key
-           FROM scout_dashboard_snapshot_rows
-           WHERE snapshot_date = ? AND primary_keyword = ?`
+           FROM scout_dashboard_keyword_hits
+           WHERE snapshot_date = ? AND keyword = ?`
         )
         .all(date, normalizedKeyword) as Array<{ product_key?: unknown }>
       const productKeys = Array.from(
         new Set(touchedRows.map((row) => normalizeText(row.product_key)).filter(Boolean))
       )
 
-      const deletedSnapshotRows =
-        db
+      if (productKeys.length === 0) {
+        return {
+          snapshotDate: date,
+          keyword: normalizedKeyword,
+          deletedSnapshotRows: 0,
+          deletedWatchlistRows: 0,
+          deletedProductMapRows: 0,
+          deletedCoverCacheRows: 0
+        } satisfies ScoutDashboardDeleteKeywordSnapshotResult
+      }
+
+      db.prepare(`DELETE FROM scout_dashboard_keyword_hits WHERE snapshot_date = ? AND keyword = ?`).run(
+        date,
+        normalizedKeyword
+      )
+
+      const remainedDateProductKeys = new Set<string>()
+      for (const keys of chunked(productKeys)) {
+        const placeholders = keys.map(() => '?').join(',')
+        const rows = db
           .prepare(
-            `DELETE FROM scout_dashboard_snapshot_rows
-             WHERE snapshot_date = ? AND primary_keyword = ?`
+            `SELECT DISTINCT product_key
+             FROM scout_dashboard_keyword_hits
+             WHERE snapshot_date = ? AND product_key IN (${placeholders})`
           )
-          .run(date, normalizedKeyword).changes ?? 0
+          .all(date, ...keys) as Array<{ product_key?: unknown }>
+        for (const row of rows) {
+          const key = normalizeText(row.product_key)
+          if (key) remainedDateProductKeys.add(key)
+        }
+      }
+      const staleDateProductKeys = productKeys.filter((key) => !remainedDateProductKeys.has(key))
+
+      let deletedSnapshotRows = 0
+      for (const keys of chunked(staleDateProductKeys)) {
+        const placeholders = keys.map(() => '?').join(',')
+        deletedSnapshotRows +=
+          db
+            .prepare(
+              `DELETE FROM scout_dashboard_snapshot_rows
+               WHERE snapshot_date = ? AND product_key IN (${placeholders})`
+            )
+            .run(date, ...keys).changes ?? 0
+      }
 
       let deletedWatchlistRows = 0
-      if (productKeys.length > 0) {
-        for (const keys of chunked(productKeys)) {
+      if (staleDateProductKeys.length > 0) {
+        for (const keys of chunked(staleDateProductKeys)) {
           const placeholders = keys.map(() => '?').join(',')
           deletedWatchlistRows +=
             db
@@ -1441,7 +1576,7 @@ export class ScoutService {
     if (latestDate) {
       const keyRow = db
         .prepare(
-          `SELECT COUNT(DISTINCT primary_keyword) AS cnt FROM scout_dashboard_snapshot_rows WHERE snapshot_date = ?`
+          `SELECT COUNT(DISTINCT keyword) AS cnt FROM scout_dashboard_keyword_hits WHERE snapshot_date = ?`
         )
         .get(latestDate) as { cnt?: unknown } | undefined
       const productRow = db
@@ -1471,14 +1606,17 @@ export class ScoutService {
 
     const keywordFilter = normalizeText(query.keyword)
     const whereCurrent = keywordFilter
-      ? `WHERE snapshot_date = ? AND primary_keyword = ?`
-      : `WHERE snapshot_date = ?`
+      ? `WHERE h.snapshot_date = ? AND h.keyword = ?`
+      : `WHERE h.snapshot_date = ?`
     const currentRows = db
       .prepare(
-        `SELECT primary_keyword AS keyword, SUM(add_cart_24h_value) AS heat, COUNT(*) AS product_count
-         FROM scout_dashboard_snapshot_rows
+        `SELECT h.keyword AS keyword, SUM(s.add_cart_24h_value) AS heat, COUNT(*) AS product_count
+         FROM scout_dashboard_keyword_hits h
+         INNER JOIN scout_dashboard_snapshot_rows s
+           ON s.snapshot_date = h.snapshot_date
+          AND s.product_key = h.product_key
          ${whereCurrent}
-         GROUP BY primary_keyword`
+         GROUP BY h.keyword`
       )
       .all(...(keywordFilter ? [base.currentDate, keywordFilter] : [base.currentDate])) as Array<Record<string, unknown>>
 
@@ -1546,14 +1684,20 @@ export class ScoutService {
     const importedAtSelect = hasImportedAt ? 's.imported_at AS imported_at_raw' : 's.first_seen_at AS imported_at_raw'
 
     const keywordFilter = normalizeText(query.keyword)
-    const whereCurrent = keywordFilter
-      ? `WHERE s.snapshot_date = ? AND s.primary_keyword = ?`
-      : `WHERE s.snapshot_date = ?`
+    const keywordJoin = keywordFilter
+      ? `INNER JOIN scout_dashboard_keyword_hits h
+           ON h.snapshot_date = s.snapshot_date
+          AND h.product_key = s.product_key
+          AND h.keyword = ?`
+      : ''
+    const keywordSelect = keywordFilter ? 'h.keyword AS display_keyword' : 's.keyword AS display_keyword'
+    const whereCurrent = `WHERE s.snapshot_date = ?`
     const currentRows = db
       .prepare(
         `SELECT
           s.product_key,
           s.primary_keyword,
+          ${keywordSelect},
           s.product_name,
           s.product_url,
           s.price,
@@ -1572,6 +1716,7 @@ export class ScoutService {
           s.raw_payload,
           COALESCE(NULLIF(TRIM(m.category_tag), ''), NULLIF(TRIM(s.primary_keyword), ''), '未分类') AS category_tag
          FROM scout_dashboard_snapshot_rows s
+         ${keywordJoin}
          LEFT JOIN scout_dashboard_product_map m
            ON m.product_key = s.product_key
          LEFT JOIN scout_dashboard_snapshot_rows prev
@@ -1581,7 +1726,7 @@ export class ScoutService {
       )
       .all(
         ...(keywordFilter
-          ? [base.prevDate, base.currentDate, keywordFilter]
+          ? [keywordFilter, base.prevDate, base.currentDate]
           : [base.prevDate, base.currentDate])
       ) as Array<Record<string, unknown>>
     if (currentRows.length === 0) return []
@@ -1679,7 +1824,7 @@ export class ScoutService {
       }
       return {
         productKey,
-        keyword: normalizeText(row.primary_keyword),
+        keyword: normalizeText(row.display_keyword) || normalizeText(row.primary_keyword),
         productName: normalizeText(row.product_name),
         productUrl: normalizeNullable(row.product_url),
         shopUrl,
@@ -1811,10 +1956,13 @@ export class ScoutService {
       const limit = clamp(query.limit ?? 20, 1, 50)
       const ranked = db
         .prepare(
-          `SELECT primary_keyword AS keyword, SUM(add_cart_24h_value) AS heat
-           FROM scout_dashboard_snapshot_rows
-           WHERE snapshot_date = ?
-           GROUP BY primary_keyword
+          `SELECT h.keyword AS keyword, SUM(s.add_cart_24h_value) AS heat
+           FROM scout_dashboard_keyword_hits h
+           INNER JOIN scout_dashboard_snapshot_rows s
+             ON s.snapshot_date = h.snapshot_date
+            AND s.product_key = h.product_key
+           WHERE h.snapshot_date = ?
+           GROUP BY h.keyword
            ORDER BY heat DESC
            LIMIT ?`
         )
@@ -1827,10 +1975,13 @@ export class ScoutService {
     const keywordPlaceholders = keywords.map(() => '?').join(',')
     const trendRows = db
       .prepare(
-        `SELECT snapshot_date, primary_keyword, SUM(add_cart_24h_value) AS heat
-         FROM scout_dashboard_snapshot_rows
-         WHERE snapshot_date IN (${datePlaceholders}) AND primary_keyword IN (${keywordPlaceholders})
-         GROUP BY snapshot_date, primary_keyword`
+        `SELECT h.snapshot_date AS snapshot_date, h.keyword AS keyword, SUM(s.add_cart_24h_value) AS heat
+         FROM scout_dashboard_keyword_hits h
+         INNER JOIN scout_dashboard_snapshot_rows s
+           ON s.snapshot_date = h.snapshot_date
+          AND s.product_key = h.product_key
+         WHERE h.snapshot_date IN (${datePlaceholders}) AND h.keyword IN (${keywordPlaceholders})
+         GROUP BY h.snapshot_date, h.keyword`
       )
       .all(...dates, ...keywords) as Array<Record<string, unknown>>
 
@@ -1838,7 +1989,7 @@ export class ScoutService {
     const keywordSeenDates = new Map<string, Set<string>>()
     for (const row of trendRows) {
       const d = normalizeText(row.snapshot_date)
-      const k = normalizeText(row.primary_keyword)
+      const k = normalizeText(row.keyword)
       if (!d || !k) continue
       heatMap.set(`${d}::${k}`, toInt(row.heat))
       const seenDates = keywordSeenDates.get(k) ?? new Set<string>()
@@ -1926,7 +2077,7 @@ export class ScoutService {
 
     const potentialSheet = workbook.addWorksheet('潜力商品')
     potentialSheet.columns = [
-      { header: '主关键词', key: 'keyword', width: 14 },
+      { header: '关键词', key: 'keyword', width: 14 },
       { header: '商品名称', key: 'productName', width: 42 },
       { header: '商品链接', key: 'productUrl', width: 38 },
       { header: '今日24h加购', key: 'addCart24hValue', width: 12 },
@@ -2370,14 +2521,17 @@ export class ScoutService {
     if (!date) return new Map<string, number>()
     const normalizedKeyword = normalizeText(keyword)
     const where = normalizedKeyword
-      ? `WHERE snapshot_date = ? AND primary_keyword = ?`
-      : `WHERE snapshot_date = ?`
+      ? `WHERE h.snapshot_date = ? AND h.keyword = ?`
+      : `WHERE h.snapshot_date = ?`
     const rows = db
       .prepare(
-        `SELECT primary_keyword AS keyword, SUM(add_cart_24h_value) AS heat
-         FROM scout_dashboard_snapshot_rows
+        `SELECT h.keyword AS keyword, SUM(s.add_cart_24h_value) AS heat
+         FROM scout_dashboard_keyword_hits h
+         INNER JOIN scout_dashboard_snapshot_rows s
+           ON s.snapshot_date = h.snapshot_date
+          AND s.product_key = h.product_key
          ${where}
-         GROUP BY primary_keyword`
+         GROUP BY h.keyword`
       )
       .all(...(normalizedKeyword ? [date, normalizedKeyword] : [date])) as Array<Record<string, unknown>>
     const map = new Map<string, number>()
@@ -2421,17 +2575,20 @@ export class ScoutService {
     const prevProductHeatMap = this.getProductHeatMap(prevDate)
     const normalizedKeyword = normalizeText(keyword)
     const where = normalizedKeyword
-      ? `WHERE s.snapshot_date = ? AND s.primary_keyword = ?`
-      : `WHERE s.snapshot_date = ?`
+      ? `WHERE h.snapshot_date = ? AND h.keyword = ?`
+      : `WHERE h.snapshot_date = ?`
 
     const rows = db
       .prepare(
         `SELECT
-          s.primary_keyword AS keyword,
+          h.keyword AS keyword,
           s.product_key AS product_key,
           s.add_cart_24h_value AS add_cart_24h_value,
           COALESCE(NULLIF(TRIM(m.category_tag), ''), NULLIF(TRIM(s.primary_keyword), ''), '未分类') AS category_tag
-         FROM scout_dashboard_snapshot_rows s
+         FROM scout_dashboard_keyword_hits h
+         INNER JOIN scout_dashboard_snapshot_rows s
+           ON s.snapshot_date = h.snapshot_date
+          AND s.product_key = h.product_key
          LEFT JOIN scout_dashboard_product_map m
            ON m.product_key = s.product_key
          ${where}`
