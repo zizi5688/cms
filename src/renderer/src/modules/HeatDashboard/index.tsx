@@ -215,6 +215,7 @@ function HeatDashboard(): React.JSX.Element {
   const [statusText, setStatusText] = useState('')
   const [selectedSnapshotDate, setSelectedSnapshotDate] = useState('')
   const [quickLookProductId, setQuickLookProductId] = useState<string | null>(null)
+  const [supplierDetailUrl, setSupplierDetailUrl] = useState<string | null>(null)
   const [queuedImageMap, setQueuedImageMap] = useState<Record<string, string>>({})
   const [queueLoadingMap, setQueueLoadingMap] = useState<Record<string, boolean>>({})
   const [queueErrorMap, setQueueErrorMap] = useState<Record<string, string>>({})
@@ -893,6 +894,31 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [])
 
+  const handleOpenSupplierDetailInApp = useCallback((supplierUrl: string | null): void => {
+    const target = String(supplierUrl ?? '').trim()
+    if (!target) {
+      setStatusText('当前供应商暂无可打开链接')
+      return
+    }
+    try {
+      const parsed = new URL(target)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        setStatusText('打开 1688 详情失败：链接协议无效')
+        return
+      }
+      const hostname = String(parsed.hostname ?? '').toLowerCase()
+      if (!/(^|\.)1688\.com$/i.test(hostname)) {
+        setStatusText('打开 1688 详情失败：当前链接并非 1688 页面')
+        return
+      }
+      setSupplierDetailUrl(parsed.toString())
+      setStatusText('已在当前窗口内打开 1688 供应商详情页')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      setStatusText(`打开 1688 详情失败：链接无效（${msg}）`)
+    }
+  }, [])
+
   const handleRetrySourcingCover = useCallback((): void => {
     const activeProduct = selectedProduct
     if (!activeProduct) {
@@ -1389,6 +1415,7 @@ function HeatDashboard(): React.JSX.Element {
         }}
         onBindSupplier={(index) => void handleBindSupplier(index)}
         onOpen1688Login={() => void handleOpen1688Login()}
+        onOpenSupplierDetail={(url) => void handleOpenSupplierDetailInApp(url)}
         onRetryCoverFetch={handleRetrySourcingCover}
         onRetrySourcing={() => void handleStartSourcing()}
         isBinding={isBindingSupplier}
@@ -1399,6 +1426,16 @@ function HeatDashboard(): React.JSX.Element {
           product={quickLookProduct}
           workspacePath={workspacePath}
           onClose={() => setQuickLookProductId(null)}
+        />
+      )}
+
+      {supplierDetailUrl && (
+        <SupplierDetailInAppModal
+          url={supplierDetailUrl}
+          onClose={() => {
+            setSupplierDetailUrl(null)
+            setStatusText('已关闭 1688 内置详情页')
+          }}
         />
       )}
     </div>
@@ -1714,6 +1751,49 @@ function QuickLookModal({
   )
 }
 
+type SupplierDetailInAppModalProps = {
+  url: string
+  onClose: () => void
+}
+
+function SupplierDetailInAppModal({
+  url,
+  onClose
+}: SupplierDetailInAppModalProps): React.JSX.Element {
+  const WebviewTag = 'webview' as any
+
+  useEffect(() => {
+    const onEsc = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 px-4 py-5">
+      <div className="flex h-[92vh] w-[96vw] max-w-[1600px] flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-[0_14px_55px_rgba(0,0,0,0.55)]">
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-700 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-zinc-100">1688 内置详情页</div>
+            <div className="truncate text-[11px] text-zinc-400">{url}</div>
+          </div>
+          <button
+            type="button"
+            className="shrink-0 rounded border border-zinc-600 px-2 py-1 text-xs text-zinc-200 transition hover:bg-zinc-800"
+            onClick={onClose}
+          >
+            关闭
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 bg-white">
+          <WebviewTag src={url} partition="persist:scout-sourcing" className="h-full w-full" allowpopups="true" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 type SourcingPanelProps = {
   isOpen: boolean
   isRunning: boolean
@@ -1727,6 +1807,7 @@ type SourcingPanelProps = {
   onSelectSupplier: (index: number) => void
   onBindSupplier: (index: number) => void
   onOpen1688Login: () => void
+  onOpenSupplierDetail: (url: string | null) => void
   onRetryCoverFetch: () => void
   onRetrySourcing: () => void
   onClose: () => void
@@ -1745,6 +1826,7 @@ function SourcingPanel({
   onSelectSupplier,
   onBindSupplier,
   onOpen1688Login,
+  onOpenSupplierDetail,
   onRetryCoverFetch,
   onRetrySourcing,
   onClose
@@ -1857,6 +1939,7 @@ function SourcingPanel({
                     selected={index === selectedSupplierIndex}
                     onSelect={() => onSelectSupplier(index)}
                     onBindSupplier={() => onBindSupplier(index)}
+                    onOpenDetail={() => onOpenSupplierDetail(candidate.url)}
                     isBinding={isBinding}
                     isRunning={isRunning}
                   />
@@ -1875,6 +1958,7 @@ function SupplierCard({
   selected,
   onSelect,
   onBindSupplier,
+  onOpenDetail,
   isBinding,
   isRunning
 }: {
@@ -1882,6 +1966,7 @@ function SupplierCard({
   selected: boolean
   onSelect: () => void
   onBindSupplier: () => void
+  onOpenDetail: () => void
   isBinding: boolean
   isRunning: boolean
 }): React.JSX.Element {
@@ -1901,10 +1986,9 @@ function SupplierCard({
     event.preventDefault()
     onSelect()
   }
-  const handleOpenExternal = (event: React.MouseEvent<HTMLButtonElement>): void => {
+  const handleOpenDetail = (event: React.MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
-    if (!candidate.url) return
-    void window.api.cms.system.openExternal(candidate.url).catch(() => void 0)
+    onOpenDetail()
   }
   const handleBindClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
@@ -1929,7 +2013,7 @@ function SupplierCard({
         <button
           type="button"
           className="shrink-0 rounded border border-zinc-600 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-45"
-          onClick={handleOpenExternal}
+          onClick={handleOpenDetail}
           disabled={!candidate.url}
           title={candidate.url ? '打开1688详情页' : '暂无详情链接'}
         >
