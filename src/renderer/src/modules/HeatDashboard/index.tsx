@@ -215,7 +215,6 @@ function HeatDashboard(): React.JSX.Element {
   const [statusText, setStatusText] = useState('')
   const [selectedSnapshotDate, setSelectedSnapshotDate] = useState('')
   const [quickLookProductId, setQuickLookProductId] = useState<string | null>(null)
-  const [supplierDetailUrl, setSupplierDetailUrl] = useState<string | null>(null)
   const [queuedImageMap, setQueuedImageMap] = useState<Record<string, string>>({})
   const [queueLoadingMap, setQueueLoadingMap] = useState<Record<string, boolean>>({})
   const [queueErrorMap, setQueueErrorMap] = useState<Record<string, string>>({})
@@ -894,31 +893,6 @@ function HeatDashboard(): React.JSX.Element {
     }
   }, [])
 
-  const handleOpenSupplierDetailInApp = useCallback((supplierUrl: string | null): void => {
-    const target = String(supplierUrl ?? '').trim()
-    if (!target) {
-      setStatusText('当前供应商暂无可打开链接')
-      return
-    }
-    try {
-      const parsed = new URL(target)
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        setStatusText('打开 1688 详情失败：链接协议无效')
-        return
-      }
-      const hostname = String(parsed.hostname ?? '').toLowerCase()
-      if (!/(^|\.)1688\.com$/i.test(hostname)) {
-        setStatusText('打开 1688 详情失败：当前链接并非 1688 页面')
-        return
-      }
-      setSupplierDetailUrl(parsed.toString())
-      setStatusText('已在当前窗口内打开 1688 供应商详情页')
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      setStatusText(`打开 1688 详情失败：链接无效（${msg}）`)
-    }
-  }, [])
-
   const handleRetrySourcingCover = useCallback((): void => {
     const activeProduct = selectedProduct
     if (!activeProduct) {
@@ -1415,7 +1389,6 @@ function HeatDashboard(): React.JSX.Element {
         }}
         onBindSupplier={(index) => void handleBindSupplier(index)}
         onOpen1688Login={() => void handleOpen1688Login()}
-        onOpenSupplierDetail={(url) => void handleOpenSupplierDetailInApp(url)}
         onRetryCoverFetch={handleRetrySourcingCover}
         onRetrySourcing={() => void handleStartSourcing()}
         isBinding={isBindingSupplier}
@@ -1426,16 +1399,6 @@ function HeatDashboard(): React.JSX.Element {
           product={quickLookProduct}
           workspacePath={workspacePath}
           onClose={() => setQuickLookProductId(null)}
-        />
-      )}
-
-      {supplierDetailUrl && (
-        <SupplierDetailInAppModal
-          url={supplierDetailUrl}
-          onClose={() => {
-            setSupplierDetailUrl(null)
-            setStatusText('已关闭 1688 内置详情页')
-          }}
         />
       )}
     </div>
@@ -1751,49 +1714,6 @@ function QuickLookModal({
   )
 }
 
-type SupplierDetailInAppModalProps = {
-  url: string
-  onClose: () => void
-}
-
-function SupplierDetailInAppModal({
-  url,
-  onClose
-}: SupplierDetailInAppModalProps): React.JSX.Element {
-  const WebviewTag = 'webview' as any
-
-  useEffect(() => {
-    const onEsc = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onEsc)
-    return () => window.removeEventListener('keydown', onEsc)
-  }, [onClose])
-
-  return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 px-4 py-5">
-      <div className="flex h-[92vh] w-[96vw] max-w-[1600px] flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-[0_14px_55px_rgba(0,0,0,0.55)]">
-        <div className="flex items-center justify-between gap-3 border-b border-zinc-700 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-zinc-100">1688 内置详情页</div>
-            <div className="truncate text-[11px] text-zinc-400">{url}</div>
-          </div>
-          <button
-            type="button"
-            className="shrink-0 rounded border border-zinc-600 px-2 py-1 text-xs text-zinc-200 transition hover:bg-zinc-800"
-            onClick={onClose}
-          >
-            关闭
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 bg-white">
-          <WebviewTag src={url} partition="persist:scout-sourcing" className="h-full w-full" allowpopups="true" />
-        </div>
-      </div>
-    </div>
-  )
-}
-
 type SourcingPanelProps = {
   isOpen: boolean
   isRunning: boolean
@@ -1807,7 +1727,6 @@ type SourcingPanelProps = {
   onSelectSupplier: (index: number) => void
   onBindSupplier: (index: number) => void
   onOpen1688Login: () => void
-  onOpenSupplierDetail: (url: string | null) => void
   onRetryCoverFetch: () => void
   onRetrySourcing: () => void
   onClose: () => void
@@ -1826,72 +1745,135 @@ function SourcingPanel({
   onSelectSupplier,
   onBindSupplier,
   onOpen1688Login,
-  onOpenSupplierDetail,
   onRetryCoverFetch,
   onRetrySourcing,
   onClose
 }: SourcingPanelProps): React.JSX.Element {
   const resolvedTargetImage = xhsImage ? resolveLocalImage(xhsImage, workspacePath) : ''
+  const WebviewTag = 'webview' as any
+  const webviewRef = useRef<any>(null)
+  const [debouncedSupplierUrl, setDebouncedSupplierUrl] = useState('')
+  const [isWebviewLoading, setIsWebviewLoading] = useState(false)
+
+  const selectedSupplierUrl = useMemo(() => {
+    const raw = String(candidates[selectedSupplierIndex]?.url ?? '').trim()
+    if (!raw) return ''
+    try {
+      const target = new URL(raw)
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') return ''
+      const hostname = String(target.hostname ?? '').toLowerCase()
+      if (!/(^|\.)1688\.com$/i.test(hostname)) return ''
+      return target.toString()
+    } catch {
+      return ''
+    }
+  }, [candidates, selectedSupplierIndex])
+
+  useEffect(() => {
+    if (!isOpen) {
+      setDebouncedSupplierUrl('')
+      setIsWebviewLoading(false)
+      return
+    }
+    if (!selectedSupplierUrl) {
+      setDebouncedSupplierUrl('')
+      setIsWebviewLoading(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setIsWebviewLoading(true)
+      setDebouncedSupplierUrl(selectedSupplierUrl)
+    }, 200)
+    return () => window.clearTimeout(timer)
+  }, [isOpen, selectedSupplierUrl])
+
+  useEffect(() => {
+    const webviewNode = webviewRef.current
+    if (!webviewNode || typeof webviewNode.addEventListener !== 'function') return
+
+    const handleDidStartLoading = (): void => {
+      setIsWebviewLoading(true)
+    }
+    const handleDidStopLoading = (): void => {
+      setIsWebviewLoading(false)
+    }
+    const handleDidFailLoad = (): void => {
+      setIsWebviewLoading(false)
+    }
+
+    webviewNode.addEventListener('did-start-loading', handleDidStartLoading)
+    webviewNode.addEventListener('did-stop-loading', handleDidStopLoading)
+    webviewNode.addEventListener('did-fail-load', handleDidFailLoad)
+    return () => {
+      webviewNode.removeEventListener('did-start-loading', handleDidStartLoading)
+      webviewNode.removeEventListener('did-stop-loading', handleDidStopLoading)
+      webviewNode.removeEventListener('did-fail-load', handleDidFailLoad)
+    }
+  }, [])
 
   return (
     <div
       className={cn(
-        'pointer-events-none absolute inset-x-0 bottom-0 z-50 px-4 pb-4 transition-all duration-300 ease-out',
-        isOpen ? 'translate-y-0 opacity-100' : 'translate-y-[105%] opacity-0'
+        'fixed inset-0 z-[70] transition-opacity duration-200',
+        isOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
       )}
       aria-hidden={!isOpen}
     >
-      <section className="pointer-events-auto rounded-xl border border-zinc-700 bg-[#1a1a1a] p-4 shadow-[0_-18px_45px_rgba(0,0,0,0.58)]">
-        <div className="flex items-center justify-between border-b border-zinc-700 pb-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/90">搜同款</div>
-            <div className="mt-0.5 text-xs text-zinc-300">
-              {isRunning
-                ? '正在搜同款并提取供应商...'
-                : emptyState
-                  ? '请根据提示完成前置条件，再重试搜同款'
-                  : '选择候选供应商后，可直接在卡片内点击“绑定供应商”'}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={onClose}
-            disabled={isRunning}
-          >
-            关闭
-          </button>
-        </div>
+      <div className="absolute inset-0 bg-black/50" />
 
-        <div className="mt-4 grid h-[336px] gap-4" style={{ gridTemplateColumns: '1.35fr 5.65fr' }}>
-          <div className="relative h-full overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1">
-            {resolvedTargetImage ? (
-              <img
-                src={resolvedTargetImage}
-                alt="xhs target"
-                className="h-full w-full object-cover"
-                loading="lazy"
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-xs text-zinc-500">
-                暂无目标图
+      <section className="absolute left-1/2 top-1/2 flex h-[90vh] w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950 shadow-[0_18px_60px_rgba(0,0,0,0.62)]">
+        <div className="flex h-full w-[360px] shrink-0 flex-col border-r border-zinc-700 bg-zinc-900/90">
+          <header className="flex items-start justify-between gap-2 border-b border-zinc-700 px-4 py-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/90">搜同款</div>
+              <div className="mt-0.5 text-xs text-zinc-300">
+                {isRunning
+                  ? '正在搜同款并提取供应商...'
+                  : emptyState
+                    ? '请根据提示完成前置条件，再重试搜同款'
+                    : '点击左侧候选卡片，右侧将自动联动 1688 详情'}
               </div>
-            )}
-            <div className="absolute left-2 top-2 rounded-md border border-amber-400/80 bg-black/80 px-2 py-1 text-[11px] font-semibold text-amber-300">
-              目标售价: {formatMoney(targetPrice)}
+            </div>
+            <button
+              type="button"
+              className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={onClose}
+              disabled={isRunning}
+            >
+              关闭
+            </button>
+          </header>
+
+          <div className="border-b border-zinc-700 px-3 py-3">
+            <div className="relative overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1">
+              {resolvedTargetImage ? (
+                <img
+                  src={resolvedTargetImage}
+                  alt="xhs target"
+                  className="h-[220px] w-full object-cover"
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="flex h-[220px] w-full items-center justify-center text-xs text-zinc-500">
+                  暂无目标图
+                </div>
+              )}
+              <div className="absolute left-2 top-2 rounded-md border border-amber-400/80 bg-black/80 px-2 py-1 text-[11px] font-semibold text-amber-300">
+                目标售价: {formatMoney(targetPrice)}
+              </div>
             </div>
           </div>
 
-          <div className="h-full min-w-0 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
             {candidates.length === 0 ? (
               isRunning ? (
-                <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                <div className="flex h-full min-h-[140px] items-center justify-center text-sm text-zinc-500">
                   供应商抓取中...
                 </div>
               ) : emptyState ? (
                 <div className="flex h-full items-center justify-center">
-                  <div className="w-full max-w-[560px] rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-center">
+                  <div className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-center">
                     <div className="text-sm font-semibold text-amber-200">{emptyState.title}</div>
                     <div className="mt-2 text-xs leading-5 text-zinc-300">{emptyState.detail}</div>
                     <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
@@ -1926,12 +1908,12 @@ function SourcingPanel({
                   </div>
                 </div>
               ) : (
-                <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                <div className="flex h-full min-h-[140px] items-center justify-center text-sm text-zinc-500">
                   暂无供应商候选
                 </div>
               )
             ) : (
-              <div className="flex h-full items-stretch gap-2 overflow-x-auto pb-1">
+              <div className="space-y-2 pb-1">
                 {candidates.map((candidate, index) => (
                   <SupplierCard
                     key={candidate.id}
@@ -1939,7 +1921,6 @@ function SourcingPanel({
                     selected={index === selectedSupplierIndex}
                     onSelect={() => onSelectSupplier(index)}
                     onBindSupplier={() => onBindSupplier(index)}
-                    onOpenDetail={() => onOpenSupplierDetail(candidate.url)}
                     isBinding={isBinding}
                     isRunning={isRunning}
                   />
@@ -1947,6 +1928,32 @@ function SourcingPanel({
               </div>
             )}
           </div>
+        </div>
+
+        <div className="relative min-w-0 flex-1 bg-zinc-950">
+          <WebviewTag
+            ref={webviewRef}
+            src={debouncedSupplierUrl || 'about:blank'}
+            partition="persist:scout-sourcing"
+            className="h-full w-full"
+            allowpopups="true"
+          />
+
+          {!debouncedSupplierUrl && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-zinc-950/88">
+              <div className="rounded-md border border-zinc-700 bg-zinc-900/85 px-4 py-3 text-sm text-zinc-300">
+                {candidates.length === 0 ? '等待供应商结果...' : '请在左侧选择一个可用的 1688 供应商卡片'}
+              </div>
+            </div>
+          )}
+
+          {isWebviewLoading && debouncedSupplierUrl && (
+            <div className="pointer-events-none absolute inset-0 bg-black/12">
+              <div className="absolute left-3 top-3 rounded border border-zinc-700 bg-zinc-900/88 px-2 py-1 text-[11px] text-zinc-200">
+                页面加载中...
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>
@@ -1958,7 +1965,6 @@ function SupplierCard({
   selected,
   onSelect,
   onBindSupplier,
-  onOpenDetail,
   isBinding,
   isRunning
 }: {
@@ -1966,7 +1972,6 @@ function SupplierCard({
   selected: boolean
   onSelect: () => void
   onBindSupplier: () => void
-  onOpenDetail: () => void
   isBinding: boolean
   isRunning: boolean
 }): React.JSX.Element {
@@ -1986,10 +1991,6 @@ function SupplierCard({
     event.preventDefault()
     onSelect()
   }
-  const handleOpenDetail = (event: React.MouseEvent<HTMLButtonElement>): void => {
-    event.stopPropagation()
-    onOpenDetail()
-  }
   const handleBindClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
     onBindSupplier()
@@ -2000,26 +2001,15 @@ function SupplierCard({
       role="button"
       tabIndex={0}
       className={cn(
-        'flex h-full min-w-[276px] cursor-pointer flex-col rounded-md border bg-zinc-950/90 p-2.5 text-left transition hover:bg-gray-800',
+        'flex w-full cursor-pointer flex-col rounded-md border bg-zinc-950/90 p-2.5 text-left transition',
         selected
-          ? 'border-emerald-500/90 shadow-[0_0_0_1px_rgba(16,185,129,0.75)]'
-          : 'border-zinc-800 hover:border-zinc-600'
+          ? 'border-emerald-500/95 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.8)]'
+          : 'border-zinc-800 hover:border-zinc-600 hover:bg-zinc-900/90'
       )}
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="truncate text-xs font-semibold text-zinc-100">{candidate.name}</div>
-        <button
-          type="button"
-          className="shrink-0 rounded border border-zinc-600 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-45"
-          onClick={handleOpenDetail}
-          disabled={!candidate.url}
-          title={candidate.url ? '打开1688详情页' : '暂无详情链接'}
-        >
-          打开
-        </button>
-      </div>
+      <div className="truncate text-xs font-semibold text-zinc-100">{candidate.name}</div>
       <div className="mt-1 text-[11px] text-zinc-400">48h揽收: {candidate.serviceRateLabel}</div>
 
       <div className="mt-2 grid min-h-0 flex-1 grid-cols-2 gap-2">
