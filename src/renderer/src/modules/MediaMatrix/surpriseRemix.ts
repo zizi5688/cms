@@ -14,16 +14,26 @@ type RemixOptions = {
   similarityThreshold?: number
   prefix?: string
   publishedImageSignatures?: Set<string>
+  bgmPool?: string[]
   seed?: string | number
   sessionId?: string
   selectedBatch?: CmsPublishTask[]
 }
 
 const EMOJI_PREFIXES = ['🔥', '💫', '✨', '🌟', '💖', '🎀', '🍃', '🌈', '💎', '🎯']
+const REMIX_VIDEO_CLIP_MIN = 3
+const REMIX_VIDEO_CLIP_MAX = 5
+
+export type SurpriseRemixMediaType = 'image' | 'video'
 
 export type SurpriseRemixCreatePayload = {
   accountId: string
-  images: string[]
+  mediaType?: SurpriseRemixMediaType
+  images?: string[]
+  videoPath?: string
+  isRemix?: boolean
+  videoClips?: string[]
+  bgmPath?: string
   title: string
   content: string
   tags?: string[]
@@ -38,9 +48,11 @@ export type SurpriseRemixCreatePayload = {
 
 export type SurpriseRemixCandidateBatch = {
   id: string
+  mediaType: SurpriseRemixMediaType
   sampleTitle: string
   taskCount: number
   imagePoolCount: number
+  videoPoolCount: number
   coverImage: string | null
   createdAtStart: number
   createdAtEnd: number
@@ -186,6 +198,45 @@ function sampleUnique<T>(items: T[], count: number, random: RandomSource): T[] {
   return picked
 }
 
+function pickIntInRange(random: RandomSource, min: number, max: number): number {
+  const left = Math.floor(Math.min(min, max))
+  const right = Math.floor(Math.max(min, max))
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return Math.max(0, left || right || 0)
+  if (left === right) return left
+  return left + Math.floor(random() * (right - left + 1))
+}
+
+function uniquePaths(paths: string[]): string[] {
+  return Array.from(
+    new Set(
+      (paths ?? [])
+        .map((value) => String(value ?? '').trim())
+        .filter(Boolean)
+    )
+  )
+}
+
+function sampleVideoClips(videoPool: string[], targetCount: number, random: RandomSource): string[] {
+  const pool = uniquePaths(videoPool)
+  const count = Math.max(1, Math.floor(targetCount))
+  if (pool.length === 0) return []
+  if (pool.length >= count) return sampleUnique(pool, count, random)
+
+  const picked = sampleUnique(pool, pool.length, random)
+  while (picked.length < count) {
+    const clip = pickOne(pool, random)
+    if (!clip) break
+    picked.push(clip)
+  }
+  return picked
+}
+
+function resolveVideoClipCount(videoPoolCount: number, random: RandomSource): number {
+  if (videoPoolCount <= 0) return 0
+  if (videoPoolCount < REMIX_VIDEO_CLIP_MIN) return REMIX_VIDEO_CLIP_MIN
+  return pickIntInRange(random, REMIX_VIDEO_CLIP_MIN, Math.min(REMIX_VIDEO_CLIP_MAX, videoPoolCount))
+}
+
 function imagesSignature(images: string[] | undefined | null): string {
   const unique = Array.from(new Set((images ?? []).filter((v) => Boolean(v))))
   unique.sort()
@@ -227,6 +278,16 @@ function pickBatchCoverImage(tasks: CmsPublishTask[]): string | null {
   return null
 }
 
+function pickBatchCoverByMediaType(tasks: CmsPublishTask[], mediaType: SurpriseRemixMediaType): string | null {
+  for (const task of tasks ?? []) {
+    if (mediaType === 'video' && task.mediaType !== 'video') continue
+    if (mediaType === 'image' && task.mediaType === 'video') continue
+    const cover = (task.images ?? []).find((image) => Boolean(image))
+    if (cover) return cover
+  }
+  return pickBatchCoverImage(tasks)
+}
+
 export function listSurpriseRemixBatches(
   tasks: CmsPublishTask[],
   options?: Pick<RemixOptions, 'lookbackDays' | 'timeWindowMs' | 'similarityThreshold'>
@@ -237,26 +298,63 @@ export function listSurpriseRemixBatches(
   const recent = filterRecentTasks(tasks ?? [], lookbackDays)
   const batches = smartClustering(recent, { timeWindowMs, similarityThreshold })
   return batches
-    .map((batch, idx) => {
+    .flatMap((batch, idx) => {
+      const imageTasks = batch.filter((task) => task.mediaType !== 'video')
+      const videoTasks = batch.filter((task) => task.mediaType === 'video')
       const imagePool = Array.from(
-        new Set(batch.flatMap((task) => (task.images ?? []).filter((v) => Boolean(v))))
+        new Set(imageTasks.flatMap((task) => (task.images ?? []).filter((v) => Boolean(v))))
+      )
+      const videoPool = uniquePaths(
+        videoTasks
+          .map((task) => (typeof task.videoPath === 'string' ? task.videoPath : ''))
+          .filter(Boolean)
       )
       const first = batch[0]
       const last = batch[batch.length - 1]
       const createdAtStart = isNumber(first?.createdAt) ? first.createdAt : 0
       const createdAtEnd = isNumber(last?.createdAt) ? last.createdAt : createdAtStart
-      return {
-        id: `batch-${createdAtStart}-${createdAtEnd}-${idx + 1}`,
-        sampleTitle: shortenForToast(first?.title ?? '', 18),
-        taskCount: batch.length,
-        imagePoolCount: imagePool.length,
-        coverImage: pickBatchCoverImage(batch),
-        createdAtStart,
-        createdAtEnd,
-        tasks: batch
-      } satisfies SurpriseRemixCandidateBatch
+      const batchPrefix = `batch-${createdAtStart}-${createdAtEnd}-${idx + 1}`
+      const imageTask =
+        imageTasks.find((task) => (task.images ?? []).length > 0 || normalizeTitle(task.title)) ??
+        first
+      const videoTask =
+        videoTasks.find(
+          (task) =>
+            (Boolean(task.videoPath) || Boolean(task.videoPreviewPath) || (task.images ?? []).length > 0)
+        ) ?? videoTasks[0] ??
+        first
+      const candidates: SurpriseRemixCandidateBatch[] = []
+      if (imagePool.length > 0) {
+        candidates.push({
+          id: `${batchPrefix}-image`,
+          mediaType: 'image',
+          sampleTitle: shortenForToast(imageTask?.title ?? '', 18),
+          taskCount: batch.length,
+          imagePoolCount: imagePool.length,
+          videoPoolCount: videoPool.length,
+          coverImage: pickBatchCoverByMediaType(batch, 'image'),
+          createdAtStart,
+          createdAtEnd,
+          tasks: batch
+        })
+      }
+      if (videoPool.length > 0) {
+        candidates.push({
+          id: `${batchPrefix}-video`,
+          mediaType: 'video',
+          sampleTitle: shortenForToast(videoTask?.title ?? '', 18),
+          taskCount: batch.length,
+          imagePoolCount: imagePool.length,
+          videoPoolCount: videoPool.length,
+          coverImage: pickBatchCoverByMediaType(batch, 'video'),
+          createdAtStart,
+          createdAtEnd,
+          tasks: batch
+        })
+      }
+      return candidates
     })
-    .filter((batch) => batch.taskCount >= 3 && batch.imagePoolCount > 0)
+    .filter((batch) => batch.taskCount >= 3)
     .sort((a, b) => b.createdAtEnd - a.createdAtEnd)
 }
 
@@ -366,9 +464,9 @@ export function buildSurpriseRemix(
   const selectedBatch =
     selectedBatchFromOptions ??
     pickOne(
-      listSurpriseRemixBatches(tasks, { lookbackDays, timeWindowMs, similarityThreshold }).map(
-        (candidate) => candidate.tasks
-      ),
+      listSurpriseRemixBatches(tasks, { lookbackDays, timeWindowMs, similarityThreshold })
+        .filter((candidate) => candidate.mediaType === 'image')
+        .map((candidate) => candidate.tasks),
       random
     )
   if (!selectedBatch || selectedBatch.length === 0) return null
@@ -500,7 +598,7 @@ export function buildSurpriseRemix(
       }
 
       key = comboKey({
-        images: payload.images,
+        images: payload.images ?? [],
         title: payload.title,
         content: payload.content,
         productId: payload.productId
@@ -512,11 +610,114 @@ export function buildSurpriseRemix(
     }
 
     if (!payload) break
+    const payloadImages = payload.images ?? []
     createdKeys.add(key)
-    createdImageSets.add(imagesSignature(payload.images))
-    usedCovers.add(payload.images[0] ?? '')
-    acceptedImageLists.push(payload.images.slice())
+    createdImageSets.add(imagesSignature(payloadImages))
+    usedCovers.add(payloadImages[0] ?? '')
+    acceptedImageLists.push(payloadImages.slice())
     payloads.push(payload)
+  }
+
+  if (payloads.length === 0) return null
+
+  return {
+    selectedBatch,
+    sampleTitle: shortenForToast(selectedBatch[0]?.title ?? '', 18),
+    payloads,
+    seed,
+    sessionId
+  }
+}
+
+export function buildSurpriseVideoRemix(
+  tasks: CmsPublishTask[],
+  options?: RemixOptions
+): {
+  selectedBatch: CmsPublishTask[]
+  sampleTitle: string
+  payloads: SurpriseRemixCreatePayload[]
+  seed: string
+  sessionId: string
+} | null {
+  const count = options?.count ?? 5
+  const lookbackDays = options?.lookbackDays ?? 14
+  const timeWindowMs = options?.timeWindowMs ?? 5 * 60 * 1000
+  const similarityThreshold = options?.similarityThreshold ?? 0.3
+  const remixTag = 'remix'
+  const seed = normalizeSeedInput(options?.seed)
+  const random = createSeededRandom(seed)
+  const sessionId = String(options?.sessionId ?? '').trim() || `remix-video-${seed}`
+  const selectedBatchFromOptions =
+    Array.isArray(options?.selectedBatch) && options.selectedBatch.length > 0
+      ? options.selectedBatch
+      : null
+
+  const selectedBatch =
+    selectedBatchFromOptions ??
+    pickOne(
+      listSurpriseRemixBatches(tasks, {
+        lookbackDays,
+        timeWindowMs,
+        similarityThreshold
+      })
+        .filter((candidate) => candidate.mediaType === 'video')
+        .map((candidate) => candidate.tasks),
+      random
+    )
+  if (!selectedBatch || selectedBatch.length === 0) return null
+
+  const selectedBatchIds = selectedBatch.map((task) => task.id)
+  const videoPool = uniquePaths(
+    selectedBatch
+      .map((task) => (typeof task.videoPath === 'string' ? task.videoPath : ''))
+      .filter(Boolean)
+  )
+  if (videoPool.length === 0) return null
+
+  const bgmPool = uniquePaths(options?.bgmPool ?? [])
+  if (bgmPool.length === 0) return null
+
+  const textSources = selectedBatch.filter((task) => {
+    const title = normalizeTitle(task.title ?? '')
+    const content = String(task.content ?? '').trim()
+    return Boolean(title || content)
+  })
+  const fallbackSource = selectedBatch[0]
+  if (!fallbackSource) return null
+
+  const payloads: SurpriseRemixCreatePayload[] = []
+  for (let i = 0; i < count; i += 1) {
+    const source = pickOne(textSources, random) ?? pickOne(selectedBatch, random) ?? fallbackSource
+    const accountId = source?.accountId || fallbackSource.accountId
+    if (!accountId) continue
+
+    const rawTitleBase = normalizeTitle(source?.title ?? '') || '(未命名)'
+    const emoji = EMOJI_PREFIXES[i % EMOJI_PREFIXES.length]
+    const title = takePrefixByCodeUnits(`${emoji}${rawTitleBase}`, PENDING_POOL_TITLE_LIMIT)
+    const content = String(source?.content ?? '').trim()
+
+    const clipCount = resolveVideoClipCount(videoPool.length, random)
+    const videoClips = sampleVideoClips(videoPool, clipCount, random)
+    const bgmPath = pickOne(bgmPool, random) ?? bgmPool[0] ?? ''
+    if (videoClips.length === 0 || !bgmPath) continue
+
+    payloads.push({
+      accountId,
+      mediaType: 'video',
+      isRemix: true,
+      videoClips,
+      bgmPath,
+      title,
+      content,
+      tags: [remixTag],
+      productId: source?.productId,
+      productName: source?.productName,
+      publishMode: 'immediate',
+      transformPolicy: 'none',
+      remixSessionId: sessionId,
+      remixSourceTaskIds: selectedBatchIds,
+      remixSeed: seed
+    })
   }
 
   if (payloads.length === 0) return null

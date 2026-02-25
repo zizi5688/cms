@@ -210,6 +210,9 @@ const api = {
           mediaType?: 'image' | 'video'
           videoPath?: string
           videoPreviewPath?: string
+          isRemix?: boolean
+          videoClips?: string[]
+          bgmPath?: string
           transformPolicy?: 'none' | 'remix_v1'
           remixSessionId?: string
           remixSourceTaskIds?: string[]

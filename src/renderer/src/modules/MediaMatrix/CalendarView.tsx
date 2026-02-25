@@ -17,6 +17,7 @@ import { KanbanWeekView } from './KanbanWeekView'
 import { getTaskDisplayTime, withDefaultStartTime } from './calendarUtils'
 import {
   buildSurpriseRemix,
+  buildSurpriseVideoRemix,
   listSurpriseRemixBatches,
   type SurpriseRemixCandidateBatch,
   type SurpriseRemixCreatePayload
@@ -38,6 +39,7 @@ type CalendarViewProps = {
 }
 
 type SurpriseRemixPreview = {
+  mediaType: 'image' | 'video'
   sessionId: string
   seed: string
   sampleTitle: string
@@ -49,10 +51,51 @@ type SurpriseRemixPickerState = {
   seed: string
   publishedImageSignatures: Set<string>
   candidates: SurpriseRemixCandidateBatch[]
+  bgmPool: string[]
   selectedBatchId: string
 }
 
+type RemixProgressState = {
+  percent: number
+  processed: number
+  total: number
+  created: number
+  message: string
+}
+
 moment.locale('zh-cn')
+
+function shortenMultilineText(value: string, maxChars: number): string {
+  const normalized = String(value ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return '(无正文)'
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.slice(0, maxChars)}...`
+}
+
+function basenameFromPath(value: string | undefined): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return '未分配'
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? normalized
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, value))
+}
+
+function parsePercentInMessage(message: string): number | null {
+  const matched = String(message ?? '').match(/(\d{1,3})\s*%/)
+  if (!matched) return null
+  const percent = Number(matched[1])
+  if (!Number.isFinite(percent)) return null
+  return clampPercent(percent)
+}
 
 function CalendarView({
   tasks,
@@ -69,6 +112,8 @@ function CalendarView({
   const [toastMessage, setToastMessage] = useState<string>('')
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
   const [isRemixing, setIsRemixing] = useState(false)
+  const [activeRemixRequestId, setActiveRemixRequestId] = useState<string>('')
+  const [remixProgress, setRemixProgress] = useState<RemixProgressState | null>(null)
   const [isRollingBackRemix, setIsRollingBackRemix] = useState(false)
   const [remixPicker, setRemixPicker] = useState<SurpriseRemixPickerState | null>(null)
   const [remixPreview, setRemixPreview] = useState<SurpriseRemixPreview | null>(null)
@@ -440,6 +485,43 @@ function CalendarView({
     return () => window.clearTimeout(timer)
   }, [flashingTaskIds])
 
+  useEffect(() => {
+    const unsubscribe = window.api.cms.task.onCreateBatchProgress((payload) => {
+      if (!activeRemixRequestId) return
+      const eventRequestId = String(payload?.requestId ?? '').trim()
+      if (!eventRequestId || eventRequestId !== activeRemixRequestId) return
+
+      setRemixProgress((prev) => {
+        const totalRaw = Number(payload?.total)
+        const processedRaw = Number(payload?.processed)
+        const createdRaw = Number(payload?.created)
+        const total = Number.isFinite(totalRaw) && totalRaw > 0 ? Math.floor(totalRaw) : Math.max(1, prev?.total ?? 0)
+        const processed = Number.isFinite(processedRaw)
+          ? Math.max(0, Math.min(total, Math.floor(processedRaw)))
+          : Math.max(0, Math.min(total, prev?.processed ?? 0))
+        const created = Number.isFinite(createdRaw) ? Math.max(0, Math.floor(createdRaw)) : prev?.created ?? 0
+        const phase = payload?.phase
+        const message = String(payload?.message ?? '').trim() || prev?.message || '正在生成裂变任务...'
+
+        let percent = total > 0 ? (processed / total) * 100 : 0
+        const innerPercent = parsePercentInMessage(message)
+        if (innerPercent !== null && total > 0 && processed < total) {
+          percent = Math.max(percent, ((processed + innerPercent / 100) / total) * 100)
+        }
+        if (phase === 'done') percent = 100
+
+        return {
+          percent: clampPercent(percent),
+          processed,
+          total,
+          created,
+          message
+        }
+      })
+    })
+    return () => unsubscribe()
+  }, [activeRemixRequestId])
+
   const buildRemixSeed = (): string => {
     if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
       return window.crypto.randomUUID()
@@ -454,6 +536,17 @@ function CalendarView({
     const candidate = picker.candidates.find((item) => item.id === batchId)
     if (!candidate) return null
     const scopedSeed = `${picker.seed}:${batchId}`
+    if (candidate.mediaType === 'video') {
+      const remix = buildSurpriseVideoRemix(tasks, {
+        count: 5,
+        lookbackDays: 14,
+        seed: scopedSeed,
+        sessionId: `remix-video-${scopedSeed}`,
+        selectedBatch: candidate.tasks,
+        bgmPool: picker.bgmPool
+      })
+      return remix ? { ...remix, mediaType: 'video' } : null
+    }
     const remix = buildSurpriseRemix(tasks, {
       count: 5,
       lookbackDays: 14,
@@ -462,10 +555,10 @@ function CalendarView({
       sessionId: `remix-${scopedSeed}`,
       selectedBatch: candidate.tasks
     })
-    return remix
+    return remix ? { ...remix, mediaType: 'image' } : null
   }
 
-  const handleSurpriseRemix = (): void => {
+  const handleSurpriseRemix = async (): Promise<void> => {
     if (isRemixing || isRollingBackRemix || remixPicker) return
     // Step 3: 计算已发布任务的图片签名集合用于跨历史去重
     const publishedImageSignatures = new Set<string>()
@@ -481,17 +574,53 @@ function CalendarView({
       setToastMessage('🎲 没有可混剪的批次（近14天、每批≥3条）')
       return
     }
-    const picker: SurpriseRemixPickerState = {
+    let bgmPool: string[] = []
+    const needsVideoBgm = candidates.some((candidate) => candidate.mediaType === 'video')
+    if (needsVideoBgm && typeof window.electronAPI.listDouyinHotMusicTracks === 'function') {
+      try {
+        const result = await window.electronAPI.listDouyinHotMusicTracks()
+        if (result?.success !== false && Array.isArray(result.files)) {
+          bgmPool = Array.from(
+            new Set(
+              result.files
+                .map((filePath) => String(filePath ?? '').trim())
+                .filter(Boolean)
+            )
+          )
+        }
+      } catch {
+        bgmPool = []
+      }
+    }
+
+    const basePicker: Omit<SurpriseRemixPickerState, 'selectedBatchId'> = {
       seed: buildRemixSeed(),
       publishedImageSignatures,
       candidates,
-      selectedBatchId: candidates[0]!.id
+      bgmPool
     }
-    const preview = buildRemixPreviewByBatch(picker, picker.selectedBatchId)
+
+    let selectedBatchId = candidates[0]!.id
+    let preview = buildRemixPreviewByBatch({ ...basePicker, selectedBatchId }, selectedBatchId)
     if (!preview) {
+      for (const candidate of candidates) {
+        const candidateId = candidate.id
+        const nextPreview = buildRemixPreviewByBatch({ ...basePicker, selectedBatchId: candidateId }, candidateId)
+        if (!nextPreview) continue
+        selectedBatchId = candidateId
+        preview = nextPreview
+        break
+      }
+    }
+    if (!preview) {
+      if (needsVideoBgm && bgmPool.length === 0) {
+        setToastMessage('🎬 未找到本地 BGM 曲库，请先同步抖音热歌后再试')
+        return
+      }
       setToastMessage('🎲 当前候选批次无法生成预览，请更换批次')
       return
     }
+    const picker: SurpriseRemixPickerState = { ...basePicker, selectedBatchId }
     setRemixPicker(picker)
     setRemixPreview(preview)
   }
@@ -499,8 +628,13 @@ function CalendarView({
   const handleSelectRemixBatch = (batchId: string): void => {
     if (!remixPicker || remixPicker.selectedBatchId === batchId) return
     const nextPicker: SurpriseRemixPickerState = { ...remixPicker, selectedBatchId: batchId }
+    const selectedCandidate = nextPicker.candidates.find((candidate) => candidate.id === batchId) ?? null
     const nextPreview = buildRemixPreviewByBatch(nextPicker, batchId)
     if (!nextPreview) {
+      if (selectedCandidate?.mediaType === 'video' && nextPicker.bgmPool.length === 0) {
+        setToastMessage('🎬 未找到本地 BGM 曲库，请先同步抖音热歌后再试')
+        return
+      }
       setToastMessage('🎲 该批次当前无法生成预览，请选择其他批次')
       return
     }
@@ -511,6 +645,14 @@ function CalendarView({
   const handleConfirmSurpriseRemix = async (): Promise<void> => {
     if (!remixPreview || !remixPicker || isRemixing) return
     const preview = remixPreview
+    setActiveRemixRequestId(preview.sessionId)
+    setRemixProgress({
+      percent: 0,
+      processed: 0,
+      total: Math.max(1, preview.payloads.length),
+      created: 0,
+      message: '开始生成裂变任务...'
+    })
     setIsRemixing(true)
     try {
       const created = await window.api.cms.task.createBatch(preview.payloads, {
@@ -520,6 +662,7 @@ function CalendarView({
         setToastMessage('🎲 预览已确认，但没有生成新任务')
         setRemixPicker(null)
         setRemixPreview(null)
+        setRemixProgress(null)
         return
       }
       onTasksCreated?.(created)
@@ -535,10 +678,20 @@ function CalendarView({
       )
       setRemixPicker(null)
       setRemixPreview(null)
+      setRemixProgress(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      setRemixProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              message: `生成失败：${message}`
+            }
+          : null
+      )
       window.alert(`混剪失败：${message}`)
     } finally {
+      setActiveRemixRequestId('')
       setIsRemixing(false)
     }
   }
@@ -806,7 +959,13 @@ function CalendarView({
                           <div className="min-w-0 flex-1">
                             <div className="text-xs font-semibold text-zinc-100">{candidate.sampleTitle}</div>
                             <div className="mt-1 text-[11px] text-zinc-400">
-                              素材 {candidate.taskCount} · 图池 {candidate.imagePoolCount}
+                              <span className="mr-2">
+                                {candidate.mediaType === 'video' ? '🎬 视频批次' : '🖼 图文批次'}
+                              </span>
+                              <span>素材 {candidate.taskCount}</span>
+                            </div>
+                            <div className="mt-1 text-[11px] text-zinc-400">
+                              图池 {candidate.imagePoolCount} · 视频池 {candidate.videoPoolCount}
                             </div>
                             <div className="mt-1 text-[10px] text-zinc-500">
                               {moment(candidate.createdAtStart).format('MM/DD HH:mm')} -{' '}
@@ -824,8 +983,9 @@ function CalendarView({
                 {remixPreview ? (
                   <>
                     <div className="text-xs text-zinc-300">
-                      命中批次：「{remixPreview.sampleTitle}」 · 候选素材 {remixPreview.selectedBatch.length} · 将创建{' '}
-                      {remixPreview.payloads.length} 条
+                      命中批次：「{remixPreview.sampleTitle}」 · 类型{' '}
+                      {remixPreview.mediaType === 'video' ? '视频混剪' : '图文裂变'} · 候选素材{' '}
+                      {remixPreview.selectedBatch.length} · 将创建 {remixPreview.payloads.length} 条
                     </div>
                     <div className="mt-1 text-[11px] text-zinc-500">
                       session: {remixPreview.sessionId} · seed: {remixPreview.seed}
@@ -846,9 +1006,21 @@ function CalendarView({
                           <div className="text-xs font-semibold text-zinc-100">
                             #{index + 1} {payload.title || '(未命名)'}
                           </div>
-                          <div className="mt-1 text-[11px] text-zinc-400">
-                            图片 {payload.images.length} 张 · 商品 {payload.productName || '未绑定商品'}
-                          </div>
+                          {payload.mediaType === 'video' || Array.isArray(payload.videoClips) ? (
+                            <>
+                              <div className="mt-1 text-[11px] text-zinc-400">
+                                将混剪 {payload.videoClips?.length ?? 0} 段视频 · BGM{' '}
+                                {basenameFromPath(payload.bgmPath)}
+                              </div>
+                              <div className="mt-1 text-[11px] text-zinc-500">
+                                文案摘要：{shortenMultilineText(payload.content, 44)}
+                              </div>
+                            </>
+                          ) : (
+                            <div className="mt-1 text-[11px] text-zinc-400">
+                              图片 {payload.images?.length ?? 0} 张 · 商品 {payload.productName || '未绑定商品'}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -861,7 +1033,26 @@ function CalendarView({
 
             {remixPreview && remixPreview.payloads.length < 5 ? (
               <div className="mt-3 text-xs text-amber-200">
-                当前素材约束下仅能生成 {remixPreview.payloads.length} 条（已应用去重保护）。
+                当前素材约束下仅能生成 {remixPreview.payloads.length} 条
+                {remixPreview.mediaType === 'image' ? '（已应用去重保护）。' : '。'}
+              </div>
+            ) : null}
+
+            {isRemixing && remixProgress ? (
+              <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <div className="mb-1 flex items-center justify-between text-[11px] text-amber-200">
+                  <span>{remixProgress.message}</span>
+                  <span>{Math.round(remixProgress.percent)}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded bg-zinc-800/80">
+                  <div
+                    className="h-full bg-amber-300 transition-all duration-300"
+                    style={{ width: `${clampPercent(remixProgress.percent)}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-[10px] text-zinc-400">
+                  进度 {remixProgress.processed}/{remixProgress.total} · 已创建 {remixProgress.created}
+                </div>
               </div>
             ) : null}
 

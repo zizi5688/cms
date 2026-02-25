@@ -4,6 +4,9 @@ import { createReadStream, createWriteStream, existsSync } from 'fs'
 import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises'
 import { basename, dirname, extname, join, posix, resolve, sep } from 'path'
 import pLimit from 'p-limit'
+import ffmpeg from 'fluent-ffmpeg'
+import ffmpegStaticImport from 'ffmpeg-static'
+import ffprobeStaticImport from 'ffprobe-static'
 import { spinText } from './utils/textSpinner'
 import { mutateImage } from './services/imageMutator'
 import { applyDynamicWatermark, applyVideoWatermark } from './services/dynamicWatermark'
@@ -50,6 +53,44 @@ export type CreateBatchProgress = {
 }
 
 const XHS_TITLE_CHAR_LIMIT = 20
+const remixVideoRenderLimit = pLimit(1)
+
+function resolveStaticModule<T>(value: T): T {
+  const maybe = value as unknown as { default?: T }
+  return (maybe && typeof maybe === 'object' && 'default' in maybe && maybe.default ? maybe.default : value) as T
+}
+
+function normalizePackagedBinaryPath(binaryPath: string): string {
+  const normalized = String(binaryPath ?? '').trim()
+  if (!normalized) return ''
+  if (!app.isPackaged) return normalized
+  return normalized.includes('app.asar') ? normalized.replace('app.asar', 'app.asar.unpacked') : normalized
+}
+
+function resolveFfmpegPath(): string {
+  const ffmpegStatic = resolveStaticModule(ffmpegStaticImport as unknown as string | null)
+  const raw = typeof ffmpegStatic === 'string' ? ffmpegStatic : ''
+  const resolved = normalizePackagedBinaryPath(raw)
+  if (!resolved) throw new Error('[TaskManager] ffmpeg-static path not found.')
+  return resolved
+}
+
+function resolveFfprobePath(): string {
+  const ffprobeStatic = resolveStaticModule(ffprobeStaticImport as unknown as { path?: string } | null)
+  const raw = ffprobeStatic && typeof ffprobeStatic.path === 'string' ? ffprobeStatic.path : ''
+  const resolved = normalizePackagedBinaryPath(raw)
+  if (!resolved) throw new Error('[TaskManager] ffprobe-static path not found.')
+  return resolved
+}
+
+let didConfigureFfmpeg = false
+
+function ensureFfmpegConfigured(): void {
+  if (didConfigureFfmpeg) return
+  ffmpeg.setFfmpegPath(resolveFfmpegPath())
+  ffmpeg.setFfprobePath(resolveFfprobePath())
+  didConfigureFfmpeg = true
+}
 
 function normalizeText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
@@ -340,6 +381,19 @@ async function copyFileWithRetry(
   throw lastError instanceof Error ? lastError : new Error('[Asset] copy failed.')
 }
 
+function parseFfmpegTimemarkToSeconds(value: unknown): number {
+  if (typeof value !== 'string') return 0
+  const normalized = value.trim()
+  if (!normalized) return 0
+  const parts = normalized.split(':')
+  if (parts.length !== 3) return 0
+  const hours = Number(parts[0])
+  const minutes = Number(parts[1])
+  const seconds = Number(parts[2])
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) return 0
+  return hours * 3600 + minutes * 60 + seconds
+}
+
 export class TaskManager {
   private sqlite: SqliteService
   private workspacePath: string | null
@@ -465,6 +519,9 @@ export class TaskManager {
       tags?: string[]
       mediaType?: 'image' | 'video'
       videoPath?: string
+      isRemix?: boolean
+      videoClips?: string[]
+      bgmPath?: string
       title?: string
       content?: string
       productId?: string
@@ -625,7 +682,18 @@ export class TaskManager {
         ? (record.tags as unknown[]).map((v) => normalizeText(v)).filter(Boolean)
         : []
       const transformPolicy = normalizeTransformPolicy(record.transformPolicy)
-      const isRemix = transformPolicy === 'remix_v1'
+      const isImageRemix = transformPolicy === 'remix_v1'
+      const isVideoRemix = record.isRemix === true && normalizeMediaType(record.mediaType) === 'video'
+      const videoClips = Array.isArray(record.videoClips)
+        ? Array.from(
+            new Set(
+              (record.videoClips as unknown[])
+                .map((value) => normalizeText(value))
+                .filter(Boolean)
+            )
+          )
+        : []
+      const bgmPathInput = typeof record.bgmPath === 'string' ? normalizeText(record.bgmPath) : ''
       const remixSessionId =
         typeof record.remixSessionId === 'string' ? normalizeText(record.remixSessionId) || undefined : undefined
       const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
@@ -671,18 +739,21 @@ export class TaskManager {
       }
 
       const recordMediaType = normalizeMediaType(record.mediaType)
-      const wantsVideo = recordMediaType === 'video' || Boolean(explicitVideoPath || inferredVideoPath)
+      const wantsVideo =
+        recordMediaType === 'video' ||
+        Boolean(explicitVideoPath || inferredVideoPath) ||
+        (isVideoRemix && videoClips.length > 0)
       const videoPathInput = normalizeText(explicitVideoPath || inferredVideoPath)
 
       if (!accountId) continue
       if (wantsVideo) {
-        if (!videoPathInput) continue
+        if (!videoPathInput && !(isVideoRemix && videoClips.length > 0)) continue
       } else {
         if (rawImages.length === 0) continue
       }
 
       const images: string[] = []
-      if (isRemix) {
+      if (isImageRemix) {
         for (const imagePath of rawImages) {
           const normalizedPath = normalizeText(imagePath)
           if (!normalizedPath) continue
@@ -821,60 +892,99 @@ export class TaskManager {
       }
 
       let videoPath: string | undefined = undefined
+      let remixCoverPath: string | undefined = undefined
       if (wantsVideo) {
-        const normalizedPath = normalizeText(videoPathInput)
-        if (!normalizedPath) continue
-        if (isHttpUrl(normalizedPath)) {
-          videoPath = normalizedPath
+        if (isVideoRemix) {
+          emitProgress(
+            'progress',
+            `正在混剪并渲染视频 ${currentTaskIndex}/${Math.max(total, 1)}...`
+          )
+          try {
+            const rendered = await remixVideoRenderLimit(() =>
+              this.renderVideoRemix({
+                workspacePath,
+                assetsVideosDir,
+                assetsImagesDir,
+                videoClips,
+                bgmPath: bgmPathInput,
+                currentTaskIndex,
+                total,
+                emitProgress
+              })
+            )
+            videoPath = rendered.videoPath
+            remixCoverPath = rendered.coverImagePath
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            emitLog(
+              'error',
+              `[数据工坊] 视频混剪失败（${currentTaskIndex}/${Math.max(total, 1)}）：${message}`
+            )
+            await this.appendVideoRemixErrorLog(workspacePath, {
+              currentTaskIndex,
+              total,
+              title: typeof record.title === 'string' ? record.title : '',
+              videoClips,
+              bgmPath: bgmPathInput,
+              errorMessage: message
+            })
+            continue
+          }
         } else {
-          const isRelativeAsset = normalizedPath.startsWith('assets/') || normalizedPath.startsWith('assets\\')
-          if (isRelativeAsset) {
-            videoPath = normalizeAssetRelativePath(normalizedPath)
-          } else if (!shouldLocalizeAssets || !isAbsoluteFilePath(normalizedPath)) {
-            videoPath = normalizedPath
-          } else if (isUnderDir(normalizedPath, generatedAssetsDir)) {
+          const normalizedPath = normalizeText(videoPathInput)
+          if (!normalizedPath) continue
+          if (isHttpUrl(normalizedPath)) {
             videoPath = normalizedPath
           } else {
-            const localizedVideoCacheKey = watermarkSignature ? `${normalizedPath}::${watermarkSignature}` : normalizedPath
-            const cachedLocalizedVideo = localizedVideoSourceCache.get(localizedVideoCacheKey)
-            if (cachedLocalizedVideo) {
-              videoPath = cachedLocalizedVideo
-              reusedVideoSourceHits += 1
+            const isRelativeAsset = normalizedPath.startsWith('assets/') || normalizedPath.startsWith('assets\\')
+            if (isRelativeAsset) {
+              videoPath = normalizeAssetRelativePath(normalizedPath)
+            } else if (!shouldLocalizeAssets || !isAbsoluteFilePath(normalizedPath)) {
+              videoPath = normalizedPath
+            } else if (isUnderDir(normalizedPath, generatedAssetsDir)) {
+              videoPath = normalizedPath
             } else {
-              emitProgress(
-                'progress',
-                `派发处理中（${currentTaskIndex}/${Math.max(total, 1)}）读取视频：${basename(normalizedPath)}`
-              )
-              const extLower = extname(normalizedPath).toLowerCase()
-              const cachedHash = fileHashCache.get(normalizedPath)
-              const fileHash = cachedHash ?? (await computeFileHashSha1(normalizedPath))
-              if (!cachedHash) fileHashCache.set(normalizedPath, fileHash)
-              const baseName = `${fileHash}${extLower}`
-              const fileName = watermarkSignature
-                ? baseName.replace(/(\.[^.]*)$/, `_wm_${watermarkSignature}$1`)
-                : baseName
-              const destAbsPath = join(assetsVideosDir, fileName)
-              let needsVideoWatermarkInjection = false
-              if (!existsSync(destAbsPath)) {
-                await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 60_000 })
-                needsVideoWatermarkInjection = true
+              const localizedVideoCacheKey = watermarkSignature ? `${normalizedPath}::${watermarkSignature}` : normalizedPath
+              const cachedLocalizedVideo = localizedVideoSourceCache.get(localizedVideoCacheKey)
+              if (cachedLocalizedVideo) {
+                videoPath = cachedLocalizedVideo
+                reusedVideoSourceHits += 1
               } else {
-                const info = await stat(destAbsPath)
-                if (!info.isFile() || info.size <= 0) {
+                emitProgress(
+                  'progress',
+                  `派发处理中（${currentTaskIndex}/${Math.max(total, 1)}）读取视频：${basename(normalizedPath)}`
+                )
+                const extLower = extname(normalizedPath).toLowerCase()
+                const cachedHash = fileHashCache.get(normalizedPath)
+                const fileHash = cachedHash ?? (await computeFileHashSha1(normalizedPath))
+                if (!cachedHash) fileHashCache.set(normalizedPath, fileHash)
+                const baseName = `${fileHash}${extLower}`
+                const fileName = watermarkSignature
+                  ? baseName.replace(/(\.[^.]*)$/, `_wm_${watermarkSignature}$1`)
+                  : baseName
+                const destAbsPath = join(assetsVideosDir, fileName)
+                let needsVideoWatermarkInjection = false
+                if (!existsSync(destAbsPath)) {
                   await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 60_000 })
                   needsVideoWatermarkInjection = true
+                } else {
+                  const info = await stat(destAbsPath)
+                  if (!info.isFile() || info.size <= 0) {
+                    await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 60_000 })
+                    needsVideoWatermarkInjection = true
+                  }
                 }
+                if (needsVideoWatermarkInjection) {
+                  const watermarkSucceeded = await applyWatermarkIfNeeded(destAbsPath, normalizedPath)
+                  if (!watermarkSucceeded) continue
+                }
+                if (importStrategy === 'move' && !isUnderWorkspace(normalizedPath)) {
+                  sourcesToDelete.add(normalizedPath)
+                }
+                videoPath = normalizeAssetRelativePath(posix.join('assets', 'videos', fileName))
+                localizedVideoSourceCache.set(localizedVideoCacheKey, videoPath)
+                localizedVideoSourceCount += 1
               }
-              if (needsVideoWatermarkInjection) {
-                const watermarkSucceeded = await applyWatermarkIfNeeded(destAbsPath, normalizedPath)
-                if (!watermarkSucceeded) continue
-              }
-              if (importStrategy === 'move' && !isUnderWorkspace(normalizedPath)) {
-                sourcesToDelete.add(normalizedPath)
-              }
-              videoPath = normalizeAssetRelativePath(posix.join('assets', 'videos', fileName))
-              localizedVideoSourceCache.set(localizedVideoCacheKey, videoPath)
-              localizedVideoSourceCount += 1
             }
           }
         }
@@ -883,11 +993,14 @@ export class TaskManager {
       const mediaType: 'image' | 'video' = wantsVideo ? 'video' : 'image'
       if (mediaType === 'image' && images.length === 0) continue
       if (mediaType === 'video' && !videoPath) continue
+      if (mediaType === 'video' && remixCoverPath && !images.includes(remixCoverPath)) {
+        images.unshift(remixCoverPath)
+      }
 
       const normalizedTitle = normalizeText(record.title)
       const normalizedContent = normalizeMultilineText(record.content)
-      const title = isRemix ? normalizeText(spinText(normalizedTitle)) : normalizedTitle
-      const content = isRemix ? normalizeMultilineText(spinText(normalizedContent)) : normalizedContent
+      const title = isImageRemix ? normalizeText(spinText(normalizedTitle)) : normalizedTitle
+      const content = isImageRemix ? normalizeMultilineText(spinText(normalizedContent)) : normalizedContent
 
       const next: PublishTask = {
         id: randomUUID(),
@@ -967,6 +1080,192 @@ export class TaskManager {
     emitProgress('done', `派发完成：${toCreate.length} 条任务`)
 
     return toCreate.slice().sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  private resolveWorkspaceMediaPath(rawPath: string, workspacePath: string): string {
+    const normalized = normalizeText(rawPath)
+    if (!normalized || isHttpUrl(normalized)) return ''
+    if (isAbsoluteFilePath(normalized)) return normalized
+    const relative = normalizeAssetRelativePath(normalized)
+    if (!workspacePath) return relative
+    return join(workspacePath, ...relative.split('/').filter(Boolean))
+  }
+
+  private async renderVideoRemix(options: {
+    workspacePath: string
+    assetsVideosDir: string
+    assetsImagesDir: string
+    videoClips: string[]
+    bgmPath: string
+    currentTaskIndex: number
+    total: number
+    emitProgress: (phase: CreateBatchProgress['phase'], message: string) => void
+  }): Promise<{ videoPath: string; coverImagePath: string }> {
+    const {
+      workspacePath,
+      assetsVideosDir,
+      assetsImagesDir,
+      videoClips,
+      bgmPath,
+      currentTaskIndex,
+      total,
+      emitProgress
+    } = options
+    const normalizedWorkspacePath = normalizeText(workspacePath)
+    if (!normalizedWorkspacePath) throw new Error('workspacePath 为空，无法输出视频混剪产物。')
+    if (!assetsVideosDir || !assetsImagesDir) throw new Error('assets 目录初始化失败，无法执行视频混剪。')
+
+    await mkdir(assetsVideosDir, { recursive: true })
+    await mkdir(assetsImagesDir, { recursive: true })
+
+    const resolvedVideoClips = (videoClips ?? [])
+      .map((clipPath) => this.resolveWorkspaceMediaPath(clipPath, normalizedWorkspacePath))
+      .filter((clipPath) => Boolean(clipPath) && existsSync(clipPath))
+    if (resolvedVideoClips.length === 0) {
+      throw new Error('视频混剪缺少可读输入素材。')
+    }
+
+    const resolvedBgmPath = this.resolveWorkspaceMediaPath(bgmPath, normalizedWorkspacePath)
+    if (!resolvedBgmPath || !existsSync(resolvedBgmPath)) {
+      throw new Error('视频混剪缺少可读 BGM。')
+    }
+
+    const renderKey = `${Date.now()}_${randomUUID().slice(0, 8)}`
+    const outputVideoFileName = `remix_${renderKey}.mp4`
+    const outputCoverFileName = `remix_${renderKey}.jpg`
+    const outputVideoAbsPath = join(assetsVideosDir, outputVideoFileName)
+    const outputCoverAbsPath = join(assetsImagesDir, outputCoverFileName)
+
+    ensureFfmpegConfigured()
+
+    const outputWidth = 1080
+    const outputHeight = 1920
+    const outputFps = 30
+    const filterLines: string[] = []
+    for (let i = 0; i < resolvedVideoClips.length; i += 1) {
+      filterLines.push(
+        `[${i}:v]scale=${outputWidth}:${outputHeight}:force_original_aspect_ratio=decrease,pad=${outputWidth}:${outputHeight}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${outputFps},crop=iw*0.98:ih*0.98:(iw-iw*0.98)/2:(ih-ih*0.98)/2,format=yuv420p,setpts=PTS-STARTPTS[v${i}]`
+      )
+    }
+    const concatInputs = resolvedVideoClips.map((_clip, i) => `[v${i}]`).join('')
+    filterLines.push(`${concatInputs}concat=n=${resolvedVideoClips.length}:v=1:a=0[vout]`)
+
+    await new Promise<void>((resolvePromise, reject) => {
+      const command = ffmpeg()
+      for (const clipPath of resolvedVideoClips) {
+        command.input(clipPath)
+      }
+      command.input(resolvedBgmPath).inputOptions(['-stream_loop -1'])
+
+      command
+        .complexFilter(filterLines)
+        .outputOptions([
+          '-map [vout]',
+          `-map ${resolvedVideoClips.length}:a:0`,
+          '-c:v libx264',
+          '-preset veryfast',
+          '-pix_fmt yuv420p',
+          `-r ${outputFps}`,
+          '-c:a aac',
+          '-b:a 192k',
+          '-shortest',
+          '-movflags +faststart',
+          '-threads 1',
+          '-filter_threads 1',
+          '-filter_complex_threads 1'
+        ])
+        .on('progress', (progress) => {
+          const percentRaw = Number((progress as { percent?: unknown }).percent)
+          if (Number.isFinite(percentRaw)) {
+            const percent = Math.max(0, Math.min(99, Math.floor(percentRaw)))
+            emitProgress(
+              'progress',
+              `正在混剪并渲染视频 ${currentTaskIndex}/${Math.max(total, 1)}...${percent}%`
+            )
+            return
+          }
+
+          const timemark = (progress as { timemark?: unknown }).timemark
+          const timemarkSeconds = parseFfmpegTimemarkToSeconds(timemark)
+          if (timemarkSeconds > 0) {
+            emitProgress(
+              'progress',
+              `正在混剪并渲染视频 ${currentTaskIndex}/${Math.max(total, 1)}...${Math.floor(timemarkSeconds)}s`
+            )
+          }
+        })
+        .on('error', (error) => reject(error))
+        .on('end', () => {
+          emitProgress('progress', `正在混剪并渲染视频 ${currentTaskIndex}/${Math.max(total, 1)}...100%`)
+          resolvePromise()
+        })
+        .save(outputVideoAbsPath)
+    })
+
+    if (!existsSync(outputVideoAbsPath)) {
+      throw new Error('视频混剪输出文件不存在。')
+    }
+
+    await this.captureVideoCover(outputVideoAbsPath, outputCoverAbsPath)
+    if (!existsSync(outputCoverAbsPath)) {
+      throw new Error('视频封面抽帧失败。')
+    }
+
+    return {
+      videoPath: normalizeAssetRelativePath(posix.join('assets', 'videos', outputVideoFileName)),
+      coverImagePath: normalizeAssetRelativePath(posix.join('assets', 'images', outputCoverFileName))
+    }
+  }
+
+  private async captureVideoCover(videoPath: string, coverPath: string): Promise<void> {
+    ensureFfmpegConfigured()
+    const tryCapture = async (timeSec: number): Promise<void> => {
+      await new Promise<void>((resolvePromise, reject) => {
+        ffmpeg(videoPath)
+          .seekInput(Math.max(0, timeSec))
+          .outputOptions(['-frames:v 1', '-q:v 2'])
+          .on('error', (error) => reject(error))
+          .on('end', () => resolvePromise())
+          .save(coverPath)
+      })
+    }
+
+    try {
+      await tryCapture(1)
+      if (existsSync(coverPath)) return
+    } catch {
+      void 0
+    }
+    await tryCapture(0)
+  }
+
+  private async appendVideoRemixErrorLog(
+    workspacePath: string,
+    payload: {
+      currentTaskIndex: number
+      total: number
+      title: string
+      videoClips: string[]
+      bgmPath: string
+      errorMessage: string
+    }
+  ): Promise<void> {
+    try {
+      const baseDir = normalizeText(workspacePath) || app.getPath('userData')
+      const logDir = join(baseDir, 'logs')
+      await mkdir(logDir, { recursive: true })
+      const logPath = join(logDir, 'video-remix-error.log')
+      const line =
+        `[${new Date().toISOString()}] ` +
+        `task=${payload.currentTaskIndex}/${Math.max(1, payload.total)} ` +
+        `title="${normalizeText(payload.title)}" ` +
+        `bgm="${normalizeText(payload.bgmPath)}" ` +
+        `clips=${JSON.stringify(payload.videoClips)} ` +
+        `error="${normalizeText(payload.errorMessage)}"\n`
+      await writeFile(logPath, line, { encoding: 'utf8', flag: 'a' })
+    } catch {
+      void 0
+    }
   }
 
   delete(taskId: string): boolean {

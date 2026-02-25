@@ -1712,7 +1712,22 @@ app.whenReady().then(async () => {
           }
         }
         const videoPath = (explicitVideoPath || inferredVideoPath).trim()
-        const mediaType = record.mediaType === 'video' || Boolean(videoPath) ? 'video' : 'image'
+        const isRemix = record.isRemix === true
+        const videoClips = Array.isArray(record.videoClips)
+          ? Array.from(
+              new Set(
+                record.videoClips
+                  .filter((value): value is string => typeof value === 'string')
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              )
+            )
+          : undefined
+        const bgmPath = typeof record.bgmPath === 'string' ? record.bgmPath.trim() : ''
+        const mediaType =
+          record.mediaType === 'video' || Boolean(videoPath) || Boolean(videoClips && videoClips.length > 0)
+            ? 'video'
+            : 'image'
         const transformPolicy = record.transformPolicy === 'remix_v1' ? 'remix_v1' : 'none'
         const remixSessionId = typeof record.remixSessionId === 'string' ? record.remixSessionId.trim() : ''
         const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
@@ -1740,7 +1755,10 @@ app.whenReady().then(async () => {
           remixSeed: remixSeed || undefined,
           mediaType,
           videoPath: videoPath || undefined,
-          videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined
+          videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
+          isRemix,
+          videoClips,
+          bgmPath: bgmPath || undefined
         }
       }),
       {
