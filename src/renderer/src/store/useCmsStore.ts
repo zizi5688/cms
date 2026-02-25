@@ -49,6 +49,8 @@ export interface CmsPreferences {
   defaultInterval: number
 }
 
+export type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+
 export interface CmsConfig {
   appId: string
   appSecret: string
@@ -64,6 +66,7 @@ export interface CmsConfig {
   dynamicWatermarkEnabled: boolean
   dynamicWatermarkOpacity: number
   dynamicWatermarkSize: number
+  dynamicWatermarkTrajectory: DynamicWatermarkTrajectory
   scoutDashboardAutoImportDir: string
   watermarkBox: WatermarkBox
 }
@@ -133,6 +136,7 @@ const initialConfig: CmsConfig = {
   dynamicWatermarkEnabled: false,
   dynamicWatermarkOpacity: 15,
   dynamicWatermarkSize: 5,
+  dynamicWatermarkTrajectory: 'pseudoRandom',
   scoutDashboardAutoImportDir: '',
   watermarkBox: { x: 0.905, y: 0.927, width: 0.055, height: 0.05 }
 }

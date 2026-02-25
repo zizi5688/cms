@@ -6,7 +6,7 @@ import { basename, dirname, extname, join, posix, resolve, sep } from 'path'
 import pLimit from 'p-limit'
 import { spinText } from './utils/textSpinner'
 import { mutateImage } from './services/imageMutator'
-import { applyDynamicWatermark } from './services/dynamicWatermark'
+import { applyDynamicWatermark, applyVideoWatermark } from './services/dynamicWatermark'
 import { SqliteService } from './services/sqliteService'
 
 export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
@@ -149,6 +149,22 @@ function normalizeDynamicWatermarkSize(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(parsed)) return 5
   return Math.max(2, Math.min(10, Math.round(parsed)))
+}
+
+type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+
+function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTrajectory {
+  const normalized = String(value ?? '').trim()
+  const available: DynamicWatermarkTrajectory[] = [
+    'smoothSine',
+    'figureEight',
+    'diagonalWrap',
+    'largeEllipse',
+    'pseudoRandom'
+  ]
+  return (available.includes(normalized as DynamicWatermarkTrajectory)
+    ? normalized
+    : 'pseudoRandom') as DynamicWatermarkTrajectory
 }
 
 function normalizeWatermarkAccountName(value: unknown, fallback: string): string {
@@ -506,6 +522,9 @@ export class TaskManager {
     const dynamicWatermarkEnabled = normalizeDynamicWatermarkEnabled(this.configStore?.get('dynamicWatermarkEnabled'))
     const dynamicWatermarkOpacity = normalizeDynamicWatermarkOpacity(this.configStore?.get('dynamicWatermarkOpacity'))
     const dynamicWatermarkSize = normalizeDynamicWatermarkSize(this.configStore?.get('dynamicWatermarkSize'))
+    const dynamicWatermarkTrajectory = normalizeDynamicWatermarkTrajectory(
+      this.configStore?.get('dynamicWatermarkTrajectory')
+    )
     const shouldLocalizeAssets = Boolean(workspacePath)
     const assetsImagesDir = shouldLocalizeAssets ? join(workspacePath, 'assets', 'images') : ''
     const assetsVideosDir = shouldLocalizeAssets ? join(workspacePath, 'assets', 'videos') : ''
@@ -547,30 +566,59 @@ export class TaskManager {
       }
       const shouldApplyDynamicWatermarkForTask = dynamicWatermarkEnabled && shouldLocalizeAssets && Boolean(watermarkAccountName)
       const watermarkSignature = shouldApplyDynamicWatermarkForTask
-        ? computeBufferHashSha1(Buffer.from(`${watermarkAccountName}|${dynamicWatermarkOpacity}|${dynamicWatermarkSize}`)).slice(0, 10)
+        ? computeBufferHashSha1(
+            Buffer.from(
+              `${watermarkAccountName}|${dynamicWatermarkOpacity}|${dynamicWatermarkSize}|${dynamicWatermarkTrajectory}`
+            )
+          ).slice(0, 10)
         : ''
-      const applyWatermarkIfNeeded = async (targetPath: string, sourcePath: string): Promise<void> => {
-        if (!shouldApplyDynamicWatermarkForTask) return
-        if (!targetPath || isHttpUrl(targetPath) || !isAbsoluteFilePath(targetPath)) return
-        if (!isSupportedImageExt(targetPath)) {
+      const applyWatermarkIfNeeded = async (targetPath: string, sourcePath: string): Promise<boolean> => {
+        if (!shouldApplyDynamicWatermarkForTask) return true
+        if (!targetPath || isHttpUrl(targetPath) || !isAbsoluteFilePath(targetPath)) return true
+        const normalizedTargetPath = resolve(targetPath)
+        const fileName = basename(sourcePath || normalizedTargetPath)
+        const isImageTarget = isSupportedImageExt(normalizedTargetPath)
+        const isVideoTarget = isVideoExt(normalizedTargetPath)
+        if (!isImageTarget && !isVideoTarget) {
           emitLog('error', `[数据工坊] 动态水印跳过（不支持格式）：${basename(sourcePath || targetPath)}`)
-          return
+          return true
         }
         emitProgress(
           'progress',
           `派发处理中（${currentTaskIndex}/${Math.max(total, 1)}）注入水印：${basename(sourcePath || targetPath)}`
         )
+        if (isImageTarget) {
+          try {
+            await watermarkLimit(() =>
+              applyDynamicWatermark(normalizedTargetPath, normalizedTargetPath, watermarkAccountName, {
+                opacity: dynamicWatermarkOpacity,
+                size: dynamicWatermarkSize
+              })
+            )
+            emitLog('info', `[数据工坊] 图片处理完成，已自动注入动态水印: @${watermarkAccountName}`)
+            return true
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            emitLog('error', `[数据工坊] 图片水印注入失败（已跳过）：${fileName} ${message}`)
+            return true
+          }
+        }
+
+        emitLog('info', `[数据工坊] 正在为视频注入动态水印，耗时较长请稍候... (文件: ${fileName})`)
         try {
           await watermarkLimit(() =>
-            applyDynamicWatermark(targetPath, targetPath, watermarkAccountName, {
+            applyVideoWatermark(normalizedTargetPath, normalizedTargetPath, watermarkAccountName, {
               opacity: dynamicWatermarkOpacity,
-              size: dynamicWatermarkSize
+              size: dynamicWatermarkSize,
+              trajectory: dynamicWatermarkTrajectory
             })
           )
-          emitLog('info', `[数据工坊] 图片处理完成，已自动注入动态水印: @${watermarkAccountName}`)
+          emitLog('info', `[数据工坊] 视频处理完成，已自动注入动态水印: @${watermarkAccountName}`)
+          return true
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          emitLog('error', `[数据工坊] 动态水印注入失败（已跳过）：${basename(sourcePath || targetPath)} ${message}`)
+          emitLog('error', `[数据工坊] 视频水印注入失败（已跳过）：${fileName} ${message}`)
+          return false
         }
       }
       const tags = Array.isArray(record.tags)
@@ -787,7 +835,8 @@ export class TaskManager {
           } else if (isUnderDir(normalizedPath, generatedAssetsDir)) {
             videoPath = normalizedPath
           } else {
-            const cachedLocalizedVideo = localizedVideoSourceCache.get(normalizedPath)
+            const localizedVideoCacheKey = watermarkSignature ? `${normalizedPath}::${watermarkSignature}` : normalizedPath
+            const cachedLocalizedVideo = localizedVideoSourceCache.get(localizedVideoCacheKey)
             if (cachedLocalizedVideo) {
               videoPath = cachedLocalizedVideo
               reusedVideoSourceHits += 1
@@ -800,21 +849,31 @@ export class TaskManager {
               const cachedHash = fileHashCache.get(normalizedPath)
               const fileHash = cachedHash ?? (await computeFileHashSha1(normalizedPath))
               if (!cachedHash) fileHashCache.set(normalizedPath, fileHash)
-              const fileName = `${fileHash}${extLower}`
+              const baseName = `${fileHash}${extLower}`
+              const fileName = watermarkSignature
+                ? baseName.replace(/(\.[^.]*)$/, `_wm_${watermarkSignature}$1`)
+                : baseName
               const destAbsPath = join(assetsVideosDir, fileName)
+              let needsVideoWatermarkInjection = false
               if (!existsSync(destAbsPath)) {
                 await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 60_000 })
+                needsVideoWatermarkInjection = true
               } else {
                 const info = await stat(destAbsPath)
                 if (!info.isFile() || info.size <= 0) {
                   await copyFileWithRetry(normalizedPath, destAbsPath, { attempts: 3, timeoutMs: 60_000 })
+                  needsVideoWatermarkInjection = true
                 }
+              }
+              if (needsVideoWatermarkInjection) {
+                const watermarkSucceeded = await applyWatermarkIfNeeded(destAbsPath, normalizedPath)
+                if (!watermarkSucceeded) continue
               }
               if (importStrategy === 'move' && !isUnderWorkspace(normalizedPath)) {
                 sourcesToDelete.add(normalizedPath)
               }
               videoPath = normalizeAssetRelativePath(posix.join('assets', 'videos', fileName))
-              localizedVideoSourceCache.set(normalizedPath, videoPath)
+              localizedVideoSourceCache.set(localizedVideoCacheKey, videoPath)
               localizedVideoSourceCount += 1
             }
           }

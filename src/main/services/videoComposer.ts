@@ -26,6 +26,7 @@ export type VideoStyleTemplate = {
 
 export type ComposeVideoFromImagesPayload = {
   sourceImages?: unknown
+  sourceVideos?: unknown
   template?: Partial<VideoStyleTemplate>
   bgmPath?: unknown
   outputPath?: unknown
@@ -81,10 +82,17 @@ type ComposeVideoRuntimeOptions = {
 
 type ComposeVideoFromPreparedPoolPayload = {
   sourceImages: string[]
+  sourceVideos?: string[]
   template?: Partial<VideoStyleTemplate>
   bgmPath?: unknown
   outputPath?: unknown
   seed?: unknown
+}
+
+type SourceMediaClip = {
+  path: string
+  mediaType: 'image' | 'video'
+  durationSec: number
 }
 
 const DEFAULT_TEMPLATE: VideoStyleTemplate = {
@@ -103,6 +111,10 @@ const DEFAULT_TEMPLATE: VideoStyleTemplate = {
 function resolveEncoderThreads(): number {
   return 1
 }
+
+const IMAGE_CLIP_DURATION_MIN_SEC = 0.8
+const IMAGE_CLIP_DURATION_MAX_SEC = 1.8
+const MIN_CLIP_DURATION_SEC = 0.05
 
 function resolveStaticModule<T>(value: T): T {
   const maybe = value as unknown as { default?: T }
@@ -295,6 +307,80 @@ export function normalizeImagePaths(value: unknown): string[] {
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter(Boolean)
   return Array.from(new Set(normalized))
+}
+
+export function normalizeVideoPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const normalized = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+  return Array.from(new Set(normalized))
+}
+
+function randomBetween(random: () => number, min: number, max: number): number {
+  const safeMin = Number.isFinite(min) ? min : 0
+  const safeMax = Number.isFinite(max) ? max : safeMin
+  if (safeMax <= safeMin) return safeMin
+  return safeMin + random() * (safeMax - safeMin)
+}
+
+function buildRandomImageDurations(count: number, totalDurationSec: number, seed: number): number[] {
+  if (count <= 0 || !Number.isFinite(totalDurationSec) || totalDurationSec <= 0) return []
+  const random = mulberry32((seed ^ 0x9e3779b9) >>> 0)
+  const raw = Array.from({ length: count }, () =>
+    randomBetween(random, IMAGE_CLIP_DURATION_MIN_SEC, IMAGE_CLIP_DURATION_MAX_SEC)
+  )
+  const rawTotal = raw.reduce((sum, value) => sum + Math.max(0.01, value), 0)
+  if (!Number.isFinite(rawTotal) || rawTotal <= 0) {
+    const fallback = totalDurationSec / count
+    return Array.from({ length: count }, (_, index) =>
+      index === count - 1 ? Math.max(0.01, totalDurationSec - fallback * (count - 1)) : Math.max(0.01, fallback)
+    )
+  }
+
+  const scaled = raw.map((value) => (Math.max(0.01, value) / rawTotal) * totalDurationSec)
+  const durations: number[] = []
+  let consumed = 0
+  for (let index = 0; index < count; index += 1) {
+    if (index === count - 1) {
+      durations.push(Math.max(0.01, totalDurationSec - consumed))
+      break
+    }
+    const duration = Math.max(0.01, scaled[index] ?? 0.01)
+    durations.push(duration)
+    consumed += duration
+  }
+  return durations
+}
+
+async function probeVideoDurationSeconds(filePath: string): Promise<number | null> {
+  const normalizedPath = String(filePath ?? '').trim()
+  if (!normalizedPath || !existsSync(normalizedPath)) return null
+  ensureFfmpegConfigured()
+  return await new Promise((resolvePromise) => {
+    ffmpeg.ffprobe(normalizedPath, (error, metadata) => {
+      if (error || !metadata) {
+        resolvePromise(null)
+        return
+      }
+      const formatDuration = Number((metadata.format as { duration?: unknown } | undefined)?.duration ?? 0)
+      if (Number.isFinite(formatDuration) && formatDuration > MIN_CLIP_DURATION_SEC) {
+        resolvePromise(formatDuration)
+        return
+      }
+
+      const streams = Array.isArray(metadata.streams)
+        ? (metadata.streams as Array<{ codec_type?: unknown; duration?: unknown }>)
+        : []
+      const videoStream = streams.find((stream) => stream.codec_type === 'video')
+      const streamDuration = Number(videoStream?.duration ?? 0)
+      if (Number.isFinite(streamDuration) && streamDuration > MIN_CLIP_DURATION_SEC) {
+        resolvePromise(streamDuration)
+        return
+      }
+      resolvePromise(null)
+    })
+  })
 }
 
 function normalizeSeed(value: unknown): number {
@@ -495,7 +581,7 @@ function parseTimemarkToSeconds(timemark: unknown): number {
 }
 
 async function renderVideo(options: {
-  images: string[]
+  clips: SourceMediaClip[]
   outputPath: string
   template: VideoStyleTemplate
   bgmPath: string | null
@@ -506,48 +592,50 @@ async function renderVideo(options: {
 }): Promise<void> {
   ensureFfmpegConfigured()
 
-  const { images, outputPath, template, bgmPath, videoEncoder, lowLoadMode, imagesPreprocessed, onProgress } = options
-  if (images.length === 0) throw new Error('[videoComposer] no images selected.')
+  const { clips, outputPath, template, bgmPath, videoEncoder, lowLoadMode, imagesPreprocessed, onProgress } = options
+  if (clips.length === 0) throw new Error('[videoComposer] no media clips selected.')
 
   const totalDuration = clampNumber(template.totalDurationSec, 1, 120)
-  const transitionsEnabled = template.transitionType !== 'none' && images.length > 1
+  const clipDurations = clips.map((clip) => Math.max(0.01, toFiniteNumber(clip.durationSec, 0.01)))
+  const transitionsEnabled = template.transitionType !== 'none' && clips.length > 1
   const rawTransition = transitionsEnabled ? template.transitionDurationSec : 0
-  const clipDuration = totalDuration / images.length
-  const transitionDuration = transitionsEnabled ? Math.min(rawTransition, Math.max(0, clipDuration * 0.6)) : 0
-  const adjustedClipDuration =
-    transitionDuration > 0 ? (totalDuration + (images.length - 1) * transitionDuration) / images.length : clipDuration
-  const finalClipDuration = Math.max(0.2, adjustedClipDuration)
+  const minClipDuration = Math.max(0.01, Math.min(...clipDurations))
+  const transitionDuration = transitionsEnabled ? Math.min(rawTransition, Math.max(0, minClipDuration * 0.6)) : 0
 
   const filterLines: string[] = []
-  for (let index = 0; index < images.length; index += 1) {
-    if (imagesPreprocessed) {
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index]
+    const clipDuration = clipDurations[index] ?? 0.01
+    const shouldSkipScale = imagesPreprocessed && clip.mediaType === 'image'
+    if (shouldSkipScale) {
       filterLines.push(
-        `[${index}:v]setsar=1,format=yuv420p,trim=duration=${toFixed3(finalClipDuration)},setpts=PTS-STARTPTS[v${index}]`
+        `[${index}:v]setsar=1,fps=${template.fps},format=yuv420p,trim=duration=${toFixed3(clipDuration)},setpts=PTS-STARTPTS[v${index}]`
       )
       continue
     }
 
     filterLines.push(
-      `[${index}:v]scale=${template.width}:${template.height}:flags=lanczos:force_original_aspect_ratio=decrease,pad=${template.width}:${template.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,trim=duration=${toFixed3(finalClipDuration)},setpts=PTS-STARTPTS[v${index}]`
+      `[${index}:v]scale=${template.width}:${template.height}:flags=lanczos:force_original_aspect_ratio=decrease,pad=${template.width}:${template.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${template.fps},format=yuv420p,trim=duration=${toFixed3(clipDuration)},setpts=PTS-STARTPTS[v${index}]`
     )
   }
 
-  if (images.length === 1) {
+  if (clips.length === 1) {
     filterLines.push(`[v0]fps=${template.fps},format=yuv420p[vout]`)
   } else if (transitionDuration <= 0) {
-    const concatInput = images.map((_, idx) => `[v${idx}]`).join('')
-    filterLines.push(`${concatInput}concat=n=${images.length}:v=1:a=0[vcat]`)
+    const concatInput = clips.map((_, idx) => `[v${idx}]`).join('')
+    filterLines.push(`${concatInput}concat=n=${clips.length}:v=1:a=0[vcat]`)
     filterLines.push(`[vcat]fps=${template.fps},format=yuv420p[vout]`)
   } else {
     let current = 'v0'
-    const offsetStep = finalClipDuration - transitionDuration
-    for (let index = 1; index < images.length; index += 1) {
+    let elapsed = clipDurations[0] ?? 0
+    for (let index = 1; index < clips.length; index += 1) {
       const outputLabel = `vx${index}`
-      const offset = index * offsetStep
+      const offset = Math.max(0, elapsed - transitionDuration * index)
       filterLines.push(
         `[${current}][v${index}]xfade=transition=${template.transitionType}:duration=${toFixed3(transitionDuration)}:offset=${toFixed3(offset)}[${outputLabel}]`
       )
       current = outputLabel
+      elapsed += clipDurations[index] ?? 0
     }
     filterLines.push(`[${current}]fps=${template.fps},format=yuv420p[vout]`)
   }
@@ -561,8 +649,14 @@ async function renderVideo(options: {
     }
   }
 
-  for (const imagePath of images) {
-    command.input(imagePath).inputOptions(['-loop 1', `-t ${toFixed3(finalClipDuration)}`])
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index]
+    const clipDuration = Math.max(0.01, clipDurations[index] ?? clip.durationSec)
+    if (clip.mediaType === 'image') {
+      command.input(clip.path).inputOptions(['-loop 1', `-t ${toFixed3(clipDuration)}`])
+      continue
+    }
+    command.input(clip.path).inputOptions([`-t ${toFixed3(clipDuration)}`])
   }
 
   const hasBgm = typeof bgmPath === 'string' && bgmPath.trim() && existsSync(bgmPath)
@@ -595,7 +689,7 @@ async function renderVideo(options: {
   }
 
   if (hasBgm) {
-    outputOptions.push(`-map ${images.length}:a:0`)
+    outputOptions.push(`-map ${clips.length}:a:0`)
     const fadeOutStart = Math.max(0, totalDuration - 0.5)
     outputOptions.push(
       `-af volume=${toFixed3(template.bgmVolume)},afade=t=in:st=0:d=0.3,afade=t=out:st=${toFixed3(fadeOutStart)}:d=0.5`
@@ -646,6 +740,40 @@ async function renderVideo(options: {
   })
 }
 
+async function renderVideoWithFallback(options: {
+  clips: SourceMediaClip[]
+  outputPath: string
+  template: VideoStyleTemplate
+  bgmPath: string | null
+  lowLoadMode: boolean
+  imagesPreprocessed: boolean
+  onProgress?: (progress: ComposeVideoProgress) => void
+}): Promise<void> {
+  const preferredEncoder: VideoEncoder = process.platform === 'darwin' ? 'h264_videotoolbox' : 'libx264'
+  try {
+    await renderVideo({
+      ...options,
+      videoEncoder: preferredEncoder
+    })
+  } catch (firstError) {
+    const firstMessage = firstError instanceof Error ? firstError.message.toLowerCase() : String(firstError).toLowerCase()
+    const shouldFallbackToX264 =
+      preferredEncoder === 'h264_videotoolbox' &&
+      (firstMessage.includes('videotoolbox') ||
+        firstMessage.includes('unknown encoder') ||
+        firstMessage.includes('encoder not found') ||
+        firstMessage.includes('error while opening encoder'))
+
+    if (!shouldFallbackToX264) throw firstError
+
+    await rm(options.outputPath, { force: true }).catch(() => void 0)
+    await renderVideo({
+      ...options,
+      videoEncoder: 'libx264'
+    })
+  }
+}
+
 export async function composeVideoFromPreparedImagePool(
   payload: ComposeVideoFromPreparedPoolPayload,
   runtimeOptions: ComposeVideoRuntimeOptions = {}
@@ -660,15 +788,13 @@ export async function composeVideoFromPreparedImagePool(
       ? toHdTemplate(normalizedTemplate, hdAspect)
       : normalizedTemplate
   const sourceImages = payload.sourceImages
-  if (sourceImages.length === 0) {
-    const error = '[videoComposer] 至少需要一张可读图片。'
+  const sourceVideos = normalizeVideoPaths(payload.sourceVideos)
+  if (sourceImages.length === 0 && sourceVideos.length === 0) {
+    const error = '[videoComposer] 至少需要一个可读素材（图片或视频）。'
     return { success: false, error, debug: buildComposeFailureDebug(error) }
   }
 
   const seed = normalizeSeed(payload?.seed)
-  const selectedImages = pickRandomSubset(sourceImages, template.imageCountMin, template.imageCountMax, seed)
-  const minRequired = Math.max(1, Math.min(template.imageCountMin, sourceImages.length))
-
   const outputPath = resolveOutputPath(payload?.outputPath)
   const bgmPath = typeof payload?.bgmPath === 'string' && payload.bgmPath.trim() ? payload.bgmPath.trim() : null
   if (bgmPath && !existsSync(bgmPath)) {
@@ -678,52 +804,117 @@ export async function composeVideoFromPreparedImagePool(
 
   let usedImages: string[] = []
   try {
-    const prepared = isLowLoadMode
-      ? await prepareLowLoadImagesForRender(selectedImages, sourceImages, minRequired, seed, template, runtimeOptions)
-      : await prepareStandardImagesForRender(selectedImages, sourceImages, minRequired, seed, template, runtimeOptions)
+    const hasVideoInputs = sourceVideos.length > 0
+    if (!hasVideoInputs) {
+      const selectedImages = pickRandomSubset(sourceImages, template.imageCountMin, template.imageCountMax, seed)
+      const minRequired = Math.max(1, Math.min(template.imageCountMin, sourceImages.length))
+      const prepared = isLowLoadMode
+        ? await prepareLowLoadImagesForRender(selectedImages, sourceImages, minRequired, seed, template, runtimeOptions)
+        : await prepareStandardImagesForRender(selectedImages, sourceImages, minRequired, seed, template, runtimeOptions)
 
-    usedImages = prepared.usedImages
-    const renderImages = prepared.renderImages
-    if (usedImages.length === 0 || renderImages.length === 0) {
-      const error = '[videoComposer] 可用图片数量不足或图片文件损坏。'
-      return { success: false, seed, error, debug: buildComposeFailureDebug(error) }
-    }
+      usedImages = prepared.usedImages
+      const renderImages = prepared.renderImages
+      if (usedImages.length === 0 || renderImages.length === 0) {
+        const error = '[videoComposer] 可用图片数量不足或图片文件损坏。'
+        return { success: false, seed, error, debug: buildComposeFailureDebug(error) }
+      }
 
-    const preferredEncoder: VideoEncoder = process.platform === 'darwin' ? 'h264_videotoolbox' : 'libx264'
-    try {
-      await renderVideo({
-        images: renderImages,
+      const durations = buildRandomImageDurations(renderImages.length, template.totalDurationSec, seed)
+      const clips: SourceMediaClip[] = renderImages.map((path, index) => ({
+        path,
+        mediaType: 'image',
+        durationSec: durations[index] ?? template.totalDurationSec / Math.max(1, renderImages.length)
+      }))
+
+      await renderVideoWithFallback({
+        clips,
         outputPath,
         template,
         bgmPath,
-        videoEncoder: preferredEncoder,
         lowLoadMode: isLowLoadMode,
         imagesPreprocessed: true,
         onProgress: runtimeOptions.onProgress
       })
-    } catch (firstError) {
-      const firstMessage = firstError instanceof Error ? firstError.message.toLowerCase() : String(firstError).toLowerCase()
-      const shouldFallbackToX264 =
-        preferredEncoder === 'h264_videotoolbox' &&
-        (firstMessage.includes('videotoolbox') ||
-          firstMessage.includes('unknown encoder') ||
-          firstMessage.includes('encoder not found') ||
-          firstMessage.includes('error while opening encoder'))
+    } else {
+      const readableImages: string[] = []
+      for (const imagePath of sourceImages) {
+        const readable = await isImageReadable(imagePath, runtimeOptions.imageReadableCache)
+        if (readable) readableImages.push(imagePath)
+      }
 
-      if (!shouldFallbackToX264) throw firstError
+      const videoDurationMap = new Map<string, number>()
+      const readableVideos: string[] = []
+      for (const videoPath of sourceVideos) {
+        const duration = await probeVideoDurationSeconds(videoPath)
+        if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= MIN_CLIP_DURATION_SEC) continue
+        readableVideos.push(videoPath)
+        videoDurationMap.set(videoPath, duration)
+      }
 
-      await rm(outputPath, { force: true }).catch(() => void 0)
-      await renderVideo({
-        images: renderImages,
+      if (readableImages.length === 0 && readableVideos.length === 0) {
+        const error = '[videoComposer] 可用素材不足或文件损坏。'
+        return { success: false, seed, error, debug: buildComposeFailureDebug(error) }
+      }
+
+      const random = mulberry32((seed ^ 0x51ed270b) >>> 0)
+      const mediaPool: Array<{ path: string; mediaType: 'image' | 'video' }> = [
+        ...readableImages.map((path) => ({ path, mediaType: 'image' as const })),
+        ...readableVideos.map((path) => ({ path, mediaType: 'video' as const }))
+      ]
+      for (let index = mediaPool.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(random() * (index + 1))
+        const temp = mediaPool[index]
+        mediaPool[index] = mediaPool[swapIndex]
+        mediaPool[swapIndex] = temp
+      }
+
+      const clips: SourceMediaClip[] = []
+      let remaining = template.totalDurationSec
+      let cursor = 0
+      let guard = 0
+      const guardLimit = Math.max(256, Math.ceil(template.totalDurationSec / MIN_CLIP_DURATION_SEC) + mediaPool.length * 16)
+
+      while (remaining > MIN_CLIP_DURATION_SEC && mediaPool.length > 0 && guard < guardLimit) {
+        const media = mediaPool[cursor % mediaPool.length]
+        cursor += 1
+        guard += 1
+
+        const baseDuration =
+          media.mediaType === 'image'
+            ? randomBetween(random, IMAGE_CLIP_DURATION_MIN_SEC, IMAGE_CLIP_DURATION_MAX_SEC)
+            : videoDurationMap.get(media.path) ?? 0
+        if (!Number.isFinite(baseDuration) || baseDuration <= MIN_CLIP_DURATION_SEC) continue
+
+        const clipDuration = Math.max(0.01, Math.min(baseDuration, remaining))
+        clips.push({
+          path: media.path,
+          mediaType: media.mediaType,
+          durationSec: clipDuration
+        })
+        remaining -= clipDuration
+      }
+
+      if (remaining > 0 && clips.length > 0) {
+        clips[clips.length - 1]!.durationSec += remaining
+      }
+      if (clips.length === 0) {
+        const error = '[videoComposer] 无法构建有效时间线，请检查素材可读性。'
+        return { success: false, seed, error, debug: buildComposeFailureDebug(error) }
+      }
+
+      usedImages = Array.from(new Set(clips.map((item) => item.path)))
+
+      await renderVideoWithFallback({
+        clips,
         outputPath,
         template,
         bgmPath,
-        videoEncoder: 'libx264',
         lowLoadMode: isLowLoadMode,
-        imagesPreprocessed: true,
+        imagesPreprocessed: false,
         onProgress: runtimeOptions.onProgress
       })
     }
+
     return {
       success: true,
       outputPath,
@@ -748,9 +939,11 @@ export async function composeVideoFromImages(
   runtimeOptions: ComposeVideoRuntimeOptions = {}
 ): Promise<ComposeVideoFromImagesResult> {
   const sourceImages = normalizeImagePaths(payload?.sourceImages)
+  const sourceVideos = normalizeVideoPaths(payload?.sourceVideos)
   return composeVideoFromPreparedImagePool(
     {
       sourceImages,
+      sourceVideos,
       template: payload?.template,
       bgmPath: payload?.bgmPath,
       outputPath: payload?.outputPath,

@@ -73,6 +73,8 @@ type ComposeVideoBatchFromImagesResult = {
   successCount: number
   failedCount: number
   sourceImageCount: number
+  sourceVideoCount: number
+  sourceMediaCount: number
   outputs: string[]
   failures: Array<{ index: number; error: string; details?: string }>
   debugLogPath?: string
@@ -561,6 +563,8 @@ const api = {
 const electronAPI = {
   openMediaFiles: (payload?: { multiSelections?: boolean; accept?: 'image' | 'video' | 'all' }) =>
     ipcRenderer.invoke('dialog:openMediaFiles', payload),
+  openMediaFilePaths: (payload?: { multiSelections?: boolean; accept?: 'image' | 'video' | 'all' }) =>
+    ipcRenderer.invoke('dialog:openMediaFilePaths', payload),
   openAudioFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:openAudioFile'),
   prepareVideoPreview: (filePath: string) => ipcRenderer.invoke('media:prepareVideoPreview', { filePath }),
   captureVideoFrame: (filePath: string, timeSec?: number): Promise<string> =>
@@ -606,6 +610,7 @@ const electronAPI = {
   composeVideoBatchFromImages: (payload: {
     sourceRootPath?: string
     sourceImages?: string[]
+    sourceVideos?: string[]
     template: {
       name?: string
       totalDurationSec: number
@@ -668,6 +673,8 @@ const electronAPI = {
   scanDirectory: (folderPath: string): Promise<string[]> => ipcRenderer.invoke('scan-directory', folderPath),
   scanDirectoryRecursive: (folderPath: string): Promise<string[]> =>
     ipcRenderer.invoke('scan-directory-recursive', folderPath),
+  scanMediaDirectoryRecursive: (folderPath: string): Promise<string[]> =>
+    ipcRenderer.invoke('scan-media-directory-recursive', folderPath),
   getPathForFile: (file: unknown): string => webUtils.getPathForFile(file as unknown as File),
   getWorkspacePath: (): Promise<{ path: string; status: 'initialized' | 'uninitialized' }> =>
     ipcRenderer.invoke('workspace.getPath'),
@@ -682,6 +689,7 @@ const electronAPI = {
     dynamicWatermarkEnabled: boolean
     dynamicWatermarkOpacity: number
     dynamicWatermarkSize: number
+    dynamicWatermarkTrajectory: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
     scoutDashboardAutoImportDir: string
     watermarkBox: { x: number; y: number; width: number; height: number }
     defaultStartTime: string
@@ -695,6 +703,7 @@ const electronAPI = {
     dynamicWatermarkEnabled?: boolean
     dynamicWatermarkOpacity?: number
     dynamicWatermarkSize?: number
+    dynamicWatermarkTrajectory?: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
     scoutDashboardAutoImportDir?: string
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string

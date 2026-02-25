@@ -20,6 +20,39 @@ function clampSizePercent(value: number): number {
   return Math.min(10, Math.max(2, Math.round(value)))
 }
 
+type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+
+type TrajectoryOption = {
+  value: DynamicWatermarkTrajectory
+  label: string
+  description: string
+}
+
+const WATERMARK_TRAJECTORY_OPTIONS: TrajectoryOption[] = [
+  { value: 'smoothSine', label: '方案 A · 柔和正弦漂移', description: '横向平移 + 纵向正弦起伏，轨迹柔和。' },
+  { value: 'figureEight', label: '方案 B · 8字李萨如', description: '围绕中心画“∞”，闭环平滑。' },
+  { value: 'diagonalWrap', label: '方案 C · 对角线回环', description: '沿对角方向巡航，越界后从对侧穿出。' },
+  { value: 'largeEllipse', label: '方案 D · 大椭圆巡航', description: '贴近边缘大轨道运动，尽量避开核心画面。' },
+  { value: 'pseudoRandom', label: '方案 E · 伪随机漫步', description: '叠加快慢波形成非线性游走（当前默认）。' }
+]
+
+function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTrajectory {
+  const normalized = String(value ?? '').trim()
+  const matched = WATERMARK_TRAJECTORY_OPTIONS.find((option) => option.value === normalized)
+  return matched?.value ?? 'pseudoRandom'
+}
+
+function positiveMod(value: number, divisor: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(divisor) || divisor <= 0) return 0
+  return ((value % divisor) + divisor) % divisor
+}
+
+function clampRange(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  if (max <= min) return min
+  return Math.max(min, Math.min(max, value))
+}
+
 function Settings(): React.JSX.Element {
   const config = useCmsStore((s) => s.config)
   const addLog = useCmsStore((s) => s.addLog)
@@ -30,10 +63,60 @@ function Settings(): React.JSX.Element {
   const [isTesting, setIsTesting] = useState(false)
   const [workspacePath, setWorkspacePath] = useState('')
   const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>('uninitialized')
+  const [previewTime, setPreviewTime] = useState(0)
   const exePickerRef = useRef<HTMLInputElement | null>(null)
   const pythonPickerRef = useRef<HTMLInputElement | null>(null)
   const scriptPickerRef = useRef<HTMLInputElement | null>(null)
   const skipFirstSaveRef = useRef(true)
+  const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
+
+  useEffect(() => {
+    const startedAt = performance.now()
+    const timer = window.setInterval(() => {
+      setPreviewTime((performance.now() - startedAt) / 1000)
+    }, 33)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const previewMotion = useMemo(() => {
+    const frameWidth = 360
+    const frameHeight = 204
+    const stickerWidth = Math.round(100 + clampSizePercent(config.dynamicWatermarkSize) * 3)
+    const stickerHeight = 30
+    const xMax = Math.max(1, frameWidth - stickerWidth)
+    const yMax = Math.max(1, frameHeight - stickerHeight)
+    const t = previewTime
+
+    let x = 0
+    let y = 0
+    if (selectedTrajectory === 'smoothSine') {
+      x = positiveMod(t * 13.3333333, xMax)
+      y = yMax / 2 + yMax * 0.4 * Math.sin(t * 0.5)
+    } else if (selectedTrajectory === 'figureEight') {
+      x = xMax / 2 + xMax * 0.4 * Math.cos(t * 0.3333333)
+      y = yMax / 2 + yMax * 0.4 * Math.sin(t * 0.6666667)
+    } else if (selectedTrajectory === 'diagonalWrap') {
+      x = positiveMod(t * 10, xMax)
+      y = positiveMod(t * 10 * (frameHeight / frameWidth), yMax)
+    } else if (selectedTrajectory === 'largeEllipse') {
+      x = xMax / 2 + xMax * 0.45 * Math.cos(t * 0.2666667)
+      y = yMax / 2 + yMax * 0.45 * Math.sin(t * 0.2666667)
+    } else {
+      x = xMax / 2 + xMax * 0.25 * Math.sin(t * 0.3666667) + xMax * 0.15 * Math.cos(t * 0.7666667)
+      y = yMax / 2 + yMax * 0.25 * Math.cos(t * 0.4333333) + yMax * 0.15 * Math.sin(t * 0.9666667)
+    }
+
+    return {
+      frameWidth,
+      frameHeight,
+      stickerWidth,
+      stickerHeight,
+      x: clampRange(x, 0, xMax),
+      y: clampRange(y, 0, yMax)
+    }
+  }, [config.dynamicWatermarkSize, previewTime, selectedTrajectory])
 
   const isFeishuConfigReady = useMemo(() => {
     return isNonEmpty(config.appId) && isNonEmpty(config.appSecret) && isNonEmpty(config.baseToken) && isNonEmpty(config.tableId)
@@ -54,6 +137,7 @@ function Settings(): React.JSX.Element {
             dynamicWatermarkEnabled: savedTools.dynamicWatermarkEnabled === true,
             dynamicWatermarkOpacity: clampOpacity(Number(savedTools.dynamicWatermarkOpacity)),
             dynamicWatermarkSize: clampSizePercent(Number(savedTools.dynamicWatermarkSize)),
+            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(savedTools.dynamicWatermarkTrajectory),
             scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
           })
           updatePreferences({
@@ -130,6 +214,7 @@ function Settings(): React.JSX.Element {
           dynamicWatermarkEnabled: config.dynamicWatermarkEnabled,
           dynamicWatermarkOpacity: clampOpacity(config.dynamicWatermarkOpacity),
           dynamicWatermarkSize: clampSizePercent(config.dynamicWatermarkSize),
+          dynamicWatermarkTrajectory: selectedTrajectory,
           scoutDashboardAutoImportDir: config.scoutDashboardAutoImportDir,
           defaultStartTime: preferences.defaultStartTime,
           defaultInterval: preferences.defaultInterval
@@ -150,6 +235,7 @@ function Settings(): React.JSX.Element {
     config.dynamicWatermarkEnabled,
     config.dynamicWatermarkOpacity,
     config.dynamicWatermarkSize,
+    selectedTrajectory,
     config.scoutDashboardAutoImportDir,
     config.watermarkScriptPath,
     preferences.defaultInterval,
@@ -334,6 +420,52 @@ function Settings(): React.JSX.Element {
               onChange={(e) => updateConfig({ dynamicWatermarkSize: clampSizePercent(Number(e.target.value)) })}
               className="w-full accent-zinc-200"
             />
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="mb-2 text-xs text-zinc-400">水印轨迹方案</div>
+            <select
+              value={selectedTrajectory}
+              onChange={(e) =>
+                updateConfig({
+                  dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(e.target.value)
+                })
+              }
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              {WATERMARK_TRAJECTORY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <div className="mt-2 text-xs text-zinc-500">
+              {WATERMARK_TRAJECTORY_OPTIONS.find((option) => option.value === selectedTrajectory)?.description}
+            </div>
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="mb-2 text-xs text-zinc-400">轨迹实时预览（黑底播放框）</div>
+            <div className="mx-auto w-full max-w-[360px]">
+              <div
+                className="relative overflow-hidden rounded-md border border-zinc-700 bg-black"
+                style={{ width: `${previewMotion.frameWidth}px`, height: `${previewMotion.frameHeight}px` }}
+              >
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.12),rgba(0,0,0,0)_55%)]" />
+                <div
+                  className="absolute inline-flex items-center justify-center rounded bg-white/12 px-2 text-xs font-semibold text-white backdrop-blur-sm"
+                  style={{
+                    left: `${previewMotion.x}px`,
+                    top: `${previewMotion.y}px`,
+                    width: `${previewMotion.stickerWidth}px`,
+                    height: `${previewMotion.stickerHeight}px`
+                  }}
+                >
+                  @accountName
+                </div>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-zinc-500">用于模拟轨迹运动效果，便于实时选择水印方案。</div>
           </div>
         </CardContent>
       </Card>
