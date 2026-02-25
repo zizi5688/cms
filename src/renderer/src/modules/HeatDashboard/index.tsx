@@ -1251,75 +1251,79 @@ function HeatDashboard(): React.JSX.Element {
                 已显示 {productCards.length} / {potentialProducts.length}
               </span>
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
-                onClick={() => setIsCoverDebugPanelOpen((prev) => !prev)}
-              >
-                {isCoverDebugPanelOpen ? '收起抓取调试' : '抓取调试'}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
-                  coverDebugState?.visual
-                    ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
-                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
-                )}
-                onClick={() =>
-                  void handleUpdateCoverDebugState({
-                    visual: !(coverDebugState?.visual === true)
-                  })
-                }
-                disabled={isCoverDebugUpdating}
-              >
-                可视抓取: {coverDebugState?.visual ? '开' : '关'}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
-                  coverDebugState?.keepWindowOpen
-                    ? 'border-amber-400/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
-                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
-                )}
-                onClick={() =>
-                  void handleUpdateCoverDebugState({
-                    keepWindowOpen: !(coverDebugState?.keepWindowOpen === true)
-                  })
-                }
-                disabled={isCoverDebugUpdating}
-              >
-                保留窗口: {coverDebugState?.keepWindowOpen ? '开' : '关'}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
-                  coverDebugState?.openDevTools
-                    ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
-                    : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
-                )}
-                onClick={() =>
-                  void handleUpdateCoverDebugState({
-                    openDevTools: !(coverDebugState?.openDevTools === true)
-                  })
-                }
-                disabled={isCoverDebugUpdating}
-              >
-                DevTools: {coverDebugState?.openDevTools ? '开' : '关'}
-              </button>
-            </div>
-            {isCoverDebugPanelOpen && (
-              <div className="mt-2 rounded-md border border-zinc-700 bg-black/35 p-2">
-                <div className="mb-1 text-[11px] text-zinc-400">
-                  实时日志：{coverDebugState?.logPath ? coverDebugState.logPath : '-'}
+            {import.meta.env.DEV && (
+              <>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-zinc-800"
+                    onClick={() => setIsCoverDebugPanelOpen((prev) => !prev)}
+                  >
+                    {isCoverDebugPanelOpen ? '收起抓取调试' : '抓取调试'}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                      coverDebugState?.visual
+                        ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                        : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                    )}
+                    onClick={() =>
+                      void handleUpdateCoverDebugState({
+                        visual: !(coverDebugState?.visual === true)
+                      })
+                    }
+                    disabled={isCoverDebugUpdating}
+                  >
+                    可视抓取: {coverDebugState?.visual ? '开' : '关'}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                      coverDebugState?.keepWindowOpen
+                        ? 'border-amber-400/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
+                        : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                    )}
+                    onClick={() =>
+                      void handleUpdateCoverDebugState({
+                        keepWindowOpen: !(coverDebugState?.keepWindowOpen === true)
+                      })
+                    }
+                    disabled={isCoverDebugUpdating}
+                  >
+                    保留窗口: {coverDebugState?.keepWindowOpen ? '开' : '关'}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50',
+                      coverDebugState?.openDevTools
+                        ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
+                        : 'border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800'
+                    )}
+                    onClick={() =>
+                      void handleUpdateCoverDebugState({
+                        openDevTools: !(coverDebugState?.openDevTools === true)
+                      })
+                    }
+                    disabled={isCoverDebugUpdating}
+                  >
+                    DevTools: {coverDebugState?.openDevTools ? '开' : '关'}
+                  </button>
                 </div>
-                <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-zinc-300">
-                  {coverDebugLines.length > 0 ? coverDebugLines.join('\n') : '暂无日志'}
-                </pre>
-              </div>
+                {isCoverDebugPanelOpen && (
+                  <div className="mt-2 rounded-md border border-zinc-700 bg-black/35 p-2">
+                    <div className="mb-1 text-[11px] text-zinc-400">
+                      实时日志：{coverDebugState?.logPath ? coverDebugState.logPath : '-'}
+                    </div>
+                    <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-zinc-300">
+                      {coverDebugLines.length > 0 ? coverDebugLines.join('\n') : '暂无日志'}
+                    </pre>
+                  </div>
+                )}
+              </>
             )}
           </header>
 
@@ -1635,12 +1639,12 @@ function ProductCard({
             onCompetitorAnalysis={onCompetitorAnalysis}
           />
           {isImageFetching && !hasValidImageUrl(card.imageUrl) && (
-            <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/70 px-2 py-1 text-[11px] text-white">
+            <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-[11px] text-white">
               封面抓取中...
             </div>
           )}
           {!isImageFetching && !hasValidImageUrl(card.imageUrl) && imageFetchError && (
-            <div className="pointer-events-none absolute right-2 top-2 rounded bg-rose-700/85 px-2 py-1 text-[11px] text-white">
+            <div className="pointer-events-none absolute left-2 top-2 rounded bg-rose-700/85 px-2 py-1 text-[11px] text-white">
               {formatImageFetchErrorLabel(imageFetchError)}
             </div>
           )}
@@ -1746,66 +1750,130 @@ function SourcingPanel({
   onClose
 }: SourcingPanelProps): React.JSX.Element {
   const resolvedTargetImage = xhsImage ? resolveLocalImage(xhsImage, workspacePath) : ''
+  const WebviewTag = 'webview' as any
+  const webviewRef = useRef<any>(null)
+  const [debouncedSupplierUrl, setDebouncedSupplierUrl] = useState('')
+  const [isWebviewLoading, setIsWebviewLoading] = useState(false)
+
+  const selectedSupplierUrl = useMemo(() => {
+    const raw = String(candidates[selectedSupplierIndex]?.url ?? '').trim()
+    if (!raw) return ''
+    try {
+      const target = new URL(raw)
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') return ''
+      const hostname = String(target.hostname ?? '').toLowerCase()
+      if (!/(^|\.)1688\.com$/i.test(hostname)) return ''
+      return target.toString()
+    } catch {
+      return ''
+    }
+  }, [candidates, selectedSupplierIndex])
+
+  useEffect(() => {
+    if (!isOpen) {
+      setDebouncedSupplierUrl('')
+      setIsWebviewLoading(false)
+      return
+    }
+    if (!selectedSupplierUrl) {
+      setDebouncedSupplierUrl('')
+      setIsWebviewLoading(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setIsWebviewLoading(true)
+      setDebouncedSupplierUrl(selectedSupplierUrl)
+    }, 200)
+    return () => window.clearTimeout(timer)
+  }, [isOpen, selectedSupplierUrl])
+
+  useEffect(() => {
+    const webviewNode = webviewRef.current
+    if (!webviewNode || typeof webviewNode.addEventListener !== 'function') return
+
+    const handleDidStartLoading = (): void => {
+      setIsWebviewLoading(true)
+    }
+    const handleDidStopLoading = (): void => {
+      setIsWebviewLoading(false)
+    }
+    const handleDidFailLoad = (): void => {
+      setIsWebviewLoading(false)
+    }
+
+    webviewNode.addEventListener('did-start-loading', handleDidStartLoading)
+    webviewNode.addEventListener('did-stop-loading', handleDidStopLoading)
+    webviewNode.addEventListener('did-fail-load', handleDidFailLoad)
+    return () => {
+      webviewNode.removeEventListener('did-start-loading', handleDidStartLoading)
+      webviewNode.removeEventListener('did-stop-loading', handleDidStopLoading)
+      webviewNode.removeEventListener('did-fail-load', handleDidFailLoad)
+    }
+  }, [])
 
   return (
     <div
       className={cn(
-        'pointer-events-none absolute inset-x-0 bottom-0 z-50 px-4 pb-4 transition-all duration-300 ease-out',
-        isOpen ? 'translate-y-0 opacity-100' : 'translate-y-[105%] opacity-0'
+        'fixed inset-0 z-[70] transition-opacity duration-200',
+        isOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
       )}
       aria-hidden={!isOpen}
     >
-      <section className="pointer-events-auto rounded-xl border border-zinc-700 bg-[#1a1a1a] p-4 shadow-[0_-18px_45px_rgba(0,0,0,0.58)]">
-        <div className="flex items-center justify-between border-b border-zinc-700 pb-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/90">搜同款</div>
-            <div className="mt-0.5 text-xs text-zinc-300">
-              {isRunning
-                ? '正在搜同款并提取供应商...'
-                : emptyState
-                  ? '请根据提示完成前置条件，再重试搜同款'
-                  : '选择候选供应商后，可直接在卡片内点击“绑定供应商”'}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={onClose}
-            disabled={isRunning}
-          >
-            关闭
-          </button>
-        </div>
+      <div className="absolute inset-0 bg-black/50" />
 
-        <div className="mt-4 grid h-[336px] gap-4" style={{ gridTemplateColumns: '1.35fr 5.65fr' }}>
-          <div className="relative h-full overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1">
-            {resolvedTargetImage ? (
-              <img
-                src={resolvedTargetImage}
-                alt="xhs target"
-                className="h-full w-full object-cover"
-                loading="lazy"
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-xs text-zinc-500">
-                暂无目标图
+      <section className="absolute left-1/2 top-1/2 flex h-[90vh] w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950 shadow-[0_18px_60px_rgba(0,0,0,0.62)]">
+        <div className="flex h-full w-[360px] shrink-0 flex-col border-r border-zinc-700 bg-zinc-900/90">
+          <header className="flex items-start justify-between gap-2 border-b border-zinc-700 px-4 py-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/90">搜同款</div>
+              <div className="mt-0.5 text-xs text-zinc-300">
+                {isRunning
+                  ? '正在搜同款并提取供应商...'
+                  : emptyState
+                    ? '请根据提示完成前置条件，再重试搜同款'
+                    : '点击左侧候选卡片，右侧将自动联动 1688 详情'}
               </div>
-            )}
-            <div className="absolute left-2 top-2 rounded-md border border-amber-400/80 bg-black/80 px-2 py-1 text-[11px] font-semibold text-amber-300">
-              目标售价: {formatMoney(targetPrice)}
+            </div>
+            <button
+              type="button"
+              className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={onClose}
+              disabled={isRunning}
+            >
+              关闭
+            </button>
+          </header>
+
+          <div className="border-b border-zinc-700 px-3 py-3">
+            <div className="relative overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1">
+              {resolvedTargetImage ? (
+                <img
+                  src={resolvedTargetImage}
+                  alt="xhs target"
+                  className="h-[220px] w-full object-cover"
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="flex h-[220px] w-full items-center justify-center text-xs text-zinc-500">
+                  暂无目标图
+                </div>
+              )}
+              <div className="absolute left-2 top-2 rounded-md border border-amber-400/80 bg-black/80 px-2 py-1 text-[11px] font-semibold text-amber-300">
+                目标售价: {formatMoney(targetPrice)}
+              </div>
             </div>
           </div>
 
-          <div className="h-full min-w-0 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
             {candidates.length === 0 ? (
               isRunning ? (
-                <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                <div className="flex h-full min-h-[140px] items-center justify-center text-sm text-zinc-500">
                   供应商抓取中...
                 </div>
               ) : emptyState ? (
                 <div className="flex h-full items-center justify-center">
-                  <div className="w-full max-w-[560px] rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-center">
+                  <div className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-center">
                     <div className="text-sm font-semibold text-amber-200">{emptyState.title}</div>
                     <div className="mt-2 text-xs leading-5 text-zinc-300">{emptyState.detail}</div>
                     <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
@@ -1840,12 +1908,12 @@ function SourcingPanel({
                   </div>
                 </div>
               ) : (
-                <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                <div className="flex h-full min-h-[140px] items-center justify-center text-sm text-zinc-500">
                   暂无供应商候选
                 </div>
               )
             ) : (
-              <div className="flex h-full items-stretch gap-2 overflow-x-auto pb-1">
+              <div className="space-y-2 pb-1">
                 {candidates.map((candidate, index) => (
                   <SupplierCard
                     key={candidate.id}
@@ -1860,6 +1928,32 @@ function SourcingPanel({
               </div>
             )}
           </div>
+        </div>
+
+        <div className="relative min-w-0 flex-1 bg-zinc-950">
+          <WebviewTag
+            ref={webviewRef}
+            src={debouncedSupplierUrl || 'about:blank'}
+            partition="persist:scout-sourcing"
+            className="h-full w-full"
+            allowpopups="true"
+          />
+
+          {!debouncedSupplierUrl && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-zinc-950/88">
+              <div className="rounded-md border border-zinc-700 bg-zinc-900/85 px-4 py-3 text-sm text-zinc-300">
+                {candidates.length === 0 ? '等待供应商结果...' : '请在左侧选择一个可用的 1688 供应商卡片'}
+              </div>
+            </div>
+          )}
+
+          {isWebviewLoading && debouncedSupplierUrl && (
+            <div className="pointer-events-none absolute inset-0 bg-black/12">
+              <div className="absolute left-3 top-3 rounded border border-zinc-700 bg-zinc-900/88 px-2 py-1 text-[11px] text-zinc-200">
+                页面加载中...
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>
@@ -1897,11 +1991,6 @@ function SupplierCard({
     event.preventDefault()
     onSelect()
   }
-  const handleOpenExternal = (event: React.MouseEvent<HTMLButtonElement>): void => {
-    event.stopPropagation()
-    if (!candidate.url) return
-    void window.api.cms.system.openExternal(candidate.url).catch(() => void 0)
-  }
   const handleBindClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
     onBindSupplier()
@@ -1912,26 +2001,15 @@ function SupplierCard({
       role="button"
       tabIndex={0}
       className={cn(
-        'flex h-full min-w-[276px] cursor-pointer flex-col rounded-md border bg-zinc-950/90 p-2.5 text-left transition hover:bg-gray-800',
+        'flex w-full cursor-pointer flex-col rounded-md border bg-zinc-950/90 p-2.5 text-left transition',
         selected
-          ? 'border-emerald-500/90 shadow-[0_0_0_1px_rgba(16,185,129,0.75)]'
-          : 'border-zinc-800 hover:border-zinc-600'
+          ? 'border-emerald-500/95 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.8)]'
+          : 'border-zinc-800 hover:border-zinc-600 hover:bg-zinc-900/90'
       )}
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="truncate text-xs font-semibold text-zinc-100">{candidate.name}</div>
-        <button
-          type="button"
-          className="shrink-0 rounded border border-zinc-600 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-45"
-          onClick={handleOpenExternal}
-          disabled={!candidate.url}
-          title={candidate.url ? '打开1688详情页' : '暂无详情链接'}
-        >
-          打开
-        </button>
-      </div>
+      <div className="truncate text-xs font-semibold text-zinc-100">{candidate.name}</div>
       <div className="mt-1 text-[11px] text-zinc-400">48h揽收: {candidate.serviceRateLabel}</div>
 
       <div className="mt-2 grid min-h-0 flex-1 grid-cols-2 gap-2">
