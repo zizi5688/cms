@@ -179,6 +179,17 @@ type CoverDebugState = {
 }
 
 type ProductFilterKey = 'all' | 'alert' | 'flawed_hot' | 'exploding_new'
+type ProductSortKey = 'potentialScore' | 'addCart24hValue' | 'totalSales' | 'price'
+type ProductSortDirection = 'asc' | 'desc'
+type ProductSortConfig = {
+  key: ProductSortKey
+  direction: ProductSortDirection
+}
+type ProductRangeFilterConfig = {
+  minAddCart24h: number
+  minPrice: string
+  maxPrice: string
+}
 
 const FILTER_PILLS: Array<{ key: ProductFilterKey; label: string }> = [
   { key: 'all', label: '全部' },
@@ -186,6 +197,14 @@ const FILTER_PILLS: Array<{ key: ProductFilterKey; label: string }> = [
   { key: 'flawed_hot', label: '低分热销' },
   { key: 'exploding_new', label: '飙升新品' }
 ]
+const PRODUCT_SORT_OPTIONS: Array<{ key: ProductSortKey; label: string }> = [
+  { key: 'potentialScore', label: '潜力分' },
+  { key: 'addCart24hValue', label: '24h加购' },
+  { key: 'totalSales', label: '总销量' },
+  { key: 'price', label: '价格' }
+]
+const DEFAULT_PRODUCT_SORT_CONFIG: ProductSortConfig = { key: 'potentialScore', direction: 'desc' }
+const DEFAULT_PRODUCT_FILTER_CONFIG: ProductRangeFilterConfig = { minAddCart24h: 0, minPrice: '', maxPrice: '' }
 
 const PRODUCT_PLACEHOLDER_IMAGE =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='640' viewBox='0 0 640 640'%3E%3Cdefs%3E%3ClinearGradient id='bg' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f3f4f6'/%3E%3Cstop offset='100%25' stop-color='%23e5e7eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='640' height='640' fill='url(%23bg)'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='Arial' font-size='28'%3ENo Image%3C/text%3E%3C/svg%3E"
@@ -223,6 +242,8 @@ function HeatDashboard(): React.JSX.Element {
   const [isCoverDebugPanelOpen, setIsCoverDebugPanelOpen] = useState(false)
   const [isCoverDebugUpdating, setIsCoverDebugUpdating] = useState(false)
   const [activeFilter, setActiveFilter] = useState<ProductFilterKey>('all')
+  const [sortConfig, setSortConfig] = useState<ProductSortConfig>(DEFAULT_PRODUCT_SORT_CONFIG)
+  const [filterConfig, setFilterConfig] = useState<ProductRangeFilterConfig>(DEFAULT_PRODUCT_FILTER_CONFIG)
   const [sourcingMarked, setSourcingMarked] = useState<MarkedProduct | null>(null)
   const [sourcingSearchCandidates, setSourcingSearchCandidates] = useState<SourcingSupplierCandidate[] | null>(null)
   const [sourcingEmptyState, setSourcingEmptyState] = useState<SourcingEmptyState | null>(null)
@@ -477,17 +498,68 @@ function HeatDashboard(): React.JSX.Element {
   }, [keywordHeat])
 
   const filteredPotentialProducts = useMemo(() => {
-    if (activeFilter === 'all') return potentialProducts
-    return potentialProducts.filter((item) => {
-      const isAlert = typeof item.isAlert === 'boolean' ? item.isAlert : (keywordAlertMap.get(item.keyword) ?? false)
-      if (activeFilter === 'alert') return isAlert
-      if (activeFilter === 'flawed_hot') return item.scout_strategy_tag === 'flawed_hot'
-      return item.scout_strategy_tag === 'exploding_new'
+    const pillFiltered =
+      activeFilter === 'all'
+        ? potentialProducts
+        : potentialProducts.filter((item) => {
+            const isAlert =
+              typeof item.isAlert === 'boolean' ? item.isAlert : (keywordAlertMap.get(item.keyword) ?? false)
+            if (activeFilter === 'alert') return isAlert
+            if (activeFilter === 'flawed_hot') return item.scout_strategy_tag === 'flawed_hot'
+            return item.scout_strategy_tag === 'exploding_new'
+          })
+
+    const parsedMinPrice = parseOptionalNumber(filterConfig.minPrice)
+    const parsedMaxPrice = parseOptionalNumber(filterConfig.maxPrice)
+    const [priceFloor, priceCeil] =
+      parsedMinPrice != null && parsedMaxPrice != null && parsedMinPrice > parsedMaxPrice
+        ? [parsedMaxPrice, parsedMinPrice]
+        : [parsedMinPrice, parsedMaxPrice]
+
+    const rangeFiltered = pillFiltered.filter((item) => {
+      if (item.addCart24hValue < filterConfig.minAddCart24h) return false
+      if (priceFloor == null && priceCeil == null) return true
+      if (item.price == null || !Number.isFinite(item.price)) return false
+      if (priceFloor != null && item.price < priceFloor) return false
+      if (priceCeil != null && item.price > priceCeil) return false
+      return true
     })
-  }, [activeFilter, keywordAlertMap, potentialProducts])
+
+    return [...rangeFiltered].sort((a, b) => {
+      const av = getPotentialSortMetric(a, sortConfig.key)
+      const bv = getPotentialSortMetric(b, sortConfig.key)
+
+      if (av == null && bv == null) {
+        if (b.potentialScore !== a.potentialScore) return b.potentialScore - a.potentialScore
+        if (b.addCart24hValue !== a.addCart24hValue) return b.addCart24hValue - a.addCart24hValue
+        return a.productName.localeCompare(b.productName)
+      }
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (av !== bv) {
+        return sortConfig.direction === 'asc' ? av - bv : bv - av
+      }
+      if (b.potentialScore !== a.potentialScore) return b.potentialScore - a.potentialScore
+      if (b.addCart24hValue !== a.addCart24hValue) return b.addCart24hValue - a.addCart24hValue
+      return a.productName.localeCompare(b.productName)
+    })
+  }, [
+    activeFilter,
+    filterConfig.maxPrice,
+    filterConfig.minAddCart24h,
+    filterConfig.minPrice,
+    keywordAlertMap,
+    potentialProducts,
+    sortConfig.direction,
+    sortConfig.key
+  ])
   const activeFilterLabel = useMemo(() => {
     return FILTER_PILLS.find((pill) => pill.key === activeFilter)?.label ?? '全部'
   }, [activeFilter])
+  const handleResetProductControls = useCallback(() => {
+    setSortConfig(DEFAULT_PRODUCT_SORT_CONFIG)
+    setFilterConfig(DEFAULT_PRODUCT_FILTER_CONFIG)
+  }, [])
 
   const productCards = useMemo<ProductCardModel[]>(() => {
     return filteredPotentialProducts.map((item) => {
@@ -1250,6 +1322,92 @@ function HeatDashboard(): React.JSX.Element {
               <span className="text-[11px] text-zinc-400">
                 已显示 {productCards.length} / {potentialProducts.length}
               </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-end gap-2 rounded-md border border-zinc-700/80 bg-zinc-900/55 p-2">
+              <label className="flex flex-col gap-1 text-[11px] text-zinc-400">
+                排序字段
+                <select
+                  value={sortConfig.key}
+                  className="h-8 rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 focus:border-cyan-500 focus:outline-none"
+                  onChange={(event) => {
+                    const nextKey = event.target.value as ProductSortKey
+                    setSortConfig((prev) => (prev.key === nextKey ? prev : { ...prev, key: nextKey }))
+                  }}
+                >
+                  {PRODUCT_SORT_OPTIONS.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-zinc-400">
+                排序方向
+                <button
+                  type="button"
+                  className="h-8 rounded border border-zinc-700 bg-zinc-900 px-3 text-xs font-semibold text-zinc-100 transition hover:border-cyan-500 hover:text-cyan-100"
+                  onClick={() =>
+                    setSortConfig((prev) => ({
+                      ...prev,
+                      direction: prev.direction === 'asc' ? 'desc' : 'asc'
+                    }))
+                  }
+                >
+                  {sortConfig.direction === 'asc' ? '升序' : '降序'}
+                </button>
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-zinc-400">
+                最低24h加购
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={filterConfig.minAddCart24h}
+                  className="h-8 w-28 rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-cyan-500 focus:outline-none"
+                  onChange={(event) => {
+                    const parsed = Number.parseInt(event.target.value, 10)
+                    setFilterConfig((prev) => ({
+                      ...prev,
+                      minAddCart24h: Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+                    }))
+                  }}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-zinc-400">
+                最低价
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={filterConfig.minPrice}
+                  placeholder="不限"
+                  className="h-8 w-24 rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-cyan-500 focus:outline-none"
+                  onChange={(event) => {
+                    setFilterConfig((prev) => ({ ...prev, minPrice: event.target.value }))
+                  }}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-zinc-400">
+                最高价
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={filterConfig.maxPrice}
+                  placeholder="不限"
+                  className="h-8 w-24 rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-cyan-500 focus:outline-none"
+                  onChange={(event) => {
+                    setFilterConfig((prev) => ({ ...prev, maxPrice: event.target.value }))
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="h-8 rounded border border-zinc-600 bg-zinc-800 px-3 text-xs font-semibold text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-100"
+                onClick={handleResetProductControls}
+              >
+                重置
+              </button>
             </div>
             {import.meta.env.DEV && (
               <>
@@ -2285,6 +2443,46 @@ function formatImageFetchErrorLabel(reason: string): string {
   if (text.includes('timeout') || text.includes('超时')) return '请求超时'
   if (text.includes('未解析到有效商品主图') || text.includes('主图')) return '未解析主图'
   return '抓取失败'
+}
+
+function parseOptionalNumber(value: string): number | null {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return null
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseSalesMetric(value: string | null): number | null {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[,\s+]/g, '')
+  if (!normalized) return null
+  const matched = normalized.match(/^(-?\d+(?:\.\d+)?)(.*)$/)
+  if (!matched) return null
+  const numeric = Number(matched[1])
+  if (!Number.isFinite(numeric)) return null
+
+  const unit = matched[2] ?? ''
+  if (unit.includes('万') || unit.includes('w')) return numeric * 10000
+  if (unit.includes('千') || unit.includes('k')) return numeric * 1000
+  if (unit.includes('m')) return numeric * 1000000
+  return numeric
+}
+
+function getPotentialSortMetric(item: PotentialProduct, key: ProductSortKey): number | null {
+  switch (key) {
+    case 'potentialScore':
+      return Number.isFinite(item.potentialScore) ? item.potentialScore : null
+    case 'addCart24hValue':
+      return Number.isFinite(item.addCart24hValue) ? item.addCart24hValue : null
+    case 'totalSales':
+      return parseSalesMetric(item.totalSales)
+    case 'price':
+      return item.price != null && Number.isFinite(item.price) ? item.price : null
+    default:
+      return null
+  }
 }
 
 function formatGrowth(value: number | null): string {
