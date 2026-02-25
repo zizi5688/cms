@@ -32,6 +32,11 @@ function isImageFile(filePath: string): boolean {
   )
 }
 
+function isVideoFile(filePath: string): boolean {
+  const normalized = filePath.toLowerCase()
+  return normalized.endsWith('.mp4') || normalized.endsWith('.mov')
+}
+
 function isAudioFile(filePath: string): boolean {
   const normalized = filePath.toLowerCase()
   return (
@@ -159,6 +164,7 @@ function VideoComposerPanel(): React.JSX.Element {
   const setActiveModule = useCmsStore((s) => s.setActiveModule)
 
   const [sourceImages, setSourceImages] = useState<string[]>([])
+  const [sourceVideos, setSourceVideos] = useState<string[]>([])
   const [sourceRootPath, setSourceRootPath] = useState('')
   const [template, setTemplate] = useState<VideoStyleTemplate>(() => INITIAL_SAVED_TEMPLATE?.template ?? DEFAULT_TEMPLATE)
   const [templateSavedAt, setTemplateSavedAt] = useState<number>(() => INITIAL_SAVED_TEMPLATE?.savedAt ?? 0)
@@ -179,7 +185,8 @@ function VideoComposerPanel(): React.JSX.Element {
   const [hotMusicSummary, setHotMusicSummary] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const canGenerate = sourceImages.length > 0 && !isGenerating && !isScanningRoot
+  const sourceMediaCount = sourceImages.length + sourceVideos.length
+  const canGenerate = sourceMediaCount > 0 && !isGenerating && !isScanningRoot
   const normalizedMin = Math.max(1, Math.floor(Number(template.imageCountMin) || 1))
   const normalizedMax = Math.max(normalizedMin, Math.floor(Number(template.imageCountMax) || normalizedMin))
   const renderMode: 'hd' = 'hd'
@@ -192,6 +199,7 @@ function VideoComposerPanel(): React.JSX.Element {
 
   const resetVideoComposerToInitial = (): void => {
     setSourceImages([])
+    setSourceVideos([])
     setSourceRootPath('')
     setTemplate(INITIAL_SAVED_TEMPLATE?.template ?? DEFAULT_TEMPLATE)
     setTemplateSavedAt(INITIAL_SAVED_TEMPLATE?.savedAt ?? 0)
@@ -427,7 +435,7 @@ function VideoComposerPanel(): React.JSX.Element {
     })
   }
 
-  const handlePickImageRoot = async (): Promise<void> => {
+  const handlePickMediaFolder = async (): Promise<void> => {
     if (isGenerating || isScanningRoot) return
     try {
       setIsScanningRoot(true)
@@ -435,27 +443,85 @@ function VideoComposerPanel(): React.JSX.Element {
       if (!folderPath || !folderPath.trim()) return
 
       const scanFn =
-        typeof window.electronAPI.scanDirectoryRecursive === 'function'
-          ? window.electronAPI.scanDirectoryRecursive
-          : window.electronAPI.scanDirectory
+        typeof window.electronAPI.scanMediaDirectoryRecursive === 'function'
+          ? window.electronAPI.scanMediaDirectoryRecursive
+          : typeof window.electronAPI.scanDirectoryRecursive === 'function'
+            ? window.electronAPI.scanDirectoryRecursive
+            : window.electronAPI.scanDirectory
       const files = await scanFn(folderPath.trim())
       const imagePaths = files.filter((item) => isImageFile(item))
-      if (imagePaths.length === 0) {
-        setError('该目录下未发现可用图片（支持 jpg/jpeg/png/webp/heic）。')
-        addLog(`[视频处理] 图片根目录无可用素材：${folderPath}`)
-        window.alert('该目录下未发现可用图片（支持 jpg/jpeg/png/webp/heic）。')
+      const videoPaths = files.filter((item) => isVideoFile(item))
+      if (imagePaths.length === 0 && videoPaths.length === 0) {
+        setError('该目录下未发现可用素材（图片: jpg/jpeg/png/webp/heic；视频: mp4/mov）。')
+        addLog(`[视频处理] 素材目录无可用素材：${folderPath}`)
+        window.alert('该目录下未发现可用素材（图片: jpg/jpeg/png/webp/heic；视频: mp4/mov）。')
         return
       }
 
       setSourceRootPath(folderPath.trim())
       setSourceImages(Array.from(new Set(imagePaths)))
+      setSourceVideos(Array.from(new Set(videoPaths)))
       setError(null)
-      addLog(`[视频处理] 已从目录导入 ${imagePaths.length} 张图片：${folderPath}`)
+      addLog(`[视频处理] 已从目录导入素材：图片 ${imagePaths.length} 张，视频 ${videoPaths.length} 条（${folderPath}）`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
-      addLog(`[视频处理] 选择图片根目录失败：${message}`)
-      window.alert(`选择图片根目录失败：${message}`)
+      addLog(`[视频处理] 选择素材文件夹失败：${message}`)
+      window.alert(`选择素材文件夹失败：${message}`)
+    } finally {
+      setIsScanningRoot(false)
+    }
+  }
+
+  const handlePickMediaFiles = async (): Promise<void> => {
+    if (isGenerating || isScanningRoot) return
+    try {
+      setIsScanningRoot(true)
+      const picked =
+        typeof window.electronAPI.openMediaFilePaths === 'function'
+          ? await window.electronAPI.openMediaFilePaths({ multiSelections: true, accept: 'all' })
+          : await window.electronAPI.openMediaFiles({ multiSelections: true, accept: 'all' })
+      const paths = Array.isArray(picked)
+        ? picked
+        : picked && typeof picked === 'object' && 'originalPath' in picked
+          ? [String((picked as { originalPath?: unknown }).originalPath ?? '').trim()]
+          : typeof picked === 'string'
+            ? [picked]
+            : []
+      if (paths.length === 0) return
+
+      const imagePaths: string[] = []
+      const videoPaths: string[] = []
+      for (const item of paths) {
+        const rawPath = String(item ?? '').trim()
+        if (!rawPath) continue
+        if (isImageFile(rawPath)) {
+          imagePaths.push(rawPath)
+          continue
+        }
+        if (isVideoFile(rawPath)) {
+          videoPaths.push(rawPath)
+        }
+      }
+
+      const normalizedImages = Array.from(new Set(imagePaths))
+      const normalizedVideos = Array.from(new Set(videoPaths))
+      if (normalizedImages.length === 0 && normalizedVideos.length === 0) {
+        setError('未选择到可用素材（图片: jpg/jpeg/png/webp/heic；视频: mp4/mov）。')
+        addLog('[视频处理] 选择文件后未识别到可用图片/视频素材。')
+        return
+      }
+
+      setSourceRootPath('')
+      setSourceImages(normalizedImages)
+      setSourceVideos(normalizedVideos)
+      setError(null)
+      addLog(`[视频处理] 已选择文件素材：图片 ${normalizedImages.length} 张，视频 ${normalizedVideos.length} 条。`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      addLog(`[视频处理] 选择素材文件失败：${message}`)
+      window.alert(`选择素材文件失败：${message}`)
     } finally {
       setIsScanningRoot(false)
     }
@@ -463,7 +529,7 @@ function VideoComposerPanel(): React.JSX.Element {
 
   const startGenerate = async (): Promise<void> => {
     if (!canGenerate) return
-    if (sourceImages.length < normalizedMin) {
+    if (sourceVideos.length === 0 && sourceImages.length < normalizedMin) {
       setError(`当前仅 ${sourceImages.length} 张图，至少需要 ${normalizedMin} 张。`)
       return
     }
@@ -479,6 +545,7 @@ function VideoComposerPanel(): React.JSX.Element {
         selectedBgmValue === RANDOM_BGM_VALUE ? 'random' : selectedBgmValue.trim() ? 'fixed' : 'none'
       const result = await window.electronAPI.composeVideoBatchFromImages({
         sourceImages,
+        sourceVideos,
         template: {
           ...template,
           imageCountMin: normalizedMin,
@@ -504,7 +571,7 @@ function VideoComposerPanel(): React.JSX.Element {
       }
 
       addLog(
-        `[视频处理] 批量生成完成：成功 ${result.successCount}，失败 ${result.failedCount}，素材池 ${result.sourceImageCount} 张`
+        `[视频处理] 批量生成完成：成功 ${result.successCount}，失败 ${result.failedCount}，素材池 ${result.sourceMediaCount} 项（图 ${result.sourceImageCount} / 视频 ${result.sourceVideoCount}）`
       )
       if (result.failures.length > 0) {
         addLog(
@@ -546,15 +613,18 @@ function VideoComposerPanel(): React.JSX.Element {
           <section className="border-b border-zinc-800 pb-3">
             <div className="mb-2 text-sm font-medium text-zinc-100">视频处理</div>
             <div className="flex items-center gap-2">
-              <Button type="button" size="sm" onClick={() => void handlePickImageRoot()} disabled={isGenerating || isScanningRoot}>
+              <Button type="button" size="sm" onClick={() => void handlePickMediaFolder()} disabled={isGenerating || isScanningRoot}>
                 {isScanningRoot ? (
                   <span className="flex items-center gap-1.5">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     扫描中
                   </span>
                 ) : (
-                  '选择目录'
+                  '选择文件夹'
                 )}
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => void handlePickMediaFiles()} disabled={isGenerating || isScanningRoot}>
+                选择文件
               </Button>
               <Button
                 type="button"
@@ -562,10 +632,11 @@ function VideoComposerPanel(): React.JSX.Element {
                 variant="outline"
                 onClick={() => {
                   setSourceImages([])
+                  setSourceVideos([])
                   setSourceRootPath('')
                   setError(null)
                 }}
-                disabled={isGenerating || isScanningRoot || sourceImages.length === 0}
+                disabled={isGenerating || isScanningRoot || sourceMediaCount === 0}
               >
                 清空
               </Button>
@@ -582,7 +653,11 @@ function VideoComposerPanel(): React.JSX.Element {
                 </Button>
               ) : null}
               <div className="min-w-0 flex-1 truncate text-sm text-zinc-300">
-                {sourceRootPath ? `${sourceRootPath} · ${sourceImages.length} 张` : '未选择目录'}
+                {sourceRootPath
+                  ? `${sourceRootPath} · 图片 ${sourceImages.length} 张 / 视频 ${sourceVideos.length} 条`
+                  : sourceMediaCount > 0
+                    ? `已选择文件 · 图片 ${sourceImages.length} 张 / 视频 ${sourceVideos.length} 条`
+                    : '未选择素材'}
               </div>
             </div>
             {error ? <div className="mt-2 text-sm text-rose-300">{error}</div> : null}
@@ -694,7 +769,9 @@ function VideoComposerPanel(): React.JSX.Element {
                       imageCountMin: normalizedMin,
                       imageCountMax: normalizedMax,
                       sourceRootPath,
-                      sourceImageCount: sourceImages.length
+                      sourceImageCount: sourceImages.length,
+                      sourceVideoCount: sourceVideos.length,
+                      sourceMediaCount
                     },
                     null,
                     2
@@ -839,7 +916,7 @@ function VideoComposerPanel(): React.JSX.Element {
                   )}
                 </Button>
                 <div className="mt-3 rounded-sm border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs leading-relaxed text-zinc-400">
-                  抽样规则：每条视频随机使用 {normalizedMin}-{normalizedMax} 张图（输出：{outputSizeLabel}）。
+                  抽样规则：图片单张时长随机，视频按整段参与；总时长严格对齐（输出：{outputSizeLabel}）。
                 </div>
               </div>
 

@@ -96,6 +96,8 @@ declare global {
     successCount: number
     failedCount: number
     sourceImageCount: number
+    sourceVideoCount: number
+    sourceMediaCount: number
     outputs: string[]
     failures: Array<{ index: number; error: string; details?: string }>
     debugLogPath?: string
@@ -572,6 +574,10 @@ declare global {
       multiSelections?: boolean
       accept?: 'image' | 'video' | 'all'
     }) => Promise<MediaSelectionItem | MediaSelectionItem[] | null>
+    openMediaFilePaths: (payload?: {
+      multiSelections?: boolean
+      accept?: 'image' | 'video' | 'all'
+    }) => Promise<string[] | string | null>
     openAudioFile: () => Promise<string | null>
     prepareVideoPreview: (filePath: string) => Promise<PrepareVideoPreviewResult>
     captureVideoFrame: (filePath: string, timeSec?: number) => Promise<string>
@@ -587,6 +593,7 @@ declare global {
     composeVideoBatchFromImages: (payload: {
       sourceRootPath?: string
       sourceImages?: string[]
+      sourceVideos?: string[]
       template: VideoStyleTemplate
       batchCount: number
       bgmMode?: 'none' | 'fixed' | 'random'
@@ -618,6 +625,7 @@ declare global {
     }) => Promise<{ response: number; checkboxChecked?: boolean }>
     scanDirectory: (folderPath: string) => Promise<string[]>
     scanDirectoryRecursive: (folderPath: string) => Promise<string[]>
+    scanMediaDirectoryRecursive: (folderPath: string) => Promise<string[]>
     getPathForFile: (file: File) => string
     getWorkspacePath: () => Promise<{ path: string; status: 'initialized' | 'uninitialized' }>
     pickWorkspacePath: () => Promise<string | null>

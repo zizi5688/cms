@@ -25,6 +25,7 @@ import {
   composeVideoFromImages,
   composeVideoFromPreparedImagePool,
   normalizeImagePaths,
+  normalizeVideoPaths,
   type ComposeVideoFailureDebug,
   type VideoOutputAspect
 } from './services/videoComposer'
@@ -235,6 +236,7 @@ function formatVideoComposerFailureDetails(options: {
   batchTotal: number
   seed: number
   sourceImageCount: number
+  sourceVideoCount?: number
   error: string
   bgmPath?: string
   debug?: ComposeVideoFailureDebug
@@ -243,6 +245,7 @@ function formatVideoComposerFailureDetails(options: {
   lines.push(`batch=${options.batchIndex}/${options.batchTotal}`)
   lines.push(`seed=${options.seed}`)
   lines.push(`sourceImageCount=${options.sourceImageCount}`)
+  lines.push(`sourceVideoCount=${Math.max(0, Number(options.sourceVideoCount) || 0)}`)
   lines.push(`error=${options.error}`)
   lines.push(`bgmPath=${options.bgmPath ? options.bgmPath : '<none>'}`)
 
@@ -733,7 +736,7 @@ async function scanDirectory(folderPath: string): Promise<string[]> {
   if (!stats.isDirectory()) return []
 
   const entries = await readdir(normalizedPath, { withFileTypes: true })
-  const allowedExt = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic'])
+  const allowedExt = IMAGE_SOURCE_EXTENSIONS
   return entries
     .filter((entry) => entry.isFile())
     .map((entry) => resolve(normalizedPath, entry.name))
@@ -750,7 +753,7 @@ async function scanDirectoryRecursive(folderPath: string): Promise<string[]> {
   const rootStats = await stat(normalizedPath)
   if (!rootStats.isDirectory()) return []
 
-  const allowedExt = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic'])
+  const allowedExt = IMAGE_SOURCE_EXTENSIONS
   const queue: string[] = [normalizedPath]
   const results: string[] = []
 
@@ -774,6 +777,46 @@ async function scanDirectoryRecursive(folderPath: string): Promise<string[]> {
       if (!entry.isFile()) continue
       const ext = extname(absolutePath).toLowerCase()
       if (allowedExt.has(ext)) results.push(absolutePath)
+    }
+  }
+
+  return results
+}
+
+const IMAGE_SOURCE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic'])
+const VIDEO_SOURCE_EXTENSIONS = new Set(['.mp4', '.mov'])
+const MIXED_SOURCE_EXTENSIONS = new Set([...IMAGE_SOURCE_EXTENSIONS, ...VIDEO_SOURCE_EXTENSIONS])
+
+async function scanMediaDirectoryRecursive(folderPath: string): Promise<string[]> {
+  const normalizedPath = folderPath.trim()
+  if (!normalizedPath) return []
+
+  const rootStats = await stat(normalizedPath)
+  if (!rootStats.isDirectory()) return []
+
+  const queue: string[] = [normalizedPath]
+  const results: string[] = []
+
+  while (queue.length > 0) {
+    const currentDir = queue.shift()
+    if (!currentDir) continue
+
+    let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>
+    try {
+      entries = await readdir(currentDir, { withFileTypes: true, encoding: 'utf8' })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      const absolutePath = resolve(currentDir, entry.name)
+      if (entry.isDirectory()) {
+        queue.push(absolutePath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const ext = extname(absolutePath).toLowerCase()
+      if (MIXED_SOURCE_EXTENSIONS.has(ext)) results.push(absolutePath)
     }
   }
 
@@ -2000,6 +2043,39 @@ app.whenReady().then(async () => {
     return await toSelectionItem(first)
   })
 
+  ipcMain.handle('dialog:openMediaFilePaths', async (event, payload?: { multiSelections?: unknown; accept?: unknown }) => {
+    const allowMulti = payload?.multiSelections === true
+    const accept = payload?.accept === 'image' ? 'image' : payload?.accept === 'video' ? 'video' : 'all'
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const properties = allowMulti ? (['openFile', 'multiSelections'] as const) : (['openFile'] as const)
+    const extensions =
+      accept === 'image'
+        ? ['jpg', 'jpeg', 'png', 'webp', 'heic']
+        : accept === 'video'
+          ? ['mp4', 'mov']
+          : ['jpg', 'jpeg', 'png', 'webp', 'heic', 'mp4', 'mov']
+    const result = window
+      ? await dialog.showOpenDialog(window, {
+          properties: [...properties],
+          filters: [{ name: 'Media', extensions }]
+        })
+      : await dialog.showOpenDialog({
+          properties: [...properties],
+          filters: [{ name: 'Media', extensions }]
+        })
+
+    if (result.canceled || result.filePaths.length === 0) return allowMulti ? [] : null
+    const normalized = Array.from(
+      new Set(
+        result.filePaths
+          .map((item) => String(item ?? '').trim())
+          .filter(Boolean)
+      )
+    )
+    if (allowMulti) return normalized
+    return normalized[0] ?? null
+  })
+
   ipcMain.handle('dialog:openAudioFile', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const properties: Array<'openFile'> = ['openFile']
@@ -2077,25 +2153,52 @@ app.whenReady().then(async () => {
     const outputAspectRaw = typeof body.outputAspect === 'string' ? body.outputAspect.trim() : ''
     const outputAspect: VideoOutputAspect = outputAspectRaw === '3:4' ? '3:4' : '9:16'
 
+    const splitMediaPaths = (paths: string[]): { images: string[]; videos: string[] } => {
+      const images: string[] = []
+      const videos: string[] = []
+      for (const item of paths) {
+        const normalized = String(item ?? '').trim()
+        if (!normalized) continue
+        const ext = extname(normalized).toLowerCase()
+        if (IMAGE_SOURCE_EXTENSIONS.has(ext)) {
+          images.push(normalized)
+          continue
+        }
+        if (VIDEO_SOURCE_EXTENSIONS.has(ext)) {
+          videos.push(normalized)
+        }
+      }
+      return {
+        images: normalizeImagePaths(images),
+        videos: normalizeVideoPaths(videos)
+      }
+    }
+
     let sourceImages = normalizeImagePaths(body.sourceImages)
-    if (sourceImages.length === 0 && sourceRootPath) {
+    let sourceVideos = normalizeVideoPaths(body.sourceVideos)
+    if (sourceImages.length === 0 && sourceVideos.length === 0 && sourceRootPath) {
       _event.sender.send('media:composeVideoFromImagesProgress', {
         percent: 0,
         batchIndex: 0,
         batchTotal: batchCount,
-        message: '正在扫描图片目录...'
+        message: '正在扫描素材目录...'
       })
-      sourceImages = await scanDirectoryRecursive(sourceRootPath)
+      const scanned = await scanMediaDirectoryRecursive(sourceRootPath)
+      const split = splitMediaPaths(scanned)
+      sourceImages = split.images
+      sourceVideos = split.videos
     }
 
     sourceImages = normalizeImagePaths(sourceImages)
-    if (sourceImages.length === 0) {
-      const error = '[videoComposer] 未找到可用图片素材。'
+    sourceVideos = normalizeVideoPaths(sourceVideos)
+    if (sourceImages.length === 0 && sourceVideos.length === 0) {
+      const error = '[videoComposer] 未找到可用图片或视频素材。'
       const details = formatVideoComposerFailureDetails({
         batchIndex: 1,
         batchTotal: batchCount,
         seed: 0,
         sourceImageCount: 0,
+        sourceVideoCount: 0,
         error
       })
       appendVideoComposerDebugLog(details)
@@ -2104,6 +2207,8 @@ app.whenReady().then(async () => {
         successCount: 0,
         failedCount: 1,
         sourceImageCount: 0,
+        sourceVideoCount: 0,
+        sourceMediaCount: 0,
         outputs: [],
         failures: [{ index: 1, error, details }],
         debugLogPath
@@ -2159,6 +2264,7 @@ app.whenReady().then(async () => {
         const result = await composeVideoFromPreparedImagePool(
           {
             sourceImages,
+            sourceVideos,
             template: (body.template ?? {}) as Record<string, unknown>,
             bgmPath: effectiveBgmPath,
             seed
@@ -2188,6 +2294,7 @@ app.whenReady().then(async () => {
             batchTotal: batchCount,
             seed,
             sourceImageCount: sourceImages.length,
+            sourceVideoCount: sourceVideos.length,
             error,
             bgmPath: effectiveBgmPath,
             debug: result.debug
@@ -2205,6 +2312,8 @@ app.whenReady().then(async () => {
       successCount: outputs.length,
       failedCount: failures.length,
       sourceImageCount: sourceImages.length,
+      sourceVideoCount: sourceVideos.length,
+      sourceMediaCount: sourceImages.length + sourceVideos.length,
       outputs,
       failures,
       debugLogPath
@@ -2303,6 +2412,17 @@ app.whenReady().then(async () => {
       return files
     } catch (error) {
       console.error('[Super CMS] scan-directory-recursive failed:', error)
+      return []
+    }
+  })
+
+  ipcMain.handle('scan-media-directory-recursive', async (_event, folderPath: string) => {
+    try {
+      const files = await scanMediaDirectoryRecursive(folderPath)
+      console.log(`[Super CMS] scan-media-directory-recursive: ${folderPath} -> ${files.length} files`)
+      return files
+    } catch (error) {
+      console.error('[Super CMS] scan-media-directory-recursive failed:', error)
       return []
     }
   })
