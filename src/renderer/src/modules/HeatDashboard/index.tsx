@@ -5,6 +5,7 @@ import {
   OperationalProductCard,
   type OperationalProduct
 } from './components/OperationalProductCard'
+import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { useCmsStore } from '@renderer/store/useCmsStore'
@@ -171,6 +172,14 @@ type SourcingEmptyState = {
   showRetrySourcingAction?: boolean
 }
 
+type DeliveryAccount = {
+  id: string
+  name: string
+  partitionKey: string
+  status?: 'logged_in' | 'expired' | 'offline'
+  lastLoginTime?: number | null
+}
+
 type CoverDebugState = {
   visual: boolean
   keepWindowOpen: boolean
@@ -230,7 +239,6 @@ function HeatDashboard(): React.JSX.Element {
   const [deletingKeywordId, setDeletingKeywordId] = useState<string | null>(null)
   const [isSourcing, setIsSourcing] = useState(false)
   const [isSourcingRunning, setIsSourcingRunning] = useState(false)
-  const [isBindingSupplier, setIsBindingSupplier] = useState(false)
   const [statusText, setStatusText] = useState('')
   const [selectedSnapshotDate, setSelectedSnapshotDate] = useState('')
   const [quickLookProductId, setQuickLookProductId] = useState<string | null>(null)
@@ -662,7 +670,6 @@ function HeatDashboard(): React.JSX.Element {
   useEffect(() => {
     setIsSourcing(false)
     setIsSourcingRunning(false)
-    setIsBindingSupplier(false)
     setSourcingMarked(null)
     setSourcingSearchCandidates(null)
     setSourcingEmptyState(null)
@@ -880,7 +887,7 @@ function HeatDashboard(): React.JSX.Element {
         }
         setSourcingEmptyState(null)
         const withFallback = results.some((item) => item.isFallback)
-        setStatusText(`搜同款完成（${withFallback ? '关键词兜底' : '图搜'}），选择候选供应商后点击“绑定供应商”保存。`)
+        setStatusText(`搜同款完成（${withFallback ? '关键词兜底' : '图搜'}），选择候选供应商后点击“一键铺货”。`)
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         setSourcingEmptyState({
@@ -896,60 +903,6 @@ function HeatDashboard(): React.JSX.Element {
     },
     [saveSelectedProduct, selectedProduct, snapshotDate]
   )
-
-  const handleBindSupplier = useCallback(async (targetIndex?: number): Promise<void> => {
-    if (!selectedProduct || !snapshotDate) {
-      setStatusText('请先选择商品后再绑定供应商')
-      return
-    }
-    const bindIndex =
-      typeof targetIndex === 'number' && Number.isFinite(targetIndex)
-        ? Math.max(0, Math.floor(targetIndex))
-        : selectedSupplierIndex
-    if (bindIndex !== selectedSupplierIndex) {
-      setSelectedSupplierIndex(bindIndex)
-    }
-    const chosen = sourcingCandidates[bindIndex] ?? null
-    if (!chosen) {
-      setStatusText('请先选择候选供应商后再绑定')
-      return
-    }
-    setIsBindingSupplier(true)
-    try {
-      const saved = (await window.api.cms.scout.dashboard.bindSupplier({
-        snapshotDate,
-        productKey: selectedProduct.id,
-        supplierName: chosen.name,
-        companyName: chosen.companyName,
-        supplierUrl: chosen.url,
-        supplierPrice: chosen.purchasePrice,
-        supplierNetProfit: chosen.netProfit,
-        supplierMoq: chosen.moq,
-        supplierFreightPrice: chosen.freightPrice,
-        supplierServiceRateLabel: chosen.serviceRateLabel,
-        sourceImage1: sourcingMarked?.sourceImage1 ?? selectedProduct.imageUrl ?? null
-      })) as MarkedProduct | null
-      if (!saved) {
-        setStatusText('绑定失败：未找到待办记录，请先加入待办后重试')
-        return
-      }
-      setSourcingMarked(saved)
-      setMarkedProducts((prev) => {
-        const idx = prev.findIndex((item) => item.id === saved.id || item.productKey === saved.productKey)
-        if (idx < 0) return [saved, ...prev]
-        const next = prev.slice()
-        next[idx] = saved
-        return next
-      })
-      setStatusText(`供应商绑定完成：${saved.supplier1Name ?? chosen.name ?? '未命名店铺'}`)
-      setIsSourcing(false)
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      setStatusText(`绑定失败：${msg}`)
-    } finally {
-      setIsBindingSupplier(false)
-    }
-  }, [selectedProduct, selectedSupplierIndex, snapshotDate, sourcingCandidates, sourcingMarked])
 
   const handleOpen1688Login = useCallback(async (): Promise<void> => {
     try {
@@ -1545,11 +1498,9 @@ function HeatDashboard(): React.JSX.Element {
           setIsSourcing(false)
           setSourcingEmptyState(null)
         }}
-        onBindSupplier={(index) => void handleBindSupplier(index)}
         onOpen1688Login={() => void handleOpen1688Login()}
         onRetryCoverFetch={handleRetrySourcingCover}
         onRetrySourcing={() => void handleStartSourcing()}
-        isBinding={isBindingSupplier}
       />
 
       {quickLookProduct && (
@@ -1875,7 +1826,6 @@ function QuickLookModal({
 type SourcingPanelProps = {
   isOpen: boolean
   isRunning: boolean
-  isBinding: boolean
   workspacePath: string
   xhsImage: string | null
   targetPrice: number | null
@@ -1883,7 +1833,6 @@ type SourcingPanelProps = {
   emptyState: SourcingEmptyState | null
   selectedSupplierIndex: number
   onSelectSupplier: (index: number) => void
-  onBindSupplier: (index: number) => void
   onOpen1688Login: () => void
   onRetryCoverFetch: () => void
   onRetrySourcing: () => void
@@ -1893,7 +1842,6 @@ type SourcingPanelProps = {
 function SourcingPanel({
   isOpen,
   isRunning,
-  isBinding,
   workspacePath,
   xhsImage,
   targetPrice,
@@ -1901,7 +1849,6 @@ function SourcingPanel({
   emptyState,
   selectedSupplierIndex,
   onSelectSupplier,
-  onBindSupplier,
   onOpen1688Login,
   onRetryCoverFetch,
   onRetrySourcing,
@@ -1909,9 +1856,23 @@ function SourcingPanel({
 }: SourcingPanelProps): React.JSX.Element {
   const resolvedTargetImage = xhsImage ? resolveLocalImage(xhsImage, workspacePath) : ''
   const WebviewTag = 'webview' as any
-  const webviewRef = useRef<any>(null)
+  const webviewRef = useRef<HTMLWebViewElement>(null)
   const [debouncedSupplierUrl, setDebouncedSupplierUrl] = useState('')
   const [isWebviewLoading, setIsWebviewLoading] = useState(false)
+  const [accounts, setAccounts] = useState<DeliveryAccount[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState('')
+  const [isAccountSelectorOpen, setIsAccountSelectorOpen] = useState(false)
+  const [isLoadingAccounts, setIsLoadingAccounts] = useState(false)
+  const [pendingSupplierIndex, setPendingSupplierIndex] = useState<number | null>(null)
+  const [isAutoDelivering, setIsAutoDelivering] = useState(false)
+  const [deliverySupplierIndex, setDeliverySupplierIndex] = useState<number | null>(null)
+  const autoRetryTimerRef = useRef<number | null>(null)
+  const deliveryRunTokenRef = useRef(0)
+  const accountSelectorOpenRef = useRef(false)
+  const [deliveryToast, setDeliveryToast] = useState<{
+    tone: 'success' | 'warning' | 'error'
+    message: string
+  } | null>(null)
 
   const selectedSupplierUrl = useMemo(() => {
     const raw = String(candidates[selectedSupplierIndex]?.url ?? '').trim()
@@ -1946,6 +1907,42 @@ function SourcingPanel({
   }, [isOpen, selectedSupplierUrl])
 
   useEffect(() => {
+    accountSelectorOpenRef.current = isAccountSelectorOpen
+  }, [isAccountSelectorOpen])
+
+  const clearAutoRetryTimer = useCallback((): void => {
+    if (autoRetryTimerRef.current != null) {
+      window.clearTimeout(autoRetryTimerRef.current)
+      autoRetryTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      clearAutoRetryTimer()
+    }
+  }, [clearAutoRetryTimer])
+
+  useEffect(() => {
+    if (!isOpen) {
+      deliveryRunTokenRef.current += 1
+      clearAutoRetryTimer()
+      setIsAccountSelectorOpen(false)
+      setPendingSupplierIndex(null)
+      setDeliverySupplierIndex(null)
+      setIsAutoDelivering(false)
+    }
+  }, [clearAutoRetryTimer, isOpen])
+
+  useEffect(() => {
+    if (!deliveryToast) return
+    const timer = window.setTimeout(() => {
+      setDeliveryToast(null)
+    }, 2600)
+    return () => window.clearTimeout(timer)
+  }, [deliveryToast])
+
+  useEffect(() => {
     const webviewNode = webviewRef.current
     if (!webviewNode || typeof webviewNode.addEventListener !== 'function') return
 
@@ -1968,6 +1965,152 @@ function SourcingPanel({
       webviewNode.removeEventListener('did-fail-load', handleDidFailLoad)
     }
   }, [])
+
+  const selectedAccount = useMemo(
+    () => accounts.find((item) => item.id === selectedAccountId) ?? null,
+    [accounts, selectedAccountId]
+  )
+
+  const loadAccounts = useCallback(async (): Promise<void> => {
+    if (isLoadingAccounts) return
+    setIsLoadingAccounts(true)
+    try {
+      const rawList = await window.api.cms.account.list()
+      const normalized = normalizeDeliveryAccounts(rawList)
+      setAccounts(normalized)
+      setSelectedAccountId((prev) => {
+        const keepsCurrent = prev && normalized.some((item) => item.id === prev)
+        if (keepsCurrent) return prev
+        return normalized[0]?.id ?? ''
+      })
+    } catch {
+      setAccounts([])
+      setSelectedAccountId('')
+      setDeliveryToast({
+        tone: 'error',
+        message: '读取本地账号失败，请稍后重试。'
+      })
+    } finally {
+      setIsLoadingAccounts(false)
+    }
+  }, [isLoadingAccounts])
+
+  const handleStartOneClickDelivery = useCallback(
+    (index: number): void => {
+      if (isAutoDelivering) return
+      onSelectSupplier(index)
+      setPendingSupplierIndex(index)
+      setIsAccountSelectorOpen(true)
+      void loadAccounts()
+    },
+    [isAutoDelivering, loadAccounts, onSelectSupplier]
+  )
+
+  const handleConfirmOneClickDelivery = useCallback(async (): Promise<void> => {
+    const targetIndex =
+      typeof pendingSupplierIndex === 'number' && Number.isFinite(pendingSupplierIndex)
+        ? Math.max(0, Math.floor(pendingSupplierIndex))
+        : selectedSupplierIndex
+    const targetCandidate = candidates[targetIndex] ?? null
+    if (!targetCandidate) {
+      setDeliveryToast({ tone: 'error', message: '请先选择有效供应商后再执行铺货。' })
+      return
+    }
+    if (!selectedAccount) {
+      setDeliveryToast({ tone: 'error', message: '请先选择本地账号后再执行铺货。' })
+      return
+    }
+
+    const webview = webviewRef.current as unknown as Electron.WebviewTag | null
+    if (!webview || typeof webview.executeJavaScript !== 'function') {
+      setDeliveryToast({
+        tone: 'error',
+        message: '右侧浏览器尚未就绪，请稍候重试。'
+      })
+      return
+    }
+
+    setIsAutoDelivering(true)
+    setDeliverySupplierIndex(targetIndex)
+    clearAutoRetryTimer()
+    deliveryRunTokenRef.current += 1
+    const runToken = deliveryRunTokenRef.current
+
+    const runAutomation = async (): Promise<void> => {
+      try {
+        const script = build1688OneClickDeliveryScript(selectedAccount.name)
+        const result = (await webview.executeJavaScript(script, true)) as {
+          ok?: unknown
+          message?: unknown
+          error?: unknown
+        } | null
+        if (deliveryRunTokenRef.current !== runToken) return
+
+        const isSuccess = result?.ok === true
+        if (isSuccess) {
+          const message = typeof result?.message === 'string' ? result.message.trim() : ''
+          setDeliveryToast({
+            tone: 'success',
+            message: message || '铺货脚本执行完成。'
+          })
+          setIsAccountSelectorOpen(false)
+          setIsAutoDelivering(false)
+          setDeliverySupplierIndex(null)
+          clearAutoRetryTimer()
+          return
+        }
+
+        const errorMessage = typeof result?.error === 'string' ? result.error.trim() : ''
+        const detailMessage = typeof result?.message === 'string' ? result.message.trim() : ''
+        if (errorMessage === 'NAVIGATING') {
+          setDeliveryToast({
+            tone: 'warning',
+            message: detailMessage || '正在切换至代发面板，请稍候...'
+          })
+          clearAutoRetryTimer()
+          autoRetryTimerRef.current = window.setTimeout(() => {
+            if (deliveryRunTokenRef.current !== runToken) return
+            if (!accountSelectorOpenRef.current) return
+            void runAutomation()
+          }, 4000)
+          return
+        }
+
+        setDeliveryToast({
+          tone: 'error',
+          message: detailMessage || `自动铺货受阻：${errorMessage || '未知错误'}`
+        })
+        setIsAutoDelivering(false)
+        setDeliverySupplierIndex(null)
+        clearAutoRetryTimer()
+      } catch (error) {
+        if (deliveryRunTokenRef.current !== runToken) return
+        const message = error instanceof Error ? error.message : String(error)
+        setDeliveryToast({
+          tone: 'error',
+          message: `自动铺货受阻：${message || '未知错误'}；请直接在右侧浏览器中手动完成后续点击。`
+        })
+        setIsAutoDelivering(false)
+        setDeliverySupplierIndex(null)
+        clearAutoRetryTimer()
+      }
+    }
+
+    void runAutomation()
+  }, [candidates, clearAutoRetryTimer, pendingSupplierIndex, selectedAccount, selectedSupplierIndex])
+
+  const handleCancelRPA = useCallback((): void => {
+    deliveryRunTokenRef.current += 1
+    clearAutoRetryTimer()
+    const webview = webviewRef.current as unknown as Electron.WebviewTag | null
+    if (webview && typeof webview.executeJavaScript === 'function') {
+      void webview.executeJavaScript('window.__CANCEL_RPA__ = true;').catch(() => ({}))
+    }
+    setIsAutoDelivering(false)
+    setDeliverySupplierIndex(null)
+    setIsAccountSelectorOpen(false)
+    setPendingSupplierIndex(null)
+  }, [clearAutoRetryTimer])
 
   return (
     <div
@@ -1996,7 +2139,7 @@ function SourcingPanel({
               type="button"
               className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={onClose}
-              disabled={isRunning}
+              disabled={isRunning || isAutoDelivering}
             >
               关闭
             </button>
@@ -2078,8 +2221,8 @@ function SourcingPanel({
                     candidate={candidate}
                     selected={index === selectedSupplierIndex}
                     onSelect={() => onSelectSupplier(index)}
-                    onBindSupplier={() => onBindSupplier(index)}
-                    isBinding={isBinding}
+                    onOneClickDelivery={() => handleStartOneClickDelivery(index)}
+                    isDelivering={isAutoDelivering && deliverySupplierIndex === index}
                     isRunning={isRunning}
                   />
                 ))}
@@ -2112,6 +2255,84 @@ function SourcingPanel({
               </div>
             </div>
           )}
+
+          {isAccountSelectorOpen && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-4">
+              <div className="w-[440px] max-w-full rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-2xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-zinc-100">选择铺货账号</div>
+                    <div className="mt-1 text-xs text-zinc-400">
+                      选择本地账号后，系统会在右侧 1688 页面自动执行代发与铺货流程。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={handleCancelRPA}
+                  >
+                    关闭
+                  </button>
+                </div>
+
+                <div className="mt-3 max-h-[280px] space-y-2 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-950/70 p-2">
+                  {isLoadingAccounts ? (
+                    <div className="py-12 text-center text-sm text-zinc-400">正在读取账号列表...</div>
+                  ) : accounts.length === 0 ? (
+                    <div className="py-12 text-center text-sm text-zinc-500">暂无可用账号，请先在媒体矩阵创建账号。</div>
+                  ) : (
+                    accounts.map((account) => {
+                      const isActive = account.id === selectedAccountId
+                      return (
+                        <button
+                          key={account.id}
+                          type="button"
+                          className={cn(
+                            'w-full rounded-md border px-3 py-2 text-left transition',
+                            isActive
+                              ? 'border-emerald-400/80 bg-emerald-500/10'
+                              : 'border-zinc-700 bg-zinc-900/50 hover:border-zinc-500'
+                          )}
+                          onClick={() => setSelectedAccountId(account.id)}
+                          disabled={isAutoDelivering}
+                        >
+                          <div className="truncate text-sm font-medium text-zinc-100">{account.name}</div>
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <Button variant="outline" onClick={handleCancelRPA}>
+                    取消
+                  </Button>
+                  <Button
+                    onClick={() => void handleConfirmOneClickDelivery()}
+                    disabled={!selectedAccountId || isLoadingAccounts || isAutoDelivering}
+                    className="bg-emerald-500 text-zinc-950 hover:bg-emerald-400"
+                  >
+                    {isAutoDelivering ? '正在全自动铺货中...' : '确认并执行'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {deliveryToast && (
+            <div
+              className={cn(
+                'pointer-events-none absolute bottom-3 right-3 z-30 rounded-md border px-3 py-2 text-xs shadow-lg',
+                deliveryToast.tone === 'success'
+                  ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100'
+                  : deliveryToast.tone === 'warning'
+                    ? 'border-amber-400/70 bg-amber-500/12 text-amber-100'
+                    : 'border-rose-400/70 bg-rose-500/12 text-rose-100'
+              )}
+            >
+              {deliveryToast.message}
+            </div>
+          )}
         </div>
       </section>
     </div>
@@ -2122,15 +2343,15 @@ function SupplierCard({
   candidate,
   selected,
   onSelect,
-  onBindSupplier,
-  isBinding,
+  onOneClickDelivery,
+  isDelivering,
   isRunning
 }: {
   candidate: SourcingSupplierCandidate
   selected: boolean
   onSelect: () => void
-  onBindSupplier: () => void
-  isBinding: boolean
+  onOneClickDelivery: () => void
+  isDelivering: boolean
   isRunning: boolean
 }): React.JSX.Element {
   const isHighMargin = (candidate.netProfitRate ?? 0) > 30
@@ -2151,7 +2372,7 @@ function SupplierCard({
   }
   const handleBindClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
-    onBindSupplier()
+    onOneClickDelivery()
   }
 
   return (
@@ -2202,13 +2423,193 @@ function SupplierCard({
       <button
         type="button"
         className="mt-2 w-full rounded-md bg-emerald-500 px-3 py-2 text-sm font-bold text-zinc-950 shadow-[0_0_22px_rgba(16,185,129,0.3)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-55"
-        disabled={isRunning || isBinding}
+        disabled={isRunning || isDelivering}
         onClick={handleBindClick}
       >
-        {isBinding ? '保存中...' : '绑定供应商'}
+        {isDelivering ? '正在全自动铺货中...' : '一键铺货'}
       </button>
     </div>
   )
+}
+
+function normalizeDeliveryAccounts(raw: unknown): DeliveryAccount[] {
+  if (!Array.isArray(raw)) return []
+  const normalized: DeliveryAccount[] = []
+  for (const item of raw) {
+    const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : null
+    if (!record) continue
+    const id = typeof record.id === 'string' ? record.id.trim() : ''
+    const name = typeof record.name === 'string' ? record.name.trim() : ''
+    const partitionKey = typeof record.partitionKey === 'string' ? record.partitionKey.trim() : ''
+    if (!id || !name || !partitionKey) continue
+    const statusRaw = typeof record.status === 'string' ? record.status : undefined
+    const status =
+      statusRaw === 'logged_in' || statusRaw === 'expired' || statusRaw === 'offline'
+        ? statusRaw
+        : undefined
+    const lastLoginTime = typeof record.lastLoginTime === 'number' ? record.lastLoginTime : null
+    normalized.push({ id, name, partitionKey, status, lastLoginTime })
+  }
+  return normalized
+}
+
+function build1688OneClickDeliveryScript(targetShopName: string): string {
+  const normalizedTargetShopName = String(targetShopName ?? '').trim()
+  const encodedTargetShopName = JSON.stringify(normalizedTargetShopName)
+  return `
+(async () => {
+  window.__CANCEL_RPA__ = false;
+  const targetShopName = ${encodedTargetShopName};
+  const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+  const norm = (s) => String(s || '').replace(/\\s+/g, '').trim();
+  const checkCancel = () => {
+    if (window.__CANCEL_RPA__) throw new Error('用户已手动中止铺货');
+  };
+
+  try {
+    // ---------------- 阶段一：检查并切换页面 ----------------
+    if (!window.location.href.includes('consign')) {
+      const isVis = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const allNodes = Array.from(document.querySelectorAll('*')).reverse();
+      const tabNode = allNodes.find((el) => {
+        if (!isVis(el)) return false;
+        const text = norm(el.textContent);
+        return (text === '代发' || text === '一件代发') && el.children.length === 0;
+      });
+
+      if (tabNode) {
+        tabNode.scrollIntoView({ block: 'center' });
+        tabNode.click();
+        tabNode.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        const parent = tabNode.closest('a, div, li');
+        if (parent) parent.click();
+        return {
+          ok: false,
+          error: 'NAVIGATING',
+          message: '正在切换到代发页面... 等待右侧网页加载完成后，请再次点击【一键铺货】继续！'
+        };
+      }
+      throw new Error('未找到代发选项卡，请确认该商品是否支持代发');
+    }
+
+    // ---------------- 阶段二：在代发页面执行自动化 ----------------
+    try {
+      console.log('[RPA] 步骤1: 滚动并寻找快速铺货按钮');
+      window.scrollBy(0, window.innerHeight);
+      await sleep(1500);
+      checkCancel();
+
+      // 精确制导打击：直接通过 className 寻找，无视 0x0 限制
+      let consignBtn = null;
+      const endBtnWait = Date.now() + 8000;
+      while (Date.now() < endBtnWait) {
+        checkCancel();
+        const btns = Array.from(
+          document.querySelectorAll('.order-button, .order-normal-button, div[class*="order-button"]')
+        ).reverse();
+        consignBtn =
+          btns.find((el) => {
+            const text = norm(el.textContent);
+            return text === '快速铺货' || text === '立即铺货';
+          }) || null;
+        if (consignBtn) break;
+        window.scrollBy(0, 400);
+        await sleep(500);
+      }
+
+      if (!consignBtn) throw new Error('精确狙击失败：未找到快速铺货按钮');
+
+      consignBtn.scrollIntoView({ block: 'center' });
+      const opts = { bubbles: true, cancelable: true, view: window };
+      consignBtn.dispatchEvent(new MouseEvent('mouseover', opts));
+      consignBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+      consignBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+      consignBtn.click();
+      consignBtn.dispatchEvent(new MouseEvent('click', opts));
+      await sleep(2000);
+      checkCancel();
+
+      console.log('[RPA] 步骤2: 匹配目标店铺 ->', targetShopName);
+      const shopNode = await (async () => {
+        const endWait = Date.now() + 10000;
+        while (Date.now() < endWait) {
+          checkCancel();
+          const all = Array.from(document.querySelectorAll('span, div, label, td, li')).reverse();
+          const node = all.find((el) => {
+            if (!(el instanceof HTMLElement)) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;
+            return norm(el.textContent) === norm(targetShopName) && el.children.length === 0;
+          });
+          if (node) return node;
+          await sleep(500);
+        }
+        throw new Error('在弹窗中未找到店铺: ' + targetShopName);
+      })();
+
+      const container =
+        shopNode.closest('[role="dialog"], .next-dialog, .modal, .popup, .drawer, body') ||
+        document.body;
+      const targetRow = shopNode.closest('tr, li, [role="row"], .shop-item, .store-item, div') || shopNode;
+
+      const checkboxes = Array.from(container.querySelectorAll('input[type="checkbox"]'));
+      if (checkboxes.length === 0) throw new Error('未找到可操作的店铺复选框');
+
+      let targetChecked = false;
+      for (const cb of checkboxes) {
+        checkCancel();
+        if (!(cb instanceof HTMLInputElement)) continue;
+        const row = cb.closest('tr, li, [role="row"], .shop-item, .store-item, div');
+        const shouldCheck = Boolean(row === targetRow || targetRow.contains(cb));
+        if (cb.checked !== shouldCheck) {
+          cb.click();
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (shouldCheck && cb.checked) targetChecked = true;
+      }
+
+      if (!targetChecked) {
+        const fallback = targetRow.querySelector('input[type="checkbox"]');
+        if (fallback instanceof HTMLInputElement && !fallback.checked) {
+          fallback.click();
+          fallback.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        targetChecked = fallback instanceof HTMLInputElement ? fallback.checked : false;
+      }
+
+      if (!targetChecked) throw new Error('店铺「' + targetShopName + '」勾选失败');
+
+      await sleep(800);
+      checkCancel();
+
+      console.log('[RPA] 步骤3: 点击提交铺货');
+      const submitBtn = Array.from(container.querySelectorAll('button, a, div'))
+        .reverse()
+        .find((el) => {
+          if (!(el instanceof HTMLElement)) return false;
+          const txt = norm(el.textContent);
+          const rect = el.getBoundingClientRect();
+          return (txt.includes('立即铺货') || txt === '确定' || txt === '提交') && rect.width > 0;
+        });
+      if (!submitBtn) throw new Error('未找到弹窗内的立即铺货确认按钮');
+
+      submitBtn.click();
+      submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      return { ok: true, message: '一键铺货流程执行完毕！' };
+    } catch (err) {
+      return { ok: false, error: err && err.message ? err.message : String(err) };
+    }
+
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+})();
+`.trim()
 }
 
 function buildSourcingCandidates(marked: MarkedProduct | null): SourcingSupplierCandidate[] {
