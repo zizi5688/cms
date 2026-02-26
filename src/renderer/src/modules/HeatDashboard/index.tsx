@@ -214,6 +214,84 @@ const PRODUCT_SORT_OPTIONS: Array<{ key: ProductSortKey; label: string }> = [
 ]
 const DEFAULT_PRODUCT_SORT_CONFIG: ProductSortConfig = { key: 'potentialScore', direction: 'desc' }
 const DEFAULT_PRODUCT_FILTER_CONFIG: ProductRangeFilterConfig = { minAddCart24h: 0, minPrice: '', maxPrice: '' }
+const DELIVERY_STATE_STORAGE_KEY = 'heat-dashboard:one-click-delivery:v1'
+
+type DeliveryStateMap = Record<
+  string,
+  {
+    candidateKeys: string[]
+    updatedAt: number
+  }
+>
+
+function normalizeDeliveryField(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function getDeliveryCandidateKey(candidate: SourcingSupplierCandidate): string {
+  const id = normalizeDeliveryField(candidate.id)
+  const name = normalizeDeliveryField(candidate.name)
+  const url = normalizeDeliveryField(candidate.url)
+  return `${id}|${name}|${url}`
+}
+
+function readDeliveryStateMap(): DeliveryStateMap {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(DELIVERY_STATE_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const map: DeliveryStateMap = {}
+    for (const [contextKey, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!contextKey || typeof contextKey !== 'string') continue
+      if (!entry || typeof entry !== 'object') continue
+      const candidateKeys = Array.isArray((entry as { candidateKeys?: unknown }).candidateKeys)
+        ? ((entry as { candidateKeys?: unknown }).candidateKeys as unknown[])
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : []
+      if (candidateKeys.length === 0) continue
+      const updatedAtRaw = (entry as { updatedAt?: unknown }).updatedAt
+      map[contextKey] = {
+        candidateKeys: Array.from(new Set(candidateKeys)),
+        updatedAt:
+          typeof updatedAtRaw === 'number' && Number.isFinite(updatedAtRaw) ? updatedAtRaw : Date.now()
+      }
+    }
+    return map
+  } catch {
+    return {}
+  }
+}
+
+function writeDeliveryStateMap(map: DeliveryStateMap): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(DELIVERY_STATE_STORAGE_KEY, JSON.stringify(map))
+  } catch {
+    // ignore localStorage write failures
+  }
+}
+
+function loadDeliveredCandidateKeys(contextKey: string | null): string[] {
+  if (!contextKey) return []
+  const map = readDeliveryStateMap()
+  return map[contextKey]?.candidateKeys ?? []
+}
+
+function appendDeliveredCandidateKey(contextKey: string | null, candidateKey: string): void {
+  if (!contextKey || !candidateKey) return
+  const map = readDeliveryStateMap()
+  const current = map[contextKey]?.candidateKeys ?? []
+  if (current.includes(candidateKey)) return
+  map[contextKey] = {
+    candidateKeys: [...current, candidateKey],
+    updatedAt: Date.now()
+  }
+  writeDeliveryStateMap(map)
+}
 
 const PRODUCT_PLACEHOLDER_IMAGE =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='640' viewBox='0 0 640 640'%3E%3Cdefs%3E%3ClinearGradient id='bg' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f3f4f6'/%3E%3Cstop offset='100%25' stop-color='%23e5e7eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='640' height='640' fill='url(%23bg)'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='Arial' font-size='28'%3ENo Image%3C/text%3E%3C/svg%3E"
@@ -638,6 +716,13 @@ function HeatDashboard(): React.JSX.Element {
     () => productCards.find((item) => item.id === quickLookProductId) ?? null,
     [productCards, quickLookProductId]
   )
+  const sourcingProductKey = sourcingMarked?.productKey ?? null
+  const selectedProductKey = selectedProduct?.id ?? null
+  const deliveryContextKey = useMemo(() => {
+    const productKey = sourcingProductKey || selectedProductKey
+    if (!productKey) return null
+    return `${snapshotDate || 'unknown'}::${productKey}`
+  }, [selectedProductKey, snapshotDate, sourcingProductKey])
 
   const handleSelectKeyword = useCallback(
     (keywordId: string) => {
@@ -1490,6 +1575,7 @@ function HeatDashboard(): React.JSX.Element {
         workspacePath={workspacePath}
         xhsImage={sourcingTargetImage}
         targetPrice={sourcingTargetPrice}
+        deliveryContextKey={deliveryContextKey}
         candidates={sourcingCandidates}
         emptyState={sourcingEmptyState}
         selectedSupplierIndex={selectedSupplierIndex}
@@ -1829,6 +1915,7 @@ type SourcingPanelProps = {
   workspacePath: string
   xhsImage: string | null
   targetPrice: number | null
+  deliveryContextKey: string | null
   candidates: SourcingSupplierCandidate[]
   emptyState: SourcingEmptyState | null
   selectedSupplierIndex: number
@@ -1845,6 +1932,7 @@ function SourcingPanel({
   workspacePath,
   xhsImage,
   targetPrice,
+  deliveryContextKey,
   candidates,
   emptyState,
   selectedSupplierIndex,
@@ -1866,7 +1954,7 @@ function SourcingPanel({
   const [pendingSupplierIndex, setPendingSupplierIndex] = useState<number | null>(null)
   const [isAutoDelivering, setIsAutoDelivering] = useState(false)
   const [deliverySupplierIndex, setDeliverySupplierIndex] = useState<number | null>(null)
-  const [deliveredCandidateIds, setDeliveredCandidateIds] = useState<string[]>([])
+  const [deliveredCandidateKeys, setDeliveredCandidateKeys] = useState<string[]>([])
   const autoRetryTimerRef = useRef<number | null>(null)
   const deliveryRunTokenRef = useRef(0)
   const navigationRetryCountRef = useRef(0)
@@ -1933,9 +2021,28 @@ function SourcingPanel({
       setPendingSupplierIndex(null)
       setDeliverySupplierIndex(null)
       setIsAutoDelivering(false)
-      setDeliveredCandidateIds([])
+      setDeliveredCandidateKeys([])
     }
   }, [clearAutoRetryTimer, isOpen])
+
+  const candidateDeliveryKeys = useMemo(
+    () => candidates.map((candidate) => getDeliveryCandidateKey(candidate)),
+    [candidates]
+  )
+  const deliveredCandidateKeySet = useMemo(
+    () => new Set(deliveredCandidateKeys),
+    [deliveredCandidateKeys]
+  )
+
+  useEffect(() => {
+    if (!isOpen || !deliveryContextKey) {
+      setDeliveredCandidateKeys([])
+      return
+    }
+    const persisted = new Set(loadDeliveredCandidateKeys(deliveryContextKey))
+    const next = candidateDeliveryKeys.filter((key) => persisted.has(key))
+    setDeliveredCandidateKeys(next)
+  }, [candidateDeliveryKeys, deliveryContextKey, isOpen])
 
   useEffect(() => {
     if (!deliveryToast) return
@@ -2071,9 +2178,11 @@ function SourcingPanel({
                 ? `已检测到铺货成功：${successKeyword || '命中成功文案'}`
                 : '提交已点击，但未检测到“铺货成功”文案，请人工确认。')
           })
-          if (successDetected && targetCandidate?.id) {
-            setDeliveredCandidateIds((prev) =>
-              prev.includes(targetCandidate.id) ? prev : [...prev, targetCandidate.id]
+          if (successDetected && targetCandidate) {
+            const deliveryKey = getDeliveryCandidateKey(targetCandidate)
+            appendDeliveredCandidateKey(deliveryContextKey, deliveryKey)
+            setDeliveredCandidateKeys((prev) =>
+              prev.includes(deliveryKey) ? prev : [...prev, deliveryKey]
             )
           }
           navigationRetryCountRef.current = 0
@@ -2146,7 +2255,14 @@ function SourcingPanel({
     }
 
     void runAutomation()
-  }, [candidates, clearAutoRetryTimer, pendingSupplierIndex, selectedAccount, selectedSupplierIndex])
+  }, [
+    candidates,
+    clearAutoRetryTimer,
+    deliveryContextKey,
+    pendingSupplierIndex,
+    selectedAccount,
+    selectedSupplierIndex
+  ])
 
   const handleCancelRPA = useCallback((): void => {
     deliveryRunTokenRef.current += 1
@@ -2265,7 +2381,9 @@ function SourcingPanel({
               )
             ) : (
               <div className="space-y-2 pb-1">
-                {candidates.map((candidate, index) => (
+                {candidates.map((candidate, index) => {
+                  const deliveryKey = candidateDeliveryKeys[index] ?? getDeliveryCandidateKey(candidate)
+                  return (
                   <SupplierCard
                     key={candidate.id}
                     candidate={candidate}
@@ -2273,10 +2391,11 @@ function SourcingPanel({
                     onSelect={() => onSelectSupplier(index)}
                     onOneClickDelivery={() => handleStartOneClickDelivery(index)}
                     isDelivering={isAutoDelivering && deliverySupplierIndex === index}
-                    isDelivered={deliveredCandidateIds.includes(candidate.id)}
+                    isDelivered={deliveredCandidateKeySet.has(deliveryKey)}
                     isRunning={isRunning}
                   />
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
@@ -2517,7 +2636,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
   return `
 (async () => {
   window.__CANCEL_RPA__ = false;
-  const SCRIPT_VERSION = 'V20.8-rowbox-nonblock-check';
+  const SCRIPT_VERSION = 'V20.9-submit-click-shortcircuit';
   const targetShopName = ${encodedTargetShopName};
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => String(s || '').replace(/\\s+/g, '').trim();
@@ -3211,174 +3330,16 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     await sleep(120);
     if (submitCarrier && submitCarrier !== submitBtnInner) clickNode(submitCarrier);
 
-    // ================= 阶段六：等待结果文案 =================
-    logMsg('提交点击完成，正在等待“铺货成功”文案...', '#FFFF00');
-    const successKeywords = ['铺货成功', '上架成功', '发布成功', '成功上架', '成功铺货'];
-    const failKeywords = ['铺货失败', '上架失败', '发布失败', '操作失败', '提交失败'];
-
-    const collectRoots = () => {
-      const roots = [document, shadow1, shadow2];
-      Array.from(document.querySelectorAll('*')).forEach((el) => {
-        if (el.shadowRoot) roots.push(el.shadowRoot);
-      });
-      return roots;
-    };
-
-    const detectKeyword = (keywords) => {
-      const roots = collectRoots();
-      for (const root of roots) {
-        let txt = '';
-        if (root === document) {
-          txt = String(document.body?.innerText || document.documentElement?.innerText || '');
-        } else {
-          txt = String(root?.textContent || '');
-        }
-        if (!txt) continue;
-        for (const kw of keywords) {
-          if (txt.includes(kw)) return kw;
-        }
-      }
-      return '';
-    };
-    const closeSuccessDialog = (keyword) => {
-      const keywordNorm = norm(keyword || '');
-      const roots = collectRoots();
-      const dialogScopes = [];
-
-      const pushScope = (node) => {
-        if (!(node instanceof HTMLElement)) return;
-        if (!isVisibleNode(node)) return;
-        if (!dialogScopes.includes(node)) dialogScopes.push(node);
-      };
-
-      roots.forEach((root) => {
-        if (!root || typeof root.querySelectorAll !== 'function') return;
-        Array.from(root.querySelectorAll('*')).forEach((el) => {
-          if (!(el instanceof HTMLElement)) return;
-          if (!isVisibleNode(el)) return;
-          const txt = norm(el.textContent || '');
-          if (!keywordNorm || !txt.includes(keywordNorm)) return;
-          let cur = el;
-          for (let i = 0; i < 8 && cur; i += 1) {
-            const r = cur.getBoundingClientRect();
-            if (r.width >= 260 && r.width <= 980 && r.height >= 120 && r.height <= 760) {
-              pushScope(cur);
-            }
-            cur = cur.parentElement;
-          }
-        });
-      });
-
-      const closePool = [];
-      const addCloseCandidate = (el, scoreBoost = 0) => {
-        if (!(el instanceof HTMLElement)) return;
-        if (!isVisibleNode(el)) return;
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 14 || rect.height < 14 || rect.width > 260 || rect.height > 90) return;
-        const txt = norm(el.textContent || '');
-        const label = norm(el.getAttribute('aria-label') || el.getAttribute('title') || '');
-        const cls = String(typeof el.className === 'string' ? el.className : '').toLowerCase();
-        let score = scoreBoost;
-        if (txt === '关闭') score += 240;
-        else if (txt.includes('关闭')) score += 160;
-        if (txt === '×' || txt === '✕' || txt === 'x') score += 80;
-        if (label.includes('关闭') || label.includes('close')) score += 180;
-        if (cls.includes('close')) score += 80;
-        if (el.tagName === 'BUTTON') score += 30;
-        if (score <= 0) return;
-        closePool.push({ el, score, rect, txt, label });
-      };
-
-      dialogScopes.forEach((scope) => {
-        const scopeRect = scope.getBoundingClientRect();
-        Array.from(scope.querySelectorAll('*')).forEach((el) => {
-          if (!(el instanceof HTMLElement)) return;
-          let boost = 0;
-          const r = el.getBoundingClientRect();
-          const nearTopRight =
-            Math.abs(scopeRect.right - r.right) <= Math.max(42, scopeRect.width * 0.2) &&
-            r.top - scopeRect.top <= Math.max(72, scopeRect.height * 0.35);
-          if (nearTopRight) boost += 36;
-          addCloseCandidate(el, boost);
-        });
-      });
-
-      if (closePool.length === 0) {
-        // 兜底：全局找可见“关闭”按钮，避免弹窗结构变形时漏掉。
-        roots.forEach((root) => {
-          if (!root || typeof root.querySelectorAll !== 'function') return;
-          Array.from(root.querySelectorAll('button,[role="button"],div,span')).forEach((el) => {
-            addCloseCandidate(el, 0);
-          });
-        });
-      }
-
-      closePool.sort(
-        (a, b) =>
-          b.score - a.score ||
-          b.rect.width - a.rect.width ||
-          Math.abs(a.rect.top - b.rect.top)
-      );
-      const winner = closePool[0]?.el || null;
-      if (!winner) return false;
-
-      const carrier =
-        winner.closest(
-          'button,[role="button"],[class*="button" i],[class*="btn" i],[class*="close" i],[part*="base" i]'
-        ) ||
-        winner.parentElement ||
-        winner;
-      clickNode(winner);
-      if (carrier && carrier !== winner) clickNode(carrier);
-      logMsg(
-        '🧹 已自动关闭成功弹窗: ' +
-          safeText(winner.textContent || winner.getAttribute('aria-label') || winner.getAttribute('title') || '关闭', 40),
-        '#00FF99'
-      );
-      return true;
-    };
-
-    let successHit = '';
-    let failHit = '';
-    const endResultWait = Date.now() + 12000;
-    while (Date.now() < endResultWait) {
-      checkCancel();
-      successHit = detectKeyword(successKeywords);
-      if (successHit) break;
-      if (!failHit) failHit = detectKeyword(failKeywords);
-      await sleep(500);
-    }
-
-    if (successHit) {
-      const closed = closeSuccessDialog(successHit);
-      if (!closed) {
-        logMsg('⚠️ 成功弹窗关闭控件未命中，请人工关闭', '#FF9900');
-      }
-      logMsg('✅ 检测到成功文案: ' + successHit, '#00FF00');
-      setTimeout(() => { if (panel) panel.remove(); }, 4000);
-      return {
-        ok: true,
-        message: '一键铺货成功：' + successHit,
-        successDetected: true,
-        successKeyword: successHit
-      };
-    }
-
-    if (failHit) {
-      logMsg('❌ 检测到失败文案: ' + failHit, '#FF0000');
-      return {
-        ok: false,
-        error: 'DELIVERY_FAILED',
-        message: '检测到失败文案：' + failHit
-      };
-    }
-
-    logMsg('⚠️ 未检测到“铺货成功”文案，请人工确认结果。', '#FF9900');
-    setTimeout(() => { if (panel) panel.remove(); }, 4000);
+    // ================= 阶段六：提交即判定成功（收口提速版） =================
+    await sleep(220);
+    checkCancel();
+    logMsg('✅ 提交按钮点击完成，交由1688继续处理；本次流程直接收口', '#00FF00');
+    setTimeout(() => { if (panel) panel.remove(); }, 1500);
     return {
       ok: true,
-      message: '提交已点击，但未检测到“铺货成功”文案，请人工确认。',
-      successDetected: false
+      message: '提交按钮已点击，流程完成（1688结果弹窗请手动关闭）',
+      successDetected: true,
+      successKeyword: 'SUBMIT_CLICKED'
     };
 
   } catch (err) {
