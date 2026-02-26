@@ -1866,8 +1866,10 @@ function SourcingPanel({
   const [pendingSupplierIndex, setPendingSupplierIndex] = useState<number | null>(null)
   const [isAutoDelivering, setIsAutoDelivering] = useState(false)
   const [deliverySupplierIndex, setDeliverySupplierIndex] = useState<number | null>(null)
+  const [deliveredCandidateIds, setDeliveredCandidateIds] = useState<string[]>([])
   const autoRetryTimerRef = useRef<number | null>(null)
   const deliveryRunTokenRef = useRef(0)
+  const navigationRetryCountRef = useRef(0)
   const accountSelectorOpenRef = useRef(false)
   const [deliveryToast, setDeliveryToast] = useState<{
     tone: 'success' | 'warning' | 'error'
@@ -1931,6 +1933,7 @@ function SourcingPanel({
       setPendingSupplierIndex(null)
       setDeliverySupplierIndex(null)
       setIsAutoDelivering(false)
+      setDeliveredCandidateIds([])
     }
   }, [clearAutoRetryTimer, isOpen])
 
@@ -2032,6 +2035,7 @@ function SourcingPanel({
 
     setIsAutoDelivering(true)
     setDeliverySupplierIndex(targetIndex)
+    navigationRetryCountRef.current = 0
     clearAutoRetryTimer()
     deliveryRunTokenRef.current += 1
     const runToken = deliveryRunTokenRef.current
@@ -2039,22 +2043,44 @@ function SourcingPanel({
     const runAutomation = async (): Promise<void> => {
       try {
         const script = build1688OneClickDeliveryScript(selectedAccount.name)
-        const result = (await webview.executeJavaScript(script, true)) as {
+        const result = (await Promise.race([
+          webview.executeJavaScript(script, true),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => reject(new Error('SCRIPT_TIMEOUT')), 35000)
+          })
+        ])) as {
           ok?: unknown
           message?: unknown
           error?: unknown
+          successDetected?: unknown
+          successKeyword?: unknown
         } | null
         if (deliveryRunTokenRef.current !== runToken) return
 
         const isSuccess = result?.ok === true
         if (isSuccess) {
           const message = typeof result?.message === 'string' ? result.message.trim() : ''
+          const successDetected = result?.successDetected === true
+          const successKeyword =
+            typeof result?.successKeyword === 'string' ? result.successKeyword.trim() : ''
           setDeliveryToast({
-            tone: 'success',
-            message: message || '铺货脚本执行完成。'
+            tone: successDetected ? 'success' : 'warning',
+            message:
+              message ||
+              (successDetected
+                ? `已检测到铺货成功：${successKeyword || '命中成功文案'}`
+                : '提交已点击，但未检测到“铺货成功”文案，请人工确认。')
           })
+          if (successDetected && targetCandidate?.id) {
+            setDeliveredCandidateIds((prev) =>
+              prev.includes(targetCandidate.id) ? prev : [...prev, targetCandidate.id]
+            )
+          }
+          navigationRetryCountRef.current = 0
           setIsAutoDelivering(false)
           setDeliverySupplierIndex(null)
+          setIsAccountSelectorOpen(false)
+          setPendingSupplierIndex(null)
           clearAutoRetryTimer()
           return
         }
@@ -2062,9 +2088,24 @@ function SourcingPanel({
         const errorMessage = typeof result?.error === 'string' ? result.error.trim() : ''
         const detailMessage = typeof result?.message === 'string' ? result.message.trim() : ''
         if (errorMessage === 'NAVIGATING') {
+          navigationRetryCountRef.current += 1
+          if (navigationRetryCountRef.current > 4) {
+            setDeliveryToast({
+              tone: 'error',
+              message: '页面切换代发状态超时，请在右侧页面手动切到代发后重试。'
+            })
+            setIsAutoDelivering(false)
+            setDeliverySupplierIndex(null)
+            setIsAccountSelectorOpen(false)
+            setPendingSupplierIndex(null)
+            clearAutoRetryTimer()
+            return
+          }
           setDeliveryToast({
             tone: 'warning',
-            message: detailMessage || '正在切换至代发面板，请稍候...'
+            message:
+              detailMessage ||
+              `正在切换至代发面板，请稍候...（${navigationRetryCountRef.current}/4）`
           })
           clearAutoRetryTimer()
           autoRetryTimerRef.current = window.setTimeout(() => {
@@ -2079,18 +2120,27 @@ function SourcingPanel({
           tone: 'error',
           message: detailMessage || `自动铺货受阻：${errorMessage || '未知错误'}`
         })
+        navigationRetryCountRef.current = 0
         setIsAutoDelivering(false)
         setDeliverySupplierIndex(null)
+        setIsAccountSelectorOpen(false)
+        setPendingSupplierIndex(null)
         clearAutoRetryTimer()
       } catch (error) {
         if (deliveryRunTokenRef.current !== runToken) return
         const message = error instanceof Error ? error.message : String(error)
         setDeliveryToast({
           tone: 'error',
-          message: `自动铺货受阻：${message || '未知错误'}；请直接在右侧浏览器中手动完成后续点击。`
+          message:
+            message === 'SCRIPT_TIMEOUT'
+              ? '自动铺货脚本执行超时（35s），已自动收口；请重试或在右侧页面手动完成。'
+              : `自动铺货受阻：${message || '未知错误'}；请直接在右侧浏览器中手动完成后续点击。`
         })
+        navigationRetryCountRef.current = 0
         setIsAutoDelivering(false)
         setDeliverySupplierIndex(null)
+        setIsAccountSelectorOpen(false)
+        setPendingSupplierIndex(null)
         clearAutoRetryTimer()
       }
     }
@@ -2100,6 +2150,7 @@ function SourcingPanel({
 
   const handleCancelRPA = useCallback((): void => {
     deliveryRunTokenRef.current += 1
+    navigationRetryCountRef.current = 0
     clearAutoRetryTimer()
     const webview = webviewRef.current as unknown as Electron.WebviewTag | null
     if (webview && typeof webview.executeJavaScript === 'function') {
@@ -2222,6 +2273,7 @@ function SourcingPanel({
                     onSelect={() => onSelectSupplier(index)}
                     onOneClickDelivery={() => handleStartOneClickDelivery(index)}
                     isDelivering={isAutoDelivering && deliverySupplierIndex === index}
+                    isDelivered={deliveredCandidateIds.includes(candidate.id)}
                     isRunning={isRunning}
                   />
                 ))}
@@ -2344,6 +2396,7 @@ function SupplierCard({
   onSelect,
   onOneClickDelivery,
   isDelivering,
+  isDelivered,
   isRunning
 }: {
   candidate: SourcingSupplierCandidate
@@ -2351,6 +2404,7 @@ function SupplierCard({
   onSelect: () => void
   onOneClickDelivery: () => void
   isDelivering: boolean
+  isDelivered: boolean
   isRunning: boolean
 }): React.JSX.Element {
   const isHighMargin = (candidate.netProfitRate ?? 0) > 30
@@ -2421,11 +2475,16 @@ function SupplierCard({
       </div>
       <button
         type="button"
-        className="mt-2 w-full rounded-md bg-emerald-500 px-3 py-2 text-sm font-bold text-zinc-950 shadow-[0_0_22px_rgba(16,185,129,0.3)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-55"
-        disabled={isRunning || isDelivering}
+        className={cn(
+          'mt-2 w-full rounded-md px-3 py-2 text-sm font-bold text-zinc-950 transition disabled:cursor-not-allowed',
+          isDelivered
+            ? 'bg-cyan-500 shadow-[0_0_22px_rgba(6,182,212,0.35)] hover:bg-cyan-400 disabled:opacity-100'
+            : 'bg-emerald-500 shadow-[0_0_22px_rgba(16,185,129,0.3)] hover:bg-emerald-400 disabled:opacity-55'
+        )}
+        disabled={isRunning || isDelivering || isDelivered}
         onClick={handleBindClick}
       >
-        {isDelivering ? '正在全自动铺货中...' : '一键铺货'}
+        {isDelivering ? '正在全自动铺货中...' : isDelivered ? '已上架' : '一键铺货'}
       </button>
     </div>
   )
@@ -2458,22 +2517,30 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
   return `
 (async () => {
   window.__CANCEL_RPA__ = false;
+  const SCRIPT_VERSION = 'V20.8-rowbox-nonblock-check';
   const targetShopName = ${encodedTargetShopName};
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => String(s || '').replace(/\\s+/g, '').trim();
   const checkCancel = () => { if (window.__CANCEL_RPA__) throw new Error('用户手动中止'); };
 
   // ================= 建立实时监控屏幕 (HUD) =================
+  // 调试开关：当前开启可视化日志框，便于定位勾选链路。
+  const SHOW_DEBUG_HUD = false;
   let panel = document.getElementById('rpa-live-log');
-  if (!panel) {
+  if (!SHOW_DEBUG_HUD && panel) {
+    panel.remove();
+    panel = null;
+  }
+  if (SHOW_DEBUG_HUD && !panel) {
     panel = document.createElement('div');
     panel.id = 'rpa-live-log';
     panel.style.cssText = 'position:fixed; top:20px; right:20px; width:400px; height:480px; z-index:9999999; background:rgba(0,0,0,0.85); color:#00FF00; border:2px solid #00FF00; padding:15px; font-family:monospace; font-size:13px; overflow-y:auto; border-radius:8px; pointer-events:none; box-shadow: 0 0 20px rgba(0,255,0,0.5);';
     panel.innerHTML = '<h3 style="margin:0 0 10px 0;color:#fff;border-bottom:1px solid #333;padding-bottom:5px;">CTO 执行监控 (V20 大结局)</h3><div id="rpa-log-content"></div>';
     document.body.appendChild(panel);
   }
-  const logDiv = document.getElementById('rpa-log-content');
+  const logDiv = SHOW_DEBUG_HUD ? document.getElementById('rpa-log-content') : null;
   const logMsg = (msg, color="#00FF00") => {
+    if (!SHOW_DEBUG_HUD || !panel || !logDiv) return;
     const p = document.createElement('div');
     p.style.color = color;
     p.style.marginBottom = '5px';
@@ -2481,6 +2548,90 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     p.innerHTML = '> ' + msg;
     logDiv.appendChild(p);
     panel.scrollTop = panel.scrollHeight;
+  };
+  const safeText = (value, limit = 80) => norm(value || '').slice(0, limit) || 'NO_TEXT';
+  const MARK_LAYER_ID = 'rpa-debug-mark-layer';
+  const markedInlineNodes = [];
+  const ensureMarkLayer = () => {
+    let layer = document.getElementById(MARK_LAYER_ID);
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = MARK_LAYER_ID;
+      layer.style.cssText =
+        'position:fixed; inset:0; pointer-events:none; z-index:2147483646;';
+      document.body.appendChild(layer);
+    }
+    return layer;
+  };
+  const clearDebugMarks = () => {
+    const layer = document.getElementById(MARK_LAYER_ID);
+    if (layer) layer.innerHTML = '';
+    while (markedInlineNodes.length > 0) {
+      const node = markedInlineNodes.pop();
+      if (!node || !(node instanceof HTMLElement)) continue;
+      const prev = node.getAttribute('data-rpa-mark-prev-style');
+      if (prev != null) {
+        if (prev) node.setAttribute('style', prev);
+        else node.removeAttribute('style');
+      }
+      node.removeAttribute('data-rpa-mark-prev-style');
+      node.removeAttribute('data-rpa-inline-mark');
+    }
+  };
+  const resolveVisibleRect = (el) => {
+    if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+    let node = el;
+    for (let i = 0; i < 8 && node; i++) {
+      const rect = node.getBoundingClientRect();
+      if (rect && rect.width > 0 && rect.height > 0) return { node, rect };
+      node = node.parentElement || null;
+    }
+    return null;
+  };
+  const markRect = (el, label, color = '#FFD400') => {
+    if (!SHOW_DEBUG_HUD || !el) return;
+    const visible = resolveVisibleRect(el);
+    if (!visible) return;
+    const { node, rect } = visible;
+    const layer = ensureMarkLayer();
+    const box = document.createElement('div');
+    box.style.cssText =
+      'position:fixed; left:' + Math.round(rect.left) + 'px; top:' + Math.round(rect.top) + 'px;' +
+      ' width:' + Math.round(rect.width) + 'px; height:' + Math.round(rect.height) + 'px;' +
+      ' border:2px solid ' + color + '; box-sizing:border-box; border-radius:6px;' +
+      ' box-shadow:0 0 0 1px rgba(0,0,0,0.25);';
+    const tag = document.createElement('div');
+    tag.textContent = label;
+    tag.style.cssText =
+      'position:absolute; left:0; top:-18px; background:' + color + '; color:#111;' +
+      ' font:600 11px/1.2 monospace; padding:2px 6px; border-radius:4px;';
+    box.appendChild(tag);
+    layer.appendChild(box);
+    if (node instanceof HTMLElement) {
+      if (!node.hasAttribute('data-rpa-inline-mark')) {
+        node.setAttribute('data-rpa-mark-prev-style', node.getAttribute('style') || '');
+        node.setAttribute('data-rpa-inline-mark', '1');
+        markedInlineNodes.push(node);
+      }
+      node.style.outline = '3px solid ' + color;
+      node.style.outlineOffset = '-2px';
+      node.style.boxShadow = 'inset 0 0 0 2px ' + color;
+    }
+  };
+  const markPoint = (x, y, label, color = '#FF7A00') => {
+    if (!SHOW_DEBUG_HUD) return;
+    const layer = ensureMarkLayer();
+    const dot = document.createElement('div');
+    dot.style.cssText =
+      'position:fixed; left:' + Math.round(x - 5) + 'px; top:' + Math.round(y - 5) + 'px;' +
+      ' width:10px; height:10px; background:' + color + '; border:1px solid #000; border-radius:50%;';
+    const tag = document.createElement('div');
+    tag.textContent = label;
+    tag.style.cssText =
+      'position:fixed; left:' + Math.round(x + 8) + 'px; top:' + Math.round(y - 8) + 'px;' +
+      ' background:' + color + '; color:#111; font:600 11px/1 monospace; padding:2px 4px; border-radius:4px;';
+    layer.appendChild(dot);
+    layer.appendChild(tag);
   };
 
   const clickNode = (node) => {
@@ -2495,7 +2646,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
   };
 
   try {
-    logMsg('启动 V20 大结局版...', '#00FFFF');
+    logMsg('启动脚本版本: ' + SCRIPT_VERSION, '#00FFFF');
 
     // ================= 阶段一：跨页面导航 =================
     if (!window.location.href.includes('consign')) {
@@ -2512,7 +2663,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     }
 
     // ================= 阶段二：自动展开弹窗 =================
-    window.scrollBy(0, 1500);
+    window.scrollBy(0, 350);
     await sleep(1500); 
     checkCancel();
 
@@ -2520,7 +2671,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
       document.querySelectorAll('.order-button, .order-normal-button, div[class*="order-button"]')
     ).reverse();
     const consignBtn = btns.find(
-      (el) => norm(el.textContent) === '快速铺货' || norm(el.textContent) === '立即铺货'
+      (el) => norm(el.textContent).includes('快速铺货') || norm(el.textContent).includes('立即铺货')
     );
 
     if (!consignBtn) throw new Error('未找到底部的快速铺货按钮');
@@ -2530,52 +2681,461 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     
     // ================= 阶段三：穿透双重结界 =================
     logMsg('潜入双层 Shadow 结界...', '#FFFF00');
-    let shadow1 = null, shadow2 = null;
-    const endShadowWait = Date.now() + 8000;
+    let shadow1 = null, shadow2 = null, layer2Host = null;
+    const endShadowWait = Date.now() + 12000;
     while (Date.now() < endShadowWait) {
         checkCancel();
         const layer1 = document.querySelector('channel-toolbox-simple-distribute');
         if (layer1 && layer1.shadowRoot) {
             shadow1 = layer1.shadowRoot;
-            const layer2 = shadow1.querySelector('channel-toolbox-simple-distribute-confirmshop');
+            let layer2 = shadow1.querySelector('channel-toolbox-simple-distribute-confirmshop');
+            if (!layer2) {
+              // 兜底：部分时序下 layer2 host 会短暂挂在 light DOM，先不做可见性强校验。
+              layer2 = document.querySelector('channel-toolbox-simple-distribute-confirmshop');
+            }
             if (layer2 && layer2.shadowRoot) {
-                shadow2 = layer2.shadowRoot;
-                break;
+              layer2Host = layer2;
+              shadow2 = layer2.shadowRoot;
+              break;
             }
         }
-        await sleep(500);
+        await sleep(250);
     }
 
-    if (!shadow1 || !shadow2) throw new Error('未能穿透双层结界！');
+    if (!shadow1 || !shadow2) {
+      const layer1Count = document.querySelectorAll('channel-toolbox-simple-distribute').length;
+      const layer2Count = document.querySelectorAll('channel-toolbox-simple-distribute-confirmshop').length;
+      throw new Error('未能穿透双层结界！layer1=' + layer1Count + ', layer2=' + layer2Count);
+    }
     logMsg('成功夺取结界控制权！', '#00FFFF');
+    logMsg('等待弹窗内容稳定...', '#AAAAAA');
+    let readyRows = 0;
+    const endReadyWait = Date.now() + 5000;
+    while (Date.now() < endReadyWait) {
+      checkCancel();
+      const rows = Array.from(shadow2.querySelectorAll('*')).filter((el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 320 || r.height < 44 || r.height > 320) return false;
+        const txt = norm(el.textContent || '');
+        return txt.includes('的店') && (txt.includes('换工具') || txt.includes('铺货设置') || txt.includes('分销'));
+      });
+      readyRows = rows.length;
+      if (readyRows >= 2) break;
+      await sleep(220);
+    }
+    logMsg('弹窗稳定检测完成，行数=' + String(readyRows), readyRows >= 2 ? '#00FF66' : '#FF9900');
 
-    // ================= 阶段四：打钩 =================
+    // ================= 阶段四：打钩（恢复 87c583a 稳定链路） =================
     logMsg('寻找店铺: ' + targetShopName, '#FFFF00');
-    
-    const allInner = Array.from(shadow2.querySelectorAll('*')).reverse();
-    const shopNode = allInner.find(el => norm(el.textContent).includes(norm(targetShopName)) && el.children.length === 0);
-    if (!shopNode) throw new Error('第二层结界内找不到店名: ' + targetShopName);
 
-    let row = shopNode;
-    while(row && row.getBoundingClientRect().width < 150) {
-        row = row.parentElement;
-        if (row === shadow2 || !row) break;
-    }
+    const targetNorm = norm(targetShopName);
+    if (!targetNorm) throw new Error('目标店铺名为空，无法执行精准匹配');
+    const gatherCandidateNodes = () => {
+      const bucket = [];
+      const pushNodes = (root) => {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+        bucket.push(...Array.from(root.querySelectorAll('*')));
+      };
 
-    let fakeCheckbox = row && row.querySelector('[class*="checkbox" i], [class*="check" i]');
-    if (!fakeCheckbox && row) {
-        fakeCheckbox = Array.from(row.querySelectorAll('*')).find(el => {
-            const r = el.getBoundingClientRect();
-            return r.width >= 12 && r.width <= 32 && r.height >= 12 && r.height <= 32 && !el.textContent.trim();
+      // 1) 第二层 shadow 内部节点
+      pushNodes(shadow2);
+      // 2) 第二层 host 的 light DOM（slot 投影源）
+      pushNodes(layer2Host);
+      // 3) slot 映射出的 assignedElements
+      Array.from(shadow2.querySelectorAll('slot')).forEach((slotEl) => {
+        const assigned = typeof slotEl.assignedElements === 'function'
+          ? slotEl.assignedElements({ flatten: true })
+          : [];
+        assigned.forEach((el) => {
+          bucket.push(el);
+          pushNodes(el);
         });
+      });
+
+      return bucket;
+    };
+
+    const pickDeepestShopNode = (nodes) => {
+      const matched = nodes.filter((el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const txt = norm(el.textContent);
+        if (!txt.includes(targetNorm)) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (Number(style.opacity || '1') <= 0.02) return false;
+        return true;
+      });
+      if (matched.length === 0) return null;
+      const deepest = matched.reverse().find((el) => {
+        const childHasTarget = Array.from(el.children).some((c) => norm(c.textContent).includes(targetNorm));
+        return !childHasTarget;
+      });
+      return deepest || matched[0];
+    };
+    const extractShopLabels = (txt) => norm(txt || '').match(/[\u4e00-\u9fa5A-Za-z0-9·_.-]{2,48}的店/g) || [];
+    const isVisibleNode = (el) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (Number(style.opacity || '1') <= 0.02) return false;
+      return true;
+    };
+    const isRowLike = (el) => {
+      if (!isVisibleNode(el)) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 260 || rect.height < 44 || rect.height > 220) return false;
+      const txt = norm(el.textContent || '');
+      if (!txt.includes(targetNorm)) return false;
+      if (!txt.includes('的店')) return false;
+      return txt.includes('换工具') || txt.includes('铺货设置') || txt.includes('分销');
+    };
+    const pickVisualRowFromScene = (seedNode) => {
+      if (!seedNode || !seedNode.getBoundingClientRect) return null;
+      const seedRect = seedNode.getBoundingClientRect();
+      const seedCenterY = seedRect.top + seedRect.height / 2;
+      const roots = [shadow2, layer2Host].filter(Boolean);
+      const scored = [];
+      roots.forEach((root) => {
+        Array.from(root.querySelectorAll('div, li, section, article')).forEach((el) => {
+          if (!isVisibleNode(el)) return;
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 360 || rect.height < 48 || rect.height > 280) return;
+          const txt = norm(el.textContent || '');
+          if (!txt.includes(targetNorm) || !txt.includes('的店')) return;
+          if (rect.left > seedRect.left - 36) return;
+          if (rect.bottom < seedRect.top - 18 || rect.top > seedRect.bottom + 18) return;
+          const centerY = rect.top + rect.height / 2;
+          const score =
+            Math.abs(centerY - seedCenterY) * 3 + Math.abs((seedRect.left - rect.left) - 120);
+          scored.push({ el, score });
+        });
+      });
+      scored.sort((a, b) => a.score - b.score);
+      return scored[0]?.el || null;
+    };
+
+    let shopNode = null;
+    let row = null;
+    const endShopWait = Date.now() + 12000;
+    while (Date.now() < endShopWait) {
+      checkCancel();
+      const candidates = gatherCandidateNodes();
+      shopNode = pickDeepestShopNode(candidates);
+      if (shopNode) {
+        // 先沿祖先链找“单店行”语义容器，避免命中整列大容器后误点第一个复选框。
+        const ancestors = [];
+        let cursor = shopNode;
+        const shopRect = shopNode.getBoundingClientRect();
+        for (let i = 0; i < 12 && cursor; i++) {
+          ancestors.push(cursor);
+          cursor = cursor.parentElement;
+        }
+        row =
+          ancestors.find((el) => {
+            if (!isRowLike(el)) return false;
+            const r = el.getBoundingClientRect();
+            return r.left <= shopRect.left - 90 && r.width >= 420;
+          }) || null;
+        if (!row) {
+          row =
+            ancestors.find((el) => {
+              if (!isVisibleNode(el)) return false;
+              const rect = el.getBoundingClientRect();
+              const txt = norm(el.textContent || '');
+              return (
+                rect.width >= 420 &&
+                rect.height >= 52 &&
+                rect.height <= 260 &&
+                txt.includes(targetNorm) &&
+                txt.includes('的店') &&
+                rect.left <= shopRect.left - 90
+              );
+            }) || null;
+        }
+        if (!row) {
+          row =
+            ancestors.find((el) => {
+              if (!isVisibleNode(el)) return false;
+              const rect = el.getBoundingClientRect();
+              const txt = norm(el.textContent || '');
+              return (
+                rect.width >= 320 &&
+                rect.height >= 40 &&
+                rect.height <= 280 &&
+                txt.includes(targetNorm) &&
+                rect.left <= shopRect.left - 48
+              );
+            }) || null;
+        }
+        if (!row) row = shopNode;
+        break;
+      }
+
+      // 未命中时推进一次列表滚动，逼出虚拟列表中的目标节点
+      const scrollables = Array.from(shadow2.querySelectorAll('div, ul, section'))
+        .filter((el) => el.scrollHeight > el.clientHeight + 10)
+        .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+      if (scrollables.length > 0) {
+        const scroller = scrollables[0];
+        const before = scroller.scrollTop;
+        const delta = Math.max(240, Math.floor(scroller.clientHeight * 0.8));
+        scroller.scrollTop = Math.min(scroller.scrollTop + delta, scroller.scrollHeight);
+        if (scroller.scrollTop === before) scroller.scrollTop = 0;
+      }
+      await sleep(400);
     }
+
+    if (!shopNode) throw new Error('第二层结界内完全找不到该店名: ' + targetShopName);
+    if (!row) row = shopNode;
+    const shopRect = shopNode.getBoundingClientRect();
+    const rowRectProbe = row.getBoundingClientRect();
+    if (
+      !isVisibleNode(row) ||
+      rowRectProbe.width < 320 ||
+      rowRectProbe.left > shopRect.left - 36
+    ) {
+      const visualRow = pickVisualRowFromScene(shopNode);
+      if (visualRow) row = visualRow;
+    }
+    clearDebugMarks();
+    markRect(row, 'ROW 目标行', '#FFD400');
+    markRect(shopNode, 'SHOP 命中文本', '#00D4FF');
+
+    const rowScope = row || shopNode;
+    const rowTextNorm = norm(rowScope.textContent || '');
+    const rowShopLabels = extractShopLabels(rowTextNorm);
+    const shopNodeLabel = (extractShopLabels(shopNode.textContent || '') || [])[0] || safeText(shopNode.textContent, 64);
+    const chosenShopLabel = shopNodeLabel;
+
+    let effectiveScope = rowScope;
+    let rowRect = rowScope.getBoundingClientRect();
+    const buildCheckboxSearchNodes = () => {
+      const nodes = [];
+      const pushFromRoot = (root) => {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+        nodes.push(...Array.from(root.querySelectorAll('*')));
+      };
+      pushFromRoot(shadow2);
+      pushFromRoot(layer2Host);
+      Array.from(shadow2.querySelectorAll('slot')).forEach((slotEl) => {
+        const assigned = typeof slotEl.assignedElements === 'function'
+          ? slotEl.assignedElements({ flatten: true })
+          : [];
+        assigned.forEach((el) => {
+          nodes.push(el);
+          pushFromRoot(el);
+        });
+      });
+      return nodes;
+    };
+    const isBlockedOwner = (el) => {
+      const ownerBtn = el.closest('button,[role="button"],a');
+      if (!ownerBtn) return false;
+      const ownerTxt = norm(ownerBtn.textContent || '');
+      return (
+        ownerTxt.includes('铺货设置') ||
+        ownerTxt.includes('换工具') ||
+        ownerTxt.includes('去授权') ||
+        ownerTxt.includes('分销AI')
+      );
+    };
+    const isCheckboxCandidate = (el, scopeRect) => {
+      if (!isVisibleNode(el)) return false;
+      const r = el.getBoundingClientRect();
+      const txt = norm(el.textContent || '');
+      if (!(r.width >= 10 && r.width <= 40 && r.height >= 10 && r.height <= 40)) return false;
+      // 复选框通常位于每行左侧，限制横向位置避免误中右侧按钮
+      if (r.left - scopeRect.left > Math.min(160, scopeRect.width * 0.3)) return false;
+      if (r.left < scopeRect.left - 4 || r.right > scopeRect.right + 4) return false;
+      return txt.length <= 2;
+    };
+    const findCheckboxInScope = (scope) => {
+      const scopeRect = scope.getBoundingClientRect();
+      const all = buildCheckboxSearchNodes().filter((node) => scope.contains(node));
+      const matched = all
+        .filter((el) => {
+          if (!isCheckboxCandidate(el, scopeRect)) return false;
+          if (isBlockedOwner(el)) return false;
+          return true;
+        })
+        .sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          if (ra.left !== rb.left) return ra.left - rb.left;
+          const ca = ra.top + ra.height / 2;
+          const cb = rb.top + rb.height / 2;
+          const centerY = scopeRect.top + scopeRect.height / 2;
+          return Math.abs(ca - centerY) - Math.abs(cb - centerY);
+        });
+      return { scopeRect, matched };
+    };
+
+    const scopeChain = [];
+    let chainCursor = rowScope;
+    for (let i = 0; i < 5 && chainCursor; i++) {
+      if (isVisibleNode(chainCursor)) scopeChain.push(chainCursor);
+      chainCursor = chainCursor.parentElement;
+    }
+
+    let fakeCheckbox = null;
+    for (const scopeEl of scopeChain) {
+      const scopeTxt = norm(scopeEl.textContent || '');
+      if (!scopeTxt.includes(targetNorm)) continue;
+      const labels = extractShopLabels(scopeTxt);
+      // 跳过明显包含多店铺的大容器，避免拿到第一个店的勾选框。
+      if (labels.length > 2 && scopeEl !== rowScope) continue;
+      const found = findCheckboxInScope(scopeEl);
+      if (found.matched.length > 0) {
+        fakeCheckbox = found.matched[0];
+        effectiveScope = scopeEl;
+        rowRect = found.scopeRect;
+        break;
+      }
+    }
+    if (!fakeCheckbox) {
+      const shopCenterY = shopRect.top + shopRect.height / 2;
+      const geomPool = buildCheckboxSearchNodes()
+        .filter((el) => {
+          if (!(el instanceof HTMLElement)) return false;
+          if (!isVisibleNode(el)) return false;
+          if (isBlockedOwner(el)) return false;
+          const r = el.getBoundingClientRect();
+          const txt = norm(el.textContent || '');
+          if (!(r.width >= 10 && r.width <= 46 && r.height >= 10 && r.height <= 46)) return false;
+          const centerY = r.top + r.height / 2;
+          if (Math.abs(centerY - shopCenterY) > Math.max(24, shopRect.height * 1.2)) return false;
+          const dx = shopRect.left - r.left;
+          if (dx < 18 || dx > 360) return false;
+          return txt.length <= 2;
+        })
+        .sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          const ay = Math.abs(ra.top + ra.height / 2 - shopCenterY);
+          const by = Math.abs(rb.top + rb.height / 2 - shopCenterY);
+          if (ay !== by) return ay - by;
+          return Math.abs((shopRect.left - ra.left) - 130) - Math.abs((shopRect.left - rb.left) - 130);
+        });
+      if (geomPool.length > 0) {
+        fakeCheckbox = geomPool[0];
+        logMsg('🧲 几何兜底命中复选框候选，脱离 scope 限制', '#AAAAAA');
+      }
+    }
+    const isCheckedInScope = (scope) => {
+      const nodes = [scope, ...Array.from(scope.querySelectorAll('*'))];
+      return nodes.some((node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const aria = String(node.getAttribute('aria-checked') || '').toLowerCase();
+        if (aria === 'true') return true;
+        const cls = String(
+          typeof node.className === 'string' ? node.className : node.getAttribute('class') || ''
+        ).toLowerCase();
+        return /(checked|is-checked|selected|active)/.test(cls);
+      });
+    };
+    const checkedBefore = isCheckedInScope(effectiveScope);
 
     if (fakeCheckbox) {
-        logMsg('🎯 锁定假复选框，执行点击', '#00FF00');
-        clickNode(fakeCheckbox);
+        const cbRect = fakeCheckbox.getBoundingClientRect();
+        const cbClassRaw = typeof fakeCheckbox.className === 'string'
+          ? fakeCheckbox.className
+          : (fakeCheckbox.getAttribute ? fakeCheckbox.getAttribute('class') : '') || '';
+        markRect(fakeCheckbox, 'CB 复选框', '#00FF66');
+        logMsg('🧭 目标店铺: ' + safeText(targetShopName, 64), '#00FFFF');
+        logMsg(
+          '🧩 行内店铺片段数: ' + String(rowShopLabels.length) +
+          ' | 片段: ' + safeText(rowShopLabels.slice(0, 3).join(' / '), 120),
+          '#AAAAAA'
+        );
+        logMsg('📐 行左偏移(店名X-行X): ' + String(Math.round(shopRect.left - rowRect.left)), '#AAAAAA');
+        logMsg(
+          '☑️ 最终命中店铺: ' + chosenShopLabel +
+          ' | 复选框: ' + String(fakeCheckbox.tagName || 'UNKNOWN') +
+          ' | 尺寸: ' + Math.round(cbRect.width) + 'x' + Math.round(cbRect.height) +
+          ' | 偏移: ' + Math.round(cbRect.left - rowRect.left) + ',' + Math.round(cbRect.top - rowRect.top) +
+          ' | class: ' + safeText(cbClassRaw, 96),
+          '#00FF00'
+        );
+        if (checkedBefore) {
+          logMsg('✅ 目标行已是勾选态，跳过点击', '#00FF00');
+        } else {
+          logMsg('🎯 锁定假复选框，执行点击', '#00FF00');
+          clickNode(fakeCheckbox);
+        }
     } else {
-        logMsg('⚠️ 尝试点击店名文字', '#FF9900');
-        clickNode(shopNode);
+        // 兜底：只尝试点击该行左侧复选框热区，不再点击店名文字，避免误触“去授权/换工具”。
+        const hitY = shopRect.top + shopRect.height / 2;
+        const hitXs = [];
+        for (let x = shopRect.left - 280; x <= shopRect.left - 8; x += 22) {
+          hitXs.push(x);
+        }
+        let hotspotNode = null;
+        hitXs.forEach((x, idx) => {
+          markPoint(x, hitY, String(idx + 1), '#FF7A00');
+        });
+        for (const x of hitXs) {
+          const hitStack =
+            typeof document.elementsFromPoint === 'function'
+              ? document.elementsFromPoint(x, hitY)
+              : [document.elementFromPoint(x, hitY)].filter(Boolean);
+          let fallback = null;
+          for (const hit of hitStack) {
+            if (!hit || !(hit instanceof HTMLElement)) continue;
+            if (!isVisibleNode(hit)) continue;
+            if (isBlockedOwner(hit)) continue;
+            const r = hit.getBoundingClientRect();
+            const txt = norm(hit.textContent || '');
+            const dx = shopRect.left - r.left;
+            const inRowBand =
+              Math.abs(r.top + r.height / 2 - hitY) <= Math.max(26, rowRect.height * 0.8);
+            if (!inRowBand || dx < 10 || dx > 420) continue;
+            if (r.width >= 8 && r.width <= 60 && r.height >= 8 && r.height <= 60 && txt.length <= 2) {
+              hotspotNode = hit;
+              break;
+            }
+            if (!fallback && r.width <= 560 && r.height <= Math.max(120, rowRect.height + 30)) {
+              fallback = hit;
+            }
+          }
+          if (!hotspotNode && fallback) hotspotNode = fallback;
+          if (hotspotNode) break;
+        }
+        logMsg('🧭 目标店铺: ' + safeText(targetShopName, 64), '#00FFFF');
+        logMsg('⚠️ 最终命中店铺: ' + chosenShopLabel + ' | 未找到显式复选框，尝试左侧热区点击', '#FF9900');
+        if (!hotspotNode) {
+          throw new Error('未定位到目标店铺复选框（含热区），已中止避免误点店名。');
+        }
+        markRect(hotspotNode, 'CB 热区命中', '#FF7A00');
+        logMsg(
+          '🎯 左侧热区命中: ' + String(hotspotNode.tagName || 'UNKNOWN') +
+          ' | 偏移: ' + Math.round((hotspotNode.getBoundingClientRect().left || 0) - rowRect.left),
+          '#FF9900'
+        );
+        if (checkedBefore) {
+          logMsg('✅ 目标行已是勾选态，跳过热区点击', '#00FF00');
+        } else {
+          clickNode(hotspotNode);
+        }
+    }
+
+    await sleep(280);
+    let checkedAfter = isCheckedInScope(effectiveScope);
+    if (!checkedAfter) {
+      // 二次采样，规避受控组件异步更新带来的假阴性。
+      await sleep(420);
+      checkedAfter = isCheckedInScope(effectiveScope);
+    }
+    logMsg(
+      '🔎 勾选态校验: before=' + (checkedBefore ? '1' : '0') + ' after=' + (checkedAfter ? '1' : '0'),
+      checkedAfter ? '#00FF00' : '#FF9900'
+    );
+    if (!checkedAfter) {
+      logMsg('⚠️ 勾选态校验仅作观察（可能假阴性），继续执行提交流程验证端到端', '#FF9900');
     }
 
     await sleep(1000);
@@ -2583,30 +3143,142 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
 
     // ================= 阶段五：终极提交 (V20 核心修复) =================
     logMsg('无视标签限制，寻找底部提交按钮...', '#FFFF00');
-    
-    // 把两层结界里的所有节点都拿出来，反向查找纯文本节点
-    const allLayers = [...Array.from(shadow1.querySelectorAll('*')), ...Array.from(shadow2.querySelectorAll('*'))].reverse();
-    const submitBtnInner = allLayers.find(el => {
-        const txt = String(el.textContent || '').replace(/\\s+/g, '');
+
+    const submitRoots = [shadow1, shadow2, layer2Host, document].filter(Boolean);
+    const submitPool = [];
+    const blockedText = ['取消', '关联商品', '铺货设置', '换工具', '去授权'];
+    submitRoots.forEach((root) => {
+      if (!root || typeof root.querySelectorAll !== 'function') return;
+      Array.from(root.querySelectorAll('*')).forEach((el) => {
+        if (!(el instanceof HTMLElement)) return;
+        if (!isVisibleNode(el)) return;
         const rect = el.getBoundingClientRect();
-        // 匹配 "立即铺货(单店)" 或 "确定" 且必须是最底层的文字包裹节点
-        return (txt.includes('立即铺货') || txt === '确定') && rect.width > 0 && el.children.length === 0;
+        if (rect.width < 72 || rect.height < 28) return;
+        const txt = norm(el.textContent || '');
+        const cls = String(typeof el.className === 'string' ? el.className : '').toLowerCase();
+        const role = String(el.getAttribute('role') || '').toLowerCase();
+        const clickableHint =
+          role === 'button' ||
+          el.tagName === 'BUTTON' ||
+          cls.includes('button') ||
+          cls.includes('btn') ||
+          String(el.getAttribute('part') || '').toLowerCase().includes('button') ||
+          String(el.getAttribute('part') || '').toLowerCase().includes('base');
+        if (!clickableHint && txt.length === 0) return;
+        let score = 0;
+        if (txt.includes('立即铺货')) score += 140;
+        if (txt.includes('单店')) score += 70;
+        if (txt === '确定' || txt.includes('确认')) score += 38;
+        if (rect.width >= 180) score += 10;
+        if (rect.top >= window.innerHeight * 0.55) score += 8;
+        if (blockedText.some((kw) => txt.includes(kw))) score -= 120;
+        if (txt.includes('关联') || txt.includes('取消')) score -= 160;
+        submitPool.push({ el, txt, rect, score });
+      });
     });
 
-    if (!submitBtnInner) throw new Error('绝杀失败：完全找不到包含“立即铺货”文字的节点');
+    submitPool.sort((a, b) => b.score - a.score || b.rect.width - a.rect.width || a.rect.left - b.rect.left);
+    const submitBtnInner = submitPool.find((item) => item.score > 0)?.el || null;
 
-    logMsg('🚀 找到提交文本节点！发射双重点击！', '#00FFFF');
-    
-    // 暴力：先点字，再点包裹着字的容器按钮
-    clickNode(submitBtnInner);
-    if (submitBtnInner.parentElement) {
-        await sleep(100);
-        clickNode(submitBtnInner.parentElement);
+    if (!submitBtnInner) {
+      const hint = submitPool
+        .slice(0, 8)
+        .map((it) => {
+          const t = it.txt || 'NO_TEXT';
+          return t + '@' + Math.round(it.rect.width) + 'x' + Math.round(it.rect.height) + '#S' + it.score;
+        })
+        .join(' | ');
+      throw new Error('未找到提交按钮（立即铺货单店）；候选: ' + (hint || '空'));
     }
 
-    logMsg('🎉 流程执行完毕！', '#00FF00');
+    markRect(submitBtnInner, 'SUBMIT 命中', '#00FFFF');
+    const submitRect = submitBtnInner.getBoundingClientRect();
+    logMsg(
+      '🚀 提交命中: ' +
+        safeText(submitBtnInner.textContent || 'NO_TEXT', 80) +
+        ' | 尺寸: ' + Math.round(submitRect.width) + 'x' + Math.round(submitRect.height),
+      '#00FFFF'
+    );
+
+    const submitCarrier =
+      submitBtnInner.closest('button,[role="button"],[class*="button" i],[class*="btn" i],[part*="base" i]') ||
+      submitBtnInner.parentElement ||
+      submitBtnInner;
+    markRect(submitCarrier, 'SUBMIT 载体', '#00AFFF');
+
+    // 暴力：点命中节点 + 载体节点，兼容自定义 WebComponent 的事件绑定位点。
+    clickNode(submitBtnInner);
+    await sleep(120);
+    if (submitCarrier && submitCarrier !== submitBtnInner) clickNode(submitCarrier);
+
+    // ================= 阶段六：等待结果文案 =================
+    logMsg('提交点击完成，正在等待“铺货成功”文案...', '#FFFF00');
+    const successKeywords = ['铺货成功', '上架成功', '发布成功', '成功上架', '成功铺货'];
+    const failKeywords = ['铺货失败', '上架失败', '发布失败', '操作失败', '提交失败'];
+
+    const collectRoots = () => {
+      const roots = [document, shadow1, shadow2];
+      Array.from(document.querySelectorAll('*')).forEach((el) => {
+        if (el.shadowRoot) roots.push(el.shadowRoot);
+      });
+      return roots;
+    };
+
+    const detectKeyword = (keywords) => {
+      const roots = collectRoots();
+      for (const root of roots) {
+        let txt = '';
+        if (root === document) {
+          txt = String(document.body?.innerText || document.documentElement?.innerText || '');
+        } else {
+          txt = String(root?.textContent || '');
+        }
+        if (!txt) continue;
+        for (const kw of keywords) {
+          if (txt.includes(kw)) return kw;
+        }
+      }
+      return '';
+    };
+
+    let successHit = '';
+    let failHit = '';
+    const endResultWait = Date.now() + 12000;
+    while (Date.now() < endResultWait) {
+      checkCancel();
+      successHit = detectKeyword(successKeywords);
+      if (successHit) break;
+      if (!failHit) failHit = detectKeyword(failKeywords);
+      await sleep(500);
+    }
+
+    if (successHit) {
+      logMsg('✅ 检测到成功文案: ' + successHit, '#00FF00');
+      setTimeout(() => { if (panel) panel.remove(); }, 4000);
+      return {
+        ok: true,
+        message: '一键铺货成功：' + successHit,
+        successDetected: true,
+        successKeyword: successHit
+      };
+    }
+
+    if (failHit) {
+      logMsg('❌ 检测到失败文案: ' + failHit, '#FF0000');
+      return {
+        ok: false,
+        error: 'DELIVERY_FAILED',
+        message: '检测到失败文案：' + failHit
+      };
+    }
+
+    logMsg('⚠️ 未检测到“铺货成功”文案，请人工确认结果。', '#FF9900');
     setTimeout(() => { if (panel) panel.remove(); }, 4000);
-    return { ok: true, message: '一键铺货自动化链路圆满完成！' };
+    return {
+      ok: true,
+      message: '提交已点击，但未检测到“铺货成功”文案，请人工确认。',
+      successDetected: false
+    };
 
   } catch (err) {
     logMsg('发生错误: ' + err.message, '#FF0000');
