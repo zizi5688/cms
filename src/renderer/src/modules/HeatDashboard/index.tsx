@@ -2469,7 +2469,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     panel = document.createElement('div');
     panel.id = 'rpa-live-log';
     panel.style.cssText = 'position:fixed; top:20px; right:20px; width:400px; height:480px; z-index:9999999; background:rgba(0,0,0,0.85); color:#00FF00; border:2px solid #00FF00; padding:15px; font-family:monospace; font-size:13px; overflow-y:auto; border-radius:8px; pointer-events:none; box-shadow: 0 0 20px rgba(0,255,0,0.5);';
-    panel.innerHTML = '<h3 style="margin:0 0 10px 0;color:#fff;border-bottom:1px solid #333;padding-bottom:5px;">CTO 执行监控 (V18 降维打击)</h3><div id="rpa-log-content"></div>';
+    panel.innerHTML = '<h3 style="margin:0 0 10px 0;color:#fff;border-bottom:1px solid #333;padding-bottom:5px;">CTO 执行监控 (V20 大结局)</h3><div id="rpa-log-content"></div>';
     document.body.appendChild(panel);
   }
   const logDiv = document.getElementById('rpa-log-content');
@@ -2484,6 +2484,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
   };
 
   const clickNode = (node) => {
+    if(!node) return;
     node.scrollIntoView({block: 'center', behavior: 'smooth'});
     const opts = { bubbles: true, cancelable: true, view: window };
     node.dispatchEvent(new MouseEvent('mouseover', opts));
@@ -2494,7 +2495,7 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
   };
 
   try {
-    logMsg('启动 V18 嵌套结界降维打击版...', '#00FFFF');
+    logMsg('启动 V20 大结局版...', '#00FFFF');
 
     // ================= 阶段一：跨页面导航 =================
     if (!window.location.href.includes('consign')) {
@@ -2503,9 +2504,8 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
       const tabNode = allNodes.find(el => isVis(el) && (norm(el.textContent) === '代发' || norm(el.textContent) === '一件代发') && el.children.length === 0);
 
       if (tabNode) {
-        logMsg('切换代发页面，请等待重载...', '#FFFF00');
-        tabNode.scrollIntoView({ block: 'center' });
-        tabNode.click();
+        logMsg('切换代发页面，等待重载...', '#FFFF00');
+        clickNode(tabNode);
         return { ok: false, error: 'NAVIGATING', message: '正在切换...' };
       }
       throw new Error('未找到代发选项卡');
@@ -2516,17 +2516,21 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     await sleep(1500); 
     checkCancel();
 
-    const btns = Array.from(document.querySelectorAll('.order-button, .order-normal-button, div[class*="order-button"]')).reverse();
-    const consignBtn = btns.find(el => norm(el.textContent) === '快速铺货' || norm(el.textContent) === '立即铺货');
+    const btns = Array.from(
+      document.querySelectorAll('.order-button, .order-normal-button, div[class*="order-button"]')
+    ).reverse();
+    const consignBtn = btns.find(
+      (el) => norm(el.textContent) === '快速铺货' || norm(el.textContent) === '立即铺货'
+    );
 
     if (!consignBtn) throw new Error('未找到底部的快速铺货按钮');
 
-    logMsg('点击快速铺货，呼出弹窗', '#00FFFF');
+    logMsg('点击外部快速铺货', '#00FFFF');
     clickNode(consignBtn);
     
     // ================= 阶段三：穿透双重结界 =================
-    logMsg('正在潜入双层 Shadow 结界...', '#FFFF00');
-    let shadow1 = null, shadow2 = null, layer2Host = null;
+    logMsg('潜入双层 Shadow 结界...', '#FFFF00');
+    let shadow1 = null, shadow2 = null;
     const endShadowWait = Date.now() + 8000;
     while (Date.now() < endShadowWait) {
         checkCancel();
@@ -2535,7 +2539,6 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
             shadow1 = layer1.shadowRoot;
             const layer2 = shadow1.querySelector('channel-toolbox-simple-distribute-confirmshop');
             if (layer2 && layer2.shadowRoot) {
-                layer2Host = layer2;
                 shadow2 = layer2.shadowRoot;
                 break;
             }
@@ -2543,124 +2546,66 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
         await sleep(500);
     }
 
-    if (!shadow1 || !shadow2) throw new Error('未能穿透双层结界！弹窗可能尚未加载完成');
-    logMsg('成功夺取双层结界控制权！', '#00FFFF');
+    if (!shadow1 || !shadow2) throw new Error('未能穿透双层结界！');
+    logMsg('成功夺取结界控制权！', '#00FFFF');
 
-    // ================= 阶段四：第二层内找店与打钩 =================
-    logMsg('深入 Layer 2 寻找店铺: ' + targetShopName, '#FFFF00');
+    // ================= 阶段四：打钩 =================
+    logMsg('寻找店铺: ' + targetShopName, '#FFFF00');
+    
+    const allInner = Array.from(shadow2.querySelectorAll('*')).reverse();
+    const shopNode = allInner.find(el => norm(el.textContent).includes(norm(targetShopName)) && el.children.length === 0);
+    if (!shopNode) throw new Error('第二层结界内找不到店名: ' + targetShopName);
 
-    const targetNorm = norm(targetShopName);
-    const gatherCandidateNodes = () => {
-      const bucket = [];
-      const pushNodes = (root) => {
-        if (!root || typeof root.querySelectorAll !== 'function') return;
-        bucket.push(...Array.from(root.querySelectorAll('*')));
-      };
-
-      // 1) 第二层 shadow 内部节点
-      pushNodes(shadow2);
-      // 2) 第二层 host 的 light DOM（slot 投影源）
-      pushNodes(layer2Host);
-      // 3) slot 映射出的 assignedElements
-      Array.from(shadow2.querySelectorAll('slot')).forEach((slotEl) => {
-        const assigned = typeof slotEl.assignedElements === 'function'
-          ? slotEl.assignedElements({ flatten: true })
-          : [];
-        assigned.forEach((el) => {
-          bucket.push(el);
-          pushNodes(el);
-        });
-      });
-
-      return bucket;
-    };
-
-    const pickDeepestShopNode = (nodes) => {
-      const matched = nodes.filter((el) => norm(el.textContent).includes(targetNorm));
-      if (matched.length === 0) return null;
-      const deepest = matched.reverse().find((el) => {
-        const childHasTarget = Array.from(el.children).some((c) => norm(c.textContent).includes(targetNorm));
-        return !childHasTarget;
-      });
-      return deepest || matched[0];
-    };
-
-    let shopNode = null;
-    let row = null;
-    const endShopWait = Date.now() + 12000;
-    while (Date.now() < endShopWait) {
-      checkCancel();
-      const candidates = gatherCandidateNodes();
-      shopNode = pickDeepestShopNode(candidates);
-      if (shopNode) {
-        row = shopNode;
-        for (let i = 0; i < 10; i++) {
-          if (!row || !row.parentElement) break;
-          const rect = row.getBoundingClientRect();
-          if (rect.width >= 200 && rect.height >= 24) break;
-          row = row.parentElement;
-        }
-        break;
-      }
-
-      // 未命中时推进一次列表滚动，逼出虚拟列表中的目标节点
-      const scrollables = Array.from(shadow2.querySelectorAll('div, ul, section'))
-        .filter((el) => el.scrollHeight > el.clientHeight + 10)
-        .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
-      if (scrollables.length > 0) {
-        const scroller = scrollables[0];
-        const before = scroller.scrollTop;
-        const delta = Math.max(240, Math.floor(scroller.clientHeight * 0.8));
-        scroller.scrollTop = Math.min(scroller.scrollTop + delta, scroller.scrollHeight);
-        if (scroller.scrollTop === before) scroller.scrollTop = 0;
-      }
-      await sleep(400);
+    let row = shopNode;
+    while(row && row.getBoundingClientRect().width < 150) {
+        row = row.parentElement;
+        if (row === shadow2 || !row) break;
     }
 
-    if (!shopNode) throw new Error('第二层结界内完全找不到该店名: ' + targetShopName);
-    if (!row) row = shopNode;
-
-    logMsg('<span style="color:#aaa;">行DOM特征: ' + (row ? row.outerHTML.replace(/</g, '&lt;').substring(0, 100) : '空') + '</span>', '#aaa');
-
-    // 【致命狙击】：寻找同行内的自定义复选框 (方块图标)
-    // 特征：宽高在 12px ~ 32px 之间，并且不包含任何文字
-    const rowScope = row || shopNode;
-    let fakeCheckbox = rowScope.querySelector('[class*="checkbox" i], [class*="check" i], [role="checkbox"], [aria-checked]');
-    if (!fakeCheckbox) {
-        const rowEls = Array.from(rowScope.querySelectorAll('*'));
-        fakeCheckbox = rowEls.find(el => {
+    let fakeCheckbox = row && row.querySelector('[class*="checkbox" i], [class*="check" i]');
+    if (!fakeCheckbox && row) {
+        fakeCheckbox = Array.from(row.querySelectorAll('*')).find(el => {
             const r = el.getBoundingClientRect();
-            const txt = norm(el.textContent || '');
-            return r.width >= 12 && r.width <= 32 && r.height >= 12 && r.height <= 32 && txt.length <= 2;
+            return r.width >= 12 && r.width <= 32 && r.height >= 12 && r.height <= 32 && !el.textContent.trim();
         });
     }
 
     if (fakeCheckbox) {
-        logMsg('🎯 锁定正方形假复选框，执行降维点击', '#00FF00');
+        logMsg('🎯 锁定假复选框，执行点击', '#00FF00');
         clickNode(fakeCheckbox);
     } else {
-        logMsg('⚠️ 警告：未找到方形图标，尝试点击店名文字', '#FF9900');
+        logMsg('⚠️ 尝试点击店名文字', '#FF9900');
         clickNode(shopNode);
     }
 
     await sleep(1000);
     checkCancel();
 
-    // ================= 阶段五：第一层内点击提交 =================
-    logMsg('返回 Layer 1 寻找底部提交按钮...', '#FFFF00');
-    // 按钮存在于第一层 shadow1 中！
-    const submitBtn = Array.from(shadow1.querySelectorAll('button, div[class*="btn"]')).reverse().find(el => {
+    // ================= 阶段五：终极提交 (V20 核心修复) =================
+    logMsg('无视标签限制，寻找底部提交按钮...', '#FFFF00');
+    
+    // 把两层结界里的所有节点都拿出来，反向查找纯文本节点
+    const allLayers = [...Array.from(shadow1.querySelectorAll('*')), ...Array.from(shadow2.querySelectorAll('*'))].reverse();
+    const submitBtnInner = allLayers.find(el => {
         const txt = String(el.textContent || '').replace(/\\s+/g, '');
-        return txt.includes('立即铺货') || txt.includes('单店') || txt === '确定';
+        const rect = el.getBoundingClientRect();
+        // 匹配 "立即铺货(单店)" 或 "确定" 且必须是最底层的文字包裹节点
+        return (txt.includes('立即铺货') || txt === '确定') && rect.width > 0 && el.children.length === 0;
     });
 
-    if (!submitBtn) throw new Error('第一层结界内未找到提交按钮');
+    if (!submitBtnInner) throw new Error('绝杀失败：完全找不到包含“立即铺货”文字的节点');
 
-    logMsg('🚀 找到提交按钮，执行发射！', '#00FFFF');
-    clickNode(submitBtn);
+    logMsg('🚀 找到提交文本节点！发射双重点击！', '#00FFFF');
+    
+    // 暴力：先点字，再点包裹着字的容器按钮
+    clickNode(submitBtnInner);
+    if (submitBtnInner.parentElement) {
+        await sleep(100);
+        clickNode(submitBtnInner.parentElement);
+    }
 
-    logMsg('执行完毕！', '#00FF00');
-    setTimeout(() => { if (panel) panel.remove(); }, 3000);
+    logMsg('🎉 流程执行完毕！', '#00FF00');
+    setTimeout(() => { if (panel) panel.remove(); }, 4000);
     return { ok: true, message: '一键铺货自动化链路圆满完成！' };
 
   } catch (err) {
