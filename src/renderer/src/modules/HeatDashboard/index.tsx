@@ -3240,6 +3240,103 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
       }
       return '';
     };
+    const closeSuccessDialog = (keyword) => {
+      const keywordNorm = norm(keyword || '');
+      const roots = collectRoots();
+      const dialogScopes = [];
+
+      const pushScope = (node) => {
+        if (!(node instanceof HTMLElement)) return;
+        if (!isVisibleNode(node)) return;
+        if (!dialogScopes.includes(node)) dialogScopes.push(node);
+      };
+
+      roots.forEach((root) => {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+        Array.from(root.querySelectorAll('*')).forEach((el) => {
+          if (!(el instanceof HTMLElement)) return;
+          if (!isVisibleNode(el)) return;
+          const txt = norm(el.textContent || '');
+          if (!keywordNorm || !txt.includes(keywordNorm)) return;
+          let cur = el;
+          for (let i = 0; i < 8 && cur; i += 1) {
+            const r = cur.getBoundingClientRect();
+            if (r.width >= 260 && r.width <= 980 && r.height >= 120 && r.height <= 760) {
+              pushScope(cur);
+            }
+            cur = cur.parentElement;
+          }
+        });
+      });
+
+      const closePool = [];
+      const addCloseCandidate = (el, scoreBoost = 0) => {
+        if (!(el instanceof HTMLElement)) return;
+        if (!isVisibleNode(el)) return;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 14 || rect.height < 14 || rect.width > 260 || rect.height > 90) return;
+        const txt = norm(el.textContent || '');
+        const label = norm(el.getAttribute('aria-label') || el.getAttribute('title') || '');
+        const cls = String(typeof el.className === 'string' ? el.className : '').toLowerCase();
+        let score = scoreBoost;
+        if (txt === '关闭') score += 240;
+        else if (txt.includes('关闭')) score += 160;
+        if (txt === '×' || txt === '✕' || txt === 'x') score += 80;
+        if (label.includes('关闭') || label.includes('close')) score += 180;
+        if (cls.includes('close')) score += 80;
+        if (el.tagName === 'BUTTON') score += 30;
+        if (score <= 0) return;
+        closePool.push({ el, score, rect, txt, label });
+      };
+
+      dialogScopes.forEach((scope) => {
+        const scopeRect = scope.getBoundingClientRect();
+        Array.from(scope.querySelectorAll('*')).forEach((el) => {
+          if (!(el instanceof HTMLElement)) return;
+          let boost = 0;
+          const r = el.getBoundingClientRect();
+          const nearTopRight =
+            Math.abs(scopeRect.right - r.right) <= Math.max(42, scopeRect.width * 0.2) &&
+            r.top - scopeRect.top <= Math.max(72, scopeRect.height * 0.35);
+          if (nearTopRight) boost += 36;
+          addCloseCandidate(el, boost);
+        });
+      });
+
+      if (closePool.length === 0) {
+        // 兜底：全局找可见“关闭”按钮，避免弹窗结构变形时漏掉。
+        roots.forEach((root) => {
+          if (!root || typeof root.querySelectorAll !== 'function') return;
+          Array.from(root.querySelectorAll('button,[role="button"],div,span')).forEach((el) => {
+            addCloseCandidate(el, 0);
+          });
+        });
+      }
+
+      closePool.sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.rect.width - a.rect.width ||
+          Math.abs(a.rect.top - b.rect.top)
+      );
+      const winner = closePool[0]?.el || null;
+      if (!winner) return false;
+
+      const carrier =
+        winner.closest(
+          'button,[role="button"],[class*="button" i],[class*="btn" i],[class*="close" i],[part*="base" i]'
+        ) ||
+        winner.parentElement ||
+        winner;
+      clickNode(winner);
+      if (carrier && carrier !== winner) clickNode(carrier);
+      logMsg(
+        '🧹 已自动关闭成功弹窗: ' +
+          safeText(winner.textContent || winner.getAttribute('aria-label') || winner.getAttribute('title') || '关闭', 40),
+        '#00FF99'
+      );
+      return true;
+    };
 
     let successHit = '';
     let failHit = '';
@@ -3253,6 +3350,10 @@ function build1688OneClickDeliveryScript(targetShopName: string): string {
     }
 
     if (successHit) {
+      const closed = closeSuccessDialog(successHit);
+      if (!closed) {
+        logMsg('⚠️ 成功弹窗关闭控件未命中，请人工关闭', '#FF9900');
+      }
       logMsg('✅ 检测到成功文案: ' + successHit, '#00FF00');
       setTimeout(() => { if (panel) panel.remove(); }, 4000);
       return {
