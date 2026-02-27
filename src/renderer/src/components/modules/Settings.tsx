@@ -43,6 +43,14 @@ type AutoImportScanProgress = {
   message?: string
 }
 
+function formatDateTime(value: number | null): string {
+  if (!Number.isFinite(Number(value))) return '--'
+  const time = Number(value)
+  const date = new Date(time)
+  if (!Number.isFinite(date.getTime())) return '--'
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
 const WATERMARK_TRAJECTORY_OPTIONS: TrajectoryOption[] = [
   { value: 'smoothSine', label: '方案 A · 柔和正弦漂移', description: '横向平移 + 纵向正弦起伏，轨迹柔和。' },
   { value: 'figureEight', label: '方案 B · 8字李萨如', description: '围绕中心画“∞”，闭环平滑。' },
@@ -77,7 +85,10 @@ function Settings(): React.JSX.Element {
 
   const [isTesting, setIsTesting] = useState(false)
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
+  const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false)
+  const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false)
   const [autoImportScanProgress, setAutoImportScanProgress] = useState<AutoImportScanProgress | null>(null)
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
   const [workspacePath, setWorkspacePath] = useState('')
   const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>('uninitialized')
   const [previewTime, setPreviewTime] = useState(0)
@@ -268,6 +279,108 @@ function Settings(): React.JSX.Element {
       dispose()
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const applyState = (state: AppUpdateState): void => {
+      if (cancelled) return
+      setAppUpdateState(state)
+    }
+
+    if (typeof window.electronAPI.getAppUpdateState === 'function') {
+      void window.electronAPI
+        .getAppUpdateState()
+        .then(applyState)
+        .catch(() => void 0)
+    }
+
+    const dispose =
+      typeof window.electronAPI.onAppUpdateStatus === 'function'
+        ? window.electronAPI.onAppUpdateStatus((state) => {
+            applyState(state)
+          })
+        : () => undefined
+
+    return () => {
+      cancelled = true
+      dispose()
+    }
+  }, [])
+
+  const appUpdateStatusText = useMemo(() => {
+    if (!appUpdateState) return '正在读取更新状态...'
+    const latest = appUpdateState.latestVersion ? `（最新：${appUpdateState.latestVersion}）` : ''
+    switch (appUpdateState.phase) {
+      case 'disabled':
+        return appUpdateState.message || '当前环境未启用自动更新。'
+      case 'checking':
+        return '正在检查更新...'
+      case 'available':
+        return appUpdateState.message || `发现新版本 ${latest}`
+      case 'downloading':
+        return appUpdateState.message || '正在下载更新...'
+      case 'downloaded':
+        return appUpdateState.message || '更新已下载，可安装。'
+      case 'not-available':
+        return appUpdateState.message || '当前已是最新版本。'
+      case 'error':
+        return appUpdateState.message || '更新检查失败。'
+      default:
+        return appUpdateState.message || '自动更新已就绪。'
+    }
+  }, [appUpdateState])
+
+  const checkAppUpdateNow = async (): Promise<void> => {
+    if (isCheckingAppUpdate) return
+    if (typeof window.electronAPI.checkAppUpdate !== 'function') {
+      const message = '当前版本未集成自动更新接口。'
+      addLog(`[更新] ${message}`)
+      window.alert(message)
+      return
+    }
+
+    setIsCheckingAppUpdate(true)
+    try {
+      addLog('[更新] 开始手动检查更新...')
+      const next = await window.electronAPI.checkAppUpdate()
+      setAppUpdateState(next)
+      addLog(`[更新] ${next.message}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[更新] 手动检查失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsCheckingAppUpdate(false)
+    }
+  }
+
+  const installDownloadedUpdate = async (): Promise<void> => {
+    if (isInstallingAppUpdate) return
+    if (typeof window.electronAPI.installAppUpdateNow !== 'function') {
+      const message = '当前版本未集成更新安装接口。'
+      addLog(`[更新] ${message}`)
+      window.alert(message)
+      return
+    }
+
+    setIsInstallingAppUpdate(true)
+    try {
+      const result = await window.electronAPI.installAppUpdateNow()
+      if (!result.accepted) {
+        const reason = result.reason ? `（${result.reason}）` : ''
+        addLog(`[更新] 暂未执行安装${reason}。`)
+        setAppUpdateState(result.state)
+        return
+      }
+      addLog('[更新] 即将重启并安装更新...')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[更新] 安装失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsInstallingAppUpdate(false)
+    }
+  }
 
   const chooseScoutDashboardAutoImportDir = async (): Promise<void> => {
     try {
@@ -511,6 +624,74 @@ function Settings(): React.JSX.Element {
               </div>
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>应用更新（Windows）</CardTitle>
+          <CardDescription>基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-2 text-xs text-zinc-300 md:grid-cols-2">
+            <div>
+              当前版本：
+              {' '}
+              {appUpdateState?.currentVersion ?? '--'}
+            </div>
+            <div>
+              最新版本：
+              {' '}
+              {appUpdateState?.latestVersion ?? '--'}
+            </div>
+            <div>
+              最近检查：
+              {' '}
+              {formatDateTime(appUpdateState?.checkedAt ?? null)}
+            </div>
+            <div>
+              下载完成：
+              {' '}
+              {formatDateTime(appUpdateState?.downloadedAt ?? null)}
+            </div>
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-sm text-zinc-200">
+            {appUpdateStatusText}
+          </div>
+
+          {typeof appUpdateState?.percent === 'number' && appUpdateState.percent >= 0 ? (
+            <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-zinc-300">
+                <span>下载进度</span>
+                <span>{Math.round(appUpdateState.percent)}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded bg-zinc-800">
+                <div
+                  className="h-full bg-emerald-500 transition-all"
+                  style={{ width: `${Math.max(0, Math.min(100, appUpdateState.percent))}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void checkAppUpdateNow()}
+              disabled={isCheckingAppUpdate || appUpdateState?.phase === 'checking'}
+            >
+              {isCheckingAppUpdate || appUpdateState?.phase === 'checking' ? '检查中...' : '检查更新'}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void installDownloadedUpdate()}
+              disabled={appUpdateState?.phase !== 'downloaded' || isInstallingAppUpdate}
+            >
+              {isInstallingAppUpdate ? '准备重启...' : '立即安装并重启'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

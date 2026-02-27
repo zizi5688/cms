@@ -85,6 +85,34 @@ type AppReleaseMeta = {
   updatedAt: string
 }
 
+type AppUpdatePhase =
+  | 'idle'
+  | 'disabled'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+type AppUpdateState = {
+  enabled: boolean
+  phase: AppUpdatePhase
+  message: string
+  platform: NodeJS.Platform
+  currentVersion: string
+  latestVersion: string | null
+  checkedAt: number | null
+  downloadedAt: number | null
+  percent: number | null
+}
+
+type InstallUpdateResult = {
+  accepted: boolean
+  reason?: string
+  state: AppUpdateState
+}
+
 // 渲染进程自定义 API（后续通过 IPC 扩展）
 const api = {
   cms: {
@@ -727,6 +755,19 @@ const electronAPI = {
     outputDir?: string
   }): Promise<ListDouyinHotMusicResult> => ipcRenderer.invoke('media:listDouyinHotMusicTracks', payload),
   getReleaseMeta: (): Promise<AppReleaseMeta> => ipcRenderer.invoke('app:getReleaseMeta'),
+  getAppUpdateState: (): Promise<AppUpdateState> => ipcRenderer.invoke('app:update.getState'),
+  checkAppUpdate: (): Promise<AppUpdateState> => ipcRenderer.invoke('app:update.check'),
+  installAppUpdateNow: (): Promise<InstallUpdateResult> => ipcRenderer.invoke('app:update.install'),
+  onAppUpdateStatus: (listener: (state: AppUpdateState) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      if (!payload || typeof payload !== 'object') return
+      listener(payload as AppUpdateState)
+    }
+    ipcRenderer.on('app:update.status', handler)
+    return () => {
+      ipcRenderer.off('app:update.status', handler)
+    }
+  },
   openDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
   showMessageBox: (payload: {
     type?: 'none' | 'info' | 'error' | 'question' | 'warning'

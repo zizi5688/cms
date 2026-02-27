@@ -108,6 +108,34 @@ declare global {
     updatedAt: string
   }
 
+  type AppUpdatePhase =
+    | 'idle'
+    | 'disabled'
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'downloading'
+    | 'downloaded'
+    | 'error'
+
+  type AppUpdateState = {
+    enabled: boolean
+    phase: AppUpdatePhase
+    message: string
+    platform: NodeJS.Platform
+    currentVersion: string
+    latestVersion: string | null
+    checkedAt: number | null
+    downloadedAt: number | null
+    percent: number | null
+  }
+
+  type InstallUpdateResult = {
+    accepted: boolean
+    reason?: string
+    state: AppUpdateState
+  }
+
   type SyncDouyinHotMusicResult = {
     success: boolean
     outputDir: string
@@ -645,6 +673,10 @@ declare global {
       outputDir?: string
     }) => Promise<ListDouyinHotMusicResult>
     getReleaseMeta: () => Promise<AppReleaseMeta>
+    getAppUpdateState: () => Promise<AppUpdateState>
+    checkAppUpdate: () => Promise<AppUpdateState>
+    installAppUpdateNow: () => Promise<InstallUpdateResult>
+    onAppUpdateStatus: (listener: (state: AppUpdateState) => void) => () => void
     openDirectory: () => Promise<string | null>
     showMessageBox: (payload: {
       type?: 'none' | 'info' | 'error' | 'question' | 'warning'

@@ -34,6 +34,7 @@ import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService } from './services/scoutService'
 import { getAppReleaseMeta } from './services/releaseMeta'
+import { initAutoUpdate } from './services/autoUpdate'
 
 // 防止 dev 模式下 stdout 管道断开导致未捕获 EPIPE 崩溃
 process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
@@ -3862,6 +3863,7 @@ app.whenReady().then(async () => {
   console.log(`[PowerSave] Blocker started (id=${powerSaveId})`)
 
   void createWindow()
+  initAutoUpdate()
 
   app.on('activate', function () {
     // macOS：点击 Dock 图标时显示已隐藏的窗口，或重新创建窗口
