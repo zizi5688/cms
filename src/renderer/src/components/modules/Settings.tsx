@@ -28,6 +28,21 @@ type TrajectoryOption = {
   description: string
 }
 
+type AutoImportScanProgress = {
+  mode: 'auto' | 'manual'
+  phase: 'start' | 'progress' | 'done' | 'error'
+  watchDir: string
+  scannedFiles: number
+  processedFiles: number
+  importedFiles: number
+  failedFiles: number
+  skippedBaselineFiles: number
+  skippedProcessedFiles: number
+  skippedRetryFiles: number
+  currentFile: string | null
+  message?: string
+}
+
 const WATERMARK_TRAJECTORY_OPTIONS: TrajectoryOption[] = [
   { value: 'smoothSine', label: '方案 A · 柔和正弦漂移', description: '横向平移 + 纵向正弦起伏，轨迹柔和。' },
   { value: 'figureEight', label: '方案 B · 8字李萨如', description: '围绕中心画“∞”，闭环平滑。' },
@@ -62,6 +77,7 @@ function Settings(): React.JSX.Element {
 
   const [isTesting, setIsTesting] = useState(false)
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
+  const [autoImportScanProgress, setAutoImportScanProgress] = useState<AutoImportScanProgress | null>(null)
   const [workspacePath, setWorkspacePath] = useState('')
   const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>('uninitialized')
   const [previewTime, setPreviewTime] = useState(0)
@@ -243,6 +259,16 @@ function Settings(): React.JSX.Element {
     preferences.defaultStartTime
   ])
 
+  useEffect(() => {
+    const dispose = window.api.cms.scout.dashboard.onAutoImportScanProgress((payload) => {
+      if (!payload || payload.mode !== 'manual') return
+      setAutoImportScanProgress(payload)
+    })
+    return () => {
+      dispose()
+    }
+  }, [])
+
   const chooseScoutDashboardAutoImportDir = async (): Promise<void> => {
     try {
       const selected = await window.electronAPI.openDirectory()
@@ -274,6 +300,20 @@ function Settings(): React.JSX.Element {
     }
 
     setIsScanningAutoImport(true)
+    setAutoImportScanProgress({
+      mode: 'manual',
+      phase: 'start',
+      watchDir,
+      scannedFiles: 0,
+      processedFiles: 0,
+      importedFiles: 0,
+      failedFiles: 0,
+      skippedBaselineFiles: 0,
+      skippedProcessedFiles: 0,
+      skippedRetryFiles: 0,
+      currentFile: null,
+      message: '准备开始手动扫描...'
+    })
     try {
       // Ensure latest path is persisted before triggering manual scan.
       await window.electronAPI.saveConfig({ scoutDashboardAutoImportDir: watchDir })
@@ -284,14 +324,22 @@ function Settings(): React.JSX.Element {
         window.alert('手动扫描未返回结果，请重试。')
         return
       }
-      if (result.busy) {
-        addLog('[热度看板] 手动扫描跳过：已有扫描任务正在运行。')
-        window.alert('已有扫描任务正在运行，请稍后再试。')
-        return
-      }
 
       const summary = `手动扫描完成：扫描 ${result.scannedFiles} 个，导入 ${result.importedFiles} 个，失败 ${result.failedFiles} 个。`
       addLog(`[热度看板] ${summary}`)
+      setAutoImportScanProgress((prev) => ({
+        mode: 'manual',
+        phase: 'done',
+        watchDir: result.watchDir,
+        scannedFiles: result.scannedFiles,
+        processedFiles: result.processedFiles,
+        importedFiles: result.importedFiles,
+        failedFiles: result.failedFiles,
+        skippedBaselineFiles: result.skippedBaselineFiles,
+        skippedProcessedFiles: result.skippedProcessedFiles,
+        skippedRetryFiles: result.skippedRetryFiles,
+        currentFile: prev?.currentFile ?? null
+      }))
       if (result.failedFiles > 0 && result.failures.length > 0) {
         const brief = result.failures
           .slice(0, 3)
@@ -311,11 +359,32 @@ function Settings(): React.JSX.Element {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[热度看板] 手动扫描失败：${message}`)
+      setAutoImportScanProgress((prev) => ({
+        mode: 'manual',
+        phase: 'error',
+        watchDir: watchDir,
+        scannedFiles: prev?.scannedFiles ?? 0,
+        processedFiles: prev?.processedFiles ?? 0,
+        importedFiles: prev?.importedFiles ?? 0,
+        failedFiles: prev?.failedFiles ?? 0,
+        skippedBaselineFiles: prev?.skippedBaselineFiles ?? 0,
+        skippedProcessedFiles: prev?.skippedProcessedFiles ?? 0,
+        skippedRetryFiles: prev?.skippedRetryFiles ?? 0,
+        currentFile: prev?.currentFile ?? null,
+        message
+      }))
       window.alert(message)
     } finally {
       setIsScanningAutoImport(false)
     }
   }
+
+  const autoImportProgressPercent = useMemo(() => {
+    if (!autoImportScanProgress) return 0
+    if (autoImportScanProgress.scannedFiles <= 0) return autoImportScanProgress.phase === 'done' ? 100 : 0
+    const raw = Math.round((autoImportScanProgress.processedFiles / autoImportScanProgress.scannedFiles) * 100)
+    return Math.max(0, Math.min(100, raw))
+  }, [autoImportScanProgress])
 
   const testConnection = async (): Promise<void> => {
     if (isTesting) return
@@ -405,6 +474,43 @@ function Settings(): React.JSX.Element {
               {isScanningAutoImport ? '扫描中...' : '手动扫描导入'}
             </Button>
           </div>
+          {autoImportScanProgress ? (
+            <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+              <div className="flex items-center justify-between text-xs text-zinc-300">
+                <span>
+                  {autoImportScanProgress.phase === 'error'
+                    ? '手动扫描失败'
+                    : autoImportScanProgress.phase === 'done'
+                      ? '手动扫描完成'
+                      : '手动扫描进行中'}
+                </span>
+                <span>
+                  {autoImportScanProgress.processedFiles}/{autoImportScanProgress.scannedFiles}
+                </span>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded bg-zinc-800">
+                <div
+                  className={`h-full transition-all ${
+                    autoImportScanProgress.phase === 'error' ? 'bg-rose-500' : 'bg-emerald-500'
+                  }`}
+                  style={{ width: `${autoImportProgressPercent}%` }}
+                />
+              </div>
+              <div className="mt-2 text-xs text-zinc-400">
+                {autoImportScanProgress.currentFile
+                  ? `当前文件：${autoImportScanProgress.currentFile}`
+                  : autoImportScanProgress.message || '等待扫描任务启动...'}
+              </div>
+              <div className="mt-1 text-xs text-zinc-500">
+                导入 {autoImportScanProgress.importedFiles}，失败 {autoImportScanProgress.failedFiles}，跳过
+                {' '}
+                {autoImportScanProgress.skippedBaselineFiles +
+                  autoImportScanProgress.skippedProcessedFiles +
+                  autoImportScanProgress.skippedRetryFiles}
+                ，进度 {autoImportProgressPercent}%
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

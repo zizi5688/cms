@@ -245,6 +245,7 @@ declare global {
             mode: 'auto' | 'manual'
             watchDir: string
             scannedFiles: number
+            processedFiles: number
             importedFiles: number
             failedFiles: number
             skippedBaselineFiles: number
@@ -253,6 +254,22 @@ declare global {
             busy: boolean
             failures: Array<{ sourceFile: string; message: string }>
           } | null>
+          onAutoImportScanProgress: (
+            listener: (payload: {
+              mode: 'auto' | 'manual'
+              phase: 'start' | 'progress' | 'done' | 'error'
+              watchDir: string
+              scannedFiles: number
+              processedFiles: number
+              importedFiles: number
+              failedFiles: number
+              skippedBaselineFiles: number
+              skippedProcessedFiles: number
+              skippedRetryFiles: number
+              currentFile: string | null
+              message?: string
+            }) => void
+          ) => () => void
           deleteSnapshot: (payload: {
             snapshotDate: string
           }) => Promise<{
