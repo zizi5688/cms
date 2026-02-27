@@ -317,6 +317,7 @@ const api = {
           mode: 'auto' | 'manual'
           watchDir: string
           scannedFiles: number
+          processedFiles: number
           importedFiles: number
           failedFiles: number
           skippedBaselineFiles: number
@@ -325,6 +326,57 @@ const api = {
           busy: boolean
           failures: Array<{ sourceFile: string; message: string }>
         } | null> => ipcRenderer.invoke('cms.scout.dashboard.autoImportScanNow'),
+        onAutoImportScanProgress: (
+          listener: (payload: {
+            mode: 'auto' | 'manual'
+            phase: 'start' | 'progress' | 'done' | 'error'
+            watchDir: string
+            scannedFiles: number
+            processedFiles: number
+            importedFiles: number
+            failedFiles: number
+            skippedBaselineFiles: number
+            skippedProcessedFiles: number
+            skippedRetryFiles: number
+            currentFile: string | null
+            message?: string
+          }) => void
+        ): (() => void) => {
+          const handler = (_event: unknown, payload: unknown): void => {
+            listener(
+              (payload ?? {
+                mode: 'manual',
+                phase: 'start',
+                watchDir: '',
+                scannedFiles: 0,
+                processedFiles: 0,
+                importedFiles: 0,
+                failedFiles: 0,
+                skippedBaselineFiles: 0,
+                skippedProcessedFiles: 0,
+                skippedRetryFiles: 0,
+                currentFile: null
+              }) as {
+                mode: 'auto' | 'manual'
+                phase: 'start' | 'progress' | 'done' | 'error'
+                watchDir: string
+                scannedFiles: number
+                processedFiles: number
+                importedFiles: number
+                failedFiles: number
+                skippedBaselineFiles: number
+                skippedProcessedFiles: number
+                skippedRetryFiles: number
+                currentFile: string | null
+                message?: string
+              }
+            )
+          }
+          ipcRenderer.on('cms.scout.dashboard.autoImportScanProgress', handler)
+          return () => {
+            ipcRenderer.off('cms.scout.dashboard.autoImportScanProgress', handler)
+          }
+        },
         deleteSnapshot: (payload: {
           snapshotDate: string
         }): Promise<{

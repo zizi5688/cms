@@ -1039,7 +1039,7 @@ app.whenReady().then(async () => {
   const autoImportBaselineSignatures = new Set<string>()
   const autoImportRetryAtBySignature = new Map<string, number>()
   let autoImportScanTimer: NodeJS.Timeout | null = null
-  let autoImportScanRunning = false
+  let autoImportScanInFlight: Promise<ScoutDashboardAutoImportScanSummary | null> | null = null
   let autoImportBaselineReady = false
   let autoImportWatchDir = ''
   let autoImportSinceTs = 0
@@ -1054,6 +1054,7 @@ app.whenReady().then(async () => {
     mode: ScoutDashboardAutoImportScanMode
     watchDir: string
     scannedFiles: number
+    processedFiles: number
     importedFiles: number
     failedFiles: number
     skippedBaselineFiles: number
@@ -1062,6 +1063,20 @@ app.whenReady().then(async () => {
     busy: boolean
     failures: ScoutDashboardAutoImportScanFailure[]
   }
+  type ScoutDashboardAutoImportScanProgress = {
+    mode: ScoutDashboardAutoImportScanMode
+    phase: 'start' | 'progress' | 'done' | 'error'
+    watchDir: string
+    scannedFiles: number
+    processedFiles: number
+    importedFiles: number
+    failedFiles: number
+    skippedBaselineFiles: number
+    skippedProcessedFiles: number
+    skippedRetryFiles: number
+    currentFile: string | null
+    message?: string
+  }
 
   const createScoutDashboardAutoImportScanSummary = (
     mode: ScoutDashboardAutoImportScanMode
@@ -1069,6 +1084,7 @@ app.whenReady().then(async () => {
     mode,
     watchDir: autoImportWatchDir,
     scannedFiles: 0,
+    processedFiles: 0,
     importedFiles: 0,
     failedFiles: 0,
     skippedBaselineFiles: 0,
@@ -1077,13 +1093,16 @@ app.whenReady().then(async () => {
     busy: false,
     failures: []
   })
+  const sendScoutDashboardAutoImportScanProgress = (payload: ScoutDashboardAutoImportScanProgress): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('cms.scout.dashboard.autoImportScanProgress', payload)
+  }
 
   const stopScoutDashboardAutoImportWatcher = (): void => {
     if (autoImportScanTimer) {
       clearInterval(autoImportScanTimer)
       autoImportScanTimer = null
     }
-    autoImportScanRunning = false
     autoImportProcessedSignatures.clear()
     autoImportBaselineSignatures.clear()
     autoImportRetryAtBySignature.clear()
@@ -1108,103 +1127,149 @@ app.whenReady().then(async () => {
   const runScoutDashboardAutoImportScan = async (
     mode: ScoutDashboardAutoImportScanMode = 'auto'
   ): Promise<ScoutDashboardAutoImportScanSummary | null> => {
-    if (autoImportScanRunning) {
-      if (mode !== 'manual') return null
-      const busySummary = createScoutDashboardAutoImportScanSummary(mode)
-      busySummary.busy = true
-      return busySummary
+    if (mode === 'manual' && autoImportScanInFlight) {
+      sendLogToRenderer('info', '[热度看板] 手动扫描已排队，等待当前扫描任务完成。')
+      await autoImportScanInFlight.catch(() => void 0)
+    } else if (mode !== 'manual' && autoImportScanInFlight) {
+      return null
     }
+
     if (!sqliteReady || !autoImportWatchDir) {
       if (mode !== 'manual') return null
       throw new Error('请先在设置中选择可用的自动导入目录。')
     }
 
-    const summary = createScoutDashboardAutoImportScanSummary(mode)
-    autoImportScanRunning = true
-    try {
-      const dirStats = await stat(autoImportWatchDir).catch(() => null)
-      if (!dirStats || !dirStats.isDirectory()) {
-        if (!autoImportMissingDirLogged) {
-          sendLogToRenderer('warn', `[热度看板] 自动导入目录不可用：${autoImportWatchDir}`)
-          autoImportMissingDirLogged = true
+    const scanTask = (async (): Promise<ScoutDashboardAutoImportScanSummary | null> => {
+      const summary = createScoutDashboardAutoImportScanSummary(mode)
+      const emitProgress = (
+        phase: ScoutDashboardAutoImportScanProgress['phase'],
+        currentFile: string | null,
+        message?: string
+      ): void => {
+        sendScoutDashboardAutoImportScanProgress({
+          mode,
+          phase,
+          watchDir: summary.watchDir,
+          scannedFiles: summary.scannedFiles,
+          processedFiles: summary.processedFiles,
+          importedFiles: summary.importedFiles,
+          failedFiles: summary.failedFiles,
+          skippedBaselineFiles: summary.skippedBaselineFiles,
+          skippedProcessedFiles: summary.skippedProcessedFiles,
+          skippedRetryFiles: summary.skippedRetryFiles,
+          currentFile,
+          message
+        })
+      }
+
+      try {
+        const dirStats = await stat(autoImportWatchDir).catch(() => null)
+        if (!dirStats || !dirStats.isDirectory()) {
+          if (!autoImportMissingDirLogged) {
+            sendLogToRenderer('warn', `[热度看板] 自动导入目录不可用：${autoImportWatchDir}`)
+            autoImportMissingDirLogged = true
+          }
+          if (mode === 'manual') {
+            const message = `自动导入目录不可用：${autoImportWatchDir}`
+            emitProgress('error', null, message)
+            throw new Error(message)
+          }
+          emitProgress('error', null, `自动导入目录不可用：${autoImportWatchDir}`)
+          return summary
+        }
+        autoImportMissingDirLogged = false
+
+        const candidates = await listDashboardExcelFilesRecursive(autoImportWatchDir)
+        summary.scannedFiles = candidates.length
+        emitProgress('start', null, mode === 'manual' ? '开始扫描目录...' : undefined)
+        if (candidates.length === 0) {
+          emitProgress('done', null)
+          return summary
+        }
+
+        candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
+        if (!autoImportBaselineReady) {
+          for (const candidate of candidates) {
+            if (candidate.mtimeMs >= autoImportSinceTs) continue
+            autoImportBaselineSignatures.add(buildDashboardAutoImportSignature(candidate))
+          }
+          autoImportBaselineReady = true
+        }
+
+        for (const candidate of candidates) {
+          const signature = buildDashboardAutoImportSignature(candidate)
+          const sourceFile = basename(candidate.filePath)
+          if (mode === 'auto' && autoImportBaselineSignatures.has(signature)) {
+            summary.skippedBaselineFiles += 1
+            summary.processedFiles += 1
+            emitProgress('progress', sourceFile)
+            continue
+          }
+          if (autoImportProcessedSignatures.has(signature)) {
+            summary.skippedProcessedFiles += 1
+            summary.processedFiles += 1
+            emitProgress('progress', sourceFile)
+            continue
+          }
+
+          const retryAt = autoImportRetryAtBySignature.get(signature) ?? 0
+          if (mode === 'auto' && retryAt > Date.now()) {
+            summary.skippedRetryFiles += 1
+            summary.processedFiles += 1
+            emitProgress('progress', sourceFile)
+            continue
+          }
+
+          try {
+            const result = await scoutService.importExcelSnapshotFromFile(candidate.filePath)
+            autoImportProcessedSignatures.add(signature)
+            autoImportRetryAtBySignature.delete(signature)
+            summary.importedFiles += 1
+            sendLogToRenderer(
+              'info',
+              `${mode === 'manual' ? '[热度看板] 手动扫描导入成功' : '[热度看板] 自动导入成功'}：${sourceFile}（日期 ${result.snapshotDates.join(', ')}）`
+            )
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            autoImportRetryAtBySignature.set(signature, Date.now() + DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS)
+            summary.failedFiles += 1
+            if (summary.failures.length < 20) {
+              summary.failures.push({ sourceFile, message })
+            }
+            sendLogToRenderer(
+              'warn',
+              `${mode === 'manual' ? '[热度看板] 手动扫描导入失败' : '[热度看板] 自动导入失败'}：${sourceFile}，${message}`
+            )
+          } finally {
+            summary.processedFiles += 1
+            emitProgress('progress', sourceFile)
+          }
         }
         if (mode === 'manual') {
-          throw new Error(`自动导入目录不可用：${autoImportWatchDir}`)
-        }
-        return summary
-      }
-      autoImportMissingDirLogged = false
-
-      const candidates = await listDashboardExcelFilesRecursive(autoImportWatchDir)
-      summary.scannedFiles = candidates.length
-      if (candidates.length === 0) return summary
-
-      candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
-      if (!autoImportBaselineReady) {
-        for (const candidate of candidates) {
-          if (candidate.mtimeMs >= autoImportSinceTs) continue
-          autoImportBaselineSignatures.add(buildDashboardAutoImportSignature(candidate))
-        }
-        autoImportBaselineReady = true
-      }
-
-      for (const candidate of candidates) {
-        const signature = buildDashboardAutoImportSignature(candidate)
-        if (mode === 'auto' && autoImportBaselineSignatures.has(signature)) {
-          summary.skippedBaselineFiles += 1
-          continue
-        }
-        if (autoImportProcessedSignatures.has(signature)) {
-          summary.skippedProcessedFiles += 1
-          continue
-        }
-
-        const retryAt = autoImportRetryAtBySignature.get(signature) ?? 0
-        if (mode === 'auto' && retryAt > Date.now()) {
-          summary.skippedRetryFiles += 1
-          continue
-        }
-
-        const sourceFile = basename(candidate.filePath)
-        try {
-          const result = await scoutService.importExcelSnapshotFromFile(candidate.filePath)
-          autoImportProcessedSignatures.add(signature)
-          autoImportRetryAtBySignature.delete(signature)
-          summary.importedFiles += 1
           sendLogToRenderer(
             'info',
-            `${mode === 'manual' ? '[热度看板] 手动扫描导入成功' : '[热度看板] 自动导入成功'}：${sourceFile}（日期 ${result.snapshotDates.join(', ')}）`
-          )
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          autoImportRetryAtBySignature.set(signature, Date.now() + DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS)
-          summary.failedFiles += 1
-          if (summary.failures.length < 20) {
-            summary.failures.push({ sourceFile, message })
-          }
-          sendLogToRenderer(
-            'warn',
-            `${mode === 'manual' ? '[热度看板] 手动扫描导入失败' : '[热度看板] 自动导入失败'}：${sourceFile}，${message}`
+            `[热度看板] 手动扫描完成：扫描 ${summary.scannedFiles} 个文件，导入 ${summary.importedFiles} 个，失败 ${summary.failedFiles} 个。`
           )
         }
+        emitProgress('done', null)
+        return summary
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        emitProgress('error', null, message)
+        if (mode === 'manual') {
+          sendLogToRenderer('warn', `[热度看板] 手动扫描失败：${message}`)
+          throw error
+        }
+        sendLogToRenderer('warn', `[热度看板] 自动导入扫描失败：${message}`)
+        return summary
       }
-      if (mode === 'manual') {
-        sendLogToRenderer(
-          'info',
-          `[热度看板] 手动扫描完成：扫描 ${summary.scannedFiles} 个文件，导入 ${summary.importedFiles} 个，失败 ${summary.failedFiles} 个。`
-        )
-      }
-      return summary
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (mode === 'manual') {
-        sendLogToRenderer('warn', `[热度看板] 手动扫描失败：${message}`)
-        throw error
-      }
-      sendLogToRenderer('warn', `[热度看板] 自动导入扫描失败：${message}`)
-      return summary
+    })()
+
+    autoImportScanInFlight = scanTask
+    try {
+      return await scanTask
     } finally {
-      autoImportScanRunning = false
+      if (autoImportScanInFlight === scanTask) autoImportScanInFlight = null
     }
   }
 
