@@ -313,6 +313,18 @@ const api = {
           keywordsCount: number
           sourceFile: string
         } | null> => ipcRenderer.invoke('cms.scout.dashboard.importExcelFile'),
+        autoImportScanNow: (): Promise<{
+          mode: 'auto' | 'manual'
+          watchDir: string
+          scannedFiles: number
+          importedFiles: number
+          failedFiles: number
+          skippedBaselineFiles: number
+          skippedProcessedFiles: number
+          skippedRetryFiles: number
+          busy: boolean
+          failures: Array<{ sourceFile: string; message: string }>
+        } | null> => ipcRenderer.invoke('cms.scout.dashboard.autoImportScanNow'),
         deleteSnapshot: (payload: {
           snapshotDate: string
         }): Promise<{

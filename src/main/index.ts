@@ -90,7 +90,7 @@ let sourcingLoginWindow: BrowserWindow | null = null
 const safeFileRecoveredByName = new Map<string, string>()
 const DASHBOARD_AUTO_IMPORT_SCAN_INTERVAL_MS = 5_000
 const DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS = 15_000
-const DASHBOARD_AUTO_IMPORT_EXTENSIONS = new Set(['.xlsx'])
+const DASHBOARD_AUTO_IMPORT_EXTENSIONS = new Set(['.xlsx', '.xlsm'])
 let disposeScoutDashboardAutoImportWatcher: (() => void) | null = null
 type ProcessLogFn = (level: 'stdout' | 'stderr' | 'info' | 'error', message: string) => void
 
@@ -1045,6 +1045,39 @@ app.whenReady().then(async () => {
   let autoImportSinceTs = 0
   let autoImportMissingDirLogged = false
 
+  type ScoutDashboardAutoImportScanMode = 'auto' | 'manual'
+  type ScoutDashboardAutoImportScanFailure = {
+    sourceFile: string
+    message: string
+  }
+  type ScoutDashboardAutoImportScanSummary = {
+    mode: ScoutDashboardAutoImportScanMode
+    watchDir: string
+    scannedFiles: number
+    importedFiles: number
+    failedFiles: number
+    skippedBaselineFiles: number
+    skippedProcessedFiles: number
+    skippedRetryFiles: number
+    busy: boolean
+    failures: ScoutDashboardAutoImportScanFailure[]
+  }
+
+  const createScoutDashboardAutoImportScanSummary = (
+    mode: ScoutDashboardAutoImportScanMode
+  ): ScoutDashboardAutoImportScanSummary => ({
+    mode,
+    watchDir: autoImportWatchDir,
+    scannedFiles: 0,
+    importedFiles: 0,
+    failedFiles: 0,
+    skippedBaselineFiles: 0,
+    skippedProcessedFiles: 0,
+    skippedRetryFiles: 0,
+    busy: false,
+    failures: []
+  })
+
   const stopScoutDashboardAutoImportWatcher = (): void => {
     if (autoImportScanTimer) {
       clearInterval(autoImportScanTimer)
@@ -1072,10 +1105,21 @@ app.whenReady().then(async () => {
     return { watchDir, sinceTs }
   }
 
-  const runScoutDashboardAutoImportScan = async (): Promise<void> => {
-    if (autoImportScanRunning) return
-    if (!sqliteReady || !autoImportWatchDir) return
+  const runScoutDashboardAutoImportScan = async (
+    mode: ScoutDashboardAutoImportScanMode = 'auto'
+  ): Promise<ScoutDashboardAutoImportScanSummary | null> => {
+    if (autoImportScanRunning) {
+      if (mode !== 'manual') return null
+      const busySummary = createScoutDashboardAutoImportScanSummary(mode)
+      busySummary.busy = true
+      return busySummary
+    }
+    if (!sqliteReady || !autoImportWatchDir) {
+      if (mode !== 'manual') return null
+      throw new Error('请先在设置中选择可用的自动导入目录。')
+    }
 
+    const summary = createScoutDashboardAutoImportScanSummary(mode)
     autoImportScanRunning = true
     try {
       const dirStats = await stat(autoImportWatchDir).catch(() => null)
@@ -1084,12 +1128,16 @@ app.whenReady().then(async () => {
           sendLogToRenderer('warn', `[热度看板] 自动导入目录不可用：${autoImportWatchDir}`)
           autoImportMissingDirLogged = true
         }
-        return
+        if (mode === 'manual') {
+          throw new Error(`自动导入目录不可用：${autoImportWatchDir}`)
+        }
+        return summary
       }
       autoImportMissingDirLogged = false
 
       const candidates = await listDashboardExcelFilesRecursive(autoImportWatchDir)
-      if (candidates.length === 0) return
+      summary.scannedFiles = candidates.length
+      if (candidates.length === 0) return summary
 
       candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
       if (!autoImportBaselineReady) {
@@ -1102,30 +1150,59 @@ app.whenReady().then(async () => {
 
       for (const candidate of candidates) {
         const signature = buildDashboardAutoImportSignature(candidate)
-        if (autoImportBaselineSignatures.has(signature)) continue
-        if (autoImportProcessedSignatures.has(signature)) continue
+        if (mode === 'auto' && autoImportBaselineSignatures.has(signature)) {
+          summary.skippedBaselineFiles += 1
+          continue
+        }
+        if (autoImportProcessedSignatures.has(signature)) {
+          summary.skippedProcessedFiles += 1
+          continue
+        }
 
         const retryAt = autoImportRetryAtBySignature.get(signature) ?? 0
-        if (retryAt > Date.now()) continue
+        if (mode === 'auto' && retryAt > Date.now()) {
+          summary.skippedRetryFiles += 1
+          continue
+        }
 
         const sourceFile = basename(candidate.filePath)
         try {
           const result = await scoutService.importExcelSnapshotFromFile(candidate.filePath)
           autoImportProcessedSignatures.add(signature)
           autoImportRetryAtBySignature.delete(signature)
+          summary.importedFiles += 1
           sendLogToRenderer(
             'info',
-            `[热度看板] 自动导入成功：${sourceFile}（日期 ${result.snapshotDates.join(', ')}）`
+            `${mode === 'manual' ? '[热度看板] 手动扫描导入成功' : '[热度看板] 自动导入成功'}：${sourceFile}（日期 ${result.snapshotDates.join(', ')}）`
           )
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           autoImportRetryAtBySignature.set(signature, Date.now() + DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS)
-          sendLogToRenderer('warn', `[热度看板] 自动导入失败：${sourceFile}，${message}`)
+          summary.failedFiles += 1
+          if (summary.failures.length < 20) {
+            summary.failures.push({ sourceFile, message })
+          }
+          sendLogToRenderer(
+            'warn',
+            `${mode === 'manual' ? '[热度看板] 手动扫描导入失败' : '[热度看板] 自动导入失败'}：${sourceFile}，${message}`
+          )
         }
       }
+      if (mode === 'manual') {
+        sendLogToRenderer(
+          'info',
+          `[热度看板] 手动扫描完成：扫描 ${summary.scannedFiles} 个文件，导入 ${summary.importedFiles} 个，失败 ${summary.failedFiles} 个。`
+        )
+      }
+      return summary
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (mode === 'manual') {
+        sendLogToRenderer('warn', `[热度看板] 手动扫描失败：${message}`)
+        throw error
+      }
       sendLogToRenderer('warn', `[热度看板] 自动导入扫描失败：${message}`)
+      return summary
     } finally {
       autoImportScanRunning = false
     }
@@ -3433,6 +3510,11 @@ app.whenReady().then(async () => {
         })
     if (result.canceled || result.filePaths.length === 0) return null
     return scoutService.importExcelSnapshotFromFile(result.filePaths[0]!)
+  })
+
+  ipcMain.handle('cms.scout.dashboard.autoImportScanNow', async () => {
+    ensureScoutDashboardAutoImportWatcher()
+    return runScoutDashboardAutoImportScan('manual')
   })
 
   ipcMain.handle('cms.scout.dashboard.deleteSnapshot', async (_event, payload: unknown) => {

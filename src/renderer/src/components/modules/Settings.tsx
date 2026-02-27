@@ -61,6 +61,7 @@ function Settings(): React.JSX.Element {
   const updatePreferences = useCmsStore((s) => s.updatePreferences)
 
   const [isTesting, setIsTesting] = useState(false)
+  const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
   const [workspacePath, setWorkspacePath] = useState('')
   const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>('uninitialized')
   const [previewTime, setPreviewTime] = useState(0)
@@ -261,6 +262,61 @@ function Settings(): React.JSX.Element {
     addLog('[热度看板] 自动导入目录已清空。')
   }
 
+  const scanScoutDashboardAutoImportNow = async (): Promise<void> => {
+    if (isScanningAutoImport) return
+
+    const watchDir = config.scoutDashboardAutoImportDir.trim()
+    if (!watchDir) {
+      const message = '请先选择自动导入目录。'
+      addLog(`[热度看板] 手动扫描失败：${message}`)
+      window.alert(message)
+      return
+    }
+
+    setIsScanningAutoImport(true)
+    try {
+      // Ensure latest path is persisted before triggering manual scan.
+      await window.electronAPI.saveConfig({ scoutDashboardAutoImportDir: watchDir })
+      addLog(`[热度看板] 开始手动扫描：${watchDir}`)
+      const result = await window.api.cms.scout.dashboard.autoImportScanNow()
+      if (!result) {
+        addLog('[热度看板] 手动扫描未返回结果。')
+        window.alert('手动扫描未返回结果，请重试。')
+        return
+      }
+      if (result.busy) {
+        addLog('[热度看板] 手动扫描跳过：已有扫描任务正在运行。')
+        window.alert('已有扫描任务正在运行，请稍后再试。')
+        return
+      }
+
+      const summary = `手动扫描完成：扫描 ${result.scannedFiles} 个，导入 ${result.importedFiles} 个，失败 ${result.failedFiles} 个。`
+      addLog(`[热度看板] ${summary}`)
+      if (result.failedFiles > 0 && result.failures.length > 0) {
+        const brief = result.failures
+          .slice(0, 3)
+          .map((item) => `${item.sourceFile}: ${item.message}`)
+          .join(' | ')
+        addLog(`[热度看板] 手动扫描失败样例：${brief}`)
+      }
+
+      const failureHint =
+        result.failedFiles > 0 && result.failures.length > 0
+          ? `\n失败样例：\n${result.failures
+              .slice(0, 3)
+              .map((item) => `- ${item.sourceFile}: ${item.message}`)
+              .join('\n')}`
+          : ''
+      window.alert(`${summary}${failureHint}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[热度看板] 手动扫描失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsScanningAutoImport(false)
+    }
+  }
+
   const testConnection = async (): Promise<void> => {
     if (isTesting) return
     if (!isFeishuConfigReady) {
@@ -325,7 +381,7 @@ function Settings(): React.JSX.Element {
               className={config.scoutDashboardAutoImportDir ? '' : 'text-zinc-500 italic'}
             />
             <div className="text-xs text-zinc-400">
-              支持多层子目录（如按年份/日期分层）；配置生效时目录内的历史文件不会补导，后续拖入/复制的新文件会自动导入。
+              支持多层子目录（如按年份/日期分层）和 `.xlsx`/`.xlsm`。若需补导历史文件，可点击“手动扫描导入”。
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -339,6 +395,14 @@ function Settings(): React.JSX.Element {
               disabled={!config.scoutDashboardAutoImportDir.trim()}
             >
               清空
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void scanScoutDashboardAutoImportNow()}
+              disabled={!config.scoutDashboardAutoImportDir.trim() || isScanningAutoImport}
+            >
+              {isScanningAutoImport ? '扫描中...' : '手动扫描导入'}
             </Button>
           </div>
         </CardContent>

@@ -241,6 +241,18 @@ declare global {
             keywordsCount: number
             sourceFile: string
           } | null>
+          autoImportScanNow: () => Promise<{
+            mode: 'auto' | 'manual'
+            watchDir: string
+            scannedFiles: number
+            importedFiles: number
+            failedFiles: number
+            skippedBaselineFiles: number
+            skippedProcessedFiles: number
+            skippedRetryFiles: number
+            busy: boolean
+            failures: Array<{ sourceFile: string; message: string }>
+          } | null>
           deleteSnapshot: (payload: {
             snapshotDate: string
           }) => Promise<{
