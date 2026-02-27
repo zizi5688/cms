@@ -828,6 +828,10 @@ type DashboardExcelFileCandidate = {
   mtimeMs: number
 }
 
+function buildDashboardAutoImportSignature(candidate: DashboardExcelFileCandidate): string {
+  return `${candidate.filePath}::${Math.floor(candidate.mtimeMs)}`
+}
+
 async function listDashboardExcelFilesRecursive(rootDir: string): Promise<DashboardExcelFileCandidate[]> {
   const normalizedRoot = resolve(String(rootDir ?? '').trim())
   if (!normalizedRoot) return []
@@ -869,10 +873,14 @@ async function listDashboardExcelFilesRecursive(rootDir: string): Promise<Dashbo
         typeof fileStats.birthtimeMs === 'number' && Number.isFinite(fileStats.birthtimeMs)
           ? fileStats.birthtimeMs
           : fileStats.birthtime.getTime()
+      const normalizedCtimeMs =
+        typeof fileStats.ctimeMs === 'number' && Number.isFinite(fileStats.ctimeMs)
+          ? fileStats.ctimeMs
+          : fileStats.ctime.getTime()
 
       candidates.push({
         filePath: absolutePath,
-        mtimeMs: Math.max(normalizedMtimeMs, normalizedBirthtimeMs)
+        mtimeMs: Math.max(normalizedMtimeMs, normalizedBirthtimeMs, normalizedCtimeMs)
       })
     }
   }
@@ -1028,9 +1036,11 @@ app.whenReady().then(async () => {
   }
 
   const autoImportProcessedSignatures = new Set<string>()
+  const autoImportBaselineSignatures = new Set<string>()
   const autoImportRetryAtBySignature = new Map<string, number>()
   let autoImportScanTimer: NodeJS.Timeout | null = null
   let autoImportScanRunning = false
+  let autoImportBaselineReady = false
   let autoImportWatchDir = ''
   let autoImportSinceTs = 0
   let autoImportMissingDirLogged = false
@@ -1042,7 +1052,9 @@ app.whenReady().then(async () => {
     }
     autoImportScanRunning = false
     autoImportProcessedSignatures.clear()
+    autoImportBaselineSignatures.clear()
     autoImportRetryAtBySignature.clear()
+    autoImportBaselineReady = false
     autoImportWatchDir = ''
     autoImportSinceTs = 0
     autoImportMissingDirLogged = false
@@ -1080,10 +1092,17 @@ app.whenReady().then(async () => {
       if (candidates.length === 0) return
 
       candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
-      for (const candidate of candidates) {
-        if (candidate.mtimeMs < autoImportSinceTs) continue
+      if (!autoImportBaselineReady) {
+        for (const candidate of candidates) {
+          if (candidate.mtimeMs >= autoImportSinceTs) continue
+          autoImportBaselineSignatures.add(buildDashboardAutoImportSignature(candidate))
+        }
+        autoImportBaselineReady = true
+      }
 
-        const signature = `${candidate.filePath}::${Math.floor(candidate.mtimeMs)}`
+      for (const candidate of candidates) {
+        const signature = buildDashboardAutoImportSignature(candidate)
+        if (autoImportBaselineSignatures.has(signature)) continue
         if (autoImportProcessedSignatures.has(signature)) continue
 
         const retryAt = autoImportRetryAtBySignature.get(signature) ?? 0
@@ -1135,10 +1154,12 @@ app.whenReady().then(async () => {
       autoImportSinceTs = sinceTs
       autoImportMissingDirLogged = false
       autoImportProcessedSignatures.clear()
+      autoImportBaselineSignatures.clear()
       autoImportRetryAtBySignature.clear()
+      autoImportBaselineReady = false
       sendLogToRenderer(
         'info',
-        `[热度看板] 已开启爆款表自动导入：${autoImportWatchDir}（仅监听配置后的新增文件）`
+        `[热度看板] 已开启爆款表自动导入：${autoImportWatchDir}（按配置生效时目录快照识别后续新增/变更文件）`
       )
     }
 

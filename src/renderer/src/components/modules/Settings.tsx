@@ -314,7 +314,7 @@ function Settings(): React.JSX.Element {
       <Card>
         <CardHeader>
           <CardTitle>热度看板自动导入</CardTitle>
-          <CardDescription>设置爆款表文件夹后，系统会递归监听该目录，仅导入“配置生效后新增”的模板文件。</CardDescription>
+          <CardDescription>设置爆款表文件夹后，系统会递归监听该目录，并按配置生效时的目录快照识别后续新增/变更模板文件。</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
@@ -325,7 +325,7 @@ function Settings(): React.JSX.Element {
               className={config.scoutDashboardAutoImportDir ? '' : 'text-zinc-500 italic'}
             />
             <div className="text-xs text-zinc-400">
-              支持多层子目录（如按年份/日期分层）；历史文件不会补导，仅监听配置后的新增文件。
+              支持多层子目录（如按年份/日期分层）；配置生效时目录内的历史文件不会补导，后续拖入/复制的新文件会自动导入。
             </div>
           </div>
           <div className="flex items-center gap-2">
