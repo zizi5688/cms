@@ -15,11 +15,12 @@
   ],
   "extraResources": [
     {
-      "from": "dist/cms_engine",
-      "to": "cms_engine"
+      "from": "dist",
+      "to": ".",
+      "filter": ["cms_engine", "cms_engine.exe"]
     },
     {
-      "from": "AI_Tools/realesrgan-ncnn-vulkan-20220424-macos",
+      "from": "dist/realesrgan",
       "to": "realesrgan"
     }
   ],

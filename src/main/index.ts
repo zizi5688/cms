@@ -894,11 +894,21 @@ function resolveBundledResourcePath(...parts: string[]): string {
 }
 
 function resolveCmsEngineExecutablePath(): string {
-  return resolveBundledResourcePath('cms_engine')
+  const basePath = resolveBundledResourcePath('cms_engine')
+  if (process.platform === 'win32') {
+    const exePath = `${basePath}.exe`
+    if (existsSync(exePath)) return exePath
+  }
+  return basePath
 }
 
 function resolveRealEsrganExecutablePath(): string {
-  return resolveBundledResourcePath('realesrgan', 'realesrgan-ncnn-vulkan')
+  const baseDir = resolveBundledResourcePath('realesrgan')
+  if (process.platform === 'win32') {
+    const winExe = join(baseDir, 'realesrgan-ncnn-vulkan.exe')
+    if (existsSync(winExe)) return winExe
+  }
+  return join(baseDir, 'realesrgan-ncnn-vulkan')
 }
 
 async function createWindow(): Promise<void> {

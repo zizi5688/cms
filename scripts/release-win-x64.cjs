@@ -41,6 +41,24 @@ function info(message) {
   console.log(`[release-win-x64] ${message}`)
 }
 
+function isWindowsExecutable(filePath) {
+  try {
+    const header = fs.readFileSync(filePath)
+    return header.length >= 2 && header[0] === 0x4d && header[1] === 0x5a
+  } catch {
+    return false
+  }
+}
+
+function isNonEmptyFile(filePath) {
+  try {
+    const stat = fs.statSync(filePath)
+    return stat.isFile() && stat.size > 0
+  } catch {
+    return false
+  }
+}
+
 if (!process.env.GH_TOKEN) {
   fail('GH_TOKEN is missing. Set it first, then rerun.')
 }
@@ -53,6 +71,16 @@ if (!fs.existsSync(packageJsonPath)) {
 
 const version = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version
 const tagName = `v${version}`
+const distDir = path.join(rootDir, 'dist')
+const bundledEngineCandidates = [
+  path.join(distDir, 'cms_engine.exe'),
+  path.join(distDir, 'cms_engine')
+]
+const bundledRealEsrganExe = path.join(distDir, 'realesrgan', 'realesrgan-ncnn-vulkan.exe')
+const bundledRealEsrganModelFiles = [
+  path.join(distDir, 'realesrgan', 'models', 'realesrgan-x4plus.param'),
+  path.join(distDir, 'realesrgan', 'models', 'realesrgan-x4plus.bin')
+]
 
 const branchResult = runCapture('git branch --show-current')
 if (!branchResult.ok) {
@@ -82,7 +110,41 @@ if (remoteTagResult.stdout.length > 0) {
   )
 }
 
+run('npm run prepare:win:deps')
+
+const bundledEnginePath = bundledEngineCandidates.find((candidate) => fs.existsSync(candidate))
+if (!bundledEnginePath) {
+  fail(
+    'Missing bundled cms_engine in dist/. Run `npm run build:win:engine` first, then rerun publish.'
+  )
+}
+if (!isWindowsExecutable(bundledEnginePath)) {
+  fail(
+    `Bundled cms_engine is not a Windows executable (MZ): ${bundledEnginePath}. Rebuild with \`npm run build:win:engine\`.`
+  )
+}
+
+if (!fs.existsSync(bundledRealEsrganExe)) {
+  fail(
+    `Missing Real-ESRGAN executable in dist/: ${bundledRealEsrganExe}. Run \`npm run prepare:win:deps\` first.`
+  )
+}
+if (!isWindowsExecutable(bundledRealEsrganExe)) {
+  fail(`Bundled Real-ESRGAN is not a Windows executable (MZ): ${bundledRealEsrganExe}`)
+}
+
+for (const modelPath of bundledRealEsrganModelFiles) {
+  if (!fs.existsSync(modelPath)) {
+    fail(`Missing Real-ESRGAN model file: ${modelPath}`)
+  }
+  if (!isNonEmptyFile(modelPath)) {
+    fail(`Invalid Real-ESRGAN model file (empty): ${modelPath}`)
+  }
+}
+
 info(`Preflight passed. Version=${version}, tag=${tagName}`)
+info(`Bundled engine: ${bundledEnginePath}`)
+info(`Bundled Real-ESRGAN: ${bundledRealEsrganExe}`)
 
 run('npm run build:app')
 run('npx electron-builder --win --x64 --publish never --config electron-builder.json')

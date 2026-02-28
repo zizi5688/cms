@@ -1,6 +1,6 @@
 {
   "name": "super-cms",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -19,6 +19,8 @@
     "dist": "npm run build:mac",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build:app && electron-builder --dir --config electron-builder.json",
+    "build:win:engine": "powershell -ExecutionPolicy Bypass -File scripts/build-cms-engine-win.ps1",
+    "prepare:win:deps": "powershell -ExecutionPolicy Bypass -File scripts/prepare-win-runtime-deps.ps1",
     "build:win:x64": "npm run build:app && electron-builder --win --x64 --config electron-builder.json --publish never",
     "verify:win:x64": "node scripts/verify-win-package.cjs release x64",
     "publish:win:x64": "node scripts/release-win-x64.cjs",
