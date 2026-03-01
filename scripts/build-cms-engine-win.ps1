@@ -87,17 +87,50 @@ function Ensure-CmsEnginePythonDeps {
   }
 
   Write-Host "[build:win:engine] Installing Python deps for cms_engine..."
-  $pipUpgradeExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-  if ($pipUpgradeExit -ne 0) {
-    Write-Warning "[build:win:engine] Failed to upgrade pip/setuptools/wheel, continue with requirement install."
+  $pipLogPath = Join-Path $RepoRoot "build\pip-cms-engine.log"
+  $pipLogDir = Split-Path -Parent $pipLogPath
+  if ($pipLogDir -and -not (Test-Path $pipLogDir)) {
+    New-Item -ItemType Directory -Path $pipLogDir -Force | Out-Null
+  }
+  if (Test-Path $pipLogPath) {
+    Remove-Item $pipLogPath -Force -ErrorAction SilentlyContinue
   }
 
-  $installExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--prefer-binary", "-r", $requirementsPath)
+  $installExit = Invoke-CmsPython -Args @(
+    "-m",
+    "pip",
+    "install",
+    "--prefer-binary",
+    "--progress-bar",
+    "off",
+    "--disable-pip-version-check",
+    "--log",
+    $pipLogPath,
+    "-r",
+    $requirementsPath
+  )
   if ($installExit -ne 0) {
     Write-Warning "[build:win:engine] First requirements install failed, retry with --upgrade."
-    $installExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--prefer-binary", "--upgrade", "-r", $requirementsPath)
+    $installExit = Invoke-CmsPython -Args @(
+      "-m",
+      "pip",
+      "install",
+      "--prefer-binary",
+      "--progress-bar",
+      "off",
+      "--disable-pip-version-check",
+      "--upgrade",
+      "--log",
+      $pipLogPath,
+      "-r",
+      $requirementsPath
+    )
   }
   if ($installExit -ne 0) {
+    if (Test-Path $pipLogPath) {
+      Write-Warning "[build:win:engine] pip log tail:"
+      Get-Content $pipLogPath -Tail 120 | ForEach-Object { Write-Warning $_ }
+    }
     throw "[build:win:engine] Failed to install cms_engine Python dependencies."
   }
 
