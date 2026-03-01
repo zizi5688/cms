@@ -86,6 +86,19 @@ type RaceDetail = {
   }
 }
 
+type ActionPriority = 'P0' | 'P1' | 'P2'
+
+type RaceActionItem = {
+  id: string
+  rank: number
+  title: string
+  account: string
+  tag: NoteTag
+  priority: ActionPriority
+  reason: string
+  action: string
+}
+
 const NOTE_TYPES: NoteType[] = ['全部', '图文', '视频']
 const MONITOR_DIR_STORAGE_KEY = 'note-race:monitor-dir:v1'
 const MONITOR_ENABLE_STORAGE_KEY = 'note-race:monitor-enable:v1'
@@ -127,6 +140,96 @@ function trendDeltaClass(delta: number): string {
   if (delta > 0) return 'text-emerald-300'
   if (delta < 0) return 'text-rose-300'
   return 'text-zinc-400'
+}
+
+function priorityClass(priority: ActionPriority): string {
+  if (priority === 'P0') return 'border-rose-500/50 bg-rose-500/10 text-rose-200'
+  if (priority === 'P1') return 'border-amber-500/50 bg-amber-500/10 text-amber-200'
+  return 'border-zinc-600 bg-zinc-800 text-zinc-300'
+}
+
+function priorityOrder(priority: ActionPriority): number {
+  if (priority === 'P0') return 0
+  if (priority === 'P1') return 1
+  return 2
+}
+
+function firstSignalLabel(signals: Signal[]): string {
+  const first = signals.find((item) => item.label.trim())
+  return first ? first.label : '无明显波动'
+}
+
+function buildActionItem(row: RaceListRow): RaceActionItem {
+  if (row.tag === '起飞') {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P0',
+      reason: `趋势 ${formatTrendDelta(row.trendDelta)}；内容信号 ${firstSignalLabel(row.contentSignals)}`,
+      action: '优先跟进：复刻同题材2条，评论区加引导，明天重点看点击与评论是否延续'
+    }
+  }
+  if (row.tag === '长尾复活') {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P0',
+      reason: `老笔记复活；趋势 ${formatTrendDelta(row.trendDelta)}`,
+      action: '放大复活：围绕同卖点补1条新笔记，并把该笔记加入未来7天重点观察'
+    }
+  }
+  if (row.tag === '风险') {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P0',
+      reason: `风险标签；商品信号 ${firstSignalLabel(row.commerceSignals)}`,
+      action: '先止损：暂停加量，排查商品页与评论反馈，确认无异常后再恢复测试'
+    }
+  }
+  if (row.tag === '掉速') {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P1',
+      reason: `趋势 ${formatTrendDelta(row.trendDelta)}；内容信号 ${firstSignalLabel(row.contentSignals)}`,
+      action: '回拉动作：改封面标题和首屏卖点，必要时重剪前3秒，观察次日回升'
+    }
+  }
+  if (row.stageIndex <= 2 && row.trendDelta > 0) {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P1',
+      reason: `早期阶段 ${row.stageLabel}；趋势 ${formatTrendDelta(row.trendDelta)}`,
+      action: '推进转化：评论区加场景问答，优化商品卖点表达，争取推进到 S3'
+    }
+  }
+  return {
+    id: row.id,
+    rank: row.rank,
+    title: row.title,
+    account: row.account,
+    tag: row.tag,
+    priority: 'P2',
+    reason: `阶段 ${row.stageLabel}；趋势 ${formatTrendDelta(row.trendDelta)}`,
+    action: '常规观察：保持投放节奏，不做大动作，继续累计对比样本'
+  }
 }
 
 function normalizeError(error: unknown): string {
@@ -384,6 +487,27 @@ function NoteRaceBoard(): React.JSX.Element {
     }
   }, [rows, meta.matchRate])
 
+  const actionList = React.useMemo(() => {
+    return rows
+      .map((row) => buildActionItem(row))
+      .sort((a, b) => {
+        const byPriority = priorityOrder(a.priority) - priorityOrder(b.priority)
+        if (byPriority !== 0) return byPriority
+        return a.rank - b.rank
+      })
+      .slice(0, 10)
+  }, [rows])
+
+  const opportunityCount = React.useMemo(
+    () => rows.filter((row) => row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3).length,
+    [rows]
+  )
+
+  const riskSignalCount = React.useMemo(
+    () => rows.filter((row) => row.tag === '风险' || row.tag === '掉速' || row.trendDelta <= -2.5).length,
+    [rows]
+  )
+
   const qualityLevel = summary.matchRate < 0.5 ? 'danger' : summary.matchRate < 0.7 ? 'warning' : 'ok'
 
   const handleCopy = React.useCallback(async (value: string): Promise<void> => {
@@ -395,6 +519,18 @@ function NoteRaceBoard(): React.JSX.Element {
       return
     }
   }, [])
+
+  const handleCopyActionList = React.useCallback(async (): Promise<void> => {
+    const lines = actionList.map(
+      (item, index) =>
+        `${index + 1}. [${item.priority}] ${item.title}（${item.account} / #${item.rank}）` +
+        `\n   原因：${item.reason}` +
+        `\n   动作：${item.action}`
+    )
+    const text = lines.length > 0 ? lines.join('\n') : '暂无可执行清单'
+    await handleCopy(text)
+    setLastImportMessage('今日必做清单已复制')
+  }, [actionList, handleCopy])
 
   const handleImport = React.useCallback(
     async (kind: 'commerce' | 'content'): Promise<void> => {
@@ -648,10 +784,47 @@ function NoteRaceBoard(): React.JSX.Element {
           </div>
         </div>
 
+        <section className="mb-2 rounded border border-zinc-700 bg-zinc-900/70 px-3 py-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-zinc-200">今日必做清单（Top 10）</h3>
+            <button
+              type="button"
+              onClick={() => void handleCopyActionList()}
+              className="inline-flex h-7 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-[11px] text-zinc-300 transition hover:border-cyan-500 hover:text-cyan-200"
+              title="复制清单"
+            >
+              复制清单
+            </button>
+          </div>
+          {actionList.length === 0 ? (
+            <div className="mt-2 text-xs text-zinc-500">暂无可执行清单</div>
+          ) : (
+            <div className="mt-2 max-h-44 space-y-1.5 overflow-auto pr-1">
+              {actionList.map((item, index) => (
+                <div key={item.id} className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1.5 text-[11px]">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-4 text-zinc-500">{index + 1}</span>
+                    <span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px]', priorityClass(item.priority))}>
+                      {item.priority}
+                    </span>
+                    <span className={cn('inline-flex rounded px-1.5 py-0.5 text-[10px]', tagClasses(item.tag))}>{item.tag}</span>
+                    <span className="truncate text-zinc-200">{item.title}</span>
+                    <span className="text-zinc-500">#{item.rank}</span>
+                  </div>
+                  <div className="mt-1 pl-6 text-zinc-400">原因：{item.reason}</div>
+                  <div className="mt-0.5 pl-6 text-zinc-300">动作：{item.action}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         <div className="mb-3 flex flex-wrap gap-2">
           <Chip label={`可评估笔记 ${summary.assessedCount}`} />
           <Chip label={`匹配成功率 ${Math.round(summary.matchRate * 100)}%`} />
           <Chip label={`监控 ${autoMonitorEnabled ? '开启' : '关闭'}`} />
+          <Chip label={`机会信号 ${opportunityCount}`} />
+          <Chip label={`风险信号 ${riskSignalCount}`} />
           <Chip label={`起飞 ${summary.risingCount}`} />
           <Chip label={`长尾复活 ${summary.revivalCount}`} />
           <Chip label={`掉速 ${summary.dropCount}`} />
