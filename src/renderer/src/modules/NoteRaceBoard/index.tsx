@@ -87,6 +87,7 @@ type RaceDetail = {
 }
 
 type ActionPriority = 'P0' | 'P1' | 'P2'
+type FocusMode = 'all' | 'opportunity' | 'alert'
 
 type RaceActionItem = {
   id: string
@@ -338,6 +339,7 @@ function NoteRaceBoard(): React.JSX.Element {
   const [snapshotDate, setSnapshotDate] = React.useState<string>('')
   const [account, setAccount] = React.useState<string>('全部账号')
   const [noteType, setNoteType] = React.useState<NoteType>('全部')
+  const [focusMode, setFocusMode] = React.useState<FocusMode>('all')
   const [monitorDir, setMonitorDir] = React.useState<string>(() => readStoredString(MONITOR_DIR_STORAGE_KEY, ''))
   const [autoMonitorEnabled, setAutoMonitorEnabled] = React.useState<boolean>(() =>
     readStoredBool(MONITOR_ENABLE_STORAGE_KEY, false)
@@ -403,15 +405,26 @@ function NoteRaceBoard(): React.JSX.Element {
     void refresh()
   }, [refresh])
 
-  const rows = React.useMemo(() => {
-    return allRows
-      .filter((row) => {
-        if (account !== '全部账号' && row.account !== account) return false
-        if (noteType !== '全部' && row.noteType !== noteType) return false
-        return true
-      })
-      .slice(0, 12)
+  const scopedRows = React.useMemo(() => {
+    return allRows.filter((row) => {
+      if (account !== '全部账号' && row.account !== account) return false
+      if (noteType !== '全部' && row.noteType !== noteType) return false
+      return true
+    })
   }, [allRows, account, noteType])
+
+  const rows = React.useMemo(() => {
+    const filtered =
+      focusMode === 'all'
+        ? scopedRows
+        : scopedRows.filter((row) => {
+            const isOpportunity = row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3
+            const isAlert = row.tag === '风险' || row.tag === '掉速' || row.trendDelta <= -2.5
+            if (focusMode === 'opportunity') return isOpportunity
+            return isAlert
+          })
+    return filtered.slice(0, 12)
+  }, [focusMode, scopedRows])
 
   const accountOptions = React.useMemo(() => {
     const unique = Array.from(new Set(allRows.map((row) => row.account).filter(Boolean)))
@@ -488,7 +501,7 @@ function NoteRaceBoard(): React.JSX.Element {
   }, [rows, meta.matchRate])
 
   const actionList = React.useMemo(() => {
-    return rows
+    return scopedRows
       .map((row) => buildActionItem(row))
       .sort((a, b) => {
         const byPriority = priorityOrder(a.priority) - priorityOrder(b.priority)
@@ -496,17 +509,21 @@ function NoteRaceBoard(): React.JSX.Element {
         return a.rank - b.rank
       })
       .slice(0, 10)
-  }, [rows])
+  }, [scopedRows])
 
   const opportunityCount = React.useMemo(
-    () => rows.filter((row) => row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3).length,
-    [rows]
+    () => scopedRows.filter((row) => row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3).length,
+    [scopedRows]
   )
 
   const riskSignalCount = React.useMemo(
-    () => rows.filter((row) => row.tag === '风险' || row.tag === '掉速' || row.trendDelta <= -2.5).length,
-    [rows]
+    () => scopedRows.filter((row) => row.tag === '风险' || row.tag === '掉速' || row.trendDelta <= -2.5).length,
+    [scopedRows]
   )
+
+  const p0Count = React.useMemo(() => actionList.filter((item) => item.priority === 'P0').length, [actionList])
+  const p1Count = React.useMemo(() => actionList.filter((item) => item.priority === 'P1').length, [actionList])
+  const p2Count = React.useMemo(() => actionList.filter((item) => item.priority === 'P2').length, [actionList])
 
   const qualityLevel = summary.matchRate < 0.5 ? 'danger' : summary.matchRate < 0.7 ? 'warning' : 'ok'
 
@@ -531,6 +548,11 @@ function NoteRaceBoard(): React.JSX.Element {
     await handleCopy(text)
     setLastImportMessage('今日必做清单已复制')
   }, [actionList, handleCopy])
+
+  const handlePickActionItem = React.useCallback((item: RaceActionItem): void => {
+    setFocusMode('all')
+    setSelectedId(item.id)
+  }, [])
 
   const handleImport = React.useCallback(
     async (kind: 'commerce' | 'content'): Promise<void> => {
@@ -695,6 +717,45 @@ function NoteRaceBoard(): React.JSX.Element {
             </select>
             <button
               type="button"
+              onClick={() => setFocusMode('all')}
+              className={cn(
+                'inline-flex h-8 items-center rounded border px-2 transition',
+                focusMode === 'all'
+                  ? 'border-cyan-500/70 bg-cyan-500/10 text-cyan-200'
+                  : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-cyan-500 hover:text-cyan-200'
+              )}
+              title="查看全部"
+            >
+              全部
+            </button>
+            <button
+              type="button"
+              onClick={() => setFocusMode('opportunity')}
+              className={cn(
+                'inline-flex h-8 items-center rounded border px-2 transition',
+                focusMode === 'opportunity'
+                  ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-200'
+                  : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-emerald-500 hover:text-emerald-200'
+              )}
+              title="只看机会"
+            >
+              机会
+            </button>
+            <button
+              type="button"
+              onClick={() => setFocusMode('alert')}
+              className={cn(
+                'inline-flex h-8 items-center rounded border px-2 transition',
+                focusMode === 'alert'
+                  ? 'border-rose-500/70 bg-rose-500/10 text-rose-200'
+                  : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-rose-500 hover:text-rose-200'
+              )}
+              title="只看风险"
+            >
+              风险
+            </button>
+            <button
+              type="button"
               onClick={() => void handlePickMonitorDir()}
               className="inline-flex h-8 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
               title="选择监控目录"
@@ -801,7 +862,12 @@ function NoteRaceBoard(): React.JSX.Element {
           ) : (
             <div className="mt-2 max-h-44 space-y-1.5 overflow-auto pr-1">
               {actionList.map((item, index) => (
-                <div key={item.id} className="rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1.5 text-[11px]">
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handlePickActionItem(item)}
+                  className="w-full rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1.5 text-left text-[11px] transition hover:border-cyan-500"
+                >
                   <div className="flex items-center gap-1.5">
                     <span className="w-4 text-zinc-500">{index + 1}</span>
                     <span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px]', priorityClass(item.priority))}>
@@ -813,7 +879,7 @@ function NoteRaceBoard(): React.JSX.Element {
                   </div>
                   <div className="mt-1 pl-6 text-zinc-400">原因：{item.reason}</div>
                   <div className="mt-0.5 pl-6 text-zinc-300">动作：{item.action}</div>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -822,7 +888,11 @@ function NoteRaceBoard(): React.JSX.Element {
         <div className="mb-3 flex flex-wrap gap-2">
           <Chip label={`可评估笔记 ${summary.assessedCount}`} />
           <Chip label={`匹配成功率 ${Math.round(summary.matchRate * 100)}%`} />
+          <Chip label={`视图 ${focusMode === 'all' ? '全部' : focusMode === 'opportunity' ? '机会' : '风险'}`} />
           <Chip label={`监控 ${autoMonitorEnabled ? '开启' : '关闭'}`} />
+          <Chip label={`P0 ${p0Count}`} />
+          <Chip label={`P1 ${p1Count}`} />
+          <Chip label={`P2 ${p2Count}`} />
           <Chip label={`机会信号 ${opportunityCount}`} />
           <Chip label={`风险信号 ${riskSignalCount}`} />
           <Chip label={`起飞 ${summary.risingCount}`} />
@@ -859,43 +929,48 @@ function NoteRaceBoard(): React.JSX.Element {
 
             {!loading && rows.length === 0 ? <div className="px-3 py-6 text-sm text-zinc-500">当前筛选条件下暂无数据</div> : null}
 
-            {rows.map((row) => (
-              <button
-                key={row.id}
-                type="button"
-                onClick={() => setSelectedId(row.id)}
-                className={cn(
-                  'grid h-[46px] w-full items-center border-b border-zinc-800/80 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
-                  selected?.id === row.id && 'bg-zinc-800/70'
-                )}
-                style={{ gridTemplateColumns: '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px' }}
-                title={row.trendHint.join('\n')}
-              >
-                <span className={cn('text-center text-zinc-400', row.rank <= 3 && 'font-semibold text-zinc-200')}>{row.rank}</span>
-                <span>
-                  <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[11px] leading-none', tagClasses(row.tag))}>{row.tag}</span>
-                </span>
-                <span className="truncate text-zinc-400">{row.account || '-'}</span>
-                <span className="truncate text-zinc-100">{row.title}</span>
-                <span className="inline-flex items-center gap-1 text-zinc-300">
-                  <span className={cn('h-1.5 w-1.5 rounded-full', ageDotClass(row.ageDays))} />
-                  第{row.ageDays}天
-                </span>
-                <span className="px-2">
-                  <div className="text-center text-zinc-200">{row.score.toFixed(1)}</div>
-                  <div className="mt-0.5 h-1 overflow-hidden rounded bg-zinc-800">
-                    <div
-                      className={cn('h-full rounded', scoreBarClasses(row.score))}
-                      style={{ width: `${Math.min(100, Math.max(0, row.score))}%` }}
-                    />
-                  </div>
-                </span>
-                <span className={cn('text-center font-medium', trendDeltaClass(row.trendDelta))}>{formatTrendDelta(row.trendDelta)}</span>
-                <SignalColumn signals={row.contentSignals} />
-                <SignalColumn signals={row.commerceSignals} />
-                <span className="truncate text-zinc-300">{row.stageLabel}</span>
-              </button>
-            ))}
+            {rows.map((row) => {
+              const rowAction = buildActionItem(row)
+              return (
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => setSelectedId(row.id)}
+                  className={cn(
+                    'grid h-[46px] w-full items-center border-b border-zinc-800/80 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
+                    rowAction.priority === 'P0' && 'bg-rose-500/5',
+                    rowAction.priority === 'P1' && 'bg-amber-500/5',
+                    selected?.id === row.id && 'bg-zinc-800/70'
+                  )}
+                  style={{ gridTemplateColumns: '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px' }}
+                  title={row.trendHint.join('\n')}
+                >
+                  <span className={cn('text-center text-zinc-400', row.rank <= 3 && 'font-semibold text-zinc-200')}>{row.rank}</span>
+                  <span>
+                    <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[11px] leading-none', tagClasses(row.tag))}>{row.tag}</span>
+                  </span>
+                  <span className="truncate text-zinc-400">{row.account || '-'}</span>
+                  <span className="truncate text-zinc-100">{row.title}</span>
+                  <span className="inline-flex items-center gap-1 text-zinc-300">
+                    <span className={cn('h-1.5 w-1.5 rounded-full', ageDotClass(row.ageDays))} />
+                    第{row.ageDays}天
+                  </span>
+                  <span className="px-2">
+                    <div className="text-center text-zinc-200">{row.score.toFixed(1)}</div>
+                    <div className="mt-0.5 h-1 overflow-hidden rounded bg-zinc-800">
+                      <div
+                        className={cn('h-full rounded', scoreBarClasses(row.score))}
+                        style={{ width: `${Math.min(100, Math.max(0, row.score))}%` }}
+                      />
+                    </div>
+                  </span>
+                  <span className={cn('text-center font-medium', trendDeltaClass(row.trendDelta))}>{formatTrendDelta(row.trendDelta)}</span>
+                  <SignalColumn signals={row.contentSignals} />
+                  <SignalColumn signals={row.commerceSignals} />
+                  <span className="truncate text-zinc-300">{row.stageLabel}</span>
+                </button>
+              )
+            })}
           </div>
         </section>
 
