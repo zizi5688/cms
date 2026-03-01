@@ -33,6 +33,7 @@ import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinH
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService } from './services/scoutService'
+import { NoteRaceService } from './services/noteRaceService'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
 
@@ -1042,8 +1043,10 @@ app.whenReady().then(async () => {
   }
 
   const scoutService = new ScoutService()
+  const noteRaceService = new NoteRaceService()
   if (sqliteReady) {
     try { scoutService.ensureSchema() } catch (e) { console.error('[Scout] ensureSchema failed:', e) }
+    try { noteRaceService.ensureSchema() } catch (e) { console.error('[NoteRace] ensureSchema failed:', e) }
   }
 
   const autoImportProcessedSignatures = new Set<string>()
@@ -3893,6 +3896,75 @@ app.whenReady().then(async () => {
       keyword,
       onlyAlerts,
       onlyNew
+    })
+  })
+
+  // ============================================================
+  // NoteRace: 数据赛马场模块 IPC
+  // ============================================================
+
+  ipcMain.handle('cms.noteRace.importCommerceFile', async (event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
+    if (directPath) {
+      return noteRaceService.importCommerceExcel(directPath)
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+      : await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return noteRaceService.importCommerceExcel(result.filePaths[0]!)
+  })
+
+  ipcMain.handle('cms.noteRace.importContentFile', async (event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
+    if (directPath) {
+      return noteRaceService.importContentExcel(directPath)
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+      : await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return noteRaceService.importContentExcel(result.filePaths[0]!)
+  })
+
+  ipcMain.handle('cms.noteRace.meta', async () => noteRaceService.getMeta())
+
+  ipcMain.handle('cms.noteRace.list', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const noteType = query.noteType === '图文' || query.noteType === '视频' || query.noteType === '全部'
+      ? query.noteType
+      : undefined
+    const rawLimit = typeof query.limit === 'number' ? query.limit : Number(query.limit)
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.floor(rawLimit))) : undefined
+    return noteRaceService.listRaceRows({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      account: typeof query.account === 'string' ? query.account : undefined,
+      noteType,
+      limit
+    })
+  })
+
+  ipcMain.handle('cms.noteRace.detail', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    return noteRaceService.getRaceDetail({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      noteKey: typeof query.noteKey === 'string' ? query.noteKey : undefined
     })
   })
 
