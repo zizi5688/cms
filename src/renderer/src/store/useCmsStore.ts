@@ -6,7 +6,7 @@ export type ActiveModuleKey =
   | 'upload'
   | 'material'
   | 'autopublish'
-  | 'scout'
+  | 'raceboard'
   | 'heatboard'
   | 'settings'
 export type ModuleId = ActiveModuleKey

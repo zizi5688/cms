@@ -9,11 +9,11 @@ import { UploadManager } from '@renderer/components/modules/UploadManager'
 import { DataWorkshop } from '@renderer/modules/DataWorkshop'
 import { HeatDashboard } from '@renderer/modules/HeatDashboard'
 import { MediaMatrix } from '@renderer/modules/MediaMatrix'
-import { ProductScout } from '@renderer/modules/ProductScout'
+import { NoteRaceBoard } from '@renderer/modules/NoteRaceBoard'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import { cn } from '@renderer/lib/utils'
 
-const MODULE_ORDER: SidebarItemKey[] = ['material', 'workshop', 'upload', 'autopublish', 'scout', 'heatboard', 'settings']
+const MODULE_ORDER: SidebarItemKey[] = ['material', 'workshop', 'upload', 'autopublish', 'raceboard', 'heatboard', 'settings']
 
 function renderModule(moduleId: SidebarItemKey): React.JSX.Element {
   switch (moduleId) {
@@ -25,8 +25,8 @@ function renderModule(moduleId: SidebarItemKey): React.JSX.Element {
       return <ImageLab />
     case 'autopublish':
       return <MediaMatrix />
-    case 'scout':
-      return <ProductScout />
+    case 'raceboard':
+      return <NoteRaceBoard />
     case 'heatboard':
       return <HeatDashboard />
     case 'settings':
