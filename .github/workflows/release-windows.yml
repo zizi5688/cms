@@ -24,6 +24,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      CMS_ENGINE_PYTHON: python
     steps:
       - name: Checkout
         uses: actions/checkout@v4

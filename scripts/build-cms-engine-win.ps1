@@ -15,15 +15,19 @@ function Invoke-CmsPython {
     return $LASTEXITCODE
   }
 
-  $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-  if ($pyCmd) {
-    & py -3 @Args
-    return $LASTEXITCODE
-  }
-
   $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
   if ($pythonCmd) {
     & python @Args
+    return $LASTEXITCODE
+  }
+
+  $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+  if ($pyCmd) {
+    & py -3.10 @Args
+    if ($LASTEXITCODE -eq 0) {
+      return 0
+    }
+    & py -3 @Args
     return $LASTEXITCODE
   }
 
