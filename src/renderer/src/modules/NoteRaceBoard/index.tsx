@@ -2,6 +2,8 @@ import * as React from 'react'
 
 import { ChevronDown, Copy, Download, RefreshCcw, Settings2 } from 'lucide-react'
 
+import { Drawer } from '@renderer/components/ui/drawer'
+import { Tabs, type TabsItem } from '@renderer/components/ui/tabs'
 import { cn } from '@renderer/lib/utils'
 
 type NoteType = '全部' | '图文' | '视频'
@@ -66,6 +68,7 @@ type RaceListRow = {
   stageIndex: 1 | 2 | 3 | 4 | 5
   noteType: '图文' | '视频'
   productName: string
+  sparkline?: number[]
 }
 
 type RaceDetail = {
@@ -88,6 +91,7 @@ type RaceDetail = {
 
 type ActionPriority = 'P0' | 'P1' | 'P2'
 type DataPhase = 'EMPTY' | 'DAY1' | 'DAY2_PLUS'
+type MainView = 'action-console' | 'monitor-hall'
 type PriorityFilter = 'all' | ActionPriority
 type SignalFilter = 'all' | 'opportunity' | 'alert' | 'rising' | 'mine-clear'
 type StageFilter = 'all' | 's1' | 's2' | 's3' | 's4' | 'new' | 'revival'
@@ -110,22 +114,51 @@ type RaceActionItem = {
   action: string
 }
 
+type LoadRowsOptions = {
+  preserveScroll?: boolean
+}
+
 const NOTE_TYPES: NoteType[] = ['全部', '图文', '视频']
 const MONITOR_DIR_STORAGE_KEY = 'note-race:monitor-dir:v1'
 const MONITOR_ENABLE_STORAGE_KEY = 'note-race:monitor-enable:v1'
 const MONITOR_CURSOR_STORAGE_KEY = 'note-race:monitor-cursor:v1'
-
-function tagClasses(tag: NoteTag): string {
-  if (tag === '起飞') return 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-  if (tag === '掉速' || tag === '长尾复活')
-    return 'border border-amber-500/40 bg-amber-500/15 text-amber-300'
-  if (tag === '风险') return 'border border-rose-500/40 bg-rose-500/15 text-rose-300'
-  return 'border border-cyan-500/35 bg-cyan-500/15 text-cyan-300'
-}
+const MONITOR_TABLE_COLUMNS =
+  '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px'
+const MAIN_VIEW_TABS: TabsItem[] = [
+  { value: 'action-console', label: '🎯 行动指挥台' },
+  { value: 'monitor-hall', label: '📊 全盘监控大厅' }
+]
 
 function signalClasses(tone: SignalTone): string {
-  if (tone === 'positive') return 'border-emerald-500/70 text-emerald-300'
-  if (tone === 'negative') return 'border-rose-500/70 text-rose-300'
+  if (tone === 'positive') {
+    return 'border-[rgba(16,185,129,0.2)] bg-transparent text-[#10B981]'
+  }
+  if (tone === 'negative') {
+    return 'border-[rgba(239,68,68,0.2)] bg-transparent text-[#ef4444]'
+  }
+  return 'border-zinc-700/70 bg-transparent text-zinc-400'
+}
+
+function tagDotClasses(tag: NoteTag): string {
+  if (tag === '风险') return 'bg-rose-400'
+  if (tag === '起飞') return 'bg-emerald-400'
+  if (tag === '掉速') return 'bg-amber-400'
+  if (tag === '长尾复活') return 'bg-yellow-400'
+  return 'bg-zinc-500'
+}
+
+function tagTextClasses(tag: NoteTag): string {
+  if (tag === '风险') return 'text-rose-200'
+  if (tag === '起飞') return 'text-emerald-200'
+  if (tag === '掉速') return 'text-amber-200'
+  if (tag === '长尾复活') return 'text-yellow-200'
+  return 'text-zinc-300'
+}
+
+function stageGhostClass(stageIndex: number): string {
+  if (stageIndex >= 4) return 'border-zinc-500/40 text-zinc-300'
+  if (stageIndex === 3) return 'border-cyan-500/30 text-cyan-200'
+  if (stageIndex === 2) return 'border-amber-500/30 text-amber-200'
   return 'border-zinc-600 text-zinc-400'
 }
 
@@ -173,9 +206,13 @@ function noticePriority(level: NoticeLevel): number {
 }
 
 function noticeClasses(level: NoticeLevel): string {
-  if (level === 'danger') return 'border-rose-500/30 bg-rose-500/10 text-rose-200'
-  if (level === 'warning') return 'border-amber-500/30 bg-amber-500/10 text-amber-200'
-  return 'border-cyan-500/25 bg-cyan-500/10 text-cyan-200'
+  if (level === 'danger') {
+    return 'border-[rgba(255,67,67,0.3)] bg-[rgba(255,67,67,0.08)] text-[#ff4d4f]'
+  }
+  if (level === 'warning') {
+    return 'border-[rgba(250,173,20,0.25)] bg-[rgba(250,173,20,0.06)] text-[#ffd666]'
+  }
+  return 'border-zinc-700/80 bg-transparent text-zinc-300'
 }
 
 function firstSignalLabel(signals: Signal[]): string {
@@ -327,14 +364,18 @@ function formatDateTime(timestamp: number): string {
   }
 }
 
-function FunnelBlock({
+function normalizeStageIndex(stageIndex: number | null | undefined): number {
+  const parsed = Number(stageIndex)
+  if (!Number.isFinite(parsed)) return 1
+  return Math.min(5, Math.max(1, Math.round(parsed)))
+}
+
+function FunnelChart({
   title,
-  metrics,
-  fillClassName
+  metrics
 }: {
   title: string
   metrics: FunnelMetric[]
-  fillClassName: string
 }): React.JSX.Element {
   if (!metrics.length) {
     return (
@@ -345,28 +386,69 @@ function FunnelBlock({
     )
   }
 
-  const base = metrics[0]?.value || 1
+  const safeValues = metrics.map((metric) =>
+    Number.isFinite(metric.value) ? Math.max(0, metric.value) : 0
+  )
+  const base = Math.max(1, safeValues[0] ?? 1)
+  const rawWidths = safeValues.map((value) => Math.max(26, Math.min(96, (value / base) * 96)))
+  const visualWidths = rawWidths.reduce<number[]>((acc, width, index) => {
+    if (index === 0) {
+      acc.push(width)
+      return acc
+    }
+    const prev = acc[index - 1] ?? width
+    acc.push(Math.max(22, Math.min(width, prev - 4)))
+    return acc
+  }, [])
+
   return (
     <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
       <h4 className="text-sm font-semibold text-zinc-100">{title}</h4>
-      <div className="mt-3 space-y-2.5">
+      <div className="mx-auto mt-3 w-full max-w-[420px]">
         {metrics.map((metric, index) => {
-          const width = Math.max(0, Math.min(100, (metric.value / base) * 100))
+          const value = safeValues[index] ?? 0
+          const nextValue = safeValues[index + 1] ?? 0
+          const width = visualWidths[index] ?? 26
+          const nextMetric = metrics[index + 1]
+          const explicitConversion =
+            nextMetric && Number.isFinite(nextMetric.conversionValue)
+              ? Number(nextMetric.conversionValue)
+              : null
+          const derivedConversion =
+            nextMetric && value > 0 ? (nextValue / value) * 100 : nextMetric ? 0 : null
+          const rawConversion = explicitConversion ?? derivedConversion
+          const conversionRate = rawConversion == null ? null : Math.max(0, rawConversion)
+          const barOpacity = Math.max(0.12, 0.3 - index * 0.04)
           return (
-            <div key={`${metric.label}-${index}`}>
-              <div className="flex items-center justify-between text-[11px] text-zinc-300">
-                <span>{metric.label}</span>
-                <span>{metric.value.toLocaleString()}</span>
-              </div>
-              <div className="mt-1 h-2 overflow-hidden rounded bg-zinc-800">
+            <div key={`${metric.label}-${index}`} className="w-full">
+              <div className="flex justify-center">
                 <div
-                  className={cn('h-full rounded', fillClassName)}
-                  style={{ width: `${width}%` }}
-                />
+                  className="relative h-6 rounded-[4px] border"
+                  style={{
+                    width: `${width}%`,
+                    borderColor: 'rgba(125,211,252,0.35)',
+                    backgroundColor: `rgba(56,189,248,${barOpacity})`
+                  }}
+                >
+                  <div
+                    className={cn(
+                      'absolute inset-0 flex items-center justify-between',
+                      width < 40 ? 'px-1.5' : 'px-2'
+                    )}
+                  >
+                    <span className="truncate text-[12px] text-zinc-100">{metric.label}</span>
+                    <span className="ml-2 shrink-0 text-[12px] font-medium tabular-nums text-zinc-100">
+                      {value.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
               </div>
-              {metric.conversionLabel && typeof metric.conversionValue === 'number' ? (
-                <div className="mt-1 pl-2 text-[10px] text-zinc-400">
-                  ↳ 转化率 {metric.conversionValue.toFixed(1)}%（{metric.conversionLabel}）
+              {nextMetric ? (
+                <div className="flex h-[28px] flex-col items-center justify-center leading-none">
+                  <span className="text-[12px] text-zinc-500">↓</span>
+                  <span className="mt-1 text-[12px] tabular-nums text-zinc-400">
+                    ↳ {conversionRate == null ? '-%' : `${conversionRate.toFixed(1)}%`}
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -386,9 +468,8 @@ function TrendSparkline({ values }: { values: number[] }): React.JSX.Element {
   const min = Math.min(...values)
   const max = Math.max(...values)
   const range = max - min || 1
-  const isRising = values[values.length - 1] >= values[0]
-  const stroke = isRising ? '#10B981' : '#EF4444'
-  const fill = isRising ? 'rgba(16,185,129,0.18)' : 'rgba(239,68,68,0.18)'
+  const stroke = '#FBBF24'
+  const fill = 'rgba(251,191,36,0.10)'
   const points = values.map((value, index) => {
     const x = (index / (values.length - 1)) * width
     const y = height - ((value - min) / range) * height
@@ -399,6 +480,8 @@ function TrendSparkline({ values }: { values: number[] }): React.JSX.Element {
     .join(' ')
   const area = `${line} L ${width} ${height} L 0 ${height} Z`
 
+  const end = points[points.length - 1]
+
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="h-14 w-full" preserveAspectRatio="none">
       <path d={area} fill={fill} />
@@ -406,11 +489,148 @@ function TrendSparkline({ values }: { values: number[] }): React.JSX.Element {
         d={line}
         fill="none"
         stroke={stroke}
-        strokeWidth="2"
+        strokeWidth="1.4"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      <circle
+        cx={end.x}
+        cy={end.y}
+        r="2.4"
+        fill={stroke}
+        stroke="rgba(24,24,27,0.95)"
+        strokeWidth="1"
+      />
     </svg>
+  )
+}
+
+function MiniSparkline({ values }: { values: number[] }): React.JSX.Element | null {
+  if (!Array.isArray(values) || values.length < 2) return null
+  const width = 72
+  const height = 18
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = max - min || 1
+  const points = values.map((value, index) => {
+    const x = (index / (values.length - 1)) * width
+    const y = height - ((value - min) / range) * height
+    return { x, y }
+  })
+  const path = points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+    .join(' ')
+  const end = points[points.length - 1]
+
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="h-[16px] w-[72px]"
+      preserveAspectRatio="none"
+    >
+      <path
+        d={path}
+        fill="none"
+        stroke="#FBBF24"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx={end.x} cy={end.y} r="1.8" fill="#FBBF24" stroke="rgba(24,24,27,0.95)" />
+    </svg>
+  )
+}
+
+type MonitorTableRowProps = {
+  row: RaceListRow
+  priority: ActionPriority
+  isSelected: boolean
+  trendLabel: string
+  trendClass: string
+  onSelect: (id: string) => void
+}
+
+const MonitorTableRow = React.memo(function MonitorTableRow({
+  row,
+  priority,
+  isSelected,
+  trendLabel,
+  trendClass,
+  onSelect
+}: MonitorTableRowProps): React.JSX.Element {
+  const stageIndex = normalizeStageIndex(row.stageIndex)
+  const stageLabel = row.stageLabel?.trim() || '-'
+  const hasSparkline = Array.isArray(row.sparkline) && row.sparkline.length >= 2
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(row.id)}
+      className={cn(
+        'grid h-[56px] w-full items-center border-b border-zinc-800/35 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
+        priority === 'P0' && 'bg-rose-500/5',
+        priority === 'P1' && 'bg-amber-500/5',
+        isSelected && 'bg-zinc-800/70'
+      )}
+      style={{ gridTemplateColumns: MONITOR_TABLE_COLUMNS }}
+      title={row.trendHint.join('\n')}
+    >
+      <span
+        className={cn(
+          'pr-2 text-right tabular-nums text-zinc-400',
+          row.rank <= 3 && 'font-semibold text-zinc-200'
+        )}
+      >
+        {row.rank}
+      </span>
+      <TagStatus tag={row.tag} />
+      <span className="truncate text-zinc-400">{row.account || '-'}</span>
+      <span className="truncate text-zinc-100">{row.title}</span>
+      <span className="inline-flex items-center justify-end gap-1 text-right tabular-nums text-zinc-300">
+        <span className={cn('h-1.5 w-1.5 rounded-full', ageDotClass(row.ageDays))} />
+        <span>第{row.ageDays}天</span>
+      </span>
+      <span className="px-2 tabular-nums">
+        <div className="text-right text-zinc-100">{row.score.toFixed(1)}</div>
+        <div className="mt-0.5 h-1 overflow-hidden rounded bg-zinc-800">
+          <div
+            className={cn('h-full rounded', scoreBarClasses(row.score))}
+            style={{ width: `${Math.min(100, Math.max(0, row.score))}%` }}
+          />
+        </div>
+      </span>
+      <span className="flex flex-col items-end justify-center">
+        {hasSparkline ? (
+          <MiniSparkline values={row.sparkline ?? []} />
+        ) : (
+          <span className="text-[10px] text-zinc-600">-</span>
+        )}
+        <span className={cn('text-right font-medium tabular-nums', trendClass)}>{trendLabel}</span>
+      </span>
+      <SignalColumn signals={row.contentSignals} />
+      <SignalColumn signals={row.commerceSignals} />
+      <span>
+        <span
+          className={cn(
+            'inline-flex rounded border px-1.5 py-0.5 text-[10px]',
+            stageGhostClass(stageIndex)
+          )}
+        >
+          {stageLabel}
+        </span>
+      </span>
+    </button>
+  )
+}, areMonitorRowsEqual)
+
+function areMonitorRowsEqual(prev: MonitorTableRowProps, next: MonitorTableRowProps): boolean {
+  return (
+    prev.row === next.row &&
+    prev.priority === next.priority &&
+    prev.isSelected === next.isSelected &&
+    prev.trendLabel === next.trendLabel &&
+    prev.trendClass === next.trendClass &&
+    prev.onSelect === next.onSelect
   )
 }
 
@@ -419,6 +639,7 @@ function NoteRaceBoard(): React.JSX.Element {
   const [snapshotDate, setSnapshotDate] = React.useState<string>('')
   const [account, setAccount] = React.useState<string>('全部账号')
   const [noteType, setNoteType] = React.useState<NoteType>('全部')
+  const [mainView, setMainView] = React.useState<MainView>('action-console')
   const [priorityFilter, setPriorityFilter] = React.useState<PriorityFilter>('all')
   const [signalFilter, setSignalFilter] = React.useState<SignalFilter>('all')
   const [stageFilter, setStageFilter] = React.useState<StageFilter>('all')
@@ -447,12 +668,14 @@ function NoteRaceBoard(): React.JSX.Element {
   const [scanLoading, setScanLoading] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
+  const [detailDrawerOpen, setDetailDrawerOpen] = React.useState<boolean>(false)
   const [importMenuOpen, setImportMenuOpen] = React.useState<boolean>(false)
   const [monitorMenuOpen, setMonitorMenuOpen] = React.useState<boolean>(false)
   const [noticeCursor, setNoticeCursor] = React.useState<number>(0)
   const scanInFlightRef = React.useRef<boolean>(false)
   const importMenuRef = React.useRef<HTMLDivElement | null>(null)
   const monitorMenuRef = React.useRef<HTMLDivElement | null>(null)
+  const tableScrollRef = React.useRef<HTMLDivElement | null>(null)
   const dataPhase: DataPhase = React.useMemo(() => {
     if (snapshotDates.length === 0) return 'EMPTY'
     if (snapshotDates.length === 1) return 'DAY1'
@@ -471,35 +694,51 @@ function NoteRaceBoard(): React.JSX.Element {
     return chosenDate
   }, [snapshotDate])
 
-  const loadRows = React.useCallback(async (targetDate: string): Promise<void> => {
-    if (!targetDate) {
-      setAllRows([])
-      return
-    }
-    setLoading(true)
-    try {
-      const nextRows = (await window.api.cms.noteRace.list({
-        snapshotDate: targetDate,
-        limit: 100
-      })) as RaceListRow[]
-      setAllRows(Array.isArray(nextRows) ? nextRows : [])
-      setError('')
-    } catch (err) {
-      setAllRows([])
-      setError(`加载列表失败：${normalizeError(err)}`)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const loadRows = React.useCallback(
+    async (targetDate: string, options: LoadRowsOptions = {}): Promise<void> => {
+      const shouldPreserveScroll = options.preserveScroll === true
+      const preservedScrollTop = shouldPreserveScroll ? (tableScrollRef.current?.scrollTop ?? 0) : 0
 
-  const refresh = React.useCallback(async (): Promise<void> => {
-    const date = await loadMeta()
-    if (date) {
-      await loadRows(date)
-      return
-    }
-    setAllRows([])
-  }, [loadMeta, loadRows])
+      if (!targetDate) {
+        setAllRows([])
+        return
+      }
+      setLoading(true)
+      try {
+        const nextRows = (await window.api.cms.noteRace.list({
+          snapshotDate: targetDate,
+          limit: 100
+        })) as RaceListRow[]
+        setAllRows(Array.isArray(nextRows) ? nextRows : [])
+        if (shouldPreserveScroll) {
+          window.requestAnimationFrame(() => {
+            if (tableScrollRef.current) {
+              tableScrollRef.current.scrollTop = preservedScrollTop
+            }
+          })
+        }
+        setError('')
+      } catch (err) {
+        setAllRows([])
+        setError(`加载列表失败：${normalizeError(err)}`)
+      } finally {
+        setLoading(false)
+      }
+    },
+    []
+  )
+
+  const refresh = React.useCallback(
+    async (options: LoadRowsOptions = {}): Promise<void> => {
+      const date = await loadMeta()
+      if (date) {
+        await loadRows(date, options)
+        return
+      }
+      setAllRows([])
+    },
+    [loadMeta, loadRows]
+  )
 
   React.useEffect(() => {
     void refresh()
@@ -634,6 +873,19 @@ function NoteRaceBoard(): React.JSX.Element {
   const selected = rows.find((row) => row.id === selectedId) ?? null
   const detail =
     selectedDetail && selected && selectedDetail.row.id === selected.id ? selectedDetail : null
+  const selectedStageIndex = normalizeStageIndex(selected?.stageIndex)
+
+  React.useEffect(() => {
+    if (mainView !== 'monitor-hall' && detailDrawerOpen) {
+      setDetailDrawerOpen(false)
+    }
+  }, [detailDrawerOpen, mainView])
+
+  React.useEffect(() => {
+    if (!selected) {
+      setDetailDrawerOpen(false)
+    }
+  }, [selected])
 
   const opportunityCount = React.useMemo(
     () =>
@@ -781,6 +1033,13 @@ function NoteRaceBoard(): React.JSX.Element {
 
   const handlePickActionItem = React.useCallback((item: RaceActionItem): void => {
     setSelectedId(item.id)
+    setMainView('monitor-hall')
+    setDetailDrawerOpen(true)
+  }, [])
+
+  const handleSelectRow = React.useCallback((rowId: string): void => {
+    setSelectedId(rowId)
+    setDetailDrawerOpen(true)
   }, [])
 
   const handleImport = React.useCallback(
@@ -829,6 +1088,13 @@ function NoteRaceBoard(): React.JSX.Element {
 
   const runFolderScan = React.useCallback(
     async (mode: 'manual' | 'auto'): Promise<void> => {
+      if (mode === 'auto' && (importMenuOpen || monitorMenuOpen || detailDrawerOpen)) return
+      if (mode === 'auto' && typeof document !== 'undefined') {
+        const activeElement = document.activeElement as HTMLElement | null
+        if (activeElement && ['SELECT', 'INPUT', 'TEXTAREA'].includes(activeElement.tagName)) {
+          return
+        }
+      }
       if (!monitorDir) {
         if (mode === 'manual') {
           setError('请先选择监控目录')
@@ -855,7 +1121,7 @@ function NoteRaceBoard(): React.JSX.Element {
           setLastImportMessage(
             `目录新增 ${result.importedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），已自动导入`
           )
-          await refresh()
+          await refresh({ preserveScroll: mode === 'auto' })
         } else if (mode === 'manual') {
           setLastImportMessage(
             `扫描完成：扫描 ${result.scannedFiles}，历史跳过 ${result.skippedOldFiles}，未发现新可导入文件`
@@ -880,7 +1146,7 @@ function NoteRaceBoard(): React.JSX.Element {
         }
       }
     },
-    [monitorDir, refresh, scanCursorMs]
+    [detailDrawerOpen, importMenuOpen, monitorDir, monitorMenuOpen, refresh, scanCursorMs]
   )
 
   const handleToggleAutoMonitor = React.useCallback((): void => {
@@ -906,7 +1172,7 @@ function NoteRaceBoard(): React.JSX.Element {
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const nextDate = event.target.value
       setSnapshotDate(nextDate)
-      void loadRows(nextDate)
+      void loadRows(nextDate, { preserveScroll: true })
     },
     [loadRows]
   )
@@ -931,7 +1197,7 @@ function NoteRaceBoard(): React.JSX.Element {
                   setImportMenuOpen((prev) => !prev)
                   setMonitorMenuOpen(false)
                 }}
-                className="inline-flex h-8 items-center gap-1.5 rounded border border-cyan-500/60 bg-cyan-500/15 px-3 text-cyan-100 transition hover:bg-cyan-500/20"
+                className="inline-flex h-8 items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-3 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
                 title="导入赛马数据"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -1010,10 +1276,16 @@ function NoteRaceBoard(): React.JSX.Element {
                       className={cn(
                         'flex h-8 w-full items-center rounded border px-2 text-left transition',
                         autoMonitorEnabled
-                          ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200'
+                          ? 'border-emerald-500/45 bg-emerald-500/5 text-emerald-200'
                           : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-cyan-500 hover:text-cyan-200'
                       )}
                     >
+                      <span
+                        className={cn(
+                          'mr-1.5 inline-flex h-1.5 w-1.5 rounded-full',
+                          autoMonitorEnabled ? 'bg-emerald-400' : 'bg-zinc-500'
+                        )}
+                      />
                       自动监控：{autoMonitorEnabled ? '开' : '关'}
                     </button>
                   </div>
@@ -1043,7 +1315,7 @@ function NoteRaceBoard(): React.JSX.Element {
       <div className="px-4 pt-2">
         <div
           className={cn(
-            'mb-2 flex h-8 items-center justify-between rounded border px-3 text-xs',
+            'mb-2 flex h-8 items-center justify-between rounded border px-3 text-[12px]',
             noticeClasses(activeNotice?.level ?? 'info')
           )}
         >
@@ -1060,67 +1332,7 @@ function NoteRaceBoard(): React.JSX.Element {
           ) : null}
         </div>
 
-        <section className="mb-2 rounded border border-zinc-700 bg-zinc-900/70 px-3 py-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold text-zinc-200">今日必做清单（Top 10）</h3>
-            <button
-              type="button"
-              onClick={() => void handleCopyActionList()}
-              disabled={actionList.length === 0}
-              className="inline-flex h-7 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-[11px] text-zinc-300 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
-              title="复制清单"
-            >
-              复制清单
-            </button>
-          </div>
-          {dataPhase === 'DAY1' ? (
-            <div className="mt-1 text-[10px] text-amber-300">
-              低置信：当前仅 1 日样本，动作仅供试探性执行
-            </div>
-          ) : null}
-          {actionList.length === 0 ? (
-            <div className="mt-2 text-xs text-zinc-500">
-              {dataPhase === 'EMPTY' ? '暂无可执行清单（等待首日数据）' : '暂无可执行清单'}
-            </div>
-          ) : (
-            <div className="mt-2 max-h-44 space-y-1.5 overflow-auto pr-1">
-              {actionList.map((item, index) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handlePickActionItem(item)}
-                  className="w-full rounded border border-zinc-700 bg-zinc-900/60 px-2 py-1.5 text-left text-[11px] transition hover:border-cyan-500"
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-4 text-zinc-500">{index + 1}</span>
-                    <span
-                      className={cn(
-                        'inline-flex rounded border px-1.5 py-0.5 text-[10px]',
-                        priorityClass(item.priority)
-                      )}
-                    >
-                      {item.priority}
-                    </span>
-                    <span
-                      className={cn(
-                        'inline-flex rounded px-1.5 py-0.5 text-[10px]',
-                        tagClasses(item.tag)
-                      )}
-                    >
-                      {item.tag}
-                    </span>
-                    <span className="truncate text-zinc-200">{item.title}</span>
-                    <span className="text-zinc-500">#{item.rank}</span>
-                  </div>
-                  <div className="mt-1 pl-6 text-zinc-400">原因：{item.reason}</div>
-                  <div className="mt-0.5 pl-6 text-zinc-300">动作：{item.action}</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="mb-3 flex h-10 items-center justify-between rounded border border-zinc-800 bg-zinc-900/55 px-2">
+        <section className="mb-2 flex h-10 items-center justify-between rounded border border-zinc-800 bg-zinc-900/55 px-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2 text-[11px]">
             <select
               value={snapshotDate}
@@ -1165,46 +1377,6 @@ function NoteRaceBoard(): React.JSX.Element {
                 </option>
               ))}
             </select>
-
-            <select
-              value={priorityFilter}
-              onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)}
-              className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
-              title="优先级筛选"
-            >
-              <option value="all">全部优先级</option>
-              <option value="P0">P0</option>
-              <option value="P1">P1</option>
-              <option value="P2">P2</option>
-            </select>
-
-            <select
-              value={signalFilter}
-              onChange={(event) => setSignalFilter(event.target.value as SignalFilter)}
-              className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
-              title="信号筛选"
-            >
-              <option value="all">所有信号</option>
-              <option value="opportunity">机会信号</option>
-              <option value="alert">风险信号</option>
-              <option value="rising">起飞</option>
-              <option value="mine-clear">排雷（风险/掉速）</option>
-            </select>
-
-            <select
-              value={stageFilter}
-              onChange={(event) => setStageFilter(event.target.value as StageFilter)}
-              className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
-              title="阶段筛选"
-            >
-              <option value="all">所有阶段</option>
-              <option value="new">存活首日</option>
-              <option value="revival">长尾复活</option>
-              <option value="s1">S1 起量</option>
-              <option value="s2">S2 导流</option>
-              <option value="s3">S3 成交</option>
-              <option value="s4">S4 成交放大</option>
-            </select>
           </div>
           <div className="hidden shrink-0 items-center gap-2 text-[11px] text-zinc-400 lg:flex">
             <span>评估 {summary.assessedCount}</span>
@@ -1214,261 +1386,357 @@ function NoteRaceBoard(): React.JSX.Element {
             <span>P0 {p0Count}</span>
             <span>P1 {p1Count}</span>
             <span>P2 {p2Count}</span>
-            <span>机会 {opportunityCount}</span>
-            <span>风险 {riskSignalCount}</span>
           </div>
         </section>
+
+        <div className="mb-3">
+          <Tabs
+            value={mainView}
+            onValueChange={(next) => setMainView(next as MainView)}
+            items={MAIN_VIEW_TABS}
+          />
+        </div>
       </div>
 
-      <div
-        className="grid min-h-0 flex-1 gap-4 px-4 pb-4"
-        style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(360px, 1fr)' }}
-      >
-        <section className="min-h-0 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/45">
-          <div className="border-b border-zinc-800 px-3 py-2 text-sm font-semibold text-zinc-100">
-            重点监控清单（Top 12）
+      {mainView === 'action-console' ? (
+        <div className="min-h-0 flex-1 px-4 pb-4">
+          <section className="flex h-full min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/45">
+            <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-100">行动指挥台（Top 10）</h3>
+                <p className="text-xs text-zinc-400">按优先级排序，聚焦当日执行动作</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleCopyActionList()}
+                disabled={actionList.length === 0}
+                className="inline-flex h-8 items-center rounded border border-zinc-700 bg-zinc-900 px-3 text-xs text-zinc-300 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+                title="复制清单"
+              >
+                复制清单
+              </button>
+            </div>
+            {dataPhase === 'DAY1' ? (
+              <div className="mx-3 mt-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                低置信：当前仅 1 日样本，动作建议用于试探性执行。
+              </div>
+            ) : null}
+            <div className="min-h-0 flex-1 overflow-auto p-3">
+              {actionList.length === 0 ? (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-6 text-sm text-zinc-500">
+                  {dataPhase === 'EMPTY' ? '暂无可执行清单（等待首日数据）' : '暂无可执行清单'}
+                </div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {actionList.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handlePickActionItem(item)}
+                      className="rounded-lg border border-zinc-700 bg-zinc-900/75 p-3 text-left transition hover:border-cyan-500"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-zinc-500">#{index + 1}</span>
+                        <span
+                          className={cn(
+                            'inline-flex rounded border px-1.5 py-0.5 text-[10px]',
+                            priorityClass(item.priority)
+                          )}
+                        >
+                          {item.priority}
+                        </span>
+                        <TagStatus tag={item.tag} compact />
+                        <span className="ml-auto text-[11px] text-zinc-500">榜单 #{item.rank}</span>
+                      </div>
+                      <div
+                        className="mt-2 truncate text-[15px] font-semibold text-zinc-50"
+                        title={item.title}
+                      >
+                        {item.title}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-400">{item.account || '-'}</div>
+                      <div className="mt-4 space-y-3">
+                        <div className="space-y-1">
+                          <div className="text-[12px] text-zinc-500/50">原因</div>
+                          <div className="text-[14px] leading-6 text-zinc-100">{item.reason}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="text-[12px] text-zinc-500/50">动作建议</div>
+                          <div className="text-[14px] leading-6 text-zinc-100">{item.action}</div>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 px-4 pb-4">
+          <div className="flex h-full min-h-0 flex-col">
+            <section className="mb-2 flex h-10 items-center justify-between rounded border border-zinc-800 bg-zinc-900/55 px-2">
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2 text-[11px]">
+                <select
+                  value={priorityFilter}
+                  onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)}
+                  className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
+                  title="优先级筛选"
+                >
+                  <option value="all">全部优先级</option>
+                  <option value="P0">P0</option>
+                  <option value="P1">P1</option>
+                  <option value="P2">P2</option>
+                </select>
+
+                <select
+                  value={signalFilter}
+                  onChange={(event) => setSignalFilter(event.target.value as SignalFilter)}
+                  className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
+                  title="信号筛选"
+                >
+                  <option value="all">所有信号</option>
+                  <option value="opportunity">机会信号</option>
+                  <option value="alert">风险信号</option>
+                  <option value="rising">起飞</option>
+                  <option value="mine-clear">排雷（风险/掉速）</option>
+                </select>
+
+                <select
+                  value={stageFilter}
+                  onChange={(event) => setStageFilter(event.target.value as StageFilter)}
+                  className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
+                  title="阶段筛选"
+                >
+                  <option value="all">所有阶段</option>
+                  <option value="new">存活首日</option>
+                  <option value="revival">长尾复活</option>
+                  <option value="s1">S1 起量</option>
+                  <option value="s2">S2 导流</option>
+                  <option value="s3">S3 成交</option>
+                  <option value="s4">S4 成交放大</option>
+                </select>
+              </div>
+              <div className="hidden shrink-0 items-center gap-2 text-[11px] text-zinc-400 lg:flex">
+                <span>机会 {opportunityCount}</span>
+                <span>风险 {riskSignalCount}</span>
+                <span>起飞 {summary.risingCount}</span>
+                <span>长尾复活 {summary.revivalCount}</span>
+                <span>掉速 {summary.dropCount}</span>
+                <span>风险标签 {summary.riskCount}</span>
+              </div>
+            </section>
+
+            <section className="min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/45">
+              <div className="border-b border-zinc-800 px-3 py-2 text-sm font-semibold text-zinc-100">
+                重点监控清单（Top 12）
+              </div>
+              <div ref={tableScrollRef} className="min-h-0 h-full overflow-auto">
+                <div
+                  className="sticky top-0 z-10 grid h-11 items-center border-b border-zinc-800 bg-zinc-900/90 px-2 text-[11px] font-medium text-zinc-400 backdrop-blur"
+                  style={{ gridTemplateColumns: MONITOR_TABLE_COLUMNS }}
+                >
+                  <span className="pr-2 text-right">排名</span>
+                  <span>标签</span>
+                  <span>账号</span>
+                  <span>笔记标题</span>
+                  <span className="text-right">笔记年龄</span>
+                  <span className="text-right">赛马分</span>
+                  <span className="text-right">趋势</span>
+                  <span className="text-right">内容信号</span>
+                  <span className="text-right">商品信号</span>
+                  <span>阶段</span>
+                </div>
+
+                {loading ? <div className="px-3 py-6 text-sm text-zinc-500">加载中...</div> : null}
+
+                {!loading && rows.length === 0 ? (
+                  <div className="px-3 py-6 text-sm text-zinc-500">
+                    {dataPhase === 'EMPTY'
+                      ? '暂无数据，请先导入首日表格'
+                      : '当前筛选条件下暂无数据'}
+                  </div>
+                ) : null}
+
+                {rows.map((row) => {
+                  const rowAction =
+                    actionMap.get(row.id) ??
+                    (dataPhase === 'DAY2_PLUS' ? buildActionItem(row) : buildActionItemDay1(row))
+                  const trendLabel =
+                    dataPhase === 'DAY2_PLUS' ? formatTrendDelta(row.trendDelta) : '样本不足'
+                  const trendClass =
+                    dataPhase === 'DAY2_PLUS' ? trendDeltaClass(row.trendDelta) : 'text-zinc-500'
+                  return (
+                    <MonitorTableRow
+                      key={row.id}
+                      row={row}
+                      priority={rowAction.priority}
+                      isSelected={selected?.id === row.id}
+                      trendLabel={trendLabel}
+                      trendClass={trendClass}
+                      onSelect={handleSelectRow}
+                    />
+                  )
+                })}
+              </div>
+            </section>
           </div>
-          <div className="min-h-0 overflow-auto">
-            <div
-              className="sticky top-0 z-10 grid h-11 items-center border-b border-zinc-800 bg-zinc-900/90 px-2 text-[11px] font-medium text-zinc-400 backdrop-blur"
-              style={{
-                gridTemplateColumns:
-                  '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px'
-              }}
-            >
-              <span className="text-center">排名</span>
-              <span>标签</span>
-              <span>账号</span>
-              <span>笔记标题</span>
-              <span>笔记年龄</span>
-              <span className="text-center">赛马分</span>
-              <span className="text-center">趋势</span>
-              <span className="text-center">内容信号</span>
-              <span className="text-center">商品信号</span>
-              <span>阶段</span>
+        </div>
+      )}
+
+      <Drawer
+        open={detailDrawerOpen}
+        onOpenChange={setDetailDrawerOpen}
+        title="笔记详情"
+        description={
+          selected ? `${selected.account || '未命名账号'} · ${selected.title}` : '未选中笔记'
+        }
+      >
+        {selected ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-zinc-100">详情总览</h3>
+              <TagStatus tag={selected.tag} />
             </div>
 
-            {loading ? <div className="px-3 py-6 text-sm text-zinc-500">加载中...</div> : null}
+            <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
+              <h4 className="text-xs font-semibold text-zinc-200">基础信息</h4>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
+                <KeyValue
+                  label="笔记ID"
+                  value={detail?.noteId || selected.id}
+                  action={
+                    <button
+                      type="button"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded border border-zinc-700 text-zinc-300 hover:border-cyan-500 hover:text-cyan-200"
+                      onClick={() => void handleCopy(detail?.noteId || selected.id)}
+                      title="复制笔记ID"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                  }
+                />
+                <KeyValue label="账号" value={selected.account || '-'} />
+                <KeyValue
+                  label="发布时间"
+                  value={
+                    detail?.createdAt
+                      ? formatDateTime(detail.createdAt)
+                      : `${snapshotDate || '-'}（D+1监控）`
+                  }
+                />
+                <KeyValue label="体裁" value={selected.noteType} />
+                <KeyValue label="关联商品" value={selected.productName || '-'} />
+                <KeyValue label="阶段" value={selected.stageLabel || '-'} />
+              </div>
+            </section>
 
-            {!loading && rows.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-zinc-500">
-                {dataPhase === 'EMPTY' ? '暂无数据，请先导入首日表格' : '当前筛选条件下暂无数据'}
+            {detailLoading ? (
+              <div className="rounded border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
+                详情加载中...
               </div>
             ) : null}
 
-            {rows.map((row) => {
-              const rowAction =
-                actionMap.get(row.id) ??
-                (dataPhase === 'DAY2_PLUS' ? buildActionItem(row) : buildActionItemDay1(row))
-              const trendLabel =
-                dataPhase === 'DAY2_PLUS' ? formatTrendDelta(row.trendDelta) : '样本不足'
-              const trendClass =
-                dataPhase === 'DAY2_PLUS' ? trendDeltaClass(row.trendDelta) : 'text-zinc-500'
-              return (
-                <button
-                  key={row.id}
-                  type="button"
-                  onClick={() => setSelectedId(row.id)}
-                  className={cn(
-                    'grid h-[46px] w-full items-center border-b border-zinc-800/80 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
-                    rowAction.priority === 'P0' && 'bg-rose-500/5',
-                    rowAction.priority === 'P1' && 'bg-amber-500/5',
-                    selected?.id === row.id && 'bg-zinc-800/70'
-                  )}
-                  style={{
-                    gridTemplateColumns:
-                      '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px'
-                  }}
-                  title={row.trendHint.join('\n')}
-                >
-                  <span
-                    className={cn(
-                      'text-center text-zinc-400',
-                      row.rank <= 3 && 'font-semibold text-zinc-200'
-                    )}
-                  >
-                    {row.rank}
-                  </span>
-                  <span>
-                    <span
-                      className={cn(
-                        'inline-flex rounded-full px-2 py-0.5 text-[11px] leading-none',
-                        tagClasses(row.tag)
-                      )}
-                    >
-                      {row.tag}
-                    </span>
-                  </span>
-                  <span className="truncate text-zinc-400">{row.account || '-'}</span>
-                  <span className="truncate text-zinc-100">{row.title}</span>
-                  <span className="inline-flex items-center gap-1 text-zinc-300">
-                    <span className={cn('h-1.5 w-1.5 rounded-full', ageDotClass(row.ageDays))} />第
-                    {row.ageDays}天
-                  </span>
-                  <span className="px-2">
-                    <div className="text-center text-zinc-200">{row.score.toFixed(1)}</div>
-                    <div className="mt-0.5 h-1 overflow-hidden rounded bg-zinc-800">
-                      <div
-                        className={cn('h-full rounded', scoreBarClasses(row.score))}
-                        style={{ width: `${Math.min(100, Math.max(0, row.score))}%` }}
-                      />
-                    </div>
-                  </span>
-                  <span className={cn('text-center font-medium', trendClass)}>{trendLabel}</span>
-                  <SignalColumn signals={row.contentSignals} />
-                  <SignalColumn signals={row.commerceSignals} />
-                  <span className="truncate text-zinc-300">{row.stageLabel}</span>
-                </button>
-              )
-            })}
-          </div>
-        </section>
+            <FunnelChart title="内容漏斗" metrics={detail?.contentFunnel ?? []} />
+            <FunnelChart title="商品漏斗" metrics={detail?.commerceFunnel ?? []} />
 
-        <aside className="min-h-0 overflow-auto rounded-xl border border-zinc-800 bg-zinc-900/55 p-3">
-          {selected ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-zinc-100">笔记详情</h3>
-                <span
-                  className={cn(
-                    'inline-flex rounded-full px-2 py-0.5 text-[11px]',
-                    tagClasses(selected.tag)
-                  )}
-                >
-                  {selected.tag}
-                </span>
-              </div>
-
-              <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
-                <h4 className="text-xs font-semibold text-zinc-200">基础信息</h4>
-                <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
-                  <KeyValue
-                    label="笔记ID"
-                    value={detail?.noteId || selected.id}
-                    action={
-                      <button
-                        type="button"
-                        className="inline-flex h-5 w-5 items-center justify-center rounded border border-zinc-700 text-zinc-300 hover:border-cyan-500 hover:text-cyan-200"
-                        onClick={() => void handleCopy(detail?.noteId || selected.id)}
-                        title="复制笔记ID"
-                      >
-                        <Copy className="h-3 w-3" />
-                      </button>
-                    }
-                  />
-                  <KeyValue label="账号" value={selected.account || '-'} />
-                  <KeyValue
-                    label="发布时间"
-                    value={
-                      detail?.createdAt
-                        ? formatDateTime(detail.createdAt)
-                        : `${snapshotDate || '-'}（D+1监控）`
-                    }
-                  />
-                  <KeyValue label="体裁" value={selected.noteType} />
-                  <KeyValue label="关联商品" value={selected.productName || '-'} />
-                  <KeyValue label="阶段" value={selected.stageLabel} />
-                </div>
-              </section>
-
-              {detailLoading ? (
-                <div className="rounded border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
-                  详情加载中...
+            <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
+              <h4 className="text-sm font-semibold text-zinc-100">趋势信号</h4>
+              {dataPhase !== 'DAY2_PLUS' ? (
+                <div className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+                  样本不足：至少需要连续 2 日数据才显示增量趋势
                 </div>
               ) : null}
-
-              <FunnelBlock
-                title="内容漏斗"
-                metrics={detail?.contentFunnel ?? []}
-                fillClassName="bg-cyan-400"
-              />
-              <FunnelBlock
-                title="商品漏斗"
-                metrics={detail?.commerceFunnel ?? []}
-                fillClassName="bg-violet-400"
-              />
-
-              <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
-                <h4 className="text-sm font-semibold text-zinc-100">趋势信号</h4>
-                {dataPhase !== 'DAY2_PLUS' ? (
-                  <div className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
-                    样本不足：至少需要连续 2 日数据才显示增量趋势
-                  </div>
-                ) : null}
-                <div className="mt-2">
-                  <TrendSparkline values={detail?.sparkline ?? []} />
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
-                  <DeltaCard
-                    label="d阅读"
-                    value={dataPhase === 'DAY2_PLUS' ? (detail?.deltas.read ?? 0) : null}
-                  />
-                  <DeltaCard
-                    label="d点击"
-                    value={dataPhase === 'DAY2_PLUS' ? (detail?.deltas.click ?? 0) : null}
-                  />
-                  <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
-                    <div className="text-[10px] text-zinc-400">加速度</div>
-                    <div className="text-zinc-200">
-                      {dataPhase === 'DAY2_PLUS'
-                        ? `${(detail?.deltas.acceleration ?? 1).toFixed(2)}x`
-                        : '--'}
-                    </div>
-                  </div>
-                  <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
-                    <div className="text-[10px] text-zinc-400">7日稳定性</div>
-                    <div className="text-zinc-200">
-                      {dataPhase === 'DAY2_PLUS' ? (detail?.deltas.stability ?? '中') : '--'}
-                    </div>
+              <div className="mt-2">
+                <TrendSparkline values={detail?.sparkline ?? []} />
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
+                <DeltaCard
+                  label="d阅读"
+                  value={dataPhase === 'DAY2_PLUS' ? (detail?.deltas.read ?? 0) : null}
+                />
+                <DeltaCard
+                  label="d点击"
+                  value={dataPhase === 'DAY2_PLUS' ? (detail?.deltas.click ?? 0) : null}
+                />
+                <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
+                  <div className="text-[10px] text-zinc-400">加速度</div>
+                  <div className="text-zinc-200">
+                    {dataPhase === 'DAY2_PLUS'
+                      ? `${(detail?.deltas.acceleration ?? 1).toFixed(2)}x`
+                      : '--'}
                   </div>
                 </div>
-              </section>
-
-              <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
-                <h4 className="text-sm font-semibold text-zinc-100">阶段进度</h4>
-                <div className="mt-2 flex items-center gap-1 text-[11px]">
-                  {[1, 2, 3, 4, 5].map((stage) => {
-                    const active = stage <= selected.stageIndex
-                    const current = stage === selected.stageIndex
-                    return (
-                      <React.Fragment key={stage}>
-                        <span
-                          className={cn(
-                            'inline-flex h-6 min-w-6 items-center justify-center rounded-full border px-1.5',
-                            current
-                              ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
-                              : active
-                                ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300'
-                                : 'border-zinc-700 bg-zinc-900 text-zinc-500'
-                          )}
-                        >
-                          S{stage}
-                        </span>
-                        {stage < 5 ? <span className="text-zinc-600">──</span> : null}
-                      </React.Fragment>
-                    )
-                  })}
+                <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
+                  <div className="text-[10px] text-zinc-400">7日稳定性</div>
+                  <div className="text-zinc-200">
+                    {dataPhase === 'DAY2_PLUS' ? (detail?.deltas.stability ?? '中') : '--'}
+                  </div>
                 </div>
-              </section>
-            </div>
-          ) : (
-            <div className="text-sm text-zinc-400">暂无笔记详情</div>
-          )}
-        </aside>
-      </div>
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
+              <h4 className="text-sm font-semibold text-zinc-100">阶段进度</h4>
+              <div className="mt-2 flex items-center gap-1 text-[11px]">
+                {[1, 2, 3, 4, 5].map((stage) => {
+                  const active = stage <= selectedStageIndex
+                  const current = stage === selectedStageIndex
+                  return (
+                    <React.Fragment key={stage}>
+                      <span
+                        className={cn(
+                          'inline-flex h-6 min-w-6 items-center justify-center rounded-full border px-1.5',
+                          current
+                            ? 'border-cyan-400/70 bg-transparent text-cyan-200'
+                            : active
+                              ? 'border-zinc-500/50 bg-transparent text-zinc-300'
+                              : 'border-zinc-700 bg-transparent text-zinc-500'
+                        )}
+                      >
+                        S{stage}
+                      </span>
+                      {stage < 5 ? <span className="text-zinc-600">──</span> : null}
+                    </React.Fragment>
+                  )
+                })}
+              </div>
+            </section>
+          </div>
+        ) : (
+          <div className="text-sm text-zinc-400">暂无笔记详情</div>
+        )}
+      </Drawer>
     </div>
+  )
+}
+
+function TagStatus({
+  tag,
+  compact = false
+}: {
+  tag: NoteTag
+  compact?: boolean
+}): React.JSX.Element {
+  return (
+    <span
+      className={cn('inline-flex items-center gap-1.5', compact ? 'text-[10px]' : 'text-[11px]')}
+    >
+      <span className={cn('h-1.5 w-1.5 rounded-full', tagDotClasses(tag))} />
+      <span className={tagTextClasses(tag)}>{tag}</span>
+    </span>
   )
 }
 
 function SignalColumn({ signals }: { signals: Signal[] }): React.JSX.Element {
   const display = signals.slice(0, 2)
   return (
-    <span className="flex items-center justify-center gap-1 overflow-hidden">
+    <span className="flex items-center justify-end gap-1 overflow-hidden tabular-nums">
       {display.map((signal) => (
         <span
           key={signal.label}
           className={cn(
-            'inline-flex max-w-[72px] truncate rounded-full border px-1.5 py-0.5 text-[10px]',
+            'inline-flex max-w-[82px] justify-end truncate rounded-[4px] border px-[4px] py-[1px] text-[10px]',
             signalClasses(signal.tone)
           )}
         >
