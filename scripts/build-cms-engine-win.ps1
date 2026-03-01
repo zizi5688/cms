@@ -45,6 +45,14 @@ function Ensure-CmsEnginePythonDeps {
     throw "[build:win:engine] Missing requirements file: $requirementsPath"
   }
 
+  $pythonInfoExit = Invoke-CmsPython -Args @(
+    "-c",
+    "import sys; print('[build:win:engine] Python executable:', sys.executable); print('[build:win:engine] Python version:', sys.version)"
+  )
+  if ($pythonInfoExit -ne 0) {
+    throw "[build:win:engine] Failed to inspect Python runtime."
+  }
+
   $importCheckCode = "import cv2, numpy, iopaint, PyInstaller; print('cms-engine-pydeps-ok')"
   $precheckExit = Invoke-CmsPython -Args @("-c", $importCheckCode)
   if ($precheckExit -eq 0) {
@@ -55,10 +63,14 @@ function Ensure-CmsEnginePythonDeps {
   Write-Host "[build:win:engine] Installing Python deps for cms_engine..."
   $pipUpgradeExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
   if ($pipUpgradeExit -ne 0) {
-    throw "[build:win:engine] Failed to upgrade pip/setuptools/wheel."
+    Write-Warning "[build:win:engine] Failed to upgrade pip/setuptools/wheel, continue with requirement install."
   }
 
-  $installExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--upgrade", "-r", $requirementsPath)
+  $installExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--prefer-binary", "-r", $requirementsPath)
+  if ($installExit -ne 0) {
+    Write-Warning "[build:win:engine] First requirements install failed, retry with --upgrade."
+    $installExit = Invoke-CmsPython -Args @("-m", "pip", "install", "--prefer-binary", "--upgrade", "-r", $requirementsPath)
+  }
   if ($installExit -ne 0) {
     throw "[build:win:engine] Failed to install cms_engine Python dependencies."
   }
