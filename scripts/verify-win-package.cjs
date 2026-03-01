@@ -2,6 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const { spawnSync } = require('child_process')
 
 function fail(message) {
   console.error(`[verify-win-package] FAIL: ${message}`)
@@ -39,6 +40,28 @@ function mustBeWindowsBinary(filePath, label) {
   mustExist(filePath, label)
   if (!isWindowsExecutable(filePath)) {
     fail(`${label} is not a Windows executable (MZ): ${filePath}`)
+  }
+}
+
+function runCmsEngineSmokeTest(enginePath) {
+  if (process.platform !== 'win32') {
+    info(`Skip cms_engine runtime smoke test on non-Windows host: ${process.platform}`)
+    return
+  }
+
+  const result = spawnSync(enginePath, ['--help'], {
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  if (result.status !== 0) {
+    const stderr = (result.stderr || '').trim()
+    const stdout = (result.stdout || '').trim()
+    const output = [stderr, stdout].filter(Boolean).join('\n').slice(0, 1200)
+    fail(
+      `cms_engine runtime smoke test failed (exit=${result.status ?? 'null'} signal=${result.signal ?? 'null'}): ${output}`
+    )
   }
 }
 
@@ -166,6 +189,7 @@ if (!bundledEnginePath) {
 if (!isWindowsExecutable(bundledEnginePath)) {
   fail(`Bundled cms_engine is not a Windows executable (MZ): ${bundledEnginePath}`)
 }
+runCmsEngineSmokeTest(bundledEnginePath)
 
 const realEsrganExe = path.join(resourcesDir, 'realesrgan', 'realesrgan-ncnn-vulkan.exe')
 mustBeWindowsBinary(realEsrganExe, 'Real-ESRGAN executable')

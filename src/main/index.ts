@@ -2804,9 +2804,14 @@ app.whenReady().then(async () => {
           event.sender.send('process-log', { level, message, timestamp: Date.now() })
         }
 
-        const runOne = async (inputPath: string, outputPath: string): Promise<void> => {
+        const runOne = async (inputPath: string, outputPath: string, mode: 'gpu' | 'cpu'): Promise<void> => {
           await new Promise<void>((resolve, reject) => {
-            const child = spawn(resolvedExePath, ['-i', inputPath, '-o', outputPath, '-n', 'realesrgan-x4plus'], {
+            const args = ['-i', inputPath, '-o', outputPath, '-n', 'realesrgan-x4plus']
+            if (mode === 'cpu') {
+              args.push('-g', '-1')
+            }
+
+            const child = spawn(resolvedExePath, args, {
               cwd: exeDir,
               stdio: ['ignore', 'pipe', 'pipe']
             })
@@ -2838,7 +2843,7 @@ app.whenReady().then(async () => {
             })
 
             child.on('error', (error) => {
-              sendLog('error', `[HD Upscale] 进程启动失败：${error.message}`)
+              sendLog('error', `[HD Upscale] ${mode.toUpperCase()} 进程启动失败：${error.message}`)
               reject(error)
             })
 
@@ -2854,12 +2859,14 @@ app.whenReady().then(async () => {
               if (outputExists && outputSize > 0) {
                 sendLog(
                   'error',
-                  `[HD Upscale] 进程非零退出但输出已生成，按成功继续：exit=${code ?? 'null'} signal=${signal ?? 'null'} size=${outputSize}`
+                  `[HD Upscale] ${mode.toUpperCase()} 进程非零退出但输出已生成，按成功继续：exit=${code ?? 'null'} signal=${signal ?? 'null'} size=${outputSize}`
                 )
                 resolve()
                 return
               }
-              reject(new Error(`[HD Upscale] 处理失败：exit=${code ?? 'null'} signal=${signal ?? 'null'}`))
+              reject(
+                new Error(`[HD Upscale] ${mode.toUpperCase()} 处理失败：exit=${code ?? 'null'} signal=${signal ?? 'null'}`)
+              )
             })
           })
         }
@@ -2881,16 +2888,35 @@ app.whenReady().then(async () => {
           const processingPlan = await createLocalProcessingPlan(inputPath, outPath, '画质重生', sendLog)
           try {
             sendLog('info', `[HD Upscale] 处理：${basename(inputPath)} -> ${basename(outPath)}`)
-            await runOne(processingPlan.inputPath, processingPlan.outputPath)
-            if (!existsSync(processingPlan.outputPath)) {
-              await new Promise((r) => setTimeout(r, 500))
+
+            const validateProcessingOutput = async (): Promise<void> => {
               if (!existsSync(processingPlan.outputPath)) {
-                throw new Error(`[ImageLab] HD Upscale output missing: ${outPath}`)
+                await new Promise((r) => setTimeout(r, 500))
+                if (!existsSync(processingPlan.outputPath)) {
+                  throw new Error(`[ImageLab] HD Upscale output missing: ${outPath}`)
+                }
               }
+              await ensureImageReadableWithRetry(processingPlan.outputPath, '画质重生', sendLog)
             }
-            await ensureImageReadableWithRetry(processingPlan.outputPath, '画质重生', sendLog)
+
+            let usedCpuFallback = false
+            try {
+              await runOne(processingPlan.inputPath, processingPlan.outputPath, 'gpu')
+              await validateProcessingOutput()
+            } catch (gpuError) {
+              const message = gpuError instanceof Error ? gpuError.message : String(gpuError)
+              sendLog('error', `[HD Upscale] GPU 处理失败，回退 CPU：${message}`)
+              usedCpuFallback = true
+              await unlink(processingPlan.outputPath).catch(() => void 0)
+              await runOne(processingPlan.inputPath, processingPlan.outputPath, 'cpu')
+              await validateProcessingOutput()
+            }
+
             await processingPlan.commit()
             await ensureImageReadableWithRetry(outPath, '画质重生', sendLog)
+            if (usedCpuFallback) {
+              sendLog('info', `[HD Upscale] CPU 回退成功：${basename(outPath)}`)
+            }
             outputs.push(outPath)
             sendLog('info', `[HD Upscale] 完成：${basename(outPath)}`)
           } finally {

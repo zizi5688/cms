@@ -25,16 +25,35 @@ function Test-NonEmptyFile {
   return $item.Length -gt 0
 }
 
+function Test-CmsEngineRuntime {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$EnginePath
+  )
+
+  if (-not (Test-Path $EnginePath)) { return $false }
+
+  $output = & $EnginePath --help 2>&1
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -eq 0) {
+    return $true
+  }
+
+  $outputText = [string]::Join("`n", ($output | Select-Object -First 20))
+  Write-Warning "[prepare:win:deps] cms_engine runtime check failed (exit=$exitCode): $outputText"
+  return $false
+}
+
 function Ensure-CmsEngine {
   param([string]$RepoRoot)
 
   $engineExe = Join-Path $RepoRoot "dist\cms_engine.exe"
-  if ((Test-Path $engineExe) -and (Test-MzHeader -Path $engineExe)) {
+  if ((Test-Path $engineExe) -and (Test-MzHeader -Path $engineExe) -and (Test-CmsEngineRuntime -EnginePath $engineExe)) {
     Write-Host "[prepare:win:deps] cms_engine.exe ready: $engineExe"
     return
   }
 
-  Write-Host "[prepare:win:deps] cms_engine.exe missing/invalid, building..."
+  Write-Host "[prepare:win:deps] cms_engine.exe missing/invalid/runtime-broken, building..."
   & powershell -ExecutionPolicy Bypass -File (Join-Path $RepoRoot "scripts\build-cms-engine-win.ps1")
 
   if (-not (Test-Path $engineExe)) {
@@ -42,6 +61,9 @@ function Ensure-CmsEngine {
   }
   if (-not (Test-MzHeader -Path $engineExe)) {
     throw "[prepare:win:deps] dist\cms_engine.exe is not a Windows executable (MZ)."
+  }
+  if (-not (Test-CmsEngineRuntime -EnginePath $engineExe)) {
+    throw "[prepare:win:deps] cms_engine.exe runtime check failed. Missing Python runtime deps may still exist."
   }
 }
 
