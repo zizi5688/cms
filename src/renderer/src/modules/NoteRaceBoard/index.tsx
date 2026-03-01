@@ -36,6 +36,20 @@ type RaceImportResult = {
   totalRows?: number
 }
 
+type RaceFolderScanResult = {
+  dirPath: string
+  scannedFiles: number
+  importedFiles: number
+  importedCommerceFiles: number
+  importedContentFiles: number
+  skippedOldFiles: number
+  skippedUnsupportedFiles: number
+  failedFiles: number
+  latestMtimeMs: number
+  importedItems: Array<{ fileName: string; kind: 'commerce' | 'content' }>
+  failures: Array<{ fileName: string; message: string }>
+}
+
 type RaceListRow = {
   id: string
   rank: number
@@ -73,6 +87,9 @@ type RaceDetail = {
 }
 
 const NOTE_TYPES: NoteType[] = ['全部', '图文', '视频']
+const MONITOR_DIR_STORAGE_KEY = 'note-race:monitor-dir:v1'
+const MONITOR_ENABLE_STORAGE_KEY = 'note-race:monitor-enable:v1'
+const MONITOR_CURSOR_STORAGE_KEY = 'note-race:monitor-cursor:v1'
 
 function tagClasses(tag: NoteTag): string {
   if (tag === '起飞') return 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
@@ -115,6 +132,27 @@ function trendDeltaClass(delta: number): string {
 function normalizeError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message
   return String(error ?? '未知错误')
+}
+
+function readStoredString(key: string, fallback = ''): string {
+  try {
+    if (typeof window === 'undefined') return fallback
+    return window.localStorage.getItem(key) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+function readStoredBool(key: string, fallback = false): boolean {
+  const raw = readStoredString(key, fallback ? '1' : '0')
+  return raw === '1'
+}
+
+function readStoredNumber(key: string, fallback = 0): number {
+  const raw = readStoredString(key, String(fallback))
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return fallback
+  return parsed
 }
 
 function formatDateTime(timestamp: number): string {
@@ -197,6 +235,11 @@ function NoteRaceBoard(): React.JSX.Element {
   const [snapshotDate, setSnapshotDate] = React.useState<string>('')
   const [account, setAccount] = React.useState<string>('全部账号')
   const [noteType, setNoteType] = React.useState<NoteType>('全部')
+  const [monitorDir, setMonitorDir] = React.useState<string>(() => readStoredString(MONITOR_DIR_STORAGE_KEY, ''))
+  const [autoMonitorEnabled, setAutoMonitorEnabled] = React.useState<boolean>(() =>
+    readStoredBool(MONITOR_ENABLE_STORAGE_KEY, false)
+  )
+  const [scanCursorMs, setScanCursorMs] = React.useState<number>(() => readStoredNumber(MONITOR_CURSOR_STORAGE_KEY, 0))
   const [allRows, setAllRows] = React.useState<RaceListRow[]>([])
   const [selectedId, setSelectedId] = React.useState<string>('')
   const [selectedDetail, setSelectedDetail] = React.useState<RaceDetail | null>(null)
@@ -210,8 +253,10 @@ function NoteRaceBoard(): React.JSX.Element {
   const [loading, setLoading] = React.useState<boolean>(false)
   const [detailLoading, setDetailLoading] = React.useState<boolean>(false)
   const [importingKind, setImportingKind] = React.useState<'commerce' | 'content' | null>(null)
+  const [scanLoading, setScanLoading] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
+  const scanInFlightRef = React.useRef<boolean>(false)
 
   const loadMeta = React.useCallback(async (): Promise<string> => {
     const next = (await window.api.cms.noteRace.meta()) as RaceMeta
@@ -375,6 +420,92 @@ function NoteRaceBoard(): React.JSX.Element {
     [refresh]
   )
 
+  const handlePickMonitorDir = React.useCallback(async (): Promise<void> => {
+    try {
+      const picked = await window.electronAPI.openDirectory()
+      if (!picked) return
+      setMonitorDir(picked)
+      window.localStorage.setItem(MONITOR_DIR_STORAGE_KEY, picked)
+      setLastImportMessage(`监控目录已设置：${picked}`)
+      setError('')
+    } catch (err) {
+      setError(`选择目录失败：${normalizeError(err)}`)
+    }
+  }, [])
+
+  const runFolderScan = React.useCallback(
+    async (mode: 'manual' | 'auto'): Promise<void> => {
+      if (!monitorDir) {
+        if (mode === 'manual') {
+          setError('请先选择监控目录')
+        }
+        return
+      }
+      if (scanInFlightRef.current) return
+
+      scanInFlightRef.current = true
+      if (mode === 'manual') {
+        setScanLoading(true)
+      }
+      try {
+        const result = (await window.api.cms.noteRace.scanFolderImports({
+          dirPath: monitorDir,
+          sinceMs: scanCursorMs
+        })) as RaceFolderScanResult
+
+        const nextCursor = Math.max(scanCursorMs, Number(result.latestMtimeMs) || 0)
+        setScanCursorMs(nextCursor)
+        window.localStorage.setItem(MONITOR_CURSOR_STORAGE_KEY, String(nextCursor))
+
+        if (result.importedFiles > 0) {
+          setLastImportMessage(
+            `目录新增 ${result.importedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），已自动导入`
+          )
+          await refresh()
+        } else if (mode === 'manual') {
+          setLastImportMessage(
+            `扫描完成：扫描 ${result.scannedFiles}，历史跳过 ${result.skippedOldFiles}，未发现新可导入文件`
+          )
+        }
+
+        if (result.failedFiles > 0) {
+          const first = result.failures[0]
+          setError(`目录导入失败 ${result.failedFiles} 个，首个：${first?.fileName ?? '-'} ${first?.message ?? ''}`.trim())
+          return
+        }
+
+        setError('')
+      } catch (err) {
+        setError(`目录扫描失败：${normalizeError(err)}`)
+      } finally {
+        scanInFlightRef.current = false
+        if (mode === 'manual') {
+          setScanLoading(false)
+        }
+      }
+    },
+    [monitorDir, refresh, scanCursorMs]
+  )
+
+  const handleToggleAutoMonitor = React.useCallback((): void => {
+    setAutoMonitorEnabled((prev) => {
+      const next = !prev
+      window.localStorage.setItem(MONITOR_ENABLE_STORAGE_KEY, next ? '1' : '0')
+      return next
+    })
+  }, [])
+
+  React.useEffect(() => {
+    if (!autoMonitorEnabled || !monitorDir) return
+    void runFolderScan('auto')
+    const timer = window.setInterval(() => {
+      void runFolderScan('auto')
+    }, 15000)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [autoMonitorEnabled, monitorDir, runFolderScan])
+
   const handleSnapshotDateChange = React.useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const nextDate = event.target.value
@@ -428,6 +559,36 @@ function NoteRaceBoard(): React.JSX.Element {
             </select>
             <button
               type="button"
+              onClick={() => void handlePickMonitorDir()}
+              className="inline-flex h-8 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
+              title="选择监控目录"
+            >
+              {monitorDir ? '更换监控目录' : '选择监控目录'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void runFolderScan('manual')}
+              disabled={scanLoading || !monitorDir}
+              className="inline-flex h-8 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+              title="扫描目录并自动导入新文件"
+            >
+              {scanLoading ? '扫描中...' : '扫描目录'}
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleAutoMonitor}
+              className={cn(
+                'inline-flex h-8 items-center rounded border px-2 transition',
+                autoMonitorEnabled
+                  ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                  : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-cyan-500 hover:text-cyan-200'
+              )}
+              title="开启后每 15 秒轮询目录一次"
+            >
+              自动监控：{autoMonitorEnabled ? '开' : '关'}
+            </button>
+            <button
+              type="button"
               onClick={() => void handleImport('commerce')}
               disabled={importingKind != null}
               className="inline-flex h-8 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
@@ -478,10 +639,19 @@ function NoteRaceBoard(): React.JSX.Element {
         {lastImportMessage ? (
           <div className="mb-2 rounded border border-cyan-500/35 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200">{lastImportMessage}</div>
         ) : null}
+        <div className="mb-2 rounded border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-[11px] text-zinc-400">
+          <div className="truncate">
+            监控目录：{monitorDir || '未设置'}
+          </div>
+          <div className="mt-1">
+            自动监控：{autoMonitorEnabled ? '已开启（15秒轮询）' : '未开启'}；游标时间：{scanCursorMs > 0 ? formatDateTime(scanCursorMs) : '-'}
+          </div>
+        </div>
 
         <div className="mb-3 flex flex-wrap gap-2">
           <Chip label={`可评估笔记 ${summary.assessedCount}`} />
           <Chip label={`匹配成功率 ${Math.round(summary.matchRate * 100)}%`} />
+          <Chip label={`监控 ${autoMonitorEnabled ? '开启' : '关闭'}`} />
           <Chip label={`起飞 ${summary.risingCount}`} />
           <Chip label={`长尾复活 ${summary.revivalCount}`} />
           <Chip label={`掉速 ${summary.dropCount}`} />

@@ -180,6 +180,20 @@ declare global {
     totalRows?: number
   }
 
+  type NoteRaceScanFolderResult = {
+    dirPath: string
+    scannedFiles: number
+    importedFiles: number
+    importedCommerceFiles: number
+    importedContentFiles: number
+    skippedOldFiles: number
+    skippedUnsupportedFiles: number
+    failedFiles: number
+    latestMtimeMs: number
+    importedItems: Array<{ fileName: string; kind: 'commerce' | 'content' }>
+    failures: Array<{ fileName: string; message: string }>
+  }
+
   type NoteRaceMeta = {
     latestDate: string | null
     availableDates: string[]
@@ -617,6 +631,10 @@ declare global {
       noteRace: {
         importCommerceFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
         importContentFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
+        scanFolderImports: (payload: {
+          dirPath: string
+          sinceMs?: number
+        }) => Promise<NoteRaceScanFolderResult>
         meta: () => Promise<NoteRaceMeta>
         list: (payload?: {
           snapshotDate?: string

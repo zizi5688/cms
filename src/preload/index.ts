@@ -129,6 +129,20 @@ type NoteRaceImportResult = {
   totalRows?: number
 }
 
+type NoteRaceScanFolderResult = {
+  dirPath: string
+  scannedFiles: number
+  importedFiles: number
+  importedCommerceFiles: number
+  importedContentFiles: number
+  skippedOldFiles: number
+  skippedUnsupportedFiles: number
+  failedFiles: number
+  latestMtimeMs: number
+  importedItems: Array<{ fileName: string; kind: 'commerce' | 'content' }>
+  failures: Array<{ fileName: string; message: string }>
+}
+
 type NoteRaceMeta = {
   latestDate: string | null
   availableDates: string[]
@@ -731,6 +745,8 @@ const api = {
         ipcRenderer.invoke('cms.noteRace.importCommerceFile', payload),
       importContentFile: (payload?: { filePath?: string }): Promise<NoteRaceImportResult | null> =>
         ipcRenderer.invoke('cms.noteRace.importContentFile', payload),
+      scanFolderImports: (payload: { dirPath: string; sinceMs?: number }): Promise<NoteRaceScanFolderResult> =>
+        ipcRenderer.invoke('cms.noteRace.scanFolderImports', payload),
       meta: (): Promise<NoteRaceMeta> => ipcRenderer.invoke('cms.noteRace.meta'),
       list: (payload?: {
         snapshotDate?: string
