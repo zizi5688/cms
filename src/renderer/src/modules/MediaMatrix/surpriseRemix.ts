@@ -33,6 +33,8 @@ export type SurpriseRemixCreatePayload = {
   videoPath?: string
   isRemix?: boolean
   videoClips?: string[]
+  durationReferenceClips?: string[]
+  targetDurationSec?: number
   bgmPath?: string
   title: string
   content: string
@@ -706,6 +708,7 @@ export function buildSurpriseVideoRemix(
       mediaType: 'video',
       isRemix: true,
       videoClips,
+      durationReferenceClips: videoPool,
       bgmPath,
       title,
       content,

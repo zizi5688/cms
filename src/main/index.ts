@@ -1888,6 +1888,21 @@ app.whenReady().then(async () => {
               )
             )
           : undefined
+        const durationReferenceClips = Array.isArray(record.durationReferenceClips)
+          ? Array.from(
+              new Set(
+                record.durationReferenceClips
+                  .filter((value): value is string => typeof value === 'string')
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              )
+            )
+          : undefined
+        const targetDurationSecRaw = Number(record.targetDurationSec)
+        const targetDurationSec =
+          Number.isFinite(targetDurationSecRaw) && targetDurationSecRaw > 0
+            ? targetDurationSecRaw
+            : undefined
         const bgmPath = typeof record.bgmPath === 'string' ? record.bgmPath.trim() : ''
         const mediaType =
           record.mediaType === 'video' || Boolean(videoPath) || Boolean(videoClips && videoClips.length > 0)
@@ -1923,6 +1938,8 @@ app.whenReady().then(async () => {
           videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
           isRemix,
           videoClips,
+          durationReferenceClips,
+          targetDurationSec,
           bgmPath: bgmPath || undefined
         }
       }),

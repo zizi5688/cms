@@ -240,6 +240,8 @@ const api = {
           videoPreviewPath?: string
           isRemix?: boolean
           videoClips?: string[]
+          durationReferenceClips?: string[]
+          targetDurationSec?: number
           bgmPath?: string
           transformPolicy?: 'none' | 'remix_v1'
           remixSessionId?: string

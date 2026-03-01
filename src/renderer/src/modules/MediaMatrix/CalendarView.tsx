@@ -1010,7 +1010,7 @@ function CalendarView({
                             <>
                               <div className="mt-1 text-[11px] text-zinc-400">
                                 将混剪 {payload.videoClips?.length ?? 0} 段视频 · BGM{' '}
-                                {basenameFromPath(payload.bgmPath)}
+                                {basenameFromPath(payload.bgmPath)} · 目标时长=该批最长单视频
                               </div>
                               <div className="mt-1 text-[11px] text-zinc-500">
                                 文案摘要：{shortenMultilineText(payload.content, 44)}
