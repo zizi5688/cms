@@ -558,6 +558,8 @@ export class TaskManager {
       durationReferenceClips?: string[]
       targetDurationSec?: number
       bgmPath?: string
+      remixTitleSourceTaskId?: string
+      remixContentSourceTaskId?: string
       title?: string
       content?: string
       productId?: string
@@ -720,6 +722,7 @@ export class TaskManager {
       const transformPolicy = normalizeTransformPolicy(record.transformPolicy)
       const isImageRemix = transformPolicy === 'remix_v1'
       const isVideoRemix = record.isRemix === true && normalizeMediaType(record.mediaType) === 'video'
+      const isRemixTask = isImageRemix || isVideoRemix || record.isRemix === true
       const videoClips = Array.isArray(record.videoClips)
         ? Array.from(
             new Set(
@@ -744,6 +747,14 @@ export class TaskManager {
           ? targetDurationSecRaw
           : undefined
       const bgmPathInput = typeof record.bgmPath === 'string' ? normalizeText(record.bgmPath) : ''
+      const remixTitleSourceTaskId =
+        typeof record.remixTitleSourceTaskId === 'string'
+          ? normalizeText(record.remixTitleSourceTaskId) || undefined
+          : undefined
+      const remixContentSourceTaskId =
+        typeof record.remixContentSourceTaskId === 'string'
+          ? normalizeText(record.remixContentSourceTaskId) || undefined
+          : undefined
       const remixSessionId =
         typeof record.remixSessionId === 'string' ? normalizeText(record.remixSessionId) || undefined : undefined
       const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
@@ -1051,8 +1062,35 @@ export class TaskManager {
 
       const normalizedTitle = normalizeText(record.title)
       const normalizedContent = normalizeMultilineText(record.content)
-      const title = isImageRemix ? normalizeText(spinText(normalizedTitle)) : normalizedTitle
-      const content = isImageRemix ? normalizeMultilineText(spinText(normalizedContent)) : normalizedContent
+      const title = isRemixTask
+        ? normalizeText(
+            spinText(normalizedTitle, {
+              mode: 'title',
+              forceChange: Boolean(normalizedTitle),
+              maxLength: XHS_TITLE_CHAR_LIMIT
+            })
+          )
+        : normalizedTitle
+      const content = isRemixTask
+        ? normalizeMultilineText(
+            spinText(normalizedContent, {
+              mode: 'content',
+              forceChange: Boolean(normalizedContent)
+            })
+          )
+        : normalizedContent
+      if (isRemixTask) {
+        const titleHit = Boolean(normalizedTitle) && title !== normalizedTitle
+        const contentHit = Boolean(normalizedContent) && content !== normalizedContent
+        emitLog(
+          'info',
+          `[数据工坊] 裂变文案改写（${currentTaskIndex}/${Math.max(total, 1)}）` +
+            `标题=${titleHit ? '命中' : '未命中'} ` +
+            `正文=${contentHit ? '命中' : '未命中'} ` +
+            `sourceTitle=${remixTitleSourceTaskId || '-'} ` +
+            `sourceContent=${remixContentSourceTaskId || '-'}`
+        )
+      }
 
       const next: PublishTask = {
         id: randomUUID(),

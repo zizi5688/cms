@@ -243,6 +243,8 @@ const api = {
           durationReferenceClips?: string[]
           targetDurationSec?: number
           bgmPath?: string
+          remixTitleSourceTaskId?: string
+          remixContentSourceTaskId?: string
           transformPolicy?: 'none' | 'remix_v1'
           remixSessionId?: string
           remixSourceTaskIds?: string[]

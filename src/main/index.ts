@@ -1904,6 +1904,10 @@ app.whenReady().then(async () => {
             ? targetDurationSecRaw
             : undefined
         const bgmPath = typeof record.bgmPath === 'string' ? record.bgmPath.trim() : ''
+        const remixTitleSourceTaskId =
+          typeof record.remixTitleSourceTaskId === 'string' ? record.remixTitleSourceTaskId.trim() : ''
+        const remixContentSourceTaskId =
+          typeof record.remixContentSourceTaskId === 'string' ? record.remixContentSourceTaskId.trim() : ''
         const mediaType =
           record.mediaType === 'video' || Boolean(videoPath) || Boolean(videoClips && videoClips.length > 0)
             ? 'video'
@@ -1940,7 +1944,9 @@ app.whenReady().then(async () => {
           videoClips,
           durationReferenceClips,
           targetDurationSec,
-          bgmPath: bgmPath || undefined
+          bgmPath: bgmPath || undefined,
+          remixTitleSourceTaskId: remixTitleSourceTaskId || undefined,
+          remixContentSourceTaskId: remixContentSourceTaskId || undefined
         }
       }),
       {

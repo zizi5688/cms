@@ -38,6 +38,8 @@ export type SurpriseRemixCreatePayload = {
   bgmPath?: string
   title: string
   content: string
+  remixTitleSourceTaskId?: string
+  remixContentSourceTaskId?: string
   tags?: string[]
   productId?: string
   productName?: string
@@ -589,6 +591,8 @@ export function buildSurpriseRemix(
         images: selectedImages,
         title: rawTitle,
         content,
+        remixTitleSourceTaskId: titleTask.id,
+        remixContentSourceTaskId: contentTask.id,
         tags: [remixTag],
         productId: baseTask.productId,
         productName: baseTask.productName,
@@ -712,6 +716,8 @@ export function buildSurpriseVideoRemix(
       bgmPath,
       title,
       content,
+      remixTitleSourceTaskId: source?.id,
+      remixContentSourceTaskId: source?.id,
       tags: [remixTag],
       productId: source?.productId,
       productName: source?.productName,
