@@ -41,16 +41,20 @@ function Invoke-CmsPython {
   foreach ($attempt in $attempts) {
     try {
       Write-Host "[build:win:engine] Try Python via $($attempt.Name): $($attempt.Value)"
+      $commandOutput = @()
       if ($attempt.Kind -eq "py310") {
-        & py -3.10 @Args
+        $commandOutput = @( & py -3.10 @Args 2>&1 )
       } elseif ($attempt.Kind -eq "py3") {
-        & py -3 @Args
+        $commandOutput = @( & py -3 @Args 2>&1 )
       } else {
-        & $attempt.Value @Args
+        $commandOutput = @( & $attempt.Value @Args 2>&1 )
       }
       $exitCode = $LASTEXITCODE
+      foreach ($line in $commandOutput) {
+        Write-Host $line
+      }
       if ($exitCode -eq 0) {
-        return 0
+        return [int]0
       }
       $lastExit = $exitCode
       Write-Warning "[build:win:engine] Python attempt $($attempt.Name) exit=$exitCode"
@@ -60,7 +64,7 @@ function Invoke-CmsPython {
     }
   }
 
-  return $lastExit
+  return [int]$lastExit
 }
 
 function Ensure-CmsEnginePythonDeps {
@@ -74,13 +78,13 @@ function Ensure-CmsEnginePythonDeps {
     throw "[build:win:engine] Missing requirements file: $requirementsPath"
   }
 
-  $pythonInfoExit = Invoke-CmsPython -Args @("-c", "import sys; print(sys.executable); print(sys.version)")
+  [int]$pythonInfoExit = Invoke-CmsPython -Args @("-c", "import sys; print(sys.executable); print(sys.version)")
   if ($pythonInfoExit -ne 0) {
     Write-Warning "[build:win:engine] Failed to inspect Python runtime; continue with dependency install."
   }
 
   $importCheckCode = "import cv2, numpy, iopaint, PyInstaller; print('cms-engine-pydeps-ok')"
-  $precheckExit = Invoke-CmsPython -Args @("-c", $importCheckCode)
+  [int]$precheckExit = Invoke-CmsPython -Args @("-c", $importCheckCode)
   if ($precheckExit -eq 0) {
     Write-Host "[build:win:engine] Python deps already ready (cv2/numpy/iopaint/pyinstaller)."
     return
@@ -96,7 +100,7 @@ function Ensure-CmsEnginePythonDeps {
     Remove-Item $pipLogPath -Force -ErrorAction SilentlyContinue
   }
 
-  $installExit = Invoke-CmsPython -Args @(
+  [int]$installExit = Invoke-CmsPython -Args @(
     "-m",
     "pip",
     "install",
@@ -111,7 +115,7 @@ function Ensure-CmsEnginePythonDeps {
   )
   if ($installExit -ne 0) {
     Write-Warning "[build:win:engine] First requirements install failed, retry with --upgrade."
-    $installExit = Invoke-CmsPython -Args @(
+    $installExit = [int](Invoke-CmsPython -Args @(
       "-m",
       "pip",
       "install",
@@ -124,7 +128,7 @@ function Ensure-CmsEnginePythonDeps {
       $pipLogPath,
       "-r",
       $requirementsPath
-    )
+    ))
   }
   if ($installExit -ne 0) {
     if (Test-Path $pipLogPath) {
@@ -134,7 +138,7 @@ function Ensure-CmsEnginePythonDeps {
     throw "[build:win:engine] Failed to install cms_engine Python dependencies."
   }
 
-  $postcheckExit = Invoke-CmsPython -Args @("-c", $importCheckCode)
+  [int]$postcheckExit = Invoke-CmsPython -Args @("-c", $importCheckCode)
   if ($postcheckExit -ne 0) {
     throw "[build:win:engine] Python dependency check failed after install (cv2/numpy/iopaint/pyinstaller)."
   }
@@ -155,7 +159,7 @@ try {
     Remove-Item "dist\cms_engine" -Force -ErrorAction SilentlyContinue
   }
 
-  $pyInstallerExit = Invoke-CmsPython -Args @(
+  [int]$pyInstallerExit = Invoke-CmsPython -Args @(
     "-m",
     "PyInstaller",
     "--noconfirm",
