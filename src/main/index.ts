@@ -33,6 +33,7 @@ import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinH
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService } from './services/scoutService'
+import { NoteRaceService } from './services/noteRaceService'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
 
@@ -1042,8 +1043,10 @@ app.whenReady().then(async () => {
   }
 
   const scoutService = new ScoutService()
+  const noteRaceService = new NoteRaceService()
   if (sqliteReady) {
     try { scoutService.ensureSchema() } catch (e) { console.error('[Scout] ensureSchema failed:', e) }
+    try { noteRaceService.ensureSchema() } catch (e) { console.error('[NoteRace] ensureSchema failed:', e) }
   }
 
   const autoImportProcessedSignatures = new Set<string>()
@@ -3920,6 +3923,170 @@ app.whenReady().then(async () => {
       onlyAlerts,
       onlyNew
     })
+  })
+
+  // ============================================================
+  // NoteRace: 数据赛马场模块 IPC
+  // ============================================================
+
+  ipcMain.handle('cms.noteRace.importCommerceFile', async (event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
+    if (directPath) {
+      return noteRaceService.importCommerceExcel(directPath)
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+      : await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return noteRaceService.importCommerceExcel(result.filePaths[0]!)
+  })
+
+  ipcMain.handle('cms.noteRace.importContentFile', async (event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
+    if (directPath) {
+      return noteRaceService.importContentExcel(directPath)
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+      : await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return noteRaceService.importContentExcel(result.filePaths[0]!)
+  })
+
+  ipcMain.handle('cms.noteRace.meta', async () => noteRaceService.getMeta())
+
+  ipcMain.handle('cms.noteRace.list', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const noteType = query.noteType === '图文' || query.noteType === '视频' || query.noteType === '全部'
+      ? query.noteType
+      : undefined
+    const rawLimit = typeof query.limit === 'number' ? query.limit : Number(query.limit)
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.floor(rawLimit))) : undefined
+    return noteRaceService.listRaceRows({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      account: typeof query.account === 'string' ? query.account : undefined,
+      noteType,
+      limit
+    })
+  })
+
+  ipcMain.handle('cms.noteRace.detail', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    return noteRaceService.getRaceDetail({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      noteKey: typeof query.noteKey === 'string' ? query.noteKey : undefined
+    })
+  })
+
+  ipcMain.handle('cms.noteRace.scanFolderImports', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const dirPath = typeof query.dirPath === 'string' ? query.dirPath.trim() : ''
+    if (!dirPath) {
+      throw new Error('监控目录不能为空')
+    }
+
+    const sinceMsRaw = typeof query.sinceMs === 'number' ? query.sinceMs : Number(query.sinceMs)
+    const sinceMs = Number.isFinite(sinceMsRaw) ? Math.max(0, sinceMsRaw) : 0
+
+    const entries = await readdir(dirPath, { withFileTypes: true })
+    const excelEntries = entries.filter((entry) => {
+      if (!entry.isFile()) return false
+      const ext = extname(entry.name).toLowerCase()
+      return ext === '.xlsx' || ext === '.xlsm' || ext === '.xls'
+    })
+
+    type Candidate = {
+      fileName: string
+      filePath: string
+      mtimeMs: number
+    }
+
+    const candidates: Candidate[] = []
+    for (const entry of excelEntries) {
+      const filePath = resolve(dirPath, entry.name)
+      try {
+        const info = await stat(filePath)
+        if (!info.isFile()) continue
+        candidates.push({
+          fileName: entry.name,
+          filePath,
+          mtimeMs: Number(info.mtimeMs) || 0
+        })
+      } catch {
+        // ignore unreadable files
+      }
+    }
+
+    candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
+
+    const importedFiles: Array<{ fileName: string; kind: 'commerce' | 'content' }> = []
+    const failures: Array<{ fileName: string; message: string }> = []
+    let importedCommerceFiles = 0
+    let importedContentFiles = 0
+    let skippedOldFiles = 0
+    let skippedUnsupportedFiles = 0
+    let latestMtimeMs = sinceMs
+
+    for (const file of candidates) {
+      latestMtimeMs = Math.max(latestMtimeMs, file.mtimeMs)
+      if (file.mtimeMs <= sinceMs) {
+        skippedOldFiles += 1
+        continue
+      }
+      const name = file.fileName
+      const isCommerce = name.includes('商品笔记数据')
+      const isContent = name.includes('笔记列表明细') || name.includes('笔记列表')
+      if (!isCommerce && !isContent) {
+        skippedUnsupportedFiles += 1
+        continue
+      }
+      try {
+        if (isCommerce) {
+          await noteRaceService.importCommerceExcel(file.filePath)
+          importedCommerceFiles += 1
+          importedFiles.push({ fileName: file.fileName, kind: 'commerce' })
+          continue
+        }
+        await noteRaceService.importContentExcel(file.filePath)
+        importedContentFiles += 1
+        importedFiles.push({ fileName: file.fileName, kind: 'content' })
+      } catch (error) {
+        failures.push({
+          fileName: file.fileName,
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+
+    return {
+      dirPath,
+      scannedFiles: candidates.length,
+      importedFiles: importedFiles.length,
+      importedCommerceFiles,
+      importedContentFiles,
+      skippedOldFiles,
+      skippedUnsupportedFiles,
+      failedFiles: failures.length,
+      latestMtimeMs,
+      importedItems: importedFiles,
+      failures
+    }
   })
 
   // 开发环境默认用 F12 打开 DevTools；生产环境屏蔽 Cmd/Ctrl + R 刷新

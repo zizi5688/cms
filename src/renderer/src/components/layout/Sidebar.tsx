@@ -4,7 +4,7 @@ import { ChartColumnBig, Database, Image, Rocket, Search, Settings, UploadCloud 
 
 import { cn } from '@renderer/lib/utils'
 
-export type SidebarItemKey = 'workshop' | 'upload' | 'material' | 'autopublish' | 'scout' | 'heatboard' | 'settings'
+export type SidebarItemKey = 'workshop' | 'upload' | 'material' | 'autopublish' | 'raceboard' | 'heatboard' | 'settings'
 
 export interface SidebarProps {
   active: SidebarItemKey
@@ -34,7 +34,7 @@ const menuItems: MenuItem[] = [
   { id: 'workshop', icon: 'Database', label: '数据工坊' },
   // { id: 'upload', icon: 'UploadCloud', label: '上传管理' },
   { id: 'autopublish', icon: 'Rocket', label: '媒体矩阵' },
-  { id: 'scout', icon: 'Search', label: '选品数据' },
+  { id: 'raceboard', icon: 'Search', label: '数据赛马场' },
   { id: 'heatboard', icon: 'ChartColumnBig', label: '热度看板' }
 ]
 

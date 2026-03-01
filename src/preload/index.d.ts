@@ -164,6 +164,90 @@ declare global {
     message?: string
   }
 
+  type NoteRaceSignalTone = 'positive' | 'negative' | 'neutral'
+  type NoteRaceTag = '起飞' | '维稳' | '掉速' | '长尾复活' | '风险'
+
+  type NoteRaceSignal = {
+    label: string
+    tone: NoteRaceSignalTone
+  }
+
+  type NoteRaceImportResult = {
+    snapshotDate: string
+    sourceFile: string
+    importedRows: number
+    matchedRows?: number
+    totalRows?: number
+  }
+
+  type NoteRaceScanFolderResult = {
+    dirPath: string
+    scannedFiles: number
+    importedFiles: number
+    importedCommerceFiles: number
+    importedContentFiles: number
+    skippedOldFiles: number
+    skippedUnsupportedFiles: number
+    failedFiles: number
+    latestMtimeMs: number
+    importedItems: Array<{ fileName: string; kind: 'commerce' | 'content' }>
+    failures: Array<{ fileName: string; message: string }>
+  }
+
+  type NoteRaceMeta = {
+    latestDate: string | null
+    availableDates: string[]
+    totalNotes: number
+    matchedNotes: number
+    matchRate: number
+  }
+
+  type NoteRaceListRow = {
+    id: string
+    rank: number
+    tag: NoteRaceTag
+    account: string
+    title: string
+    ageDays: number
+    score: number
+    trendDelta: number
+    trendHint: string[]
+    contentSignals: NoteRaceSignal[]
+    commerceSignals: NoteRaceSignal[]
+    stageLabel: string
+    stageIndex: 1 | 2 | 3 | 4 | 5
+    noteType: '图文' | '视频'
+    productName: string
+  }
+
+  type NoteRaceDetail = {
+    row: NoteRaceListRow
+    noteId: string | null
+    productId: string | null
+    createdAt: number | null
+    matchConfidence: number
+    matchRule: string
+    contentFunnel: Array<{
+      label: string
+      value: number
+      conversionLabel?: string
+      conversionValue?: number
+    }>
+    commerceFunnel: Array<{
+      label: string
+      value: number
+      conversionLabel?: string
+      conversionValue?: number
+    }>
+    sparkline: number[]
+    deltas: {
+      read: number
+      click: number
+      acceleration: number
+      stability: '高' | '中' | '低'
+    }
+  }
+
   type MediaSelectionItem = {
     originalPath: string
     previewPath: string | null
@@ -543,6 +627,25 @@ declare global {
             onlyNew?: boolean
           }) => Promise<string | null>
         }
+      }
+      noteRace: {
+        importCommerceFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
+        importContentFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
+        scanFolderImports: (payload: {
+          dirPath: string
+          sinceMs?: number
+        }) => Promise<NoteRaceScanFolderResult>
+        meta: () => Promise<NoteRaceMeta>
+        list: (payload?: {
+          snapshotDate?: string
+          account?: string
+          noteType?: '全部' | '图文' | '视频'
+          limit?: number
+        }) => Promise<NoteRaceListRow[]>
+        detail: (payload: {
+          snapshotDate?: string
+          noteKey?: string
+        }) => Promise<NoteRaceDetail | null>
       }
       task: {
         createBatch: (
