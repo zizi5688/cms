@@ -24,7 +24,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-      CMS_ENGINE_PYTHON: python
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,4 +48,12 @@ jobs:
         run: npm ci
 
       - name: Publish Windows release
-        run: npm run publish:win:x64:ci
+        shell: pwsh
+        run: |
+          if ($env:pythonLocation) {
+            $env:CMS_ENGINE_PYTHON = Join-Path $env:pythonLocation "python.exe"
+            Write-Host "Using CMS_ENGINE_PYTHON=$env:CMS_ENGINE_PYTHON"
+          } else {
+            Write-Host "pythonLocation env is empty, fallback to script auto-detection."
+          }
+          npm run publish:win:x64:ci

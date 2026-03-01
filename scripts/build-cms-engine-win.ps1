@@ -10,28 +10,57 @@ function Invoke-CmsPython {
     [string[]]$Args
   )
 
+  $attempts = @()
   if ($env:CMS_ENGINE_PYTHON -and $env:CMS_ENGINE_PYTHON.Trim()) {
-    & $env:CMS_ENGINE_PYTHON @Args
-    return $LASTEXITCODE
+    $attempts += @{ Name = "CMS_ENGINE_PYTHON"; Kind = "exe"; Value = $env:CMS_ENGINE_PYTHON.Trim() }
+  }
+  if ($env:pythonLocation -and $env:pythonLocation.Trim()) {
+    $attempts += @{
+      Name = "pythonLocation";
+      Kind = "exe";
+      Value = (Join-Path $env:pythonLocation.Trim() "python.exe")
+    }
   }
 
   $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
   if ($pythonCmd) {
-    & python @Args
-    return $LASTEXITCODE
+    $attempts += @{ Name = "python"; Kind = "exe"; Value = $pythonCmd.Source }
   }
 
   $pyCmd = Get-Command py -ErrorAction SilentlyContinue
   if ($pyCmd) {
-    & py -3.10 @Args
-    if ($LASTEXITCODE -eq 0) {
-      return 0
-    }
-    & py -3 @Args
-    return $LASTEXITCODE
+    $attempts += @{ Name = "py-3.10"; Kind = "py310"; Value = "py" }
+    $attempts += @{ Name = "py-3"; Kind = "py3"; Value = "py" }
   }
 
-  throw "[build:win:engine] Python runtime not found. Install Python 3 first."
+  if ($attempts.Count -eq 0) {
+    throw "[build:win:engine] Python runtime not found. Install Python 3 first."
+  }
+
+  $lastExit = 1
+  foreach ($attempt in $attempts) {
+    try {
+      Write-Host "[build:win:engine] Try Python via $($attempt.Name): $($attempt.Value)"
+      if ($attempt.Kind -eq "py310") {
+        & py -3.10 @Args
+      } elseif ($attempt.Kind -eq "py3") {
+        & py -3 @Args
+      } else {
+        & $attempt.Value @Args
+      }
+      $exitCode = $LASTEXITCODE
+      if ($exitCode -eq 0) {
+        return 0
+      }
+      $lastExit = $exitCode
+      Write-Warning "[build:win:engine] Python attempt $($attempt.Name) exit=$exitCode"
+    } catch {
+      Write-Warning "[build:win:engine] Python attempt $($attempt.Name) failed: $($_.Exception.Message)"
+      $lastExit = 1
+    }
+  }
+
+  return $lastExit
 }
 
 function Ensure-CmsEnginePythonDeps {
