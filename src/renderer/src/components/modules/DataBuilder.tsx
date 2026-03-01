@@ -131,6 +131,8 @@ function DataBuilder(): React.JSX.Element {
   const setDataWorkshopFolderPath = useCmsStore((s) => s.setDataWorkshopFolderPath)
   const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
   const workspacePath = useCmsStore((s) => s.workspacePath)
+  const activeModule = useCmsStore((s) => s.activeModule)
+  const isWorkshopActive = activeModule === 'workshop'
 
   const importedVideoPaths = useMemo(() => {
     if (workshopImport?.type !== 'video') return []
@@ -566,14 +568,20 @@ function DataBuilder(): React.JSX.Element {
   }, [dataWorkshopFolderPath, handleScan, isScanning, isVideoMode])
 
   useEffect(() => {
+    if (!isWorkshopActive) return
     let canceled = false
     const loadAccounts = async (): Promise<void> => {
       try {
         const list = await window.api.cms.account.list()
         if (canceled) return
         setAccounts(list)
-        setSelectedAccountId((prev) => prev || list[0]?.id || '')
+        setSelectedAccountId((prev) => {
+          const normalizedPrev = String(prev ?? '').trim()
+          if (normalizedPrev && list.some((item) => item.id === normalizedPrev)) return normalizedPrev
+          return list[0]?.id || ''
+        })
       } catch (error) {
+        if (canceled) return
         addLog(`[Super CMS] 拉取账号列表失败：${String(error)}`)
       }
     }
@@ -581,16 +589,20 @@ function DataBuilder(): React.JSX.Element {
     return () => {
       canceled = true
     }
-  }, [addLog])
+  }, [addLog, isWorkshopActive, workspacePath])
 
   useEffect(() => {
+    if (!isWorkshopActive) return
     let canceled = false
     const loadProducts = async (): Promise<void> => {
+      const accountId = selectedAccountId.trim()
       try {
-        const list = await window.api.cms.product.list()
+        const list = await window.api.cms.product.list(accountId ? { accountId } : undefined)
         if (canceled) return
         setAllProducts(list)
       } catch (error) {
+        if (canceled) return
+        setAllProducts([])
         addLog(`[Super CMS] 拉取商品列表失败：${String(error)}`)
       }
     }
@@ -598,7 +610,7 @@ function DataBuilder(): React.JSX.Element {
     return () => {
       canceled = true
     }
-  }, [addLog])
+  }, [addLog, isWorkshopActive, selectedAccountId, workspacePath])
 
   useEffect(() => {
     setSelectedProductId('')
