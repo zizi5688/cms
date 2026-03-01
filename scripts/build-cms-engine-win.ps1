@@ -45,12 +45,9 @@ function Ensure-CmsEnginePythonDeps {
     throw "[build:win:engine] Missing requirements file: $requirementsPath"
   }
 
-  $pythonInfoExit = Invoke-CmsPython -Args @(
-    "-c",
-    "import sys; print('[build:win:engine] Python executable:', sys.executable); print('[build:win:engine] Python version:', sys.version)"
-  )
+  $pythonInfoExit = Invoke-CmsPython -Args @("-c", "import sys; print(sys.executable); print(sys.version)")
   if ($pythonInfoExit -ne 0) {
-    throw "[build:win:engine] Failed to inspect Python runtime."
+    Write-Warning "[build:win:engine] Failed to inspect Python runtime; continue with dependency install."
   }
 
   $importCheckCode = "import cv2, numpy, iopaint, PyInstaller; print('cms-engine-pydeps-ok')"
