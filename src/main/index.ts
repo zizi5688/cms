@@ -2826,6 +2826,16 @@ app.whenReady().then(async () => {
                 resolve()
                 return
               }
+              const outputExists = existsSync(outputPath)
+              const outputSize = outputExists ? Number(statSync(outputPath).size || 0) : 0
+              if (outputExists && outputSize > 0) {
+                sendLog(
+                  'error',
+                  `[HD Upscale] 进程非零退出但输出已生成，按成功继续：exit=${code ?? 'null'} signal=${signal ?? 'null'} size=${outputSize}`
+                )
+                resolve()
+                return
+              }
               reject(new Error(`[HD Upscale] 处理失败：exit=${code ?? 'null'} signal=${signal ?? 'null'}`))
             })
           })
