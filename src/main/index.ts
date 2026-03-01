@@ -1898,7 +1898,26 @@ app.whenReady().then(async () => {
               )
             )
           : undefined
+        const durationReferenceClips = Array.isArray(record.durationReferenceClips)
+          ? Array.from(
+              new Set(
+                record.durationReferenceClips
+                  .filter((value): value is string => typeof value === 'string')
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              )
+            )
+          : undefined
+        const targetDurationSecRaw = Number(record.targetDurationSec)
+        const targetDurationSec =
+          Number.isFinite(targetDurationSecRaw) && targetDurationSecRaw > 0
+            ? targetDurationSecRaw
+            : undefined
         const bgmPath = typeof record.bgmPath === 'string' ? record.bgmPath.trim() : ''
+        const remixTitleSourceTaskId =
+          typeof record.remixTitleSourceTaskId === 'string' ? record.remixTitleSourceTaskId.trim() : ''
+        const remixContentSourceTaskId =
+          typeof record.remixContentSourceTaskId === 'string' ? record.remixContentSourceTaskId.trim() : ''
         const mediaType =
           record.mediaType === 'video' || Boolean(videoPath) || Boolean(videoClips && videoClips.length > 0)
             ? 'video'
@@ -1933,7 +1952,11 @@ app.whenReady().then(async () => {
           videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
           isRemix,
           videoClips,
-          bgmPath: bgmPath || undefined
+          durationReferenceClips,
+          targetDurationSec,
+          bgmPath: bgmPath || undefined,
+          remixTitleSourceTaskId: remixTitleSourceTaskId || undefined,
+          remixContentSourceTaskId: remixContentSourceTaskId || undefined
         }
       }),
       {

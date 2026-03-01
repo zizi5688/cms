@@ -394,6 +394,40 @@ function parseFfmpegTimemarkToSeconds(value: unknown): number {
   return hours * 3600 + minutes * 60 + seconds
 }
 
+function toFfmpegSeconds(value: number): string {
+  const numeric = Number.isFinite(value) ? value : 0
+  return Math.max(0.001, numeric).toFixed(3)
+}
+
+async function probeVideoDurationSeconds(filePath: string): Promise<number | null> {
+  const normalizedPath = String(filePath ?? '').trim()
+  if (!normalizedPath || !existsSync(normalizedPath)) return null
+  ensureFfmpegConfigured()
+  return await new Promise((resolvePromise) => {
+    ffmpeg.ffprobe(normalizedPath, (error, metadata) => {
+      if (error || !metadata) {
+        resolvePromise(null)
+        return
+      }
+      const formatDuration = Number((metadata.format as { duration?: unknown } | undefined)?.duration ?? 0)
+      if (Number.isFinite(formatDuration) && formatDuration > 0.1) {
+        resolvePromise(formatDuration)
+        return
+      }
+      const streams = Array.isArray(metadata.streams)
+        ? (metadata.streams as Array<{ codec_type?: unknown; duration?: unknown }>)
+        : []
+      const videoStream = streams.find((stream) => stream.codec_type === 'video')
+      const streamDuration = Number(videoStream?.duration ?? 0)
+      if (Number.isFinite(streamDuration) && streamDuration > 0.1) {
+        resolvePromise(streamDuration)
+        return
+      }
+      resolvePromise(null)
+    })
+  })
+}
+
 export class TaskManager {
   private sqlite: SqliteService
   private workspacePath: string | null
@@ -521,7 +555,11 @@ export class TaskManager {
       videoPath?: string
       isRemix?: boolean
       videoClips?: string[]
+      durationReferenceClips?: string[]
+      targetDurationSec?: number
       bgmPath?: string
+      remixTitleSourceTaskId?: string
+      remixContentSourceTaskId?: string
       title?: string
       content?: string
       productId?: string
@@ -684,6 +722,7 @@ export class TaskManager {
       const transformPolicy = normalizeTransformPolicy(record.transformPolicy)
       const isImageRemix = transformPolicy === 'remix_v1'
       const isVideoRemix = record.isRemix === true && normalizeMediaType(record.mediaType) === 'video'
+      const isRemixTask = isImageRemix || isVideoRemix || record.isRemix === true
       const videoClips = Array.isArray(record.videoClips)
         ? Array.from(
             new Set(
@@ -693,7 +732,29 @@ export class TaskManager {
             )
           )
         : []
+      const durationReferenceClips = Array.isArray(record.durationReferenceClips)
+        ? Array.from(
+            new Set(
+              (record.durationReferenceClips as unknown[])
+                .map((value) => normalizeText(value))
+                .filter(Boolean)
+            )
+          )
+        : []
+      const targetDurationSecRaw = Number(record.targetDurationSec)
+      const targetDurationSec =
+        Number.isFinite(targetDurationSecRaw) && targetDurationSecRaw > 0
+          ? targetDurationSecRaw
+          : undefined
       const bgmPathInput = typeof record.bgmPath === 'string' ? normalizeText(record.bgmPath) : ''
+      const remixTitleSourceTaskId =
+        typeof record.remixTitleSourceTaskId === 'string'
+          ? normalizeText(record.remixTitleSourceTaskId) || undefined
+          : undefined
+      const remixContentSourceTaskId =
+        typeof record.remixContentSourceTaskId === 'string'
+          ? normalizeText(record.remixContentSourceTaskId) || undefined
+          : undefined
       const remixSessionId =
         typeof record.remixSessionId === 'string' ? normalizeText(record.remixSessionId) || undefined : undefined
       const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
@@ -906,6 +967,8 @@ export class TaskManager {
                 assetsVideosDir,
                 assetsImagesDir,
                 videoClips,
+                durationReferenceClips,
+                targetDurationSec,
                 bgmPath: bgmPathInput,
                 currentTaskIndex,
                 total,
@@ -999,8 +1062,35 @@ export class TaskManager {
 
       const normalizedTitle = normalizeText(record.title)
       const normalizedContent = normalizeMultilineText(record.content)
-      const title = isImageRemix ? normalizeText(spinText(normalizedTitle)) : normalizedTitle
-      const content = isImageRemix ? normalizeMultilineText(spinText(normalizedContent)) : normalizedContent
+      const title = isRemixTask
+        ? normalizeText(
+            spinText(normalizedTitle, {
+              mode: 'title',
+              forceChange: Boolean(normalizedTitle),
+              maxLength: XHS_TITLE_CHAR_LIMIT
+            })
+          )
+        : normalizedTitle
+      const content = isRemixTask
+        ? normalizeMultilineText(
+            spinText(normalizedContent, {
+              mode: 'content',
+              forceChange: Boolean(normalizedContent)
+            })
+          )
+        : normalizedContent
+      if (isRemixTask) {
+        const titleHit = Boolean(normalizedTitle) && title !== normalizedTitle
+        const contentHit = Boolean(normalizedContent) && content !== normalizedContent
+        emitLog(
+          'info',
+          `[数据工坊] 裂变文案改写（${currentTaskIndex}/${Math.max(total, 1)}）` +
+            `标题=${titleHit ? '命中' : '未命中'} ` +
+            `正文=${contentHit ? '命中' : '未命中'} ` +
+            `sourceTitle=${remixTitleSourceTaskId || '-'} ` +
+            `sourceContent=${remixContentSourceTaskId || '-'}`
+        )
+      }
 
       const next: PublishTask = {
         id: randomUUID(),
@@ -1096,6 +1186,8 @@ export class TaskManager {
     assetsVideosDir: string
     assetsImagesDir: string
     videoClips: string[]
+    durationReferenceClips?: string[]
+    targetDurationSec?: number
     bgmPath: string
     currentTaskIndex: number
     total: number
@@ -1106,6 +1198,8 @@ export class TaskManager {
       assetsVideosDir,
       assetsImagesDir,
       videoClips,
+      durationReferenceClips,
+      targetDurationSec,
       bgmPath,
       currentTaskIndex,
       total,
@@ -1118,7 +1212,7 @@ export class TaskManager {
     await mkdir(assetsVideosDir, { recursive: true })
     await mkdir(assetsImagesDir, { recursive: true })
 
-    const resolvedVideoClips = (videoClips ?? [])
+    let resolvedVideoClips = (videoClips ?? [])
       .map((clipPath) => this.resolveWorkspaceMediaPath(clipPath, normalizedWorkspacePath))
       .filter((clipPath) => Boolean(clipPath) && existsSync(clipPath))
     if (resolvedVideoClips.length === 0) {
@@ -1128,6 +1222,58 @@ export class TaskManager {
     const resolvedBgmPath = this.resolveWorkspaceMediaPath(bgmPath, normalizedWorkspacePath)
     if (!resolvedBgmPath || !existsSync(resolvedBgmPath)) {
       throw new Error('视频混剪缺少可读 BGM。')
+    }
+
+    const resolvedDurationReferenceClips = Array.from(
+      new Set(
+        (durationReferenceClips ?? [])
+          .map((clipPath) => this.resolveWorkspaceMediaPath(clipPath, normalizedWorkspacePath))
+          .filter((clipPath) => Boolean(clipPath) && existsSync(clipPath))
+      )
+    )
+    const durationProbePaths =
+      resolvedDurationReferenceClips.length > 0 ? resolvedDurationReferenceClips : resolvedVideoClips
+
+    const durationByPath = new Map<string, number>()
+    for (const clipPath of durationProbePaths) {
+      const durationSec = await probeVideoDurationSeconds(clipPath)
+      if (typeof durationSec === 'number' && Number.isFinite(durationSec) && durationSec > 0.1) {
+        durationByPath.set(clipPath, durationSec)
+      }
+    }
+
+    let referenceLongestDurationSec = 0
+    for (const clipPath of durationProbePaths) {
+      const durationSec = durationByPath.get(clipPath) ?? 0
+      if (durationSec > referenceLongestDurationSec) referenceLongestDurationSec = durationSec
+    }
+
+    const explicitTargetDuration =
+      typeof targetDurationSec === 'number' && Number.isFinite(targetDurationSec) && targetDurationSec > 0
+        ? targetDurationSec
+        : 0
+    const effectiveTargetDurationSec = explicitTargetDuration > 0 ? explicitTargetDuration : referenceLongestDurationSec
+
+    if (effectiveTargetDurationSec > 0) {
+      let currentConcatDurationSec = 0
+      for (const clipPath of resolvedVideoClips) {
+        const durationSec = durationByPath.get(clipPath) ?? (await probeVideoDurationSeconds(clipPath)) ?? 0
+        if (durationSec > 0.1) durationByPath.set(clipPath, durationSec)
+        currentConcatDurationSec += Math.max(0, durationSec)
+      }
+
+      if (currentConcatDurationSec > 0 && currentConcatDurationSec < effectiveTargetDurationSec) {
+        const extensionPool = resolvedVideoClips.slice()
+        let extensionIndex = 0
+        while (currentConcatDurationSec < effectiveTargetDurationSec && extensionPool.length > 0 && extensionIndex < 48) {
+          const clipPath = extensionPool[extensionIndex % extensionPool.length] as string
+          const durationSec = durationByPath.get(clipPath) ?? (await probeVideoDurationSeconds(clipPath)) ?? 0
+          if (durationSec <= 0.1) break
+          resolvedVideoClips.push(clipPath)
+          currentConcatDurationSec += durationSec
+          extensionIndex += 1
+        }
+      }
     }
 
     const renderKey = `${Date.now()}_${randomUUID().slice(0, 8)}`
@@ -1156,24 +1302,28 @@ export class TaskManager {
         command.input(clipPath)
       }
       command.input(resolvedBgmPath).inputOptions(['-stream_loop -1'])
+      const outputOptions = [
+        '-map [vout]',
+        `-map ${resolvedVideoClips.length}:a:0`,
+        '-c:v libx264',
+        '-preset veryfast',
+        '-pix_fmt yuv420p',
+        `-r ${outputFps}`,
+        '-c:a aac',
+        '-b:a 192k',
+        '-shortest',
+        '-movflags +faststart',
+        '-threads 1',
+        '-filter_threads 1',
+        '-filter_complex_threads 1'
+      ]
+      if (effectiveTargetDurationSec > 0) {
+        outputOptions.push(`-t ${toFfmpegSeconds(effectiveTargetDurationSec)}`)
+      }
 
       command
         .complexFilter(filterLines)
-        .outputOptions([
-          '-map [vout]',
-          `-map ${resolvedVideoClips.length}:a:0`,
-          '-c:v libx264',
-          '-preset veryfast',
-          '-pix_fmt yuv420p',
-          `-r ${outputFps}`,
-          '-c:a aac',
-          '-b:a 192k',
-          '-shortest',
-          '-movflags +faststart',
-          '-threads 1',
-          '-filter_threads 1',
-          '-filter_complex_threads 1'
-        ])
+        .outputOptions(outputOptions)
         .on('progress', (progress) => {
           const percentRaw = Number((progress as { percent?: unknown }).percent)
           if (Number.isFinite(percentRaw)) {

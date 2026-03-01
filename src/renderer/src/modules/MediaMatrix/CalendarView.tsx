@@ -84,6 +84,12 @@ function basenameFromPath(value: string | undefined): string {
   return parts[parts.length - 1] ?? normalized
 }
 
+function shortTaskId(value: string | undefined): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return '-'
+  return normalized.length <= 8 ? normalized : normalized.slice(0, 8)
+}
+
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.min(100, value))
@@ -1010,16 +1016,26 @@ function CalendarView({
                             <>
                               <div className="mt-1 text-[11px] text-zinc-400">
                                 将混剪 {payload.videoClips?.length ?? 0} 段视频 · BGM{' '}
-                                {basenameFromPath(payload.bgmPath)}
+                                {basenameFromPath(payload.bgmPath)} · 目标时长=该批最长单视频
                               </div>
                               <div className="mt-1 text-[11px] text-zinc-500">
                                 文案摘要：{shortenMultilineText(payload.content, 44)}
                               </div>
+                              <div className="mt-1 text-[11px] text-zinc-500">
+                                文案来源：T {shortTaskId(payload.remixTitleSourceTaskId)} / C{' '}
+                                {shortTaskId(payload.remixContentSourceTaskId)} · 改写：开启
+                              </div>
                             </>
                           ) : (
-                            <div className="mt-1 text-[11px] text-zinc-400">
-                              图片 {payload.images?.length ?? 0} 张 · 商品 {payload.productName || '未绑定商品'}
-                            </div>
+                            <>
+                              <div className="mt-1 text-[11px] text-zinc-400">
+                                图片 {payload.images?.length ?? 0} 张 · 商品 {payload.productName || '未绑定商品'}
+                              </div>
+                              <div className="mt-1 text-[11px] text-zinc-500">
+                                文案来源：T {shortTaskId(payload.remixTitleSourceTaskId)} / C{' '}
+                                {shortTaskId(payload.remixContentSourceTaskId)} · 改写：开启
+                              </div>
+                            </>
                           )}
                         </div>
                       ))}
