@@ -24,6 +24,7 @@
     "build:win:x64": "npm run build:app && electron-builder --win --x64 --config electron-builder.json --publish never",
     "verify:win:x64": "node scripts/verify-win-package.cjs release x64",
     "publish:win:x64": "node scripts/release-win-x64.cjs",
+    "publish:win:x64:ci": "node scripts/release-win-x64-ci.cjs",
     "build:win": "npm run build:win:x64",
     "publish:win": "npm run publish:win:x64",
     "build:mac:engine": "bash scripts/build-cms-engine-mac.sh",
