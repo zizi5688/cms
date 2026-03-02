@@ -88,6 +88,7 @@ type RaceDetail = {
 
 type ActionPriority = 'P0' | 'P1' | 'P2'
 type FocusMode = 'all' | 'opportunity' | 'alert'
+type DataPhase = 'EMPTY' | 'DAY1' | 'DAY2_PLUS'
 
 type RaceActionItem = {
   id: string
@@ -233,6 +234,43 @@ function buildActionItem(row: RaceListRow): RaceActionItem {
   }
 }
 
+function buildActionItemDay1(row: RaceListRow): RaceActionItem {
+  if (row.score >= 80) {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P1',
+      reason: `首日高分 ${row.score.toFixed(1)}，当前仅 1 日样本`,
+      action: '先小步放大：围绕同题材补 1 条，并在明日重点看点击与评论增量'
+    }
+  }
+  if (row.stageIndex <= 2 && row.score >= 60) {
+    return {
+      id: row.id,
+      rank: row.rank,
+      title: row.title,
+      account: row.account,
+      tag: row.tag,
+      priority: 'P1',
+      reason: `首日阶段 ${row.stageLabel}，具备继续观察价值`,
+      action: '推进转化表达：优化封面标题和首屏卖点，等待次日增量确认'
+    }
+  }
+  return {
+    id: row.id,
+    rank: row.rank,
+    title: row.title,
+    account: row.account,
+    tag: row.tag,
+    priority: 'P2',
+    reason: `首日样本不足，暂不做趋势结论`,
+    action: '常规观察：先保留样本，不做大动作，等待第 2 日数据'
+  }
+}
+
 function normalizeError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message
   return String(error ?? '未知错误')
@@ -362,6 +400,12 @@ function NoteRaceBoard(): React.JSX.Element {
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
   const scanInFlightRef = React.useRef<boolean>(false)
+  const dataPhase: DataPhase = React.useMemo(() => {
+    if (snapshotDates.length === 0) return 'EMPTY'
+    if (snapshotDates.length === 1) return 'DAY1'
+    return 'DAY2_PLUS'
+  }, [snapshotDates.length])
+  const canUseFocus = dataPhase === 'DAY2_PLUS'
 
   const loadMeta = React.useCallback(async (): Promise<string> => {
     const next = (await window.api.cms.noteRace.meta()) as RaceMeta
@@ -415,7 +459,7 @@ function NoteRaceBoard(): React.JSX.Element {
 
   const rows = React.useMemo(() => {
     const filtered =
-      focusMode === 'all'
+      !canUseFocus || focusMode === 'all'
         ? scopedRows
         : scopedRows.filter((row) => {
             const isOpportunity = row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3
@@ -424,7 +468,7 @@ function NoteRaceBoard(): React.JSX.Element {
             return isAlert
           })
     return filtered.slice(0, 12)
-  }, [focusMode, scopedRows])
+  }, [canUseFocus, focusMode, scopedRows])
 
   const accountOptions = React.useMemo(() => {
     const unique = Array.from(new Set(allRows.map((row) => row.account).filter(Boolean)))
@@ -482,7 +526,7 @@ function NoteRaceBoard(): React.JSX.Element {
   const detail = selectedDetail && selected && selectedDetail.row.id === selected.id ? selectedDetail : null
 
   const summary = React.useMemo(() => {
-    const byTag = rows.reduce<Record<NoteTag, number>>(
+    const byTag = scopedRows.reduce<Record<NoteTag, number>>(
       (acc, row) => {
         acc[row.tag] += 1
         return acc
@@ -491,41 +535,50 @@ function NoteRaceBoard(): React.JSX.Element {
     )
 
     return {
-      assessedCount: rows.length,
+      assessedCount: scopedRows.length,
       matchRate: meta.matchRate,
       risingCount: byTag['起飞'],
       revivalCount: byTag['长尾复活'],
       dropCount: byTag['掉速'],
       riskCount: byTag['风险']
     }
-  }, [rows, meta.matchRate])
+  }, [scopedRows, meta.matchRate])
 
   const actionList = React.useMemo(() => {
+    const builder = dataPhase === 'DAY2_PLUS' ? buildActionItem : buildActionItemDay1
     return scopedRows
-      .map((row) => buildActionItem(row))
+      .map((row) => builder(row))
       .sort((a, b) => {
         const byPriority = priorityOrder(a.priority) - priorityOrder(b.priority)
         if (byPriority !== 0) return byPriority
         return a.rank - b.rank
       })
       .slice(0, 10)
-  }, [scopedRows])
+  }, [dataPhase, scopedRows])
 
-  const opportunityCount = React.useMemo(
-    () => scopedRows.filter((row) => row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3).length,
-    [scopedRows]
-  )
+  const opportunityCount = React.useMemo(() => {
+    if (dataPhase !== 'DAY2_PLUS') return 0
+    return scopedRows.filter((row) => row.tag === '起飞' || row.tag === '长尾复活' || row.trendDelta >= 3).length
+  }, [dataPhase, scopedRows])
 
-  const riskSignalCount = React.useMemo(
-    () => scopedRows.filter((row) => row.tag === '风险' || row.tag === '掉速' || row.trendDelta <= -2.5).length,
-    [scopedRows]
-  )
+  const riskSignalCount = React.useMemo(() => {
+    if (dataPhase !== 'DAY2_PLUS') return 0
+    return scopedRows.filter((row) => row.tag === '风险' || row.tag === '掉速' || row.trendDelta <= -2.5).length
+  }, [dataPhase, scopedRows])
 
   const p0Count = React.useMemo(() => actionList.filter((item) => item.priority === 'P0').length, [actionList])
   const p1Count = React.useMemo(() => actionList.filter((item) => item.priority === 'P1').length, [actionList])
   const p2Count = React.useMemo(() => actionList.filter((item) => item.priority === 'P2').length, [actionList])
 
   const qualityLevel = summary.matchRate < 0.5 ? 'danger' : summary.matchRate < 0.7 ? 'warning' : 'ok'
+  const actionMap = React.useMemo(() => new Map(actionList.map((item) => [item.id, item])), [actionList])
+
+  React.useEffect(() => {
+    if (canUseFocus) return
+    if (focusMode !== 'all') {
+      setFocusMode('all')
+    }
+  }, [canUseFocus, focusMode])
 
   const handleCopy = React.useCallback(async (value: string): Promise<void> => {
     const normalized = String(value ?? '').trim()
@@ -538,16 +591,17 @@ function NoteRaceBoard(): React.JSX.Element {
   }, [])
 
   const handleCopyActionList = React.useCallback(async (): Promise<void> => {
+    const prefix = dataPhase === 'DAY1' ? '（低置信：当前仅 1 日样本）\n' : ''
     const lines = actionList.map(
       (item, index) =>
         `${index + 1}. [${item.priority}] ${item.title}（${item.account} / #${item.rank}）` +
         `\n   原因：${item.reason}` +
         `\n   动作：${item.action}`
     )
-    const text = lines.length > 0 ? lines.join('\n') : '暂无可执行清单'
+    const text = lines.length > 0 ? `${prefix}${lines.join('\n')}` : '暂无可执行清单'
     await handleCopy(text)
     setLastImportMessage('今日必做清单已复制')
-  }, [actionList, handleCopy])
+  }, [actionList, dataPhase, handleCopy])
 
   const handlePickActionItem = React.useCallback((item: RaceActionItem): void => {
     setFocusMode('all')
@@ -685,13 +739,18 @@ function NoteRaceBoard(): React.JSX.Element {
             <select
               value={snapshotDate}
               onChange={handleSnapshotDateChange}
+              disabled={snapshotDates.length === 0}
               className="h-8 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
             >
-              {snapshotDates.map((date) => (
-                <option key={date} value={date}>
-                  {date}
-                </option>
-              ))}
+              {snapshotDates.length === 0 ? (
+                <option value="">暂无快照</option>
+              ) : (
+                snapshotDates.map((date) => (
+                  <option key={date} value={date}>
+                    {date}
+                  </option>
+                ))
+              )}
             </select>
             <select
               value={account}
@@ -731,26 +790,28 @@ function NoteRaceBoard(): React.JSX.Element {
             <button
               type="button"
               onClick={() => setFocusMode('opportunity')}
+              disabled={!canUseFocus}
               className={cn(
-                'inline-flex h-8 items-center rounded border px-2 transition',
+                'inline-flex h-8 items-center rounded border px-2 transition disabled:cursor-not-allowed disabled:opacity-60',
                 focusMode === 'opportunity'
                   ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-200'
                   : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-emerald-500 hover:text-emerald-200'
               )}
-              title="只看机会"
+              title={canUseFocus ? '只看机会' : '至少 2 日数据后可用'}
             >
               机会
             </button>
             <button
               type="button"
               onClick={() => setFocusMode('alert')}
+              disabled={!canUseFocus}
               className={cn(
-                'inline-flex h-8 items-center rounded border px-2 transition',
+                'inline-flex h-8 items-center rounded border px-2 transition disabled:cursor-not-allowed disabled:opacity-60',
                 focusMode === 'alert'
                   ? 'border-rose-500/70 bg-rose-500/10 text-rose-200'
                   : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-rose-500 hover:text-rose-200'
               )}
-              title="只看风险"
+              title={canUseFocus ? '只看风险' : '至少 2 日数据后可用'}
             >
               风险
             </button>
@@ -817,7 +878,19 @@ function NoteRaceBoard(): React.JSX.Element {
       </header>
 
       <div className="px-4 pt-3">
-        {qualityLevel !== 'ok' ? (
+        {dataPhase === 'EMPTY' ? (
+          <div className="mb-2 rounded border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200">
+            未检测到可分析数据。先导入“商品笔记表 + 笔记列表表”，或设置监控目录后自动抓取。
+          </div>
+        ) : null}
+
+        {dataPhase === 'DAY1' ? (
+          <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            当前仅有 1 日数据：已启用横截面评估，趋势与增量信号暂标记为“样本不足”。
+          </div>
+        ) : null}
+
+        {dataPhase !== 'EMPTY' && qualityLevel !== 'ok' ? (
           <div
             className={cn(
               'mb-2 rounded border px-3 py-2 text-xs',
@@ -851,14 +924,18 @@ function NoteRaceBoard(): React.JSX.Element {
             <button
               type="button"
               onClick={() => void handleCopyActionList()}
-              className="inline-flex h-7 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-[11px] text-zinc-300 transition hover:border-cyan-500 hover:text-cyan-200"
+              disabled={actionList.length === 0}
+              className="inline-flex h-7 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-[11px] text-zinc-300 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
               title="复制清单"
             >
               复制清单
             </button>
           </div>
+          {dataPhase === 'DAY1' ? <div className="mt-1 text-[10px] text-amber-300">低置信：当前仅 1 日样本，动作仅供试探性执行</div> : null}
           {actionList.length === 0 ? (
-            <div className="mt-2 text-xs text-zinc-500">暂无可执行清单</div>
+            <div className="mt-2 text-xs text-zinc-500">
+              {dataPhase === 'EMPTY' ? '暂无可执行清单（等待首日数据）' : '暂无可执行清单'}
+            </div>
           ) : (
             <div className="mt-2 max-h-44 space-y-1.5 overflow-auto pr-1">
               {actionList.map((item, index) => (
@@ -887,14 +964,15 @@ function NoteRaceBoard(): React.JSX.Element {
 
         <div className="mb-3 flex flex-wrap gap-2">
           <Chip label={`可评估笔记 ${summary.assessedCount}`} />
-          <Chip label={`匹配成功率 ${Math.round(summary.matchRate * 100)}%`} />
+          <Chip label={`匹配成功率 ${dataPhase === 'EMPTY' ? '-' : `${Math.round(summary.matchRate * 100)}%`}`} />
           <Chip label={`视图 ${focusMode === 'all' ? '全部' : focusMode === 'opportunity' ? '机会' : '风险'}`} />
+          <Chip label={`阶段 ${dataPhase === 'EMPTY' ? 'P0' : dataPhase === 'DAY1' ? '首日' : '连续'}`} />
           <Chip label={`监控 ${autoMonitorEnabled ? '开启' : '关闭'}`} />
-          <Chip label={`P0 ${p0Count}`} />
-          <Chip label={`P1 ${p1Count}`} />
-          <Chip label={`P2 ${p2Count}`} />
-          <Chip label={`机会信号 ${opportunityCount}`} />
-          <Chip label={`风险信号 ${riskSignalCount}`} />
+          <Chip label={`P0 ${dataPhase === 'EMPTY' ? '-' : p0Count}`} />
+          <Chip label={`P1 ${dataPhase === 'EMPTY' ? '-' : p1Count}`} />
+          <Chip label={`P2 ${dataPhase === 'EMPTY' ? '-' : p2Count}`} />
+          <Chip label={`机会信号 ${canUseFocus ? opportunityCount : '-'}`} />
+          <Chip label={`风险信号 ${canUseFocus ? riskSignalCount : '-'}`} />
           <Chip label={`起飞 ${summary.risingCount}`} />
           <Chip label={`长尾复活 ${summary.revivalCount}`} />
           <Chip label={`掉速 ${summary.dropCount}`} />
@@ -927,10 +1005,16 @@ function NoteRaceBoard(): React.JSX.Element {
 
             {loading ? <div className="px-3 py-6 text-sm text-zinc-500">加载中...</div> : null}
 
-            {!loading && rows.length === 0 ? <div className="px-3 py-6 text-sm text-zinc-500">当前筛选条件下暂无数据</div> : null}
+            {!loading && rows.length === 0 ? (
+              <div className="px-3 py-6 text-sm text-zinc-500">
+                {dataPhase === 'EMPTY' ? '暂无数据，请先导入首日表格' : '当前筛选条件下暂无数据'}
+              </div>
+            ) : null}
 
             {rows.map((row) => {
-              const rowAction = buildActionItem(row)
+              const rowAction = actionMap.get(row.id) ?? (dataPhase === 'DAY2_PLUS' ? buildActionItem(row) : buildActionItemDay1(row))
+              const trendLabel = dataPhase === 'DAY2_PLUS' ? formatTrendDelta(row.trendDelta) : '样本不足'
+              const trendClass = dataPhase === 'DAY2_PLUS' ? trendDeltaClass(row.trendDelta) : 'text-zinc-500'
               return (
                 <button
                   key={row.id}
@@ -944,7 +1028,7 @@ function NoteRaceBoard(): React.JSX.Element {
                   )}
                   style={{ gridTemplateColumns: '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px' }}
                   title={row.trendHint.join('\n')}
-                >
+                  >
                   <span className={cn('text-center text-zinc-400', row.rank <= 3 && 'font-semibold text-zinc-200')}>{row.rank}</span>
                   <span>
                     <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[11px] leading-none', tagClasses(row.tag))}>{row.tag}</span>
@@ -964,7 +1048,7 @@ function NoteRaceBoard(): React.JSX.Element {
                       />
                     </div>
                   </span>
-                  <span className={cn('text-center font-medium', trendDeltaClass(row.trendDelta))}>{formatTrendDelta(row.trendDelta)}</span>
+                  <span className={cn('text-center font-medium', trendClass)}>{trendLabel}</span>
                   <SignalColumn signals={row.contentSignals} />
                   <SignalColumn signals={row.commerceSignals} />
                   <span className="truncate text-zinc-300">{row.stageLabel}</span>
@@ -1014,19 +1098,26 @@ function NoteRaceBoard(): React.JSX.Element {
 
               <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
                 <h4 className="text-sm font-semibold text-zinc-100">趋势信号</h4>
+                {dataPhase !== 'DAY2_PLUS' ? (
+                  <div className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+                    样本不足：至少需要连续 2 日数据才显示增量趋势
+                  </div>
+                ) : null}
                 <div className="mt-2">
                   <TrendSparkline values={detail?.sparkline ?? []} />
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
-                  <DeltaCard label="d阅读" value={detail?.deltas.read ?? 0} />
-                  <DeltaCard label="d点击" value={detail?.deltas.click ?? 0} />
+                  <DeltaCard label="d阅读" value={dataPhase === 'DAY2_PLUS' ? (detail?.deltas.read ?? 0) : null} />
+                  <DeltaCard label="d点击" value={dataPhase === 'DAY2_PLUS' ? (detail?.deltas.click ?? 0) : null} />
                   <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
                     <div className="text-[10px] text-zinc-400">加速度</div>
-                    <div className="text-zinc-200">{(detail?.deltas.acceleration ?? 1).toFixed(2)}x</div>
+                    <div className="text-zinc-200">
+                      {dataPhase === 'DAY2_PLUS' ? `${(detail?.deltas.acceleration ?? 1).toFixed(2)}x` : '--'}
+                    </div>
                   </div>
                   <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
                     <div className="text-[10px] text-zinc-400">7日稳定性</div>
-                    <div className="text-zinc-200">{detail?.deltas.stability ?? '中'}</div>
+                    <div className="text-zinc-200">{dataPhase === 'DAY2_PLUS' ? (detail?.deltas.stability ?? '中') : '--'}</div>
                   </div>
                 </div>
               </section>
@@ -1087,7 +1178,15 @@ function SignalColumn({ signals }: { signals: Signal[] }): React.JSX.Element {
   )
 }
 
-function DeltaCard({ label, value }: { label: string; value: number }): React.JSX.Element {
+function DeltaCard({ label, value }: { label: string; value: number | null }): React.JSX.Element {
+  if (value == null) {
+    return (
+      <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
+        <div className="text-[10px] text-zinc-400">{label}</div>
+        <div className="text-zinc-500">--</div>
+      </div>
+    )
+  }
   const className = value > 0 ? 'text-emerald-300' : value < 0 ? 'text-rose-300' : 'text-zinc-300'
   const prefix = value > 0 ? '+' : ''
   return (
