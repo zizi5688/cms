@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-19T01:44:17Z",
+  "generated_at": "2026-02-26T13:39:45Z",
   "mode": "incremental",
   "ui_framework_hint": "electron",
   "repo": "CMS-2.0",
@@ -171,13 +171,13 @@
     {
       "id": "EV-015",
       "category": "页面/窗口/控件与事件链路",
-      "conclusion": "热度看板“绑定供应商”通过 IPC 写回 watchlist，并返回持久化后的标记记录",
+      "conclusion": "热度看板候选供应商支持“选择账号 -> 一键铺货”自动化执行，并在成功后回写卡片状态",
       "implementation_level": "已实现",
       "confidence": "high",
       "traces": [
-        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleBindSupplier" },
-        { "path": "src/main/index.ts", "symbol": "ipcMain.handle('cms.scout.dashboard.bindSupplier')" },
-        { "path": "src/main/services/scoutService.ts", "symbol": "bindDashboardSupplier" }
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleStartOneClickDelivery" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleConfirmOneClickDelivery" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "SupplierCard" }
       ]
     },
     {
@@ -310,6 +310,54 @@
         { "path": "src/preload/index.ts", "symbol": "dashboard.coverDebugState/coverDebugLog" },
         { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleUpdateCoverDebugState/loadCoverDebugLog" }
       ]
+    },
+    {
+      "id": "EV-028",
+      "category": "业务服务/状态管理/数据访问",
+      "conclusion": "一键铺货“已上架”状态按商品上下文持久化到 localStorage，跨页面重开可回显",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "DELIVERY_STATE_STORAGE_KEY" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "getDeliveryCandidateKey" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "loadDeliveredCandidateKeys/appendDeliveredCandidateKey" }
+      ]
+    },
+    {
+      "id": "EV-029",
+      "category": "页面/窗口/控件与事件链路",
+      "conclusion": "一键铺货运行态具备账号确认弹窗、自动执行中状态、自动收口与手动中止",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "isAccountSelectorOpen" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleConfirmOneClickDelivery" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "handleCancelRPA" }
+      ]
+    },
+    {
+      "id": "EV-030",
+      "category": "IPC/RPC/API 调用关系",
+      "conclusion": "自动铺货通过 Webview 注入 V20.9 脚本执行，包含 35 秒超时与 NAVIGATING 4 秒接力重试机制",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "build1688OneClickDeliveryScript" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "webview.executeJavaScript(script, true)" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "navigationRetryCountRef/autoRetryTimerRef" }
+      ]
+    },
+    {
+      "id": "EV-031",
+      "category": "测试/错误处理/日志与告警",
+      "conclusion": "V20.9 脚本默认关闭 HUD，提交流程以 SUBMIT_CLICKED 作为成功收口信号并提示用户手动关闭 1688 结果弹窗",
+      "implementation_level": "已实现",
+      "confidence": "high",
+      "traces": [
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "const SCRIPT_VERSION = 'V20.9-submit-click-shortcircuit'" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "const SHOW_DEBUG_HUD = false" },
+        { "path": "src/renderer/src/modules/HeatDashboard/index.tsx", "symbol": "successKeyword: 'SUBMIT_CLICKED'" }
+      ]
     }
   ],
   "pending_confirmation": [
@@ -342,6 +390,11 @@
       "id": "PC-006",
       "question": "CSV 字段兼容策略是否需要固定模板约束",
       "related_evidence_ids": ["EV-005"]
+    },
+    {
+      "id": "PC-008",
+      "question": "一键铺货是否需要从“提交点击成功”升级为“检测到铺货成功文案/回执”后再置为已上架",
+      "related_evidence_ids": ["EV-031"]
     }
   ]
 }

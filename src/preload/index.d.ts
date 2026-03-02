@@ -219,6 +219,7 @@ declare global {
     totalNotes: number
     matchedNotes: number
     matchRate: number
+    trendReadyDates: string[]
   }
 
   type NoteRaceListRow = {

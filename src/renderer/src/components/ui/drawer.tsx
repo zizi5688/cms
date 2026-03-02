@@ -40,13 +40,17 @@ function Drawer({
         type="button"
         aria-label="关闭详情抽屉"
         onClick={() => onOpenChange(false)}
-        className="absolute inset-0 bg-black/20 backdrop-blur-[1px]"
+        className="absolute inset-0 bg-black/20"
+        style={{ backdropFilter: 'none' }}
       />
       <aside
-        className={cn(
-          'absolute right-0 top-0 flex h-full flex-col border-l border-zinc-800 bg-zinc-950/98 shadow-2xl',
-          widthClassName
-        )}
+        className={cn('absolute right-0 top-0 flex h-full flex-col', widthClassName)}
+        style={{
+          backgroundColor: '#1a1a1c',
+          borderLeft: '1px solid rgba(255,255,255,0.1)',
+          boxShadow: '-10px 0 20px rgba(0, 0, 0, 0.5)',
+          backdropFilter: 'none'
+        }}
         role="dialog"
         aria-modal="true"
       >

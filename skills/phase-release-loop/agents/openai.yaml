@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phase Release Loop"
+  short_description: "One-shot closeout: commit, merge, DMG, install, relaunch"
+  default_prompt: "Use $phase-release-loop to finish this phase: validate, commit, push, merge to main, build DMG, install, relaunch, and report."

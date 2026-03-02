@@ -124,6 +124,7 @@ export type NoteRaceMeta = {
   totalNotes: number
   matchedNotes: number
   matchRate: number
+  trendReadyDates: string[]
 }
 
 export type NoteRaceListQuery = {
@@ -202,14 +203,17 @@ function normalizeTitle(value: unknown): string {
 
 function normalizeCellValue(value: unknown): unknown {
   if (value == null) return null
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    return value
   if (value instanceof Date) return value
   if (typeof value === 'object') {
     const row = value as Record<string, unknown>
     if (typeof row.text === 'string') return row.text
     if (typeof row.result === 'string' || typeof row.result === 'number') return row.result
     if (typeof row.richText === 'object' && Array.isArray(row.richText)) {
-      const merged = (row.richText as Array<{ text?: unknown }>).map((item) => String(item?.text ?? '')).join('')
+      const merged = (row.richText as Array<{ text?: unknown }>)
+        .map((item) => String(item?.text ?? ''))
+        .join('')
       return merged
     }
   }
@@ -258,7 +262,10 @@ function parseDateValue(value: unknown): number | null {
   if (!text) return null
   let parsed = Date.parse(text)
   if (!Number.isFinite(parsed)) {
-    const compact = text.replace(/年|\/|\\./g, '-').replace(/月/g, '-').replace(/日/g, ' ')
+    const compact = text
+      .replace(/年|\/|\\./g, '-')
+      .replace(/月/g, '-')
+      .replace(/日/g, ' ')
     const normalizedTime = compact.replace(/时/g, ':').replace(/分/g, ':').replace(/秒/g, '')
     parsed = Date.parse(normalizedTime)
   }
@@ -333,7 +340,8 @@ function toStableLabel(values: number[]): '高' | '中' | '低' {
   if (values.length <= 1) return '中'
   const mean = values.reduce((sum, item) => sum + item, 0) / values.length
   if (mean <= 0) return '低'
-  const variance = values.reduce((sum, item) => sum + (item - mean) * (item - mean), 0) / values.length
+  const variance =
+    values.reduce((sum, item) => sum + (item - mean) * (item - mean), 0) / values.length
   const cv = Math.sqrt(variance) / mean
   if (cv <= 0.25) return '高'
   if (cv <= 0.6) return '中'
@@ -424,6 +432,88 @@ function countHeaderMatches(map: Map<string, number>, headers: string[]): number
     }
   }
   return matches
+}
+
+type SnapshotScope = 'daily' | 'range' | 'unknown'
+type TrendComparabilityReason =
+  | 'ok'
+  | 'missing_previous_snapshot'
+  | 'snapshot_gap'
+  | 'missing_dual_source'
+  | 'non_daily_scope'
+
+type SnapshotImportProfile = {
+  snapshotDate: string
+  commerceCount: number
+  contentCount: number
+  commerceScope: SnapshotScope
+  contentScope: SnapshotScope
+  mergedScope: SnapshotScope
+}
+
+type TrendComparability = {
+  comparable: boolean
+  previousSnapshotDate: string | null
+  reason: TrendComparabilityReason
+}
+
+function inferSnapshotScopeFromSourceFile(sourceFile: string): SnapshotScope {
+  const normalized = normalizeText(sourceFile)
+  if (!normalized) return 'unknown'
+  if (/(近\s*1\s*日|前\s*1\s*日|昨日|昨天|t-?1)/i.test(normalized)) return 'daily'
+  if (/(近\s*(?:[2-9]|[1-9]\d)\s*日|区间|范围|自定义)/i.test(normalized)) return 'range'
+  if (/(~|～|至|到|_to_|-to-)/i.test(normalized)) return 'range'
+
+  const fullDateMatches = Array.from(
+    normalized.matchAll(/20\d{2}[-_.年]\d{1,2}[-_.月]\d{1,2}/g)
+  ).length
+  if (fullDateMatches >= 2) return 'range'
+  if (fullDateMatches === 1) return 'daily'
+
+  if (/(\d{1,2})\s*[-~～]\s*(\d{1,2})/.test(normalized)) return 'range'
+  return 'unknown'
+}
+
+function mergeSnapshotScopes(scopes: SnapshotScope[]): SnapshotScope {
+  if (scopes.length === 0) return 'unknown'
+  if (scopes.includes('range')) return 'range'
+  if (scopes.every((scope) => scope === 'daily')) return 'daily'
+  return 'unknown'
+}
+
+function parseYmdToUtcMs(value: string): number | null {
+  const matched = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!matched?.[1] || !matched[2] || !matched[3]) return null
+  const year = Number(matched[1])
+  const month = Number(matched[2])
+  const day = Number(matched[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  return Date.UTC(year, month - 1, day)
+}
+
+function isNextSnapshotDay(previousDate: string, currentDate: string): boolean {
+  const previousMs = parseYmdToUtcMs(previousDate)
+  const currentMs = parseYmdToUtcMs(currentDate)
+  if (previousMs == null || currentMs == null) return false
+  return currentMs - previousMs === 24 * 60 * 60 * 1000
+}
+
+function describeTrendComparabilityReason(
+  reason: TrendComparabilityReason,
+  previousSnapshotDate: string | null
+): string {
+  if (reason === 'missing_previous_snapshot') return '缺少上一日可比快照，已禁用增量趋势计算。'
+  if (reason === 'snapshot_gap') {
+    return `与上一快照不连续（上一快照：${previousSnapshotDate ?? '-'}），已禁用增量趋势计算。`
+  }
+  if (reason === 'missing_dual_source') {
+    return '当前或上一快照缺少“商品+内容”配对导入，已禁用增量趋势计算。'
+  }
+  if (reason === 'non_daily_scope') {
+    return '当前或上一快照不是“近1日”同口径，已禁用增量趋势计算。'
+  }
+  return '快照口径不可比，已禁用增量趋势计算。'
 }
 
 export class NoteRaceService {
@@ -543,6 +633,140 @@ export class NoteRaceService {
     `)
   }
 
+  private getSnapshotImportProfile(db: DbConnection, snapshotDate: string): SnapshotImportProfile {
+    const commerceCount = Number(
+      db
+        .prepare(`SELECT COUNT(*) AS cnt FROM note_race_raw_commerce WHERE snapshot_date = ?`)
+        .get(snapshotDate)?.cnt ?? 0
+    )
+    const contentCount = Number(
+      db
+        .prepare(`SELECT COUNT(*) AS cnt FROM note_race_raw_content WHERE snapshot_date = ?`)
+        .get(snapshotDate)?.cnt ?? 0
+    )
+
+    const commerceFiles = db
+      .prepare(
+        `
+        SELECT DISTINCT source_file AS sourceFile
+        FROM note_race_raw_commerce
+        WHERE snapshot_date = ? AND source_file IS NOT NULL AND TRIM(source_file) <> ''
+        `
+      )
+      .all(snapshotDate)
+      .map((row) => normalizeText(row.sourceFile))
+      .filter(Boolean)
+    const contentFiles = db
+      .prepare(
+        `
+        SELECT DISTINCT source_file AS sourceFile
+        FROM note_race_raw_content
+        WHERE snapshot_date = ? AND source_file IS NOT NULL AND TRIM(source_file) <> ''
+        `
+      )
+      .all(snapshotDate)
+      .map((row) => normalizeText(row.sourceFile))
+      .filter(Boolean)
+
+    const commerceScope = mergeSnapshotScopes(commerceFiles.map(inferSnapshotScopeFromSourceFile))
+    let contentScope = mergeSnapshotScopes(contentFiles.map(inferSnapshotScopeFromSourceFile))
+    const contentTimeRange = db
+      .prepare(
+        `
+        SELECT
+          MIN(first_published_at) AS minTs,
+          MAX(first_published_at) AS maxTs
+        FROM note_race_raw_content
+        WHERE snapshot_date = ?
+        `
+      )
+      .get(snapshotDate)
+    const minContentTs = Number(contentTimeRange?.minTs ?? 0)
+    const maxContentTs = Number(contentTimeRange?.maxTs ?? 0)
+    if (
+      contentCount > 0 &&
+      Number.isFinite(minContentTs) &&
+      Number.isFinite(maxContentTs) &&
+      minContentTs > 0 &&
+      maxContentTs >= minContentTs
+    ) {
+      const spanDays = (maxContentTs - minContentTs) / (24 * 60 * 60 * 1000)
+      if (spanDays > 2) {
+        contentScope = 'range'
+      } else if (contentScope === 'unknown') {
+        contentScope = 'daily'
+      }
+    }
+    const mergedScope = mergeSnapshotScopes([commerceScope, contentScope])
+
+    return {
+      snapshotDate,
+      commerceCount,
+      contentCount,
+      commerceScope,
+      contentScope,
+      mergedScope
+    }
+  }
+
+  private getPreviousSnapshotDate(db: DbConnection, snapshotDate: string): string | null {
+    const value = normalizeText(
+      db
+        .prepare(
+          `SELECT MAX(snapshot_date) AS snapshotDate FROM note_race_raw_commerce WHERE snapshot_date < ?`
+        )
+        .get(snapshotDate)?.snapshotDate
+    )
+    return value || null
+  }
+
+  private evaluateTrendComparability(db: DbConnection, snapshotDate: string): TrendComparability {
+    const previousSnapshotDate = this.getPreviousSnapshotDate(db, snapshotDate)
+    if (!previousSnapshotDate) {
+      return {
+        comparable: false,
+        previousSnapshotDate: null,
+        reason: 'missing_previous_snapshot'
+      }
+    }
+    if (!isNextSnapshotDay(previousSnapshotDate, snapshotDate)) {
+      return {
+        comparable: false,
+        previousSnapshotDate,
+        reason: 'snapshot_gap'
+      }
+    }
+
+    const currentProfile = this.getSnapshotImportProfile(db, snapshotDate)
+    const previousProfile = this.getSnapshotImportProfile(db, previousSnapshotDate)
+    const hasDualSource =
+      currentProfile.commerceCount > 0 &&
+      currentProfile.contentCount > 0 &&
+      previousProfile.commerceCount > 0 &&
+      previousProfile.contentCount > 0
+    if (!hasDualSource) {
+      return {
+        comparable: false,
+        previousSnapshotDate,
+        reason: 'missing_dual_source'
+      }
+    }
+
+    if (currentProfile.mergedScope !== 'daily' || previousProfile.mergedScope !== 'daily') {
+      return {
+        comparable: false,
+        previousSnapshotDate,
+        reason: 'non_daily_scope'
+      }
+    }
+
+    return {
+      comparable: true,
+      previousSnapshotDate,
+      reason: 'ok'
+    }
+  }
+
   private async detectExcelImportKind(
     filePath: string
   ): Promise<{ kind: NoteRaceImportKind | null; detectedBy: NoteRaceImportDetectedBy | null }> {
@@ -564,7 +788,15 @@ export class NoteRaceService {
       '笔记商品点击次数',
       '笔记阅读数'
     ]
-    const contentHeaders = ['首次发布时间', '体裁', '曝光', '观看量', '封面点击率', '涨粉', '人均观看时长']
+    const contentHeaders = [
+      '首次发布时间',
+      '体裁',
+      '曝光',
+      '观看量',
+      '封面点击率',
+      '涨粉',
+      '人均观看时长'
+    ]
 
     const firstRowMap = buildHeaderIndex(sheet.getRow(1).values as unknown[])
     const secondRowMap = buildHeaderIndex(sheet.getRow(2).values as unknown[])
@@ -882,31 +1114,55 @@ export class NoteRaceService {
   getMeta(): NoteRaceMeta {
     const db = this.sqlite.tryGetConnection() as DbConnection | null
     if (!db) {
-      return { latestDate: null, availableDates: [], totalNotes: 0, matchedNotes: 0, matchRate: 0 }
+      return {
+        latestDate: null,
+        availableDates: [],
+        totalNotes: 0,
+        matchedNotes: 0,
+        matchRate: 0,
+        trendReadyDates: []
+      }
     }
     const dates = db
-      .prepare(`SELECT DISTINCT snapshot_date AS snapshotDate FROM note_race_daily_rank ORDER BY snapshot_date DESC`)
+      .prepare(
+        `SELECT DISTINCT snapshot_date AS snapshotDate FROM note_race_daily_rank ORDER BY snapshot_date DESC`
+      )
       .all()
       .map((row) => String(row.snapshotDate ?? '').trim())
       .filter(Boolean)
     const latestDate = dates[0] ?? null
     if (!latestDate) {
-      return { latestDate: null, availableDates: [], totalNotes: 0, matchedNotes: 0, matchRate: 0 }
+      return {
+        latestDate: null,
+        availableDates: [],
+        totalNotes: 0,
+        matchedNotes: 0,
+        matchRate: 0,
+        trendReadyDates: []
+      }
     }
     const total = Number(
-      db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank WHERE snapshot_date = ?`).get(latestDate)?.cnt ?? 0
+      db
+        .prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank WHERE snapshot_date = ?`)
+        .get(latestDate)?.cnt ?? 0
     )
     const matched = Number(
       db
-        .prepare(`SELECT COUNT(*) AS cnt FROM note_race_match_map WHERE snapshot_date = ? AND confidence > 0`)
+        .prepare(
+          `SELECT COUNT(*) AS cnt FROM note_race_match_map WHERE snapshot_date = ? AND confidence > 0`
+        )
         .get(latestDate)?.cnt ?? 0
+    )
+    const trendReadyDates = dates.filter(
+      (date) => this.evaluateTrendComparability(db, date).comparable
     )
     return {
       latestDate,
       availableDates: dates,
       totalNotes: total,
       matchedNotes: matched,
-      matchRate: total > 0 ? matched / total : 0
+      matchRate: total > 0 ? matched / total : 0,
+      trendReadyDates
     }
   }
 
@@ -1112,7 +1368,8 @@ export class NoteRaceService {
       },
       noteId: normalizeText(commerce.note_id) || null,
       productId: normalizeText(commerce.product_id) || null,
-      createdAt: typeof commerce.note_created_at === 'number' ? Number(commerce.note_created_at) : null,
+      createdAt:
+        typeof commerce.note_created_at === 'number' ? Number(commerce.note_created_at) : null,
       matchConfidence: Number(match?.confidence ?? 0),
       matchRule: String(match?.matchRule ?? 'unmatched'),
       contentFunnel,
@@ -1154,7 +1411,9 @@ export class NoteRaceService {
 
     for (const row of commerceRows) {
       const exactKey = createTitleTimeKey(row.title, row.noteCreatedAt)
-      const exactCandidates = (matchByExact.get(exactKey) ?? []).filter((item) => !usedContentIds.has(item.rowId))
+      const exactCandidates = (matchByExact.get(exactKey) ?? []).filter(
+        (item) => !usedContentIds.has(item.rowId)
+      )
       if (exactCandidates.length === 1) {
         usedContentIds.add(exactCandidates[0].rowId)
         matches.push({
@@ -1166,7 +1425,11 @@ export class NoteRaceService {
         continue
       }
       if (exactCandidates.length > 1) {
-        const chosen = exactCandidates.sort((a, b) => Math.abs((a.firstPublishedAt ?? 0) - (row.noteCreatedAt ?? 0)) - Math.abs((b.firstPublishedAt ?? 0) - (row.noteCreatedAt ?? 0)))[0]
+        const chosen = exactCandidates.sort(
+          (a, b) =>
+            Math.abs((a.firstPublishedAt ?? 0) - (row.noteCreatedAt ?? 0)) -
+            Math.abs((b.firstPublishedAt ?? 0) - (row.noteCreatedAt ?? 0))
+        )[0]
         usedContentIds.add(chosen.rowId)
         matches.push({
           noteKey: row.noteKey,
@@ -1177,7 +1440,9 @@ export class NoteRaceService {
         continue
       }
 
-      const titleCandidates = (matchByTitle.get(normalizeTitle(row.title)) ?? []).filter((item) => !usedContentIds.has(item.rowId))
+      const titleCandidates = (matchByTitle.get(normalizeTitle(row.title)) ?? []).filter(
+        (item) => !usedContentIds.has(item.rowId)
+      )
       if (titleCandidates.length === 1) {
         usedContentIds.add(titleCandidates[0].rowId)
         matches.push({
@@ -1232,22 +1497,41 @@ export class NoteRaceService {
 
     const intermediate: IntermediateRank[] = []
     const snapshotTs = Date.parse(`${snapshotDate}T00:00:00+08:00`)
+    const trendComparability = this.evaluateTrendComparability(db, snapshotDate)
+    const trendComparable = trendComparability.comparable
+    const trendBlockedReason = trendComparable
+      ? null
+      : describeTrendComparabilityReason(
+          trendComparability.reason,
+          trendComparability.previousSnapshotDate
+        )
 
     for (const row of commerceRows) {
       const match = matchMap.get(row.noteKey)
-      const content = match?.contentRowId ? contentById.get(match.contentRowId) ?? null : null
+      const content = match?.contentRowId ? (contentById.get(match.contentRowId) ?? null) : null
       const prevRows = prevRowStmt.all(row.noteKey, snapshotDate)
       const prev = prevRows.length > 0 ? mapCommerceRow(prevRows[0]) : null
       const prev2 = prevRows.length > 1 ? mapCommerceRow(prevRows[1]) : null
 
-      const prevContent = content ? mapContentRow(prevContentStmt.get(content.rowId, snapshotDate) ?? null) : null
+      const prevContent = content
+        ? mapContentRow(prevContentStmt.get(content.rowId, snapshotDate) ?? null)
+        : null
 
-      const dRead = row.readCount - (prev?.readCount ?? 0)
-      const dClick = row.clickCount - (prev?.clickCount ?? 0)
-      const dOrder = row.payOrders - (prev?.payOrders ?? 0)
+      const rawDRead = row.readCount - (prev?.readCount ?? 0)
+      const rawDClick = row.clickCount - (prev?.clickCount ?? 0)
+      const rawDOrder = row.payOrders - (prev?.payOrders ?? 0)
+      const dRead = trendComparable ? rawDRead : 0
+      const dClick = trendComparable ? rawDClick : 0
+      const dOrder = trendComparable ? rawDOrder : 0
 
-      const prevDRead = prev ? prev.readCount - (prev2?.readCount ?? 0) : 0
-      const acceleration = prevDRead === 0 ? (dRead === 0 ? 1 : 1.2) : Number((dRead / prevDRead).toFixed(2))
+      const rawPrevDRead = prev ? prev.readCount - (prev2?.readCount ?? 0) : 0
+      const acceleration = trendComparable
+        ? rawPrevDRead === 0
+          ? dRead === 0
+            ? 1
+            : 1.2
+          : Number((dRead / rawPrevDRead).toFixed(2))
+        : 1
 
       const stableSeries = prevSeriesStmt
         .all(row.noteKey, snapshotDate)
@@ -1256,31 +1540,52 @@ export class NoteRaceService {
       const stability = toStableLabel(stableSeries)
 
       const stage = inferStage(row)
-      const ageDays = row.noteCreatedAt && Number.isFinite(snapshotTs)
-        ? Math.max(0, Math.ceil((snapshotTs - row.noteCreatedAt) / (1000 * 60 * 60 * 24)))
-        : 0
+      const ageDays =
+        row.noteCreatedAt && Number.isFinite(snapshotTs)
+          ? Math.max(0, Math.ceil((snapshotTs - row.noteCreatedAt) / (1000 * 60 * 60 * 24)))
+          : 0
 
-      const trendDeltaRaw = dRead * 0.02 + dClick * 0.3 + dOrder * 2 + (acceleration - 1) * 2
+      const trendDeltaRaw = trendComparable
+        ? dRead * 0.02 + dClick * 0.3 + dOrder * 2 + (acceleration - 1) * 2
+        : 0
       const trendDelta = Number(clamp(trendDeltaRaw, -9.9, 9.9).toFixed(1))
 
-      const readBaseline = computeBaseline(prevRows.map((item) => Number(item.read_count ?? 0)), row.readCount)
-      const clickBaseline = computeBaseline(prevRows.map((item) => Number(item.click_count ?? 0)), row.clickCount)
-      const ctrBaseline = computeBaseline(prevRows.map((item) => Number(item.click_rate_pv ?? 0)), row.clickRatePv)
-      const trendHint = [
-        '昨对比前3日均值',
-        `阅读 ${formatDelta(dRead)} (${formatPercent(dRead, readBaseline)})`,
-        `点击 ${formatDelta(dClick)} (${formatPercent(dClick, clickBaseline)})`,
-        `CTR ${formatDeltaRate(row.clickRatePv - ctrBaseline)}`
-      ]
+      const trendHint = trendComparable
+        ? (() => {
+            const readBaseline = computeBaseline(
+              prevRows.map((item) => Number(item.read_count ?? 0)),
+              row.readCount
+            )
+            const clickBaseline = computeBaseline(
+              prevRows.map((item) => Number(item.click_count ?? 0)),
+              row.clickCount
+            )
+            const ctrBaseline = computeBaseline(
+              prevRows.map((item) => Number(item.click_rate_pv ?? 0)),
+              row.clickRatePv
+            )
+            return [
+              '昨对比前3日均值',
+              `阅读 ${formatDelta(dRead)} (${formatPercent(dRead, readBaseline)})`,
+              `点击 ${formatDelta(dClick)} (${formatPercent(dClick, clickBaseline)})`,
+              `CTR ${formatDeltaRate(row.clickRatePv - ctrBaseline)}`
+            ]
+          })()
+        : ['样本不足或口径不可比', trendBlockedReason ?? '快照口径不可比，已禁用增量趋势计算。']
 
-      const dComment = row.commentCount - (prev?.commentCount ?? 0)
-      const dCollect = row.collectCount - (prev?.collectCount ?? 0)
-      const dLike = row.likeCount - (prev?.likeCount ?? 0)
-      const dCover = content ? content.coverClickRate - (prevContent?.coverClickRate ?? 0) : 0
+      const rawDComment = row.commentCount - (prev?.commentCount ?? 0)
+      const rawDCollect = row.collectCount - (prev?.collectCount ?? 0)
+      const rawDLike = row.likeCount - (prev?.likeCount ?? 0)
+      const rawDCover = content ? content.coverClickRate - (prevContent?.coverClickRate ?? 0) : 0
+      const dComment = trendComparable ? rawDComment : 0
+      const dCollect = trendComparable ? rawDCollect : 0
+      const dLike = trendComparable ? rawDLike : 0
+      const dCover = trendComparable ? rawDCover : 0
 
       const contentSignals: NoteRaceSignal[] = []
       if (dComment !== 0) contentSignals.push(toSignal('评', dComment))
-      if (contentSignals.length < 2 && content && dCover !== 0) contentSignals.push(toSignal('封点', dCover * 100, 'pp'))
+      if (contentSignals.length < 2 && content && dCover !== 0)
+        contentSignals.push(toSignal('封点', dCover * 100, 'pp'))
       if (contentSignals.length < 2 && dCollect !== 0) contentSignals.push(toSignal('藏', dCollect))
       if (contentSignals.length < 2 && dLike !== 0) contentSignals.push(toSignal('赞', dLike))
       if (contentSignals.length === 0) contentSignals.push(toSignal('评', 0))
@@ -1295,8 +1600,13 @@ export class NoteRaceService {
           dLike +
           (content?.viewCount ?? row.readCount) * 0.02
       )
-      const commerceRaw = Math.max(0, row.clickCount * 3 + dClick * 4 + row.payOrders * 40 + dOrder * 80 + row.payAmount * 0.2)
-      const trendRaw = dRead + dClick * 8 + dOrder * 80 + (acceleration - 1) * 30
+      const commerceRaw = Math.max(
+        0,
+        row.clickCount * 3 + dClick * 4 + row.payOrders * 40 + dOrder * 80 + row.payAmount * 0.2
+      )
+      const trendRaw = trendComparable
+        ? dRead + dClick * 8 + dOrder * 80 + (acceleration - 1) * 30
+        : 0
 
       intermediate.push({
         noteKey: row.noteKey,
@@ -1333,7 +1643,11 @@ export class NoteRaceService {
         const contentScore = contentNorm(item.contentRaw)
         const commerceScore = commerceNorm(item.commerceRaw)
         const refundPenalty = clamp(item.refundRatePayTime * 20, 0, 20)
-        const score = clamp(0.55 * trendScore + 0.3 * contentScore + 0.15 * commerceScore - refundPenalty, 0, 100)
+        const score = clamp(
+          0.55 * trendScore + 0.3 * contentScore + 0.15 * commerceScore - refundPenalty,
+          0,
+          100
+        )
         return {
           ...item,
           score: Number(score.toFixed(1))
@@ -1368,7 +1682,14 @@ export class NoteRaceService {
     const now = Date.now()
     const saveTx = db.transaction(() => {
       for (const match of matches) {
-        insertMatch.run(snapshotDate, match.noteKey, match.contentRowId, match.confidence, match.rule, now)
+        insertMatch.run(
+          snapshotDate,
+          match.noteKey,
+          match.contentRowId,
+          match.confidence,
+          match.rule,
+          now
+        )
       }
       for (const row of ranked) {
         insertRank.run(
@@ -1468,7 +1789,13 @@ function toNullableNumber(value: unknown): number | null {
 
 function toTag(value: unknown): NoteRaceTag {
   const normalized = normalizeText(value)
-  if (normalized === '起飞' || normalized === '维稳' || normalized === '掉速' || normalized === '长尾复活' || normalized === '风险') {
+  if (
+    normalized === '起飞' ||
+    normalized === '维稳' ||
+    normalized === '掉速' ||
+    normalized === '长尾复活' ||
+    normalized === '风险'
+  ) {
     return normalized
   }
   return '维稳'
@@ -1476,7 +1803,8 @@ function toTag(value: unknown): NoteRaceTag {
 
 function toStageIndex(value: unknown): 1 | 2 | 3 | 4 | 5 {
   const numeric = Number(value)
-  if (numeric === 1 || numeric === 2 || numeric === 3 || numeric === 4 || numeric === 5) return numeric
+  if (numeric === 1 || numeric === 2 || numeric === 3 || numeric === 4 || numeric === 5)
+    return numeric
   return 1
 }
 

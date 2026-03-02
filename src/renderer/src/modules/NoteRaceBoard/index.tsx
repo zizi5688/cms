@@ -1,14 +1,6 @@
 import * as React from 'react'
 
-import {
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Download,
-  ExternalLink,
-  RefreshCcw,
-  Settings2
-} from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, Download, RefreshCcw, Settings2 } from 'lucide-react'
 
 import { Drawer } from '@renderer/components/ui/drawer'
 import { Tabs, type TabsItem } from '@renderer/components/ui/tabs'
@@ -36,6 +28,7 @@ type RaceMeta = {
   totalNotes: number
   matchedNotes: number
   matchRate: number
+  trendReadyDates: string[]
 }
 
 type RaceFolderScanResult = {
@@ -90,7 +83,7 @@ type RaceDetail = {
 }
 
 type ActionPriority = 'P0' | 'P1' | 'P2'
-type DataPhase = 'EMPTY' | 'DAY1' | 'DAY2_PLUS'
+type DataPhase = 'EMPTY' | 'LOW_CONFIDENCE' | 'DAY2_PLUS'
 type MainView = 'action-console' | 'monitor-hall'
 type ViewMode = 'flat' | 'grouped'
 type PriorityFilter = 'all' | ActionPriority
@@ -132,6 +125,23 @@ type ProductGroup = {
   totalExposure: number | null
   totalRead: number | null
   rows: RaceListRow[]
+}
+
+type ScoreBreakdownPart = {
+  id: 'content' | 'commerce' | 'trend'
+  label: string
+  value: number | null
+  widthPercent: number
+  sharePercent: number
+  barClassName: string
+}
+
+type ScoreBreakdownData = {
+  totalScore: number
+  parts: ScoreBreakdownPart[]
+  penaltyTriggered: boolean
+  penaltyText: string | null
+  allPartsMissing: boolean
 }
 
 const NOTE_TYPES: NoteType[] = ['全部', '图文', '视频']
@@ -318,8 +328,8 @@ function buildActionItemDay1(row: RaceListRow): RaceActionItem {
       account: row.account,
       tag: row.tag,
       priority: 'P1',
-      reason: `首日高分 ${row.score.toFixed(1)}，当前仅 1 日样本`,
-      action: '先小步放大：围绕同题材补 1 条，并在明日重点看点击与评论增量'
+      reason: `低置信高分 ${row.score.toFixed(1)}（样本不足或口径不可比）`,
+      action: '先小步放大：围绕同题材补 1 条，并在下一可比快照重点看点击与评论增量'
     }
   }
   if (row.stageIndex <= 2 && row.score >= 60) {
@@ -330,8 +340,8 @@ function buildActionItemDay1(row: RaceListRow): RaceActionItem {
       account: row.account,
       tag: row.tag,
       priority: 'P1',
-      reason: `首日阶段 ${row.stageLabel}，具备继续观察价值`,
-      action: '推进转化表达：优化封面标题和首屏卖点，等待次日增量确认'
+      reason: `低置信阶段 ${row.stageLabel}，具备继续观察价值`,
+      action: '推进转化表达：优化封面标题和首屏卖点，等待下一可比快照确认'
     }
   }
   return {
@@ -341,8 +351,8 @@ function buildActionItemDay1(row: RaceListRow): RaceActionItem {
     account: row.account,
     tag: row.tag,
     priority: 'P2',
-    reason: `首日样本不足，暂不做趋势结论`,
-    action: '常规观察：先保留样本，不做大动作，等待第 2 日数据'
+    reason: `样本不足或口径不可比，暂不做趋势结论`,
+    action: '常规观察：先保留样本，不做大动作，等待下一可比快照'
   }
 }
 
@@ -391,6 +401,174 @@ function buildNoteExternalUrl(noteKey: string | null | undefined): string | null
   if (!normalized) return null
   if (/^https?:\/\//i.test(normalized)) return normalized
   return `https://www.xiaohongshu.com/explore/${encodeURIComponent(normalized)}`
+}
+
+function readFirstNumeric(sources: unknown[], keys: string[]): number | null {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue
+    const record = source as Record<string, unknown>
+    for (const key of keys) {
+      if (!(key in record)) continue
+      const value = Number(record[key])
+      if (Number.isFinite(value)) return value
+    }
+  }
+  return null
+}
+
+function readFirstBoolean(sources: unknown[], keys: string[]): boolean | null {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue
+    const record = source as Record<string, unknown>
+    for (const key of keys) {
+      if (!(key in record)) continue
+      const raw = record[key]
+      if (typeof raw === 'boolean') return raw
+      if (typeof raw === 'number') return raw !== 0
+      if (typeof raw === 'string') {
+        const normalized = raw.trim().toLowerCase()
+        if (['1', 'true', 'yes', 'y'].includes(normalized)) return true
+        if (['0', 'false', 'no', 'n'].includes(normalized)) return false
+      }
+    }
+  }
+  return null
+}
+
+function findFunnelMetricValue(
+  metrics: FunnelMetric[] | null | undefined,
+  keywords: string[]
+): number | null {
+  if (!Array.isArray(metrics)) return null
+  for (const metric of metrics) {
+    const label = String(metric.label ?? '').trim()
+    if (!label) continue
+    if (!keywords.some((keyword) => label.includes(keyword))) continue
+    const value = Number(metric.value)
+    if (Number.isFinite(value)) return Math.max(0, value)
+  }
+  return null
+}
+
+function formatBreakdownValue(value: number | null): string {
+  if (value == null) return '-'
+  const abs = Math.abs(value)
+  if (abs >= 100) return value.toFixed(0)
+  return value.toFixed(1).replace(/\.0$/, '')
+}
+
+function resolveScoreBreakdown(row: RaceListRow, detail: RaceDetail | null): ScoreBreakdownData {
+  const sources: unknown[] = [detail, detail?.row, row]
+  const totalScore = Number.isFinite(row.score) ? row.score : 0
+
+  const contentScore = readFirstNumeric(sources, [
+    'content_score',
+    'contentScore',
+    'content_raw',
+    'contentRaw'
+  ])
+  const commerceScore = readFirstNumeric(sources, [
+    'commerce_score',
+    'commerceScore',
+    'commerce_raw',
+    'commerceRaw'
+  ])
+  const trendScore = readFirstNumeric(sources, [
+    'trend_score',
+    'trendScore',
+    'trend_raw',
+    'trendRaw'
+  ])
+
+  const numericValues = [contentScore, commerceScore, trendScore]
+    .filter((item): item is number => item != null && Number.isFinite(item))
+    .map((item) => Math.max(0, item))
+  const maxValue = numericValues.length > 0 ? Math.max(...numericValues) : 0
+  const sumValue = numericValues.reduce((sum, item) => sum + item, 0)
+
+  const buildPart = (
+    id: ScoreBreakdownPart['id'],
+    label: string,
+    value: number | null,
+    barClassName: string
+  ): ScoreBreakdownPart => {
+    const safeValue = value != null && Number.isFinite(value) ? Math.max(0, value) : null
+    const widthPercent = safeValue == null || maxValue <= 0 ? 0 : (safeValue / maxValue) * 100
+    const sharePercent = safeValue == null || sumValue <= 0 ? 0 : (safeValue / sumValue) * 100
+    return {
+      id,
+      label,
+      value: safeValue,
+      widthPercent: Math.min(100, Math.max(0, widthPercent)),
+      sharePercent: Math.min(100, Math.max(0, sharePercent)),
+      barClassName
+    }
+  }
+
+  const parts: ScoreBreakdownPart[] = [
+    buildPart('content', '内容表现', contentScore, 'bg-cyan-400'),
+    buildPart('commerce', '商品转化', commerceScore, 'bg-emerald-400'),
+    buildPart('trend', '爆发趋势', trendScore, 'bg-amber-400')
+  ]
+
+  const refundPenalty = readFirstNumeric(sources, [
+    'refund_penalty',
+    'refundPenalty',
+    'refund_deduct_score',
+    'refundDeductScore',
+    'penalty_refund',
+    'refund_score_penalty',
+    'refundScorePenalty'
+  ])
+  const refundRate = readFirstNumeric(sources, [
+    'refund_rate_pay_time',
+    'refundRatePayTime',
+    'refund_rate',
+    'refundRate'
+  ])
+  const hasRefundPenaltyFlag = readFirstBoolean(sources, [
+    'has_refund_penalty',
+    'hasRefundPenalty',
+    'refund_penalty_triggered',
+    'refundPenaltyTriggered',
+    'is_refund_risk',
+    'isRefundRisk'
+  ])
+
+  const refundCount = findFunnelMetricValue(detail?.commerceFunnel, ['退款'])
+  const payCount = findFunnelMetricValue(detail?.commerceFunnel, ['支付'])
+  const derivedRefundRate =
+    payCount != null && payCount > 0 && refundCount != null ? refundCount / payCount : null
+  const effectiveRefundRate =
+    refundRate != null && Number.isFinite(refundRate)
+      ? Math.max(0, refundRate)
+      : derivedRefundRate != null
+        ? Math.max(0, derivedRefundRate)
+        : null
+  const derivedPenalty =
+    refundPenalty != null
+      ? Math.max(0, refundPenalty)
+      : effectiveRefundRate != null
+        ? Math.min(20, effectiveRefundRate * 20)
+        : null
+  const penaltyTriggered =
+    hasRefundPenaltyFlag === true ||
+    (derivedPenalty != null && derivedPenalty > 0.01) ||
+    (effectiveRefundRate != null && effectiveRefundRate >= 0.3)
+  const penaltyText =
+    derivedPenalty != null && derivedPenalty > 0.01
+      ? `⚠️ 退款惩罚：-${derivedPenalty.toFixed(1)}分`
+      : penaltyTriggered
+        ? '🚨 转化链路高危'
+        : null
+
+  return {
+    totalScore,
+    parts,
+    penaltyTriggered,
+    penaltyText,
+    allPartsMissing: parts.every((item) => item.value == null)
+  }
 }
 
 function FunnelChart({
@@ -637,7 +815,7 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
           title="复制笔记链接"
           aria-label="复制笔记链接"
         >
-          <ExternalLink className="h-3 w-3" />
+          <Copy className="h-3 w-3" />
         </span>
       </span>
       <span className="inline-flex items-center justify-end gap-1 text-right tabular-nums text-zinc-300">
@@ -718,7 +896,8 @@ function NoteRaceBoard(): React.JSX.Element {
     availableDates: [],
     totalNotes: 0,
     matchedNotes: 0,
-    matchRate: 0
+    matchRate: 0,
+    trendReadyDates: []
   })
   const [loading, setLoading] = React.useState<boolean>(false)
   const [detailLoading, setDetailLoading] = React.useState<boolean>(false)
@@ -726,6 +905,7 @@ function NoteRaceBoard(): React.JSX.Element {
   const [scanLoading, setScanLoading] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
+  const [copyToastMessage, setCopyToastMessage] = React.useState<string>('')
   const [detailDrawerOpen, setDetailDrawerOpen] = React.useState<boolean>(false)
   const [monitorMenuOpen, setMonitorMenuOpen] = React.useState<boolean>(false)
   const [noticeCursor, setNoticeCursor] = React.useState<number>(0)
@@ -733,14 +913,31 @@ function NoteRaceBoard(): React.JSX.Element {
   const scanInFlightRef = React.useRef<boolean>(false)
   const monitorMenuRef = React.useRef<HTMLDivElement | null>(null)
   const tableScrollRef = React.useRef<HTMLDivElement | null>(null)
+  const isTrendReady = React.useMemo(() => {
+    if (!snapshotDate) return false
+    return Array.isArray(meta.trendReadyDates) && meta.trendReadyDates.includes(snapshotDate)
+  }, [meta.trendReadyDates, snapshotDate])
+
   const dataPhase: DataPhase = React.useMemo(() => {
     if (snapshotDates.length === 0) return 'EMPTY'
-    if (snapshotDates.length === 1) return 'DAY1'
-    return 'DAY2_PLUS'
-  }, [snapshotDates.length])
+    return isTrendReady ? 'DAY2_PLUS' : 'LOW_CONFIDENCE'
+  }, [isTrendReady, snapshotDates.length])
 
   const loadMeta = React.useCallback(async (): Promise<string> => {
-    const next = (await window.api.cms.noteRace.meta()) as RaceMeta
+    const nextRaw = (await window.api.cms.noteRace.meta()) as RaceMeta
+    const trendReadyDates = Array.isArray(nextRaw?.trendReadyDates)
+      ? nextRaw.trendReadyDates.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : []
+    const next: RaceMeta = {
+      latestDate: nextRaw?.latestDate ?? null,
+      availableDates: Array.isArray(nextRaw?.availableDates)
+        ? nextRaw.availableDates.map((item) => String(item ?? '').trim()).filter(Boolean)
+        : [],
+      totalNotes: Number(nextRaw?.totalNotes ?? 0),
+      matchedNotes: Number(nextRaw?.matchedNotes ?? 0),
+      matchRate: Number(nextRaw?.matchRate ?? 0),
+      trendReadyDates
+    }
     const availableDates = Array.isArray(next.availableDates) ? next.availableDates : []
     const chosenDate =
       snapshotDate && availableDates.includes(snapshotDate) ? snapshotDate : (next.latestDate ?? '')
@@ -1046,11 +1243,11 @@ function NoteRaceBoard(): React.JSX.Element {
         message: '数据匹配率偏低，请核对标题/发布时间格式。'
       })
     }
-    if (dataPhase === 'DAY1') {
+    if (dataPhase === 'LOW_CONFIDENCE') {
       items.push({
-        id: 'day1',
+        id: 'low-confidence',
         level: 'warning',
-        message: '当前仅有 1 日数据：趋势与增量信号仅供试探性参考。'
+        message: '当前样本不足或口径不可比：趋势与增量信号仅供试探性参考。'
       })
     } else if (dataPhase === 'EMPTY') {
       items.push({
@@ -1118,6 +1315,16 @@ function NoteRaceBoard(): React.JSX.Element {
     }
   }, [])
 
+  React.useEffect(() => {
+    if (!copyToastMessage) return
+    const timer = window.setTimeout(() => {
+      setCopyToastMessage('')
+    }, 1800)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [copyToastMessage])
+
   const handleCopy = React.useCallback(async (value: string): Promise<boolean> => {
     const normalized = String(value ?? '').trim()
     if (!normalized) return false
@@ -1130,7 +1337,8 @@ function NoteRaceBoard(): React.JSX.Element {
   }, [])
 
   const handleCopyActionList = React.useCallback(async (): Promise<void> => {
-    const prefix = dataPhase === 'DAY1' ? '（低置信：当前仅 1 日样本）\n' : ''
+    const prefix =
+      dataPhase === 'DAY2_PLUS' ? '' : '（低置信：当前样本不足或口径不可比，趋势仅供参考）\n'
     const lines = actionList.map(
       (item, index) =>
         `${index + 1}. [${item.priority}] ${item.title}（${item.account} / #${item.rank}）` +
@@ -1162,7 +1370,7 @@ function NoteRaceBoard(): React.JSX.Element {
       }
       const copied = await handleCopy(targetUrl)
       if (copied) {
-        setLastImportMessage('笔记链接已复制到剪贴板')
+        setCopyToastMessage('链接复制成功')
         setError('')
         return
       }
@@ -1521,9 +1729,9 @@ function NoteRaceBoard(): React.JSX.Element {
                 复制清单
               </button>
             </div>
-            {dataPhase === 'DAY1' ? (
+            {dataPhase === 'LOW_CONFIDENCE' ? (
               <div className="mx-3 mt-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                低置信：当前仅 1 日样本，动作建议用于试探性执行。
+                低置信：当前样本不足或口径不可比，动作建议用于试探性执行。
               </div>
             ) : null}
             <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -1848,6 +2056,12 @@ function NoteRaceBoard(): React.JSX.Element {
         </div>
       )}
 
+      {copyToastMessage ? (
+        <div className="pointer-events-none fixed left-1/2 top-8 z-50 -translate-x-1/2 rounded-md border border-emerald-400/60 bg-emerald-500/12 px-3 py-1.5 text-xs text-emerald-100 shadow-lg">
+          {copyToastMessage}
+        </div>
+      ) : null}
+
       <Drawer
         open={detailDrawerOpen}
         onOpenChange={setDetailDrawerOpen}
@@ -1901,6 +2115,8 @@ function NoteRaceBoard(): React.JSX.Element {
               </div>
             ) : null}
 
+            <ScoreBreakdownCard row={selected} detail={detail} />
+
             <FunnelChart title="内容漏斗" metrics={detail?.contentFunnel ?? []} />
             <FunnelChart title="商品漏斗" metrics={detail?.commerceFunnel ?? []} />
 
@@ -1908,7 +2124,7 @@ function NoteRaceBoard(): React.JSX.Element {
               <h4 className="text-sm font-semibold text-zinc-100">趋势信号</h4>
               {dataPhase !== 'DAY2_PLUS' ? (
                 <div className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
-                  样本不足：至少需要连续 2 日数据才显示增量趋势
+                  样本不足或口径不可比：仅当连续两天均为“近1日”同口径快照时才显示增量趋势
                 </div>
               ) : null}
               <div className="mt-2">
@@ -2008,6 +2224,70 @@ function SignalColumn({ signals }: { signals: Signal[] }): React.JSX.Element {
         </span>
       ))}
     </span>
+  )
+}
+
+function ScoreBreakdownCard({
+  row,
+  detail
+}: {
+  row: RaceListRow
+  detail: RaceDetail | null
+}): React.JSX.Element {
+  const data = resolveScoreBreakdown(row, detail)
+  return (
+    <section className="rounded-lg border border-zinc-700/70 bg-[rgba(255,255,255,0.03)] p-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
+      <div className="flex items-start justify-between gap-2">
+        <h4 className="text-sm font-semibold text-zinc-100">赛马分归因</h4>
+        {data.penaltyTriggered ? (
+          <span className="inline-flex rounded border border-[rgba(255,67,67,0.4)] bg-[rgba(255,67,67,0.1)] px-2 py-0.5 text-[10px] text-[#ff4d4f]">
+            {data.penaltyText ?? '🚨 转化链路高危'}
+          </span>
+        ) : (
+          <span className="inline-flex rounded border border-zinc-600/50 bg-transparent px-2 py-0.5 text-[10px] text-zinc-400">
+            ✓ 链路健康
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 grid grid-cols-[132px_minmax(0,1fr)] gap-4">
+        <div className="rounded border border-zinc-700/70 bg-zinc-900/55 px-2.5 py-2">
+          <div className="text-[10px] text-zinc-500">综合赛马分</div>
+          <div className="mt-1 text-[28px] font-semibold leading-none tabular-nums text-zinc-50">
+            {formatBreakdownValue(data.totalScore)}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {data.parts.map((part) => {
+            const valueText =
+              part.value == null
+                ? '-'
+                : `${formatBreakdownValue(part.value)} · ${part.sharePercent.toFixed(1)}%`
+            return (
+              <div key={part.id}>
+                <div className="mb-1 flex items-center justify-between text-[11px]">
+                  <span className="text-zinc-300">{part.label}</span>
+                  <span className="tabular-nums text-zinc-400">{valueText}</span>
+                </div>
+                <div className="h-[6px] overflow-hidden rounded-[3px] bg-zinc-800/80">
+                  <div
+                    className={cn('h-full rounded-[3px]', part.barClassName)}
+                    style={{ width: `${part.widthPercent}%` }}
+                  />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {data.allPartsMissing ? (
+        <div className="mt-2 text-[10px] text-zinc-500">
+          子项得分未下发，已回退到总分与风险诊断展示。
+        </div>
+      ) : null}
+    </section>
   )
 }
 
