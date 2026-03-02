@@ -1,7 +1,7 @@
 # Super CMS 技术架构文档（交接版）
 
-- 文档版本: v1.1
-- 最近更新时间: 2026-02-19
+- 文档版本: v1.2
+- 最近更新时间: 2026-02-26
 - 项目类型: Electron + React + TypeScript 桌面应用
 - UI 技术判定: `electron`（依据 `package.json`、`src/main/index.ts`、`src/preload/index.ts`）
 
@@ -31,6 +31,7 @@ flowchart LR
 
 - 渲染层（`src/renderer`）:
   - 页面与交互编排（素材处理、数据工坊、媒体矩阵、选品、热度看板、设置）。
+  - 热度看板内 `SourcingPanel` 负责 1688 Webview 联动、一键铺货账号确认弹窗与交互收口。
   - 本地状态管理（Zustand `useCmsStore`）。
 - 预加载层（`src/preload` + `src/main/preload`）:
   - 暴露受控 API（`window.api`, `window.electronAPI`）。
@@ -71,6 +72,11 @@ flowchart LR
   D --> F["IPC_SEARCH_1688_BY_IMAGE"]
   F --> G["1688 搜索/人工调试"]
   G --> H["候选供应商回填 UI"]
+  H --> I["SourcingPanel 一键铺货"]
+  I --> J["账号选择弹窗确认"]
+  J --> K["webview.executeJavaScript 注入 V20.9 脚本"]
+  K --> L["双层 Shadow DOM 穿透 + 勾选 + 提交点击"]
+  L --> M["SUBMIT_CLICKED 收口 -> 已上架状态写入 localStorage"]
 ```
 
 ## 4. API 契约
@@ -84,7 +90,7 @@ flowchart LR
 | 发布 | `publisher.publish`, `automation-log`, `publisher:progress` | 双向 | 小红书自动化发布与进度 |
 | 素材处理 | `process-watermark`, `process-hd-upscale`, `process-grid-split`, `media:prepareVideoPreview` | Renderer -> Main | 图片/视频处理 |
 | 选品同步 | `cms.scout.sync.*`, `cms.scout.keyword.*`, `cms.scout.product.list` | Renderer -> Main | JSON 导入与查询 |
-| 热度看板 | `cms.scout.dashboard.*`, `IPC_FETCH_XHS_IMAGE`, `IPC_IMAGE_UPDATED`, `IPC_IMAGE_FETCH_FAILED`, `IPC_SEARCH_1688_BY_IMAGE` | 双向 | 趋势查询、封面抓取、失败回传、1688 图搜与绑定 |
+| 热度看板 | `cms.scout.dashboard.*`, `IPC_FETCH_XHS_IMAGE`, `IPC_IMAGE_UPDATED`, `IPC_IMAGE_FETCH_FAILED`, `IPC_SEARCH_1688_BY_IMAGE` | 双向 | 趋势查询、封面抓取、失败回传、1688 图搜；铺货动作为 Renderer 侧 Webview 脚本注入执行 |
 | 工作区 | `workspace.getPath/pickPath/setPath/relaunch` | Renderer -> Main | 本地工作区管理 |
 | 设置/飞书 | `get-config/save-config/get-feishu-config/feishu-*` | Renderer -> Main | 配置读写与飞书 API |
 
@@ -112,7 +118,8 @@ flowchart LR
 - 快照维度按 `snapshot_date + product_key` 复合主键。
 - 监控指标（加购、评分、店铺粉丝）支持趋势聚合。
 - `deleteDashboardSnapshot` 以 `imported_at` 批次为主键删除快照，并级联清理失效 `watchlist/product_map/cover_cache`。
-- `bindDashboardSupplier` 将候选供应商写回 `scout_dashboard_watchlist`（`supplier1_*`, `profit1`, `best_profit_amount`, `sourcing_status`）。
+- 搜同款结果仍写回 `scout_dashboard_watchlist`（`supplier1_*`, `profit1`, `best_profit_amount`, `sourcing_status`），供候选卡片展示与利润排序。
+- “已上架”状态不写数据库，采用 Renderer 侧 `localStorage` (`heat-dashboard:one-click-delivery:v1`) 按 `snapshotDate::productKey` 上下文持久化候选键集合。
 
 ## 6. 部署拓扑
 运行形态分开发与打包:
@@ -150,6 +157,9 @@ flowchart TB
   - `DiagnosticsService` 保存截图和网络请求日志至 `workspace/diagnostics`。
 - 队列稳定性:
   - `QueueService.markStalledTasksAsFailed/recoverStalledTasks`。
+- 热度看板自动化反馈:
+  - 一键铺货执行通过 Toast 输出 `success/warning/error`。
+  - 脚本内 HUD 默认关闭（`SHOW_DEBUG_HUD=false`），仅在调试时启用可视化标记。
 
 现状结论:
 - 已具备本地诊断能力。
@@ -186,12 +196,13 @@ flowchart TB
 - [安全性] 评估主窗口 `sandbox` 收敛路径，至少对新窗口默认开启更严格策略。
 - [产品一致性] `UploadManager` 入口已隐藏但代码仍活跃，建议明确保留或下线策略。
 - [调试治理] 抓图/搜同款调试开关目前依赖进程环境变量，建议增加持久化配置与角色权限控制。
+- [成功判定] 当前一键铺货以 `SUBMIT_CLICKED` 作为收口条件，未强依赖“铺货成功”文案命中；若业务要求强一致，需补充二次确认回执策略。
 
 ## 11. 本次变更摘要
-- 对齐 `origin/main` 最新修复：待排期池标题长度校验前移到排期入口，避免非法任务进入调度队列。
-- 发布稳定性补充：上传就绪守卫 + 上传中重试拦截，降低图文发布中断率。
-- 失败任务治理补充：统一失败展示并在重试耗尽后回退待排期池，便于人工二次处理。
-- 本次巡检同步刷新文档审计产物：`docs/_evidence.json`、`docs/_update-report.md`。
+- 热度看板新增“候选供应商 -> 账号确认 -> 一键铺货自动化”完整交互链路，执行入口在 `SourcingPanel`。
+- 一键铺货执行引擎统一为 `build1688OneClickDeliveryScript`（`V20.9-submit-click-shortcircuit`），保留双层 Shadow DOM 穿透与提交点击收口。
+- React 编排新增自动接力与兜底：`NAVIGATING` 4 秒重试（最多 4 次）、35 秒脚本超时、用户手动中止 `window.__CANCEL_RPA__`。
+- 已上架状态持久化策略落地：按商品上下文写入本地 `localStorage`，用于供应商卡片按钮状态回显。
 
 <!-- ARCH-SECTION:BEGIN -->
 ### 人工补充区

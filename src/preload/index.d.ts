@@ -178,6 +178,25 @@ declare global {
     importedRows: number
     matchedRows?: number
     totalRows?: number
+    kind?: 'commerce' | 'content'
+    detectedBy?: 'header' | 'filename'
+  }
+
+  type NoteRaceAutoImportBatchResult = {
+    selectedFiles: number
+    importedFiles: number
+    importedCommerceFiles: number
+    importedContentFiles: number
+    failedFiles: number
+    importedItems: Array<
+      NoteRaceImportResult & {
+        filePath: string
+        fileName: string
+        kind: 'commerce' | 'content'
+        detectedBy: 'header' | 'filename'
+      }
+    >
+    failures: Array<{ filePath: string; fileName: string; message: string }>
   }
 
   type NoteRaceScanFolderResult = {
@@ -200,6 +219,7 @@ declare global {
     totalNotes: number
     matchedNotes: number
     matchRate: number
+    trendReadyDates: string[]
   }
 
   type NoteRaceListRow = {
@@ -629,6 +649,11 @@ declare global {
         }
       }
       noteRace: {
+        importAutoFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
+        importAutoFiles: (payload?: {
+          filePath?: string
+          filePaths?: string[]
+        }) => Promise<NoteRaceAutoImportBatchResult | null>
         importCommerceFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
         importContentFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
         scanFolderImports: (payload: {

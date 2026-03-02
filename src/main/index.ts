@@ -3929,6 +3929,121 @@ app.whenReady().then(async () => {
   // NoteRace: 数据赛马场模块 IPC
   // ============================================================
 
+  const runNoteRaceAutoImports = async (
+    filePaths: string[]
+  ): Promise<{
+    selectedFiles: number
+    importedFiles: number
+    importedCommerceFiles: number
+    importedContentFiles: number
+    failedFiles: number
+    importedItems: Array<{
+      filePath: string
+      fileName: string
+      snapshotDate: string
+      sourceFile: string
+      importedRows: number
+      matchedRows?: number
+      totalRows?: number
+      kind: 'commerce' | 'content'
+      detectedBy: 'header' | 'filename'
+    }>
+    failures: Array<{ filePath: string; fileName: string; message: string }>
+  }> => {
+    const normalized = filePaths
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+    const importedItems: Array<{
+      filePath: string
+      fileName: string
+      snapshotDate: string
+      sourceFile: string
+      importedRows: number
+      matchedRows?: number
+      totalRows?: number
+      kind: 'commerce' | 'content'
+      detectedBy: 'header' | 'filename'
+    }> = []
+    const failures: Array<{ filePath: string; fileName: string; message: string }> = []
+    let importedCommerceFiles = 0
+    let importedContentFiles = 0
+
+    for (const filePath of normalized) {
+      try {
+        const result = await noteRaceService.importAutoExcel(filePath)
+        importedItems.push({
+          filePath,
+          fileName: basename(filePath),
+          ...result
+        })
+        if (result.kind === 'commerce') importedCommerceFiles += 1
+        if (result.kind === 'content') importedContentFiles += 1
+      } catch (error) {
+        failures.push({
+          filePath,
+          fileName: basename(filePath),
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+
+    return {
+      selectedFiles: normalized.length,
+      importedFiles: importedItems.length,
+      importedCommerceFiles,
+      importedContentFiles,
+      failedFiles: failures.length,
+      importedItems,
+      failures
+    }
+  }
+
+  ipcMain.handle('cms.noteRace.importAutoFile', async (event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
+    if (directPath) {
+      return noteRaceService.importAutoExcel(directPath)
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+      : await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return noteRaceService.importAutoExcel(result.filePaths[0]!)
+  })
+
+  ipcMain.handle('cms.noteRace.importAutoFiles', async (event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
+    const directPaths = Array.isArray(query.filePaths)
+      ? query.filePaths.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : []
+    const targetPaths =
+      directPaths.length > 0 ? directPaths : directPath ? [directPath] : []
+    if (targetPaths.length > 0) {
+      return runNoteRaceAutoImports(targetPaths)
+    }
+
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+      : await dialog.showOpenDialog({
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Excel', extensions: ['xlsx', 'xlsm', 'xls'] }]
+        })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return runNoteRaceAutoImports(result.filePaths)
+  })
+
   ipcMain.handle('cms.noteRace.importCommerceFile', async (event, payload: unknown) => {
     const query = (payload ?? {}) as Record<string, unknown>
     const directPath = typeof query.filePath === 'string' ? query.filePath.trim() : ''
