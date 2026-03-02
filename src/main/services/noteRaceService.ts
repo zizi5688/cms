@@ -111,6 +111,13 @@ export type NoteRaceImportResult = {
   totalRows?: number
 }
 
+export type NoteRaceImportKind = 'commerce' | 'content'
+export type NoteRaceImportDetectedBy = 'header' | 'filename'
+export type NoteRaceAutoImportResult = NoteRaceImportResult & {
+  kind: NoteRaceImportKind
+  detectedBy: NoteRaceImportDetectedBy
+}
+
 export type NoteRaceMeta = {
   latestDate: string | null
   availableDates: string[]
@@ -402,6 +409,23 @@ function cell(row: { getCell: (index: number) => { value: unknown } }, index: nu
   return row.getCell(index).value
 }
 
+function detectImportKindFromFileName(filePath: string): NoteRaceImportKind | null {
+  const sourceFile = basename(filePath)
+  if (sourceFile.includes('商品笔记数据')) return 'commerce'
+  if (sourceFile.includes('笔记列表明细') || sourceFile.includes('笔记列表')) return 'content'
+  return null
+}
+
+function countHeaderMatches(map: Map<string, number>, headers: string[]): number {
+  let matches = 0
+  for (const header of headers) {
+    if (map.has(header)) {
+      matches += 1
+    }
+  }
+  return matches
+}
+
 export class NoteRaceService {
   private sqlite: SqliteService
 
@@ -517,6 +541,72 @@ export class NoteRaceService {
       CREATE INDEX IF NOT EXISTS idx_note_race_rank_snapshot_rank ON note_race_daily_rank (snapshot_date, rank_position);
       CREATE INDEX IF NOT EXISTS idx_note_race_rank_snapshot_score ON note_race_daily_rank (snapshot_date, score DESC);
     `)
+  }
+
+  private async detectExcelImportKind(
+    filePath: string
+  ): Promise<{ kind: NoteRaceImportKind | null; detectedBy: NoteRaceImportDetectedBy | null }> {
+    const workbook = await createExcelWorkbook()
+    await workbook.xlsx.readFile(filePath)
+    const sheet = workbook.worksheets[0]
+    if (!sheet) {
+      const byName = detectImportKindFromFileName(filePath)
+      return { kind: byName, detectedBy: byName ? 'filename' : null }
+    }
+
+    const commerceHeaders = [
+      '笔记ID',
+      '作者昵称',
+      '作者xhs_ID',
+      '关联商品名称',
+      '笔记支付金额',
+      '笔记支付订单数',
+      '笔记商品点击次数',
+      '笔记阅读数'
+    ]
+    const contentHeaders = ['首次发布时间', '体裁', '曝光', '观看量', '封面点击率', '涨粉', '人均观看时长']
+
+    const firstRowMap = buildHeaderIndex(sheet.getRow(1).values as unknown[])
+    const secondRowMap = buildHeaderIndex(sheet.getRow(2).values as unknown[])
+
+    const commerceScore = Math.max(
+      countHeaderMatches(firstRowMap, commerceHeaders),
+      countHeaderMatches(secondRowMap, commerceHeaders)
+    )
+    const contentScore = Math.max(
+      countHeaderMatches(firstRowMap, contentHeaders),
+      countHeaderMatches(secondRowMap, contentHeaders)
+    )
+
+    if (commerceScore >= 2 || contentScore >= 2) {
+      if (commerceScore > contentScore) return { kind: 'commerce', detectedBy: 'header' }
+      if (contentScore > commerceScore) return { kind: 'content', detectedBy: 'header' }
+      const byName = detectImportKindFromFileName(filePath)
+      if (byName) return { kind: byName, detectedBy: 'filename' }
+      return { kind: 'commerce', detectedBy: 'header' }
+    }
+
+    const byName = detectImportKindFromFileName(filePath)
+    if (byName) return { kind: byName, detectedBy: 'filename' }
+    return { kind: null, detectedBy: null }
+  }
+
+  async importAutoExcel(filePath: string): Promise<NoteRaceAutoImportResult> {
+    const detected = await this.detectExcelImportKind(filePath)
+    if (!detected.kind) {
+      throw new Error(
+        '无法识别 Excel 类型。请导入“商品笔记数据”或“笔记列表明细表”，并确保表头完整。'
+      )
+    }
+    const imported =
+      detected.kind === 'commerce'
+        ? await this.importCommerceExcel(filePath)
+        : await this.importContentExcel(filePath)
+    return {
+      ...imported,
+      kind: detected.kind,
+      detectedBy: detected.detectedBy ?? 'filename'
+    }
   }
 
   async importCommerceExcel(filePath: string): Promise<NoteRaceImportResult> {

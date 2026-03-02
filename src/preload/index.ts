@@ -127,6 +127,25 @@ type NoteRaceImportResult = {
   importedRows: number
   matchedRows?: number
   totalRows?: number
+  kind?: 'commerce' | 'content'
+  detectedBy?: 'header' | 'filename'
+}
+
+type NoteRaceAutoImportBatchResult = {
+  selectedFiles: number
+  importedFiles: number
+  importedCommerceFiles: number
+  importedContentFiles: number
+  failedFiles: number
+  importedItems: Array<
+    NoteRaceImportResult & {
+      filePath: string
+      fileName: string
+      kind: 'commerce' | 'content'
+      detectedBy: 'header' | 'filename'
+    }
+  >
+  failures: Array<{ filePath: string; fileName: string; message: string }>
 }
 
 type NoteRaceScanFolderResult = {
@@ -741,6 +760,13 @@ const api = {
       }
     },
     noteRace: {
+      importAutoFile: (payload?: { filePath?: string }): Promise<NoteRaceImportResult | null> =>
+        ipcRenderer.invoke('cms.noteRace.importAutoFile', payload),
+      importAutoFiles: (payload?: {
+        filePath?: string
+        filePaths?: string[]
+      }): Promise<NoteRaceAutoImportBatchResult | null> =>
+        ipcRenderer.invoke('cms.noteRace.importAutoFiles', payload),
       importCommerceFile: (payload?: { filePath?: string }): Promise<NoteRaceImportResult | null> =>
         ipcRenderer.invoke('cms.noteRace.importCommerceFile', payload),
       importContentFile: (payload?: { filePath?: string }): Promise<NoteRaceImportResult | null> =>

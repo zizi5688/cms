@@ -1,6 +1,14 @@
 import * as React from 'react'
 
-import { ChevronDown, Copy, Download, RefreshCcw, Settings2 } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  ExternalLink,
+  RefreshCcw,
+  Settings2
+} from 'lucide-react'
 
 import { Drawer } from '@renderer/components/ui/drawer'
 import { Tabs, type TabsItem } from '@renderer/components/ui/tabs'
@@ -28,14 +36,6 @@ type RaceMeta = {
   totalNotes: number
   matchedNotes: number
   matchRate: number
-}
-
-type RaceImportResult = {
-  snapshotDate: string
-  sourceFile: string
-  importedRows: number
-  matchedRows?: number
-  totalRows?: number
 }
 
 type RaceFolderScanResult = {
@@ -92,6 +92,7 @@ type RaceDetail = {
 type ActionPriority = 'P0' | 'P1' | 'P2'
 type DataPhase = 'EMPTY' | 'DAY1' | 'DAY2_PLUS'
 type MainView = 'action-console' | 'monitor-hall'
+type ViewMode = 'flat' | 'grouped'
 type PriorityFilter = 'all' | ActionPriority
 type SignalFilter = 'all' | 'opportunity' | 'alert' | 'rising' | 'mine-clear'
 type StageFilter = 'all' | 's1' | 's2' | 's3' | 's4' | 'new' | 'revival'
@@ -116,6 +117,21 @@ type RaceActionItem = {
 
 type LoadRowsOptions = {
   preserveScroll?: boolean
+}
+
+type ProductGroup = {
+  key: string
+  productName: string
+  noteCount: number
+  maxScore: number
+  maxPriority: ActionPriority
+  hasRising: boolean
+  hasRisk: boolean
+  hasRevival: boolean
+  hasDrop: boolean
+  totalExposure: number | null
+  totalRead: number | null
+  rows: RaceListRow[]
 }
 
 const NOTE_TYPES: NoteType[] = ['全部', '图文', '视频']
@@ -370,6 +386,13 @@ function normalizeStageIndex(stageIndex: number | null | undefined): number {
   return Math.min(5, Math.max(1, Math.round(parsed)))
 }
 
+function buildNoteExternalUrl(noteKey: string | null | undefined): string | null {
+  const normalized = String(noteKey ?? '').trim()
+  if (!normalized) return null
+  if (/^https?:\/\//i.test(normalized)) return normalized
+  return `https://www.xiaohongshu.com/explore/${encodeURIComponent(normalized)}`
+}
+
 function FunnelChart({
   title,
   metrics
@@ -548,6 +571,9 @@ type MonitorTableRowProps = {
   trendLabel: string
   trendClass: string
   onSelect: (id: string) => void
+  onOpenLink: (id: string) => void
+  indented?: boolean
+  className?: string
 }
 
 const MonitorTableRow = React.memo(function MonitorTableRow({
@@ -556,7 +582,10 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
   isSelected,
   trendLabel,
   trendClass,
-  onSelect
+  onSelect,
+  onOpenLink,
+  indented = false,
+  className
 }: MonitorTableRowProps): React.JSX.Element {
   const stageIndex = normalizeStageIndex(row.stageIndex)
   const stageLabel = row.stageLabel?.trim() || '-'
@@ -570,7 +599,8 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
         'grid h-[56px] w-full items-center border-b border-zinc-800/35 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
         priority === 'P0' && 'bg-rose-500/5',
         priority === 'P1' && 'bg-amber-500/5',
-        isSelected && 'bg-zinc-800/70'
+        isSelected && 'bg-zinc-800/70',
+        className
       )}
       style={{ gridTemplateColumns: MONITOR_TABLE_COLUMNS }}
       title={row.trendHint.join('\n')}
@@ -585,7 +615,31 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
       </span>
       <TagStatus tag={row.tag} />
       <span className="truncate text-zinc-400">{row.account || '-'}</span>
-      <span className="truncate text-zinc-100">{row.title}</span>
+      <span className={cn('flex min-w-0 items-center gap-1', indented && 'pl-4')}>
+        <span className="truncate text-zinc-100" title={row.title}>
+          {row.title}
+        </span>
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenLink(row.id)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              event.stopPropagation()
+              onOpenLink(row.id)
+            }
+          }}
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-zinc-500 transition hover:text-cyan-300 focus:outline-none"
+          title="复制笔记链接"
+          aria-label="复制笔记链接"
+        >
+          <ExternalLink className="h-3 w-3" />
+        </span>
+      </span>
       <span className="inline-flex items-center justify-end gap-1 text-right tabular-nums text-zinc-300">
         <span className={cn('h-1.5 w-1.5 rounded-full', ageDotClass(row.ageDays))} />
         <span>第{row.ageDays}天</span>
@@ -630,7 +684,10 @@ function areMonitorRowsEqual(prev: MonitorTableRowProps, next: MonitorTableRowPr
     prev.isSelected === next.isSelected &&
     prev.trendLabel === next.trendLabel &&
     prev.trendClass === next.trendClass &&
-    prev.onSelect === next.onSelect
+    prev.onSelect === next.onSelect &&
+    prev.onOpenLink === next.onOpenLink &&
+    prev.indented === next.indented &&
+    prev.className === next.className
   )
 }
 
@@ -640,6 +697,7 @@ function NoteRaceBoard(): React.JSX.Element {
   const [account, setAccount] = React.useState<string>('全部账号')
   const [noteType, setNoteType] = React.useState<NoteType>('全部')
   const [mainView, setMainView] = React.useState<MainView>('action-console')
+  const [viewMode, setViewMode] = React.useState<ViewMode>('flat')
   const [priorityFilter, setPriorityFilter] = React.useState<PriorityFilter>('all')
   const [signalFilter, setSignalFilter] = React.useState<SignalFilter>('all')
   const [stageFilter, setStageFilter] = React.useState<StageFilter>('all')
@@ -664,16 +722,15 @@ function NoteRaceBoard(): React.JSX.Element {
   })
   const [loading, setLoading] = React.useState<boolean>(false)
   const [detailLoading, setDetailLoading] = React.useState<boolean>(false)
-  const [importingKind, setImportingKind] = React.useState<'commerce' | 'content' | null>(null)
+  const [importing, setImporting] = React.useState<boolean>(false)
   const [scanLoading, setScanLoading] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
   const [detailDrawerOpen, setDetailDrawerOpen] = React.useState<boolean>(false)
-  const [importMenuOpen, setImportMenuOpen] = React.useState<boolean>(false)
   const [monitorMenuOpen, setMonitorMenuOpen] = React.useState<boolean>(false)
   const [noticeCursor, setNoticeCursor] = React.useState<number>(0)
+  const [expandedGroups, setExpandedGroups] = React.useState<Record<string, boolean>>({})
   const scanInFlightRef = React.useRef<boolean>(false)
-  const importMenuRef = React.useRef<HTMLDivElement | null>(null)
   const monitorMenuRef = React.useRef<HTMLDivElement | null>(null)
   const tableScrollRef = React.useRef<HTMLDivElement | null>(null)
   const dataPhase: DataPhase = React.useMemo(() => {
@@ -825,6 +882,62 @@ function NoteRaceBoard(): React.JSX.Element {
       })
       .slice(0, 12)
   }, [actionMap, priorityFilter, scopedRows, signalFilter, stageFilter])
+
+  const groupedRows = React.useMemo<ProductGroup[]>(() => {
+    const groupMap = new Map<string, ProductGroup>()
+
+    for (const row of rows) {
+      const productName = row.productName?.trim() || '未关联商品'
+      const key = productName
+      const rowPriority = actionMap.get(row.id)?.priority ?? 'P2'
+      const current = groupMap.get(key)
+
+      if (!current) {
+        groupMap.set(key, {
+          key,
+          productName,
+          noteCount: 1,
+          maxScore: row.score,
+          maxPriority: rowPriority,
+          hasRising: row.tag === '起飞',
+          hasRisk: row.tag === '风险',
+          hasRevival: row.tag === '长尾复活',
+          hasDrop: row.tag === '掉速',
+          totalExposure: null,
+          totalRead: null,
+          rows: [row]
+        })
+        continue
+      }
+
+      current.noteCount += 1
+      current.maxScore = Math.max(current.maxScore, row.score)
+      if (priorityOrder(rowPriority) < priorityOrder(current.maxPriority)) {
+        current.maxPriority = rowPriority
+      }
+      current.hasRising = current.hasRising || row.tag === '起飞'
+      current.hasRisk = current.hasRisk || row.tag === '风险'
+      current.hasRevival = current.hasRevival || row.tag === '长尾复活'
+      current.hasDrop = current.hasDrop || row.tag === '掉速'
+      current.rows.push(row)
+    }
+
+    return Array.from(groupMap.values()).sort((a, b) => {
+      if (b.maxScore !== a.maxScore) return b.maxScore - a.maxScore
+      if (b.noteCount !== a.noteCount) return b.noteCount - a.noteCount
+      return a.productName.localeCompare(b.productName, 'zh-CN')
+    })
+  }, [actionMap, rows])
+
+  React.useEffect(() => {
+    setExpandedGroups((prev) => {
+      const next: Record<string, boolean> = {}
+      for (const group of groupedRows) {
+        if (prev[group.key]) next[group.key] = true
+      }
+      return next
+    })
+  }, [groupedRows])
 
   React.useEffect(() => {
     if (!rows.length) {
@@ -995,9 +1108,6 @@ function NoteRaceBoard(): React.JSX.Element {
   React.useEffect(() => {
     const onPointerDown = (event: MouseEvent): void => {
       const target = event.target as Node
-      if (importMenuRef.current && !importMenuRef.current.contains(target)) {
-        setImportMenuOpen(false)
-      }
       if (monitorMenuRef.current && !monitorMenuRef.current.contains(target)) {
         setMonitorMenuOpen(false)
       }
@@ -1008,13 +1118,14 @@ function NoteRaceBoard(): React.JSX.Element {
     }
   }, [])
 
-  const handleCopy = React.useCallback(async (value: string): Promise<void> => {
+  const handleCopy = React.useCallback(async (value: string): Promise<boolean> => {
     const normalized = String(value ?? '').trim()
-    if (!normalized) return
+    if (!normalized) return false
     try {
       await navigator.clipboard.writeText(normalized)
+      return true
     } catch {
-      return
+      return false
     }
   }, [])
 
@@ -1042,36 +1153,62 @@ function NoteRaceBoard(): React.JSX.Element {
     setDetailDrawerOpen(true)
   }, [])
 
-  const handleImport = React.useCallback(
-    async (kind: 'commerce' | 'content'): Promise<void> => {
-      setImportingKind(kind)
-      setError('')
-      try {
-        const result = (
-          kind === 'commerce'
-            ? await window.api.cms.noteRace.importCommerceFile()
-            : await window.api.cms.noteRace.importContentFile()
-        ) as RaceImportResult | null
-
-        if (result) {
-          const matchedText =
-            typeof result.matchedRows === 'number'
-              ? `，匹配 ${result.matchedRows}/${result.totalRows ?? '-'} 条`
-              : ''
-          setLastImportMessage(
-            `已导入 ${result.sourceFile}：${result.importedRows} 行${matchedText}`
-          )
-        }
-
-        await refresh()
-      } catch (err) {
-        setError(`导入失败：${normalizeError(err)}`)
-      } finally {
-        setImportingKind(null)
+  const handleOpenNoteLink = React.useCallback(
+    async (noteKey: string): Promise<void> => {
+      const targetUrl = buildNoteExternalUrl(noteKey)
+      if (!targetUrl) {
+        setError('当前笔记缺少可复制链接')
+        return
       }
+      const copied = await handleCopy(targetUrl)
+      if (copied) {
+        setLastImportMessage('笔记链接已复制到剪贴板')
+        setError('')
+        return
+      }
+      setError('复制链接失败，请检查系统剪贴板权限')
     },
-    [refresh]
+    [handleCopy]
   )
+
+  const handleToggleGroup = React.useCallback((groupKey: string): void => {
+    setExpandedGroups((prev) => ({
+      ...prev,
+      [groupKey]: !prev[groupKey]
+    }))
+  }, [])
+
+  const handleImport = React.useCallback(async (): Promise<void> => {
+    setImporting(true)
+    setError('')
+    try {
+      const result = await window.api.cms.noteRace.importAutoFiles()
+
+      if (result) {
+        const totalImportedRows = result.importedItems.reduce(
+          (sum, item) => sum + Number(item.importedRows || 0),
+          0
+        )
+        setLastImportMessage(
+          `已导入 ${result.importedFiles}/${result.selectedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），共 ${totalImportedRows} 行`
+        )
+        if (result.failedFiles > 0) {
+          const firstFailure = result.failures[0]
+          setError(
+            `自动识别导入失败 ${result.failedFiles} 个，首个：${firstFailure?.fileName ?? '-'} ${firstFailure?.message ?? ''}`.trim()
+          )
+        } else {
+          setError('')
+        }
+      }
+
+      await refresh()
+    } catch (err) {
+      setError(`导入失败：${normalizeError(err)}`)
+    } finally {
+      setImporting(false)
+    }
+  }, [refresh])
 
   const handlePickMonitorDir = React.useCallback(async (): Promise<void> => {
     try {
@@ -1088,7 +1225,7 @@ function NoteRaceBoard(): React.JSX.Element {
 
   const runFolderScan = React.useCallback(
     async (mode: 'manual' | 'auto'): Promise<void> => {
-      if (mode === 'auto' && (importMenuOpen || monitorMenuOpen || detailDrawerOpen)) return
+      if (mode === 'auto' && (monitorMenuOpen || detailDrawerOpen)) return
       if (mode === 'auto' && typeof document !== 'undefined') {
         const activeElement = document.activeElement as HTMLElement | null
         if (activeElement && ['SELECT', 'INPUT', 'TEXTAREA'].includes(activeElement.tagName)) {
@@ -1146,7 +1283,7 @@ function NoteRaceBoard(): React.JSX.Element {
         }
       }
     },
-    [detailDrawerOpen, importMenuOpen, monitorDir, monitorMenuOpen, refresh, scanCursorMs]
+    [detailDrawerOpen, monitorDir, monitorMenuOpen, refresh, scanCursorMs]
   )
 
   const handleToggleAutoMonitor = React.useCallback((): void => {
@@ -1190,54 +1327,22 @@ function NoteRaceBoard(): React.JSX.Element {
             <p className="text-xs text-zinc-400">重点监控清单（趋势优先）</p>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            <div ref={importMenuRef} className="relative">
-              <button
-                type="button"
-                onClick={() => {
-                  setImportMenuOpen((prev) => !prev)
-                  setMonitorMenuOpen(false)
-                }}
-                className="inline-flex h-8 items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-3 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
-                title="导入赛马数据"
-              >
-                <Download className="h-3.5 w-3.5" />
-                导入数据
-                <ChevronDown className="h-3.5 w-3.5" />
-              </button>
-              {importMenuOpen ? (
-                <div className="absolute right-0 top-9 z-40 w-44 rounded-md border border-zinc-700 bg-zinc-900/95 p-1 shadow-xl backdrop-blur">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportMenuOpen(false)
-                      void handleImport('commerce')
-                    }}
-                    disabled={importingKind != null}
-                    className="flex h-8 w-full items-center rounded px-2 text-left text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {importingKind === 'commerce' ? '导入商品中...' : '导入商品笔记表'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportMenuOpen(false)
-                      void handleImport('content')
-                    }}
-                    disabled={importingKind != null}
-                    className="flex h-8 w-full items-center rounded px-2 text-left text-zinc-200 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {importingKind === 'content' ? '导入内容中...' : '导入笔记列表表'}
-                  </button>
-                </div>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              onClick={() => void handleImport()}
+              disabled={importing}
+              className="inline-flex h-8 items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-3 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+              title="选择 Excel（支持多选，自动识别导入）"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {importing ? '识别导入中...' : '导入数据'}
+            </button>
 
             <div ref={monitorMenuRef} className="relative">
               <button
                 type="button"
                 onClick={() => {
                   setMonitorMenuOpen((prev) => !prev)
-                  setImportMenuOpen(false)
                 }}
                 className="inline-flex h-8 items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-3 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
                 title="监控配置"
@@ -1477,6 +1582,41 @@ function NoteRaceBoard(): React.JSX.Element {
           <div className="flex h-full min-h-0 flex-col">
             <section className="mb-2 flex h-10 items-center justify-between rounded border border-zinc-800 bg-zinc-900/55 px-2">
               <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pr-2 text-[11px]">
+                <div
+                  className="inline-flex h-7 items-center rounded border border-zinc-700 bg-zinc-950 p-0.5"
+                  role="radiogroup"
+                  aria-label="监控视图切换"
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={viewMode === 'flat'}
+                    onClick={() => setViewMode('flat')}
+                    className={cn(
+                      'inline-flex h-6 items-center rounded px-2 text-[11px] transition',
+                      viewMode === 'flat'
+                        ? 'bg-zinc-100 text-zinc-900'
+                        : 'text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100'
+                    )}
+                  >
+                    ≡ 笔记平铺
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={viewMode === 'grouped'}
+                    onClick={() => setViewMode('grouped')}
+                    className={cn(
+                      'inline-flex h-6 items-center rounded px-2 text-[11px] transition',
+                      viewMode === 'grouped'
+                        ? 'bg-zinc-100 text-zinc-900'
+                        : 'text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100'
+                    )}
+                  >
+                    ⊞ 商品聚合
+                  </button>
+                </div>
+
                 <select
                   value={priorityFilter}
                   onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)}
@@ -1536,16 +1676,33 @@ function NoteRaceBoard(): React.JSX.Element {
                   className="sticky top-0 z-10 grid h-11 items-center border-b border-zinc-800 bg-zinc-900/90 px-2 text-[11px] font-medium text-zinc-400 backdrop-blur"
                   style={{ gridTemplateColumns: MONITOR_TABLE_COLUMNS }}
                 >
-                  <span className="pr-2 text-right">排名</span>
-                  <span>标签</span>
-                  <span>账号</span>
-                  <span>笔记标题</span>
-                  <span className="text-right">笔记年龄</span>
-                  <span className="text-right">赛马分</span>
-                  <span className="text-right">趋势</span>
-                  <span className="text-right">内容信号</span>
-                  <span className="text-right">商品信号</span>
-                  <span>阶段</span>
+                  {viewMode === 'flat' ? (
+                    <>
+                      <span className="pr-2 text-right">排名</span>
+                      <span>标签</span>
+                      <span>账号</span>
+                      <span>笔记标题</span>
+                      <span className="text-right">笔记年龄</span>
+                      <span className="text-right">赛马分</span>
+                      <span className="text-right">趋势</span>
+                      <span className="text-right">内容信号</span>
+                      <span className="text-right">商品信号</span>
+                      <span>阶段</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="pr-2 text-right">展开</span>
+                      <span>优先级</span>
+                      <span>聚合类型</span>
+                      <span>商品名称</span>
+                      <span className="text-right">笔记数</span>
+                      <span className="text-right">最高赛马分</span>
+                      <span className="text-right">曝光/阅读</span>
+                      <span className="text-right">核心状态</span>
+                      <span className="text-right">商品侧信号</span>
+                      <span>阶段</span>
+                    </>
+                  )}
                 </div>
 
                 {loading ? <div className="px-3 py-6 text-sm text-zinc-500">加载中...</div> : null}
@@ -1558,26 +1715,133 @@ function NoteRaceBoard(): React.JSX.Element {
                   </div>
                 ) : null}
 
-                {rows.map((row) => {
-                  const rowAction =
-                    actionMap.get(row.id) ??
-                    (dataPhase === 'DAY2_PLUS' ? buildActionItem(row) : buildActionItemDay1(row))
-                  const trendLabel =
-                    dataPhase === 'DAY2_PLUS' ? formatTrendDelta(row.trendDelta) : '样本不足'
-                  const trendClass =
-                    dataPhase === 'DAY2_PLUS' ? trendDeltaClass(row.trendDelta) : 'text-zinc-500'
-                  return (
-                    <MonitorTableRow
-                      key={row.id}
-                      row={row}
-                      priority={rowAction.priority}
-                      isSelected={selected?.id === row.id}
-                      trendLabel={trendLabel}
-                      trendClass={trendClass}
-                      onSelect={handleSelectRow}
-                    />
-                  )
-                })}
+                {viewMode === 'flat'
+                  ? rows.map((row) => {
+                      const rowAction =
+                        actionMap.get(row.id) ??
+                        (dataPhase === 'DAY2_PLUS'
+                          ? buildActionItem(row)
+                          : buildActionItemDay1(row))
+                      const trendLabel =
+                        dataPhase === 'DAY2_PLUS' ? formatTrendDelta(row.trendDelta) : '样本不足'
+                      const trendClass =
+                        dataPhase === 'DAY2_PLUS'
+                          ? trendDeltaClass(row.trendDelta)
+                          : 'text-zinc-500'
+                      return (
+                        <MonitorTableRow
+                          key={row.id}
+                          row={row}
+                          priority={rowAction.priority}
+                          isSelected={selected?.id === row.id}
+                          trendLabel={trendLabel}
+                          trendClass={trendClass}
+                          onSelect={handleSelectRow}
+                          onOpenLink={handleOpenNoteLink}
+                        />
+                      )
+                    })
+                  : groupedRows.map((group) => {
+                      const expanded = expandedGroups[group.key] ?? false
+                      const stateLabels: string[] = []
+                      if (group.hasRisk) stateLabels.push('风险')
+                      if (group.hasRising) stateLabels.push('起飞')
+                      if (group.hasRevival) stateLabels.push('复活')
+                      if (group.hasDrop) stateLabels.push('掉速')
+                      const stateSummary = stateLabels.length > 0 ? stateLabels.join(' / ') : '稳定'
+                      const funnelSummary =
+                        group.totalExposure == null || group.totalRead == null
+                          ? '- / -'
+                          : `${group.totalExposure} / ${group.totalRead}`
+
+                      return (
+                        <React.Fragment key={group.key}>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleGroup(group.key)}
+                            className={cn(
+                              'grid h-[56px] w-full items-center border-b border-zinc-800/45 px-2 text-left text-[12px] transition hover:bg-zinc-800/35',
+                              expanded && 'bg-zinc-900/50'
+                            )}
+                            style={{ gridTemplateColumns: MONITOR_TABLE_COLUMNS }}
+                            title={group.productName}
+                          >
+                            <span className="inline-flex items-center justify-end pr-2 text-zinc-400">
+                              <ChevronRight
+                                className={cn(
+                                  'h-3.5 w-3.5 transition-transform',
+                                  expanded && 'rotate-90 text-zinc-200'
+                                )}
+                              />
+                            </span>
+                            <span
+                              className={cn(
+                                'inline-flex max-w-[74px] rounded border px-1.5 py-0.5 text-[10px]',
+                                priorityClass(group.maxPriority)
+                              )}
+                            >
+                              {group.maxPriority}
+                            </span>
+                            <span className="truncate text-zinc-400">商品聚合</span>
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate font-semibold text-zinc-100">
+                                {group.productName}
+                              </span>
+                              <span className="inline-flex shrink-0 rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                                共 {group.noteCount} 篇
+                              </span>
+                            </span>
+                            <span className="text-right tabular-nums text-zinc-300">
+                              {group.noteCount}
+                            </span>
+                            <span className="text-right tabular-nums text-zinc-100">
+                              {group.maxScore.toFixed(1)}
+                            </span>
+                            <span className="text-right tabular-nums text-zinc-400">
+                              {funnelSummary}
+                            </span>
+                            <span className="truncate text-right text-zinc-300">
+                              {stateSummary}
+                            </span>
+                            <span className="text-right text-zinc-500">-</span>
+                            <span className="text-zinc-500">聚合</span>
+                          </button>
+
+                          {expanded
+                            ? group.rows.map((row) => {
+                                const rowAction =
+                                  actionMap.get(row.id) ??
+                                  (dataPhase === 'DAY2_PLUS'
+                                    ? buildActionItem(row)
+                                    : buildActionItemDay1(row))
+                                const trendLabel =
+                                  dataPhase === 'DAY2_PLUS'
+                                    ? formatTrendDelta(row.trendDelta)
+                                    : '样本不足'
+                                const trendClass =
+                                  dataPhase === 'DAY2_PLUS'
+                                    ? trendDeltaClass(row.trendDelta)
+                                    : 'text-zinc-500'
+
+                                return (
+                                  <MonitorTableRow
+                                    key={`${group.key}:${row.id}`}
+                                    row={row}
+                                    priority={rowAction.priority}
+                                    isSelected={selected?.id === row.id}
+                                    trendLabel={trendLabel}
+                                    trendClass={trendClass}
+                                    onSelect={handleSelectRow}
+                                    onOpenLink={handleOpenNoteLink}
+                                    indented
+                                    className="bg-zinc-900/25"
+                                  />
+                                )
+                              })
+                            : null}
+                        </React.Fragment>
+                      )
+                    })}
               </div>
             </section>
           </div>
