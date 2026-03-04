@@ -4086,6 +4086,8 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cms.noteRace.meta', async () => noteRaceService.getMeta())
 
+  ipcMain.handle('cms.noteRace.snapshotStats', async () => noteRaceService.getSnapshotStats())
+
   ipcMain.handle('cms.noteRace.deleteSnapshot', async (_event, payload: unknown) => {
     const query = (payload ?? {}) as Record<string, unknown>
     const snapshotDate = typeof query.snapshotDate === 'string' ? query.snapshotDate : ''

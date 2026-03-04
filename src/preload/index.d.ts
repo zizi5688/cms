@@ -231,6 +231,15 @@ declare global {
     recomputedSnapshots: number
   }
 
+  type NoteRaceSnapshotStat = {
+    snapshotDate: string
+    commerceRows: number
+    contentRows: number
+    rankRows: number
+    matchedRows: number
+    latestImportedAt: number | null
+  }
+
   type NoteRaceListRow = {
     id: string
     rank: number
@@ -670,6 +679,7 @@ declare global {
           sinceMs?: number
         }) => Promise<NoteRaceScanFolderResult>
         meta: () => Promise<NoteRaceMeta>
+        snapshotStats: () => Promise<NoteRaceSnapshotStat[]>
         deleteSnapshot: (payload: {
           snapshotDate: string
         }) => Promise<NoteRaceDeleteSnapshotResult>

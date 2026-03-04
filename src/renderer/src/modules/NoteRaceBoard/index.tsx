@@ -40,6 +40,15 @@ type RaceDeleteSnapshotResult = {
   recomputedSnapshots: number
 }
 
+type RaceSnapshotStat = {
+  snapshotDate: string
+  commerceRows: number
+  contentRows: number
+  rankRows: number
+  matchedRows: number
+  latestImportedAt: number | null
+}
+
 type RaceFolderScanResult = {
   dirPath: string
   scannedFiles: number
@@ -908,15 +917,18 @@ function NoteRaceBoard(): React.JSX.Element {
     matchRate: 0,
     trendReadyDates: []
   })
+  const [snapshotStats, setSnapshotStats] = React.useState<RaceSnapshotStat[]>([])
   const [loading, setLoading] = React.useState<boolean>(false)
   const [detailLoading, setDetailLoading] = React.useState<boolean>(false)
   const [importing, setImporting] = React.useState<boolean>(false)
   const [scanLoading, setScanLoading] = React.useState<boolean>(false)
+  const [snapshotStatsLoading, setSnapshotStatsLoading] = React.useState<boolean>(false)
   const [deletingSnapshot, setDeletingSnapshot] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
   const [copyToastMessage, setCopyToastMessage] = React.useState<string>('')
   const [detailDrawerOpen, setDetailDrawerOpen] = React.useState<boolean>(false)
+  const [dataManagerOpen, setDataManagerOpen] = React.useState<boolean>(false)
   const [monitorMenuOpen, setMonitorMenuOpen] = React.useState<boolean>(false)
   const [noticeCursor, setNoticeCursor] = React.useState<number>(0)
   const [expandedGroups, setExpandedGroups] = React.useState<Record<string, boolean>>({})
@@ -992,16 +1004,30 @@ function NoteRaceBoard(): React.JSX.Element {
     []
   )
 
+  const loadSnapshotStats = React.useCallback(async (): Promise<void> => {
+    setSnapshotStatsLoading(true)
+    try {
+      const stats = (await window.api.cms.noteRace.snapshotStats()) as RaceSnapshotStat[]
+      setSnapshotStats(Array.isArray(stats) ? stats : [])
+    } catch (err) {
+      setSnapshotStats([])
+      setError(`加载日期统计失败：${normalizeError(err)}`)
+    } finally {
+      setSnapshotStatsLoading(false)
+    }
+  }, [])
+
   const refresh = React.useCallback(
     async (options: LoadRowsOptions = {}): Promise<void> => {
       const date = await loadMeta()
+      await loadSnapshotStats()
       if (date) {
         await loadRows(date, options)
         return
       }
       setAllRows([])
     },
-    [loadMeta, loadRows]
+    [loadMeta, loadRows, loadSnapshotStats]
   )
 
   React.useEffect(() => {
@@ -1428,37 +1454,55 @@ function NoteRaceBoard(): React.JSX.Element {
     }
   }, [refresh])
 
+  const executeDeleteSnapshot = React.useCallback(
+    async (rawSnapshotDate: string): Promise<void> => {
+      const targetDate = String(rawSnapshotDate ?? '').trim()
+      if (!targetDate) {
+        setError('请先选择要删除的快照日期')
+        return
+      }
+
+      const stat = snapshotStats.find((item) => item.snapshotDate === targetDate) ?? null
+      const detailText = stat
+        ? `商品 ${stat.commerceRows} 行，内容 ${stat.contentRows} 行，榜单 ${stat.rankRows} 行`
+        : '当日全部导入数据'
+      const accepted = window.confirm(
+        `确认删除 ${targetDate} 的导入数据吗？\n\n` +
+          `预计影响：${detailText}。\n` +
+          '该操作不可恢复。'
+      )
+      if (!accepted) return
+
+      setDeletingSnapshot(true)
+      setError('')
+      try {
+        const result = (await window.api.cms.noteRace.deleteSnapshot({
+          snapshotDate: targetDate
+        })) as RaceDeleteSnapshotResult
+        const summaryText =
+          `已删除 ${result.snapshotDate}：商品 ${result.deletedCommerceRows} 行，` +
+          `内容 ${result.deletedContentRows} 行，匹配 ${result.deletedMatchRows} 行，榜单 ${result.deletedRankRows} 行。`
+        const recomputeText =
+          result.recomputedSnapshots > 0 ? `已重算后续 ${result.recomputedSnapshots} 个日期。` : ''
+        setLastImportMessage(`${summaryText}${recomputeText ? ` ${recomputeText}` : ''}`)
+        await refresh()
+      } catch (err) {
+        setError(`删除失败：${normalizeError(err)}`)
+      } finally {
+        setDeletingSnapshot(false)
+      }
+    },
+    [refresh, snapshotStats]
+  )
+
   const handleDeleteSnapshot = React.useCallback(async (): Promise<void> => {
-    const targetDate = String(snapshotDate ?? '').trim()
-    if (!targetDate) {
-      setError('请先选择要删除的快照日期')
-      return
-    }
+    await executeDeleteSnapshot(snapshotDate)
+  }, [executeDeleteSnapshot, snapshotDate])
 
-    const accepted = window.confirm(
-      `确认删除 ${targetDate} 的导入数据吗？\n\n该操作会删除当日商品/内容/匹配/榜单数据，且不可恢复。`
-    )
-    if (!accepted) return
-
-    setDeletingSnapshot(true)
-    setError('')
-    try {
-      const result = (await window.api.cms.noteRace.deleteSnapshot({
-        snapshotDate: targetDate
-      })) as RaceDeleteSnapshotResult
-      const summaryText =
-        `已删除 ${result.snapshotDate}：商品 ${result.deletedCommerceRows} 行，` +
-        `内容 ${result.deletedContentRows} 行，匹配 ${result.deletedMatchRows} 行，榜单 ${result.deletedRankRows} 行。`
-      const recomputeText =
-        result.recomputedSnapshots > 0 ? `已重算后续 ${result.recomputedSnapshots} 个日期。` : ''
-      setLastImportMessage(`${summaryText}${recomputeText ? ` ${recomputeText}` : ''}`)
-      await refresh()
-    } catch (err) {
-      setError(`删除失败：${normalizeError(err)}`)
-    } finally {
-      setDeletingSnapshot(false)
-    }
-  }, [refresh, snapshotDate])
+  const handleOpenDataManager = React.useCallback((): void => {
+    setMonitorMenuOpen(false)
+    setDataManagerOpen(true)
+  }, [])
 
   const handlePickMonitorDir = React.useCallback(async (): Promise<void> => {
     try {
@@ -1624,6 +1668,13 @@ function NoteRaceBoard(): React.JSX.Element {
                       className="flex h-8 w-full items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-left text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {scanLoading ? '扫描中...' : '扫描目录'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenDataManager}
+                      className="flex h-8 w-full items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-left text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
+                    >
+                      导入日期管理
                     </button>
                     <button
                       type="button"
@@ -2114,6 +2165,94 @@ function NoteRaceBoard(): React.JSX.Element {
           {copyToastMessage}
         </div>
       ) : null}
+
+      <Drawer
+        open={dataManagerOpen}
+        onOpenChange={setDataManagerOpen}
+        title="导入日期管理"
+        description="按日期查看导入规模并执行删除"
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300">
+            删除会清理该日期的商品/内容/匹配/榜单数据，并自动重算后续日期趋势口径。
+          </div>
+
+          {snapshotStatsLoading ? (
+            <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
+              日期统计加载中...
+            </div>
+          ) : null}
+
+          {!snapshotStatsLoading && snapshotStats.length === 0 ? (
+            <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
+              暂无可管理的导入日期
+            </div>
+          ) : null}
+
+          {!snapshotStatsLoading && snapshotStats.length > 0 ? (
+            <div className="overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900/60">
+              <div className="grid grid-cols-[120px_1fr_90px_130px_70px] border-b border-zinc-700 bg-zinc-900/80 px-3 py-2 text-[11px] text-zinc-400">
+                <span>快照日期</span>
+                <span>导入规模</span>
+                <span className="text-right">匹配率</span>
+                <span className="text-right">最近导入</span>
+                <span className="text-right">操作</span>
+              </div>
+              <div className="max-h-[56vh] overflow-auto">
+                {snapshotStats.map((item) => {
+                  const isCurrent = snapshotDate === item.snapshotDate
+                  const matchRate =
+                    item.rankRows > 0
+                      ? Math.round((Math.max(0, item.matchedRows) / Math.max(1, item.rankRows)) * 100)
+                      : 0
+                  return (
+                    <div
+                      key={item.snapshotDate}
+                      className={cn(
+                        'grid grid-cols-[120px_1fr_90px_130px_70px] items-center border-b border-zinc-800/70 px-3 py-2 text-[12px] text-zinc-200',
+                        isCurrent && 'bg-cyan-500/10'
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className={cn(
+                          'truncate text-left transition hover:text-cyan-300',
+                          isCurrent && 'font-semibold text-cyan-200'
+                        )}
+                        onClick={() => {
+                          setSnapshotDate(item.snapshotDate)
+                          void loadRows(item.snapshotDate, { preserveScroll: true })
+                        }}
+                        title="定位到该日期"
+                      >
+                        {item.snapshotDate}
+                      </button>
+                      <span className="truncate text-zinc-300">
+                        商品 {item.commerceRows} · 内容 {item.contentRows} · 榜单 {item.rankRows}
+                      </span>
+                      <span className="text-right tabular-nums text-zinc-300">{matchRate}%</span>
+                      <span className="text-right tabular-nums text-zinc-400">
+                        {item.latestImportedAt ? formatDateTime(item.latestImportedAt) : '-'}
+                      </span>
+                      <div className="text-right">
+                        <button
+                          type="button"
+                          onClick={() => void executeDeleteSnapshot(item.snapshotDate)}
+                          disabled={deletingSnapshot}
+                          className="inline-flex h-6 items-center rounded border border-rose-500/40 bg-rose-500/10 px-2 text-[11px] text-rose-200 transition hover:border-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                          title="删除该日期"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </Drawer>
 
       <Drawer
         open={detailDrawerOpen}

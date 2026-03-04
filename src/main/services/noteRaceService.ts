@@ -136,6 +136,15 @@ export type NoteRaceDeleteSnapshotResult = {
   recomputedSnapshots: number
 }
 
+export type NoteRaceSnapshotStat = {
+  snapshotDate: string
+  commerceRows: number
+  contentRows: number
+  rankRows: number
+  matchedRows: number
+  latestImportedAt: number | null
+}
+
 export type NoteRaceListQuery = {
   snapshotDate?: string
   account?: string
@@ -1273,6 +1282,75 @@ export class NoteRaceService {
       deletedRankRows: result.deletedRankRows,
       recomputedSnapshots
     }
+  }
+
+  getSnapshotStats(): NoteRaceSnapshotStat[] {
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    if (!db) return []
+
+    const rows = db
+      .prepare(
+        `
+        WITH dates AS (
+          SELECT DISTINCT snapshot_date FROM note_race_raw_commerce
+          UNION
+          SELECT DISTINCT snapshot_date FROM note_race_raw_content
+          UNION
+          SELECT DISTINCT snapshot_date FROM note_race_daily_rank
+        ),
+        commerce AS (
+          SELECT snapshot_date, COUNT(*) AS commerce_rows, MAX(imported_at) AS latest_commerce_imported_at
+          FROM note_race_raw_commerce
+          GROUP BY snapshot_date
+        ),
+        content AS (
+          SELECT snapshot_date, COUNT(*) AS content_rows, MAX(imported_at) AS latest_content_imported_at
+          FROM note_race_raw_content
+          GROUP BY snapshot_date
+        ),
+        ranked AS (
+          SELECT snapshot_date, COUNT(*) AS rank_rows
+          FROM note_race_daily_rank
+          GROUP BY snapshot_date
+        ),
+        matched AS (
+          SELECT snapshot_date, COUNT(*) AS matched_rows
+          FROM note_race_match_map
+          WHERE confidence > 0
+          GROUP BY snapshot_date
+        )
+        SELECT
+          d.snapshot_date AS snapshotDate,
+          COALESCE(c.commerce_rows, 0) AS commerceRows,
+          COALESCE(t.content_rows, 0) AS contentRows,
+          COALESCE(r.rank_rows, 0) AS rankRows,
+          COALESCE(m.matched_rows, 0) AS matchedRows,
+          CASE
+            WHEN COALESCE(c.latest_commerce_imported_at, 0) >= COALESCE(t.latest_content_imported_at, 0)
+              THEN NULLIF(COALESCE(c.latest_commerce_imported_at, 0), 0)
+            ELSE NULLIF(COALESCE(t.latest_content_imported_at, 0), 0)
+          END AS latestImportedAt
+        FROM dates d
+        LEFT JOIN commerce c ON c.snapshot_date = d.snapshot_date
+        LEFT JOIN content t ON t.snapshot_date = d.snapshot_date
+        LEFT JOIN ranked r ON r.snapshot_date = d.snapshot_date
+        LEFT JOIN matched m ON m.snapshot_date = d.snapshot_date
+        ORDER BY d.snapshot_date DESC
+        `
+      )
+      .all()
+
+    return rows.map((row) => ({
+      snapshotDate: normalizeText(row.snapshotDate),
+      commerceRows: Math.max(0, Number(row.commerceRows ?? 0)),
+      contentRows: Math.max(0, Number(row.contentRows ?? 0)),
+      rankRows: Math.max(0, Number(row.rankRows ?? 0)),
+      matchedRows: Math.max(0, Number(row.matchedRows ?? 0)),
+      latestImportedAt:
+        row.latestImportedAt == null || !Number.isFinite(Number(row.latestImportedAt))
+          ? null
+          : Number(row.latestImportedAt)
+    }))
   }
 
   listRaceRows(query: NoteRaceListQuery = {}): NoteRaceListRow[] {

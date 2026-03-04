@@ -180,6 +180,15 @@ type NoteRaceDeleteSnapshotResult = {
   recomputedSnapshots: number
 }
 
+type NoteRaceSnapshotStat = {
+  snapshotDate: string
+  commerceRows: number
+  contentRows: number
+  rankRows: number
+  matchedRows: number
+  latestImportedAt: number | null
+}
+
 type NoteRaceListRow = {
   id: string
   rank: number
@@ -784,6 +793,7 @@ const api = {
       scanFolderImports: (payload: { dirPath: string; sinceMs?: number }): Promise<NoteRaceScanFolderResult> =>
         ipcRenderer.invoke('cms.noteRace.scanFolderImports', payload),
       meta: (): Promise<NoteRaceMeta> => ipcRenderer.invoke('cms.noteRace.meta'),
+      snapshotStats: (): Promise<NoteRaceSnapshotStat[]> => ipcRenderer.invoke('cms.noteRace.snapshotStats'),
       deleteSnapshot: (payload: {
         snapshotDate: string
       }): Promise<NoteRaceDeleteSnapshotResult> => ipcRenderer.invoke('cms.noteRace.deleteSnapshot', payload),
