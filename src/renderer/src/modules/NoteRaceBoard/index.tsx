@@ -126,6 +126,19 @@ type RaceDetail = {
     acceleration: number
     stability: '高' | '中' | '低'
   }
+  cumulative: {
+    startDate: string
+    endDate: string
+    spanDays: number
+    activeDays: number
+    coverageRate: number
+    totalRead: number
+    totalClick: number
+    totalOrders: number
+    totalAmount: number
+    clickRate: number
+    payRate: number
+  }
 }
 
 type ActionPriority = 'P0' | 'P1' | 'P2'
@@ -434,6 +447,24 @@ function formatDateTime(timestamp: number): string {
   } catch {
     return String(timestamp)
   }
+}
+
+function formatMetricInteger(value: number | null | undefined): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '--'
+  return Math.round(numeric).toLocaleString('zh-CN')
+}
+
+function formatMetricAmount(value: number | null | undefined): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '--'
+  return `¥${numeric.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 1 })}`
+}
+
+function formatMetricPercent(value: number | null | undefined): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '--'
+  return `${(Math.max(0, numeric) * 100).toFixed(1)}%`
 }
 
 function normalizeStageIndex(stageIndex: number | null | undefined): number {
@@ -2592,6 +2623,53 @@ function NoteRaceBoard(): React.JSX.Element {
               </div>
             </section>
 
+            <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
+              <h4 className="text-sm font-semibold text-zinc-100">采集期累计</h4>
+              <div className="mt-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] text-zinc-300">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-400">采集周期</span>
+                  <span className="tabular-nums text-zinc-200">
+                    {detail?.cumulative?.startDate ?? '-'} → {detail?.cumulative?.endDate ?? '-'}（
+                    {detail?.cumulative?.spanDays ?? '--'}天）
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <span className="text-zinc-400">快照覆盖率</span>
+                  <span className="tabular-nums text-zinc-200">
+                    {detail?.cumulative?.activeDays ?? '--'}/{detail?.cumulative?.spanDays ?? '--'}（
+                    {formatMetricPercent(detail?.cumulative?.coverageRate)}
+                    ）
+                  </span>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[12px]">
+                <CumulativeMetricCard
+                  label="累计阅读"
+                  value={formatMetricInteger(detail?.cumulative?.totalRead)}
+                />
+                <CumulativeMetricCard
+                  label="累计商品点击"
+                  value={formatMetricInteger(detail?.cumulative?.totalClick)}
+                />
+                <CumulativeMetricCard
+                  label="累计支付订单"
+                  value={formatMetricInteger(detail?.cumulative?.totalOrders)}
+                />
+                <CumulativeMetricCard
+                  label="累计支付金额"
+                  value={formatMetricAmount(detail?.cumulative?.totalAmount)}
+                />
+                <CumulativeMetricCard
+                  label="采集期点击率"
+                  value={formatMetricPercent(detail?.cumulative?.clickRate)}
+                />
+                <CumulativeMetricCard
+                  label="采集期支付率"
+                  value={formatMetricPercent(detail?.cumulative?.payRate)}
+                />
+              </div>
+            </section>
+
             {detailLoading ? (
               <div className="rounded border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
                 详情加载中...
@@ -2792,6 +2870,21 @@ function DeltaCard({ label, value }: { label: string; value: number | null }): R
         {prefix}
         {value}
       </div>
+    </div>
+  )
+}
+
+function CumulativeMetricCard({
+  label,
+  value
+}: {
+  label: string
+  value: string
+}): React.JSX.Element {
+  return (
+    <div className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5">
+      <div className="text-[10px] text-zinc-400">{label}</div>
+      <div className="tabular-nums text-zinc-200">{value}</div>
     </div>
   )
 }
