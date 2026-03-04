@@ -510,15 +510,23 @@ function inferSnapshotScopeFromSourceFile(sourceFile: string): SnapshotScope {
   if (!normalized) return 'unknown'
   if (/(近\s*1\s*日|前\s*1\s*日|昨日|昨天|t-?1)/i.test(normalized)) return 'daily'
   if (/(近\s*(?:[2-9]|[1-9]\d)\s*日|区间|范围|自定义)/i.test(normalized)) return 'range'
-  if (/(~|～|至|到|_to_|-to-)/i.test(normalized)) return 'range'
 
-  const fullDateMatches = Array.from(
-    normalized.matchAll(/20\d{2}[-_.年]\d{1,2}[-_.月]\d{1,2}/g)
-  ).length
-  if (fullDateMatches >= 2) return 'range'
-  if (fullDateMatches === 1) return 'daily'
+  const fullDates = Array.from(normalized.matchAll(/(20\d{2})[-_.年](\d{1,2})[-_.月](\d{1,2})/g))
+    .map((item) => normalizeDateParts(Number(item[1]), Number(item[2]), Number(item[3])))
+    .filter((item): item is string => Boolean(item))
+  if (fullDates.length >= 2) {
+    const distinct = new Set(fullDates)
+    return distinct.size === 1 ? 'daily' : 'range'
+  }
+  if (fullDates.length === 1 && /(~|～|至|到|_to_|-to-)/i.test(normalized)) return 'range'
+  if (fullDates.length === 1) return 'daily'
 
-  if (/(\d{1,2})\s*[-~～]\s*(\d{1,2})/.test(normalized)) return 'range'
+  if (/(~|～|至|到|_to_|-to-)/i.test(normalized)) {
+    const shortRange = normalized.match(/(^|[^0-9])(\d{1,2})\s*[-~～]\s*(\d{1,2})([^0-9]|$)/)
+    if (shortRange?.[2] && shortRange[3] && shortRange[2] === shortRange[3]) return 'daily'
+    return 'range'
+  }
+
   return 'unknown'
 }
 
@@ -1264,6 +1272,28 @@ export class NoteRaceService {
     return recomputed
   }
 
+  private refreshTrendReadySnapshots(db: DbConnection, dates: string[]): void {
+    const countBlockedStmt = db.prepare(
+      `
+      SELECT COUNT(*) AS cnt
+      FROM note_race_daily_rank
+      WHERE snapshot_date = ? AND trend_hint_json LIKE '%样本不足或口径不可比%'
+      `
+    )
+    for (const snapshotDate of dates) {
+      const comparability = this.evaluateTrendComparability(db, snapshotDate)
+      if (!comparability.comparable) continue
+      const blockedCount = Number(countBlockedStmt.get(snapshotDate)?.cnt ?? 0)
+      if (!Number.isFinite(blockedCount) || blockedCount <= 0) continue
+      try {
+        this.rebuildSnapshot(snapshotDate)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[NoteRace] refresh trend-ready snapshot failed: ${snapshotDate} ${message}`)
+      }
+    }
+  }
+
   getMeta(): NoteRaceMeta {
     const db = this.sqlite.tryGetConnection() as DbConnection | null
     if (!db) {
@@ -1294,6 +1324,7 @@ export class NoteRaceService {
         trendReadyDates: []
       }
     }
+    this.refreshTrendReadySnapshots(db, [...dates].reverse())
     const total = Number(
       db
         .prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank WHERE snapshot_date = ?`)
