@@ -67,7 +67,18 @@ function App(): React.JSX.Element {
               typeof saved.dynamicWatermarkSize === 'number'
                 ? Math.max(2, Math.min(10, Math.round(saved.dynamicWatermarkSize)))
                 : 5,
-            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(saved.dynamicWatermarkTrajectory)
+            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(saved.dynamicWatermarkTrajectory),
+            storageMaintenanceEnabled: saved.storageMaintenanceEnabled === true,
+            storageMaintenanceStartTime:
+              typeof saved.storageMaintenanceStartTime === 'string' &&
+              /^([01]\d|2[0-3]):[0-5]\d$/.test(saved.storageMaintenanceStartTime)
+                ? saved.storageMaintenanceStartTime
+                : '02:30',
+            storageMaintenanceRetainDays:
+              typeof saved.storageMaintenanceRetainDays === 'number'
+                ? Math.max(1, Math.min(120, Math.floor(saved.storageMaintenanceRetainDays)))
+                : 7,
+            storageArchivePath: saved.storageArchivePath ?? ''
           }
           if (isValidWatermarkBox(saved.watermarkBox)) {
             patch.watermarkBox = saved.watermarkBox

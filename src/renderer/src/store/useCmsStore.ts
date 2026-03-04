@@ -67,6 +67,10 @@ export interface CmsConfig {
   dynamicWatermarkOpacity: number
   dynamicWatermarkSize: number
   dynamicWatermarkTrajectory: DynamicWatermarkTrajectory
+  storageMaintenanceEnabled: boolean
+  storageMaintenanceStartTime: string
+  storageMaintenanceRetainDays: number
+  storageArchivePath: string
   scoutDashboardAutoImportDir: string
   watermarkBox: WatermarkBox
 }
@@ -137,6 +141,10 @@ const initialConfig: CmsConfig = {
   dynamicWatermarkOpacity: 15,
   dynamicWatermarkSize: 5,
   dynamicWatermarkTrajectory: 'pseudoRandom',
+  storageMaintenanceEnabled: false,
+  storageMaintenanceStartTime: '02:30',
+  storageMaintenanceRetainDays: 7,
+  storageArchivePath: '',
   scoutDashboardAutoImportDir: '',
   watermarkBox: { x: 0.905, y: 0.927, width: 0.055, height: 0.05 }
 }
