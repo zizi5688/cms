@@ -189,6 +189,34 @@ type NoteRaceSnapshotStat = {
   latestImportedAt: number | null
 }
 
+type NoteRaceSnapshotBatchStat = {
+  snapshotDate: string
+  importedAt: number
+  commerceRows: number
+  contentRows: number
+  sourceFiles: string[]
+  status: 'active' | 'deleted'
+  deletedAt: number | null
+  restorableUntil: number | null
+  restorable: boolean
+}
+
+type NoteRaceDeleteBatchResult = {
+  snapshotDate: string
+  importedAt: number
+  deletedCommerceRows: number
+  deletedContentRows: number
+  recomputedSnapshots: number
+}
+
+type NoteRaceRestoreBatchResult = {
+  snapshotDate: string
+  importedAt: number
+  restoredCommerceRows: number
+  restoredContentRows: number
+  recomputedSnapshots: number
+}
+
 type NoteRaceListRow = {
   id: string
   rank: number
@@ -794,9 +822,23 @@ const api = {
         ipcRenderer.invoke('cms.noteRace.scanFolderImports', payload),
       meta: (): Promise<NoteRaceMeta> => ipcRenderer.invoke('cms.noteRace.meta'),
       snapshotStats: (): Promise<NoteRaceSnapshotStat[]> => ipcRenderer.invoke('cms.noteRace.snapshotStats'),
+      snapshotBatchStats: (payload?: {
+        snapshotDate?: string
+        includeDeleted?: boolean
+      }): Promise<NoteRaceSnapshotBatchStat[]> => ipcRenderer.invoke('cms.noteRace.snapshotBatchStats', payload),
       deleteSnapshot: (payload: {
         snapshotDate: string
       }): Promise<NoteRaceDeleteSnapshotResult> => ipcRenderer.invoke('cms.noteRace.deleteSnapshot', payload),
+      deleteSnapshotBatch: (payload: {
+        snapshotDate: string
+        importedAt: number
+        reason?: string
+      }): Promise<NoteRaceDeleteBatchResult> => ipcRenderer.invoke('cms.noteRace.deleteSnapshotBatch', payload),
+      restoreSnapshotBatch: (payload: {
+        snapshotDate: string
+        importedAt: number
+      }): Promise<NoteRaceRestoreBatchResult> =>
+        ipcRenderer.invoke('cms.noteRace.restoreSnapshotBatch', payload),
       list: (payload?: {
         snapshotDate?: string
         account?: string

@@ -145,6 +145,34 @@ export type NoteRaceSnapshotStat = {
   latestImportedAt: number | null
 }
 
+export type NoteRaceSnapshotBatchStat = {
+  snapshotDate: string
+  importedAt: number
+  commerceRows: number
+  contentRows: number
+  sourceFiles: string[]
+  status: 'active' | 'deleted'
+  deletedAt: number | null
+  restorableUntil: number | null
+  restorable: boolean
+}
+
+export type NoteRaceDeleteBatchResult = {
+  snapshotDate: string
+  importedAt: number
+  deletedCommerceRows: number
+  deletedContentRows: number
+  recomputedSnapshots: number
+}
+
+export type NoteRaceRestoreBatchResult = {
+  snapshotDate: string
+  importedAt: number
+  restoredCommerceRows: number
+  restoredContentRows: number
+  recomputedSnapshots: number
+}
+
 export type NoteRaceListQuery = {
   snapshotDate?: string
   account?: string
@@ -475,6 +503,8 @@ type TrendComparability = {
   reason: TrendComparabilityReason
 }
 
+const NOTE_RACE_BATCH_RESTORE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+
 function inferSnapshotScopeFromSourceFile(sourceFile: string): SnapshotScope {
   const normalized = normalizeText(sourceFile)
   if (!normalized) return 'unknown'
@@ -608,6 +638,75 @@ export class NoteRaceService {
       );
       CREATE INDEX IF NOT EXISTS idx_note_race_content_snapshot ON note_race_raw_content (snapshot_date);
       CREATE INDEX IF NOT EXISTS idx_note_race_content_title ON note_race_raw_content (title);
+
+      CREATE TABLE IF NOT EXISTS note_race_deleted_commerce (
+        snapshot_date TEXT NOT NULL,
+        note_key TEXT NOT NULL,
+        note_id TEXT,
+        title TEXT NOT NULL,
+        account_name TEXT,
+        account_xhs_id TEXT,
+        note_created_at INTEGER,
+        note_type TEXT,
+        product_id TEXT,
+        product_name TEXT,
+        read_count REAL NOT NULL DEFAULT 0,
+        like_count REAL NOT NULL DEFAULT 0,
+        collect_count REAL NOT NULL DEFAULT 0,
+        comment_count REAL NOT NULL DEFAULT 0,
+        share_count REAL NOT NULL DEFAULT 0,
+        follow_count REAL NOT NULL DEFAULT 0,
+        danmu_count REAL NOT NULL DEFAULT 0,
+        avg_watch_seconds REAL NOT NULL DEFAULT 0,
+        finish_rate_pv REAL NOT NULL DEFAULT 0,
+        click_count REAL NOT NULL DEFAULT 0,
+        click_people REAL NOT NULL DEFAULT 0,
+        click_rate_pv REAL NOT NULL DEFAULT 0,
+        pay_orders REAL NOT NULL DEFAULT 0,
+        pay_users REAL NOT NULL DEFAULT 0,
+        pay_amount REAL NOT NULL DEFAULT 0,
+        pay_rate_pv REAL NOT NULL DEFAULT 0,
+        pay_rate_uv REAL NOT NULL DEFAULT 0,
+        add_cart_count REAL NOT NULL DEFAULT 0,
+        refund_amount_pay_time REAL NOT NULL DEFAULT 0,
+        refund_rate_pay_time REAL NOT NULL DEFAULT 0,
+        source_file TEXT,
+        imported_at INTEGER NOT NULL,
+        raw_json TEXT,
+        deleted_at INTEGER NOT NULL,
+        delete_reason TEXT NOT NULL DEFAULT 'manual',
+        PRIMARY KEY (snapshot_date, note_key, imported_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_note_race_deleted_commerce_snapshot ON note_race_deleted_commerce (snapshot_date);
+      CREATE INDEX IF NOT EXISTS idx_note_race_deleted_commerce_batch ON note_race_deleted_commerce (snapshot_date, imported_at);
+      CREATE INDEX IF NOT EXISTS idx_note_race_deleted_commerce_deleted_at ON note_race_deleted_commerce (deleted_at);
+
+      CREATE TABLE IF NOT EXISTS note_race_deleted_content (
+        snapshot_date TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        first_published_at INTEGER,
+        note_type TEXT,
+        exposure REAL NOT NULL DEFAULT 0,
+        view_count REAL NOT NULL DEFAULT 0,
+        cover_click_rate REAL NOT NULL DEFAULT 0,
+        like_count REAL NOT NULL DEFAULT 0,
+        comment_count REAL NOT NULL DEFAULT 0,
+        collect_count REAL NOT NULL DEFAULT 0,
+        follow_gain_count REAL NOT NULL DEFAULT 0,
+        share_count REAL NOT NULL DEFAULT 0,
+        avg_watch_seconds REAL NOT NULL DEFAULT 0,
+        danmu_count REAL NOT NULL DEFAULT 0,
+        source_file TEXT,
+        imported_at INTEGER NOT NULL,
+        raw_json TEXT,
+        deleted_at INTEGER NOT NULL,
+        delete_reason TEXT NOT NULL DEFAULT 'manual',
+        PRIMARY KEY (snapshot_date, row_id, imported_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_note_race_deleted_content_snapshot ON note_race_deleted_content (snapshot_date);
+      CREATE INDEX IF NOT EXISTS idx_note_race_deleted_content_batch ON note_race_deleted_content (snapshot_date, imported_at);
+      CREATE INDEX IF NOT EXISTS idx_note_race_deleted_content_deleted_at ON note_race_deleted_content (deleted_at);
 
       CREATE TABLE IF NOT EXISTS note_race_match_map (
         snapshot_date TEXT NOT NULL,
@@ -1129,6 +1228,46 @@ export class NoteRaceService {
     }
   }
 
+  private extractChanges(result: unknown): number {
+    const value = (result as { changes?: unknown } | null)?.changes
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return 0
+    return Math.max(0, Math.floor(parsed))
+  }
+
+  private recomputeSnapshotsFrom(snapshotDate: string): number {
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    const date = normalizeText(snapshotDate)
+    if (!db || !date) return 0
+
+    const futureDates = db
+      .prepare(
+        `
+        SELECT DISTINCT snapshot_date AS snapshotDate
+        FROM note_race_raw_commerce
+        WHERE snapshot_date >= ?
+        ORDER BY snapshot_date ASC
+        `
+      )
+      .all(date)
+      .map((row) => normalizeText(row.snapshotDate))
+      .filter(Boolean)
+
+    const queue = [date, ...futureDates]
+    const uniqueDates = Array.from(new Set(queue))
+    let recomputed = 0
+    for (const currentDate of uniqueDates) {
+      try {
+        this.rebuildSnapshot(currentDate)
+        recomputed += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[NoteRace] rebuild snapshot failed: ${currentDate} ${message}`)
+      }
+    }
+    return recomputed
+  }
+
   getMeta(): NoteRaceMeta {
     const db = this.sqlite.tryGetConnection() as DbConnection | null
     if (!db) {
@@ -1202,55 +1341,29 @@ export class NoteRaceService {
     }
 
     const tx = db.transaction(() => {
-      const deletedMatchRows = Number(
-        (
-          db.prepare(`DELETE FROM note_race_match_map WHERE snapshot_date = ?`).run(date) as {
-            changes?: unknown
-          }
-        ).changes ?? 0
+      const deletedMatchRows = this.extractChanges(
+        db.prepare(`DELETE FROM note_race_match_map WHERE snapshot_date = ?`).run(date)
       )
-      const deletedRankRows = Number(
-        (
-          db.prepare(`DELETE FROM note_race_daily_rank WHERE snapshot_date = ?`).run(date) as {
-            changes?: unknown
-          }
-        ).changes ?? 0
+      const deletedRankRows = this.extractChanges(
+        db.prepare(`DELETE FROM note_race_daily_rank WHERE snapshot_date = ?`).run(date)
       )
-      const deletedCommerceRows = Number(
-        (
-          db.prepare(`DELETE FROM note_race_raw_commerce WHERE snapshot_date = ?`).run(date) as {
-            changes?: unknown
-          }
-        ).changes ?? 0
+      const deletedCommerceRows = this.extractChanges(
+        db.prepare(`DELETE FROM note_race_raw_commerce WHERE snapshot_date = ?`).run(date)
       )
-      const deletedContentRows = Number(
-        (
-          db.prepare(`DELETE FROM note_race_raw_content WHERE snapshot_date = ?`).run(date) as {
-            changes?: unknown
-          }
-        ).changes ?? 0
+      const deletedContentRows = this.extractChanges(
+        db.prepare(`DELETE FROM note_race_raw_content WHERE snapshot_date = ?`).run(date)
       )
 
-      const snapshotsToRecompute = db
-        .prepare(
-          `
-          SELECT DISTINCT snapshot_date AS snapshotDate
-          FROM note_race_raw_commerce
-          WHERE snapshot_date > ?
-          ORDER BY snapshot_date ASC
-          `
-        )
-        .all(date)
-        .map((row) => normalizeText(row.snapshotDate))
-        .filter(Boolean)
+      // 日期级删除属于最终删除，回收区同日期数据一并清理，避免误恢复。
+      db.prepare(`DELETE FROM note_race_deleted_commerce WHERE snapshot_date = ?`).run(date)
+      db.prepare(`DELETE FROM note_race_deleted_content WHERE snapshot_date = ?`).run(date)
 
       return {
         snapshotDate: date,
         deletedCommerceRows,
         deletedContentRows,
         deletedMatchRows,
-        deletedRankRows,
-        snapshotsToRecompute
+        deletedRankRows
       }
     })
 
@@ -1260,19 +1373,9 @@ export class NoteRaceService {
       deletedContentRows: number
       deletedMatchRows: number
       deletedRankRows: number
-      snapshotsToRecompute: string[]
     }
 
-    let recomputedSnapshots = 0
-    for (const currentDate of result.snapshotsToRecompute) {
-      try {
-        this.rebuildSnapshot(currentDate)
-        recomputedSnapshots += 1
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        console.warn(`[NoteRace] rebuild snapshot failed after delete: ${currentDate} ${message}`)
-      }
-    }
+    const recomputedSnapshots = this.recomputeSnapshotsFrom(date)
 
     return {
       snapshotDate: result.snapshotDate,
@@ -1297,6 +1400,10 @@ export class NoteRaceService {
           SELECT DISTINCT snapshot_date FROM note_race_raw_content
           UNION
           SELECT DISTINCT snapshot_date FROM note_race_daily_rank
+          UNION
+          SELECT DISTINCT snapshot_date FROM note_race_deleted_commerce
+          UNION
+          SELECT DISTINCT snapshot_date FROM note_race_deleted_content
         ),
         commerce AS (
           SELECT snapshot_date, COUNT(*) AS commerce_rows, MAX(imported_at) AS latest_commerce_imported_at
@@ -1351,6 +1458,392 @@ export class NoteRaceService {
           ? null
           : Number(row.latestImportedAt)
     }))
+  }
+
+  getSnapshotBatchStats(payload: {
+    snapshotDate?: string
+    includeDeleted?: boolean
+  } = {}): NoteRaceSnapshotBatchStat[] {
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    if (!db) return []
+
+    const snapshotDate = normalizeText(payload.snapshotDate)
+    const includeDeleted = payload.includeDeleted !== false
+    const now = Date.now()
+    const params: unknown[] = []
+    const where = snapshotDate ? 'WHERE b.snapshot_date = ?' : ''
+    if (snapshotDate) params.push(snapshotDate)
+
+    const activeRows = db
+      .prepare(
+        `
+        WITH batches AS (
+          SELECT snapshot_date, imported_at FROM note_race_raw_commerce
+          UNION
+          SELECT snapshot_date, imported_at FROM note_race_raw_content
+        ),
+        commerce AS (
+          SELECT
+            snapshot_date,
+            imported_at,
+            COUNT(*) AS commerce_rows,
+            GROUP_CONCAT(DISTINCT source_file) AS source_files
+          FROM note_race_raw_commerce
+          GROUP BY snapshot_date, imported_at
+        ),
+        content AS (
+          SELECT
+            snapshot_date,
+            imported_at,
+            COUNT(*) AS content_rows,
+            GROUP_CONCAT(DISTINCT source_file) AS source_files
+          FROM note_race_raw_content
+          GROUP BY snapshot_date, imported_at
+        )
+        SELECT
+          b.snapshot_date AS snapshotDate,
+          b.imported_at AS importedAt,
+          COALESCE(c.commerce_rows, 0) AS commerceRows,
+          COALESCE(t.content_rows, 0) AS contentRows,
+          COALESCE(c.source_files, '') AS commerceSourceFiles,
+          COALESCE(t.source_files, '') AS contentSourceFiles
+        FROM batches b
+        LEFT JOIN commerce c ON c.snapshot_date = b.snapshot_date AND c.imported_at = b.imported_at
+        LEFT JOIN content t ON t.snapshot_date = b.snapshot_date AND t.imported_at = b.imported_at
+        ${where}
+        ORDER BY b.snapshot_date DESC, b.imported_at DESC
+        `
+      )
+      .all(...params)
+
+    const activeStats: NoteRaceSnapshotBatchStat[] = activeRows.map((row) => {
+      const sourceFiles = Array.from(
+        new Set(
+          `${normalizeText(row.commerceSourceFiles)},${normalizeText(row.contentSourceFiles)}`
+            .split(',')
+            .map((item) => normalizeText(item))
+            .filter(Boolean)
+        )
+      )
+      const importedAt = Math.max(0, Number(row.importedAt ?? 0))
+      return {
+        snapshotDate: normalizeText(row.snapshotDate),
+        importedAt,
+        commerceRows: Math.max(0, Number(row.commerceRows ?? 0)),
+        contentRows: Math.max(0, Number(row.contentRows ?? 0)),
+        sourceFiles,
+        status: 'active',
+        deletedAt: null,
+        restorableUntil: null,
+        restorable: false
+      }
+    })
+
+    const deletedStats: NoteRaceSnapshotBatchStat[] = []
+    if (includeDeleted) {
+      const deletedRows = db
+        .prepare(
+          `
+          WITH batches AS (
+            SELECT snapshot_date, imported_at FROM note_race_deleted_commerce
+            UNION
+            SELECT snapshot_date, imported_at FROM note_race_deleted_content
+          ),
+          commerce AS (
+            SELECT
+              snapshot_date,
+              imported_at,
+              COUNT(*) AS commerce_rows,
+              GROUP_CONCAT(DISTINCT source_file) AS source_files,
+              MAX(deleted_at) AS deleted_at
+            FROM note_race_deleted_commerce
+            GROUP BY snapshot_date, imported_at
+          ),
+          content AS (
+            SELECT
+              snapshot_date,
+              imported_at,
+              COUNT(*) AS content_rows,
+              GROUP_CONCAT(DISTINCT source_file) AS source_files,
+              MAX(deleted_at) AS deleted_at
+            FROM note_race_deleted_content
+            GROUP BY snapshot_date, imported_at
+          )
+          SELECT
+            b.snapshot_date AS snapshotDate,
+            b.imported_at AS importedAt,
+            COALESCE(c.commerce_rows, 0) AS commerceRows,
+            COALESCE(t.content_rows, 0) AS contentRows,
+            COALESCE(c.source_files, '') AS commerceSourceFiles,
+            COALESCE(t.source_files, '') AS contentSourceFiles,
+            CASE
+              WHEN COALESCE(c.deleted_at, 0) >= COALESCE(t.deleted_at, 0)
+                THEN NULLIF(COALESCE(c.deleted_at, 0), 0)
+              ELSE NULLIF(COALESCE(t.deleted_at, 0), 0)
+            END AS deletedAt
+          FROM batches b
+          LEFT JOIN commerce c ON c.snapshot_date = b.snapshot_date AND c.imported_at = b.imported_at
+          LEFT JOIN content t ON t.snapshot_date = b.snapshot_date AND t.imported_at = b.imported_at
+          ${where}
+          ORDER BY b.snapshot_date DESC, b.imported_at DESC
+          `
+        )
+        .all(...params)
+
+      for (const row of deletedRows) {
+        const sourceFiles = Array.from(
+          new Set(
+            `${normalizeText(row.commerceSourceFiles)},${normalizeText(row.contentSourceFiles)}`
+              .split(',')
+              .map((item) => normalizeText(item))
+              .filter(Boolean)
+          )
+        )
+        const importedAt = Math.max(0, Number(row.importedAt ?? 0))
+        const deletedAt =
+          row.deletedAt == null || !Number.isFinite(Number(row.deletedAt))
+            ? null
+            : Math.max(0, Number(row.deletedAt))
+        const restorableUntil =
+          deletedAt == null ? null : deletedAt + NOTE_RACE_BATCH_RESTORE_RETENTION_MS
+        deletedStats.push({
+          snapshotDate: normalizeText(row.snapshotDate),
+          importedAt,
+          commerceRows: Math.max(0, Number(row.commerceRows ?? 0)),
+          contentRows: Math.max(0, Number(row.contentRows ?? 0)),
+          sourceFiles,
+          status: 'deleted',
+          deletedAt,
+          restorableUntil,
+          restorable: restorableUntil != null && now <= restorableUntil
+        })
+      }
+    }
+
+    return [...activeStats, ...deletedStats].sort((a, b) => {
+      if (a.snapshotDate !== b.snapshotDate) return b.snapshotDate.localeCompare(a.snapshotDate)
+      if (a.importedAt !== b.importedAt) return b.importedAt - a.importedAt
+      if (a.status === b.status) return 0
+      return a.status === 'active' ? -1 : 1
+    })
+  }
+
+  deleteSnapshotBatch(payload: {
+    snapshotDate?: string
+    importedAt?: number
+    reason?: string
+  }): NoteRaceDeleteBatchResult {
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    const snapshotDate = normalizeText(payload.snapshotDate)
+    const importedAt = Number(payload.importedAt)
+    const reason = normalizeText(payload.reason) || 'manual'
+    if (!snapshotDate) throw new Error('快照日期不能为空')
+    if (!Number.isFinite(importedAt) || importedAt <= 0) throw new Error('批次 importedAt 非法')
+    if (!db) {
+      return {
+        snapshotDate,
+        importedAt: Math.floor(importedAt),
+        deletedCommerceRows: 0,
+        deletedContentRows: 0,
+        recomputedSnapshots: 0
+      }
+    }
+
+    const batchImportedAt = Math.floor(importedAt)
+    const now = Date.now()
+    const tx = db.transaction(() => {
+      this.extractChanges(
+        db
+          .prepare(
+            `
+            INSERT OR REPLACE INTO note_race_deleted_commerce (
+              snapshot_date, note_key, note_id, title, account_name, account_xhs_id, note_created_at, note_type,
+              product_id, product_name, read_count, like_count, collect_count, comment_count, share_count,
+              follow_count, danmu_count, avg_watch_seconds, finish_rate_pv, click_count, click_people, click_rate_pv,
+              pay_orders, pay_users, pay_amount, pay_rate_pv, pay_rate_uv, add_cart_count, refund_amount_pay_time,
+              refund_rate_pay_time, source_file, imported_at, raw_json, deleted_at, delete_reason
+            )
+            SELECT
+              snapshot_date, note_key, note_id, title, account_name, account_xhs_id, note_created_at, note_type,
+              product_id, product_name, read_count, like_count, collect_count, comment_count, share_count,
+              follow_count, danmu_count, avg_watch_seconds, finish_rate_pv, click_count, click_people, click_rate_pv,
+              pay_orders, pay_users, pay_amount, pay_rate_pv, pay_rate_uv, add_cart_count, refund_amount_pay_time,
+              refund_rate_pay_time, source_file, imported_at, raw_json, ?, ?
+            FROM note_race_raw_commerce
+            WHERE snapshot_date = ? AND imported_at = ?
+            `
+          )
+          .run(now, reason, snapshotDate, batchImportedAt)
+      )
+      this.extractChanges(
+        db
+          .prepare(
+            `
+            INSERT OR REPLACE INTO note_race_deleted_content (
+              snapshot_date, row_id, title, first_published_at, note_type, exposure, view_count, cover_click_rate,
+              like_count, comment_count, collect_count, follow_gain_count, share_count, avg_watch_seconds,
+              danmu_count, source_file, imported_at, raw_json, deleted_at, delete_reason
+            )
+            SELECT
+              snapshot_date, row_id, title, first_published_at, note_type, exposure, view_count, cover_click_rate,
+              like_count, comment_count, collect_count, follow_gain_count, share_count, avg_watch_seconds,
+              danmu_count, source_file, imported_at, raw_json, ?, ?
+            FROM note_race_raw_content
+            WHERE snapshot_date = ? AND imported_at = ?
+            `
+          )
+          .run(now, reason, snapshotDate, batchImportedAt)
+      )
+
+      const deletedCommerceRows = this.extractChanges(
+        db
+          .prepare(
+            `DELETE FROM note_race_raw_commerce WHERE snapshot_date = ? AND imported_at = ?`
+          )
+          .run(snapshotDate, batchImportedAt)
+      )
+      const deletedContentRows = this.extractChanges(
+        db
+          .prepare(
+            `DELETE FROM note_race_raw_content WHERE snapshot_date = ? AND imported_at = ?`
+          )
+          .run(snapshotDate, batchImportedAt)
+      )
+      return { deletedCommerceRows, deletedContentRows }
+    })
+
+    const result = tx() as { deletedCommerceRows: number; deletedContentRows: number }
+    const recomputedSnapshots = this.recomputeSnapshotsFrom(snapshotDate)
+    return {
+      snapshotDate,
+      importedAt: batchImportedAt,
+      deletedCommerceRows: result.deletedCommerceRows,
+      deletedContentRows: result.deletedContentRows,
+      recomputedSnapshots
+    }
+  }
+
+  restoreSnapshotBatch(payload: {
+    snapshotDate?: string
+    importedAt?: number
+  }): NoteRaceRestoreBatchResult {
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    const snapshotDate = normalizeText(payload.snapshotDate)
+    const importedAt = Number(payload.importedAt)
+    if (!snapshotDate) throw new Error('快照日期不能为空')
+    if (!Number.isFinite(importedAt) || importedAt <= 0) throw new Error('批次 importedAt 非法')
+    if (!db) {
+      return {
+        snapshotDate,
+        importedAt: Math.floor(importedAt),
+        restoredCommerceRows: 0,
+        restoredContentRows: 0,
+        recomputedSnapshots: 0
+      }
+    }
+
+    const batchImportedAt = Math.floor(importedAt)
+    const commerceMeta = db
+      .prepare(
+        `
+        SELECT COUNT(*) AS cnt, MAX(deleted_at) AS deletedAt
+        FROM note_race_deleted_commerce
+        WHERE snapshot_date = ? AND imported_at = ?
+        `
+      )
+      .get(snapshotDate, batchImportedAt)
+    const contentMeta = db
+      .prepare(
+        `
+        SELECT COUNT(*) AS cnt, MAX(deleted_at) AS deletedAt
+        FROM note_race_deleted_content
+        WHERE snapshot_date = ? AND imported_at = ?
+        `
+      )
+      .get(snapshotDate, batchImportedAt)
+    const commerceCount = Math.max(0, Number(commerceMeta?.cnt ?? 0))
+    const contentCount = Math.max(0, Number(contentMeta?.cnt ?? 0))
+    if (commerceCount + contentCount <= 0) {
+      throw new Error(`未找到可恢复批次：${snapshotDate} / ${batchImportedAt}`)
+    }
+
+    const deletedAt = Math.max(
+      Number(commerceMeta?.deletedAt ?? 0),
+      Number(contentMeta?.deletedAt ?? 0)
+    )
+    if (!Number.isFinite(deletedAt) || deletedAt <= 0) {
+      throw new Error('批次恢复失败：缺少删除时间，无法校验恢复窗口')
+    }
+    const now = Date.now()
+    if (now - deletedAt > NOTE_RACE_BATCH_RESTORE_RETENTION_MS) {
+      throw new Error('该批次已超过 7 天恢复窗口，无法恢复')
+    }
+
+    const tx = db.transaction(() => {
+      const restoredCommerceRows = this.extractChanges(
+        db
+          .prepare(
+            `
+            INSERT OR REPLACE INTO note_race_raw_commerce (
+              snapshot_date, note_key, note_id, title, account_name, account_xhs_id, note_created_at, note_type,
+              product_id, product_name, read_count, like_count, collect_count, comment_count, share_count,
+              follow_count, danmu_count, avg_watch_seconds, finish_rate_pv, click_count, click_people, click_rate_pv,
+              pay_orders, pay_users, pay_amount, pay_rate_pv, pay_rate_uv, add_cart_count, refund_amount_pay_time,
+              refund_rate_pay_time, source_file, imported_at, raw_json
+            )
+            SELECT
+              snapshot_date, note_key, note_id, title, account_name, account_xhs_id, note_created_at, note_type,
+              product_id, product_name, read_count, like_count, collect_count, comment_count, share_count,
+              follow_count, danmu_count, avg_watch_seconds, finish_rate_pv, click_count, click_people, click_rate_pv,
+              pay_orders, pay_users, pay_amount, pay_rate_pv, pay_rate_uv, add_cart_count, refund_amount_pay_time,
+              refund_rate_pay_time, source_file, imported_at, raw_json
+            FROM note_race_deleted_commerce
+            WHERE snapshot_date = ? AND imported_at = ?
+            `
+          )
+          .run(snapshotDate, batchImportedAt)
+      )
+      const restoredContentRows = this.extractChanges(
+        db
+          .prepare(
+            `
+            INSERT OR REPLACE INTO note_race_raw_content (
+              snapshot_date, row_id, title, first_published_at, note_type, exposure, view_count, cover_click_rate,
+              like_count, comment_count, collect_count, follow_gain_count, share_count, avg_watch_seconds,
+              danmu_count, source_file, imported_at, raw_json
+            )
+            SELECT
+              snapshot_date, row_id, title, first_published_at, note_type, exposure, view_count, cover_click_rate,
+              like_count, comment_count, collect_count, follow_gain_count, share_count, avg_watch_seconds,
+              danmu_count, source_file, imported_at, raw_json
+            FROM note_race_deleted_content
+            WHERE snapshot_date = ? AND imported_at = ?
+            `
+          )
+          .run(snapshotDate, batchImportedAt)
+      )
+
+      db.prepare(`DELETE FROM note_race_deleted_commerce WHERE snapshot_date = ? AND imported_at = ?`).run(
+        snapshotDate,
+        batchImportedAt
+      )
+      db.prepare(`DELETE FROM note_race_deleted_content WHERE snapshot_date = ? AND imported_at = ?`).run(
+        snapshotDate,
+        batchImportedAt
+      )
+
+      return { restoredCommerceRows, restoredContentRows }
+    })
+
+    const result = tx() as { restoredCommerceRows: number; restoredContentRows: number }
+    const recomputedSnapshots = this.recomputeSnapshotsFrom(snapshotDate)
+    return {
+      snapshotDate,
+      importedAt: batchImportedAt,
+      restoredCommerceRows: result.restoredCommerceRows,
+      restoredContentRows: result.restoredContentRows,
+      recomputedSnapshots
+    }
   }
 
   listRaceRows(query: NoteRaceListQuery = {}): NoteRaceListRow[] {

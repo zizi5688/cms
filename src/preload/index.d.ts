@@ -240,6 +240,34 @@ declare global {
     latestImportedAt: number | null
   }
 
+  type NoteRaceSnapshotBatchStat = {
+    snapshotDate: string
+    importedAt: number
+    commerceRows: number
+    contentRows: number
+    sourceFiles: string[]
+    status: 'active' | 'deleted'
+    deletedAt: number | null
+    restorableUntil: number | null
+    restorable: boolean
+  }
+
+  type NoteRaceDeleteBatchResult = {
+    snapshotDate: string
+    importedAt: number
+    deletedCommerceRows: number
+    deletedContentRows: number
+    recomputedSnapshots: number
+  }
+
+  type NoteRaceRestoreBatchResult = {
+    snapshotDate: string
+    importedAt: number
+    restoredCommerceRows: number
+    restoredContentRows: number
+    recomputedSnapshots: number
+  }
+
   type NoteRaceListRow = {
     id: string
     rank: number
@@ -680,9 +708,22 @@ declare global {
         }) => Promise<NoteRaceScanFolderResult>
         meta: () => Promise<NoteRaceMeta>
         snapshotStats: () => Promise<NoteRaceSnapshotStat[]>
+        snapshotBatchStats: (payload?: {
+          snapshotDate?: string
+          includeDeleted?: boolean
+        }) => Promise<NoteRaceSnapshotBatchStat[]>
         deleteSnapshot: (payload: {
           snapshotDate: string
         }) => Promise<NoteRaceDeleteSnapshotResult>
+        deleteSnapshotBatch: (payload: {
+          snapshotDate: string
+          importedAt: number
+          reason?: string
+        }) => Promise<NoteRaceDeleteBatchResult>
+        restoreSnapshotBatch: (payload: {
+          snapshotDate: string
+          importedAt: number
+        }) => Promise<NoteRaceRestoreBatchResult>
         list: (payload?: {
           snapshotDate?: string
           account?: string

@@ -4088,10 +4088,37 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cms.noteRace.snapshotStats', async () => noteRaceService.getSnapshotStats())
 
+  ipcMain.handle('cms.noteRace.snapshotBatchStats', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    return noteRaceService.getSnapshotBatchStats({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      includeDeleted: query.includeDeleted === false ? false : true
+    })
+  })
+
   ipcMain.handle('cms.noteRace.deleteSnapshot', async (_event, payload: unknown) => {
     const query = (payload ?? {}) as Record<string, unknown>
     const snapshotDate = typeof query.snapshotDate === 'string' ? query.snapshotDate : ''
     return noteRaceService.deleteSnapshotDate(snapshotDate)
+  })
+
+  ipcMain.handle('cms.noteRace.deleteSnapshotBatch', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    return noteRaceService.deleteSnapshotBatch({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      importedAt:
+        typeof query.importedAt === 'number' ? query.importedAt : Number(query.importedAt),
+      reason: typeof query.reason === 'string' ? query.reason : undefined
+    })
+  })
+
+  ipcMain.handle('cms.noteRace.restoreSnapshotBatch', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    return noteRaceService.restoreSnapshotBatch({
+      snapshotDate: typeof query.snapshotDate === 'string' ? query.snapshotDate : undefined,
+      importedAt:
+        typeof query.importedAt === 'number' ? query.importedAt : Number(query.importedAt)
+    })
   })
 
   ipcMain.handle('cms.noteRace.list', async (_event, payload: unknown) => {
