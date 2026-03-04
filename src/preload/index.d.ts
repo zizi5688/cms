@@ -312,6 +312,19 @@ declare global {
       acceleration: number
       stability: '高' | '中' | '低'
     }
+    cumulative: {
+      startDate: string
+      endDate: string
+      spanDays: number
+      activeDays: number
+      coverageRate: number
+      totalRead: number
+      totalClick: number
+      totalOrders: number
+      totalAmount: number
+      clickRate: number
+      payRate: number
+    }
   }
 
   type MediaSelectionItem = {

@@ -224,6 +224,19 @@ export type NoteRaceDetail = {
     acceleration: number
     stability: '高' | '中' | '低'
   }
+  cumulative: {
+    startDate: string
+    endDate: string
+    spanDays: number
+    activeDays: number
+    coverageRate: number
+    totalRead: number
+    totalClick: number
+    totalOrders: number
+    totalAmount: number
+    clickRate: number
+    payRate: number
+  }
 }
 
 type ExcelWorkbook = {
@@ -2026,6 +2039,49 @@ export class NoteRaceService {
       .reverse()
     const sparkline = sparklineRows.map((row) => Number(row.readCount ?? 0))
 
+    const cumulativeRows = db
+      .prepare(
+        `
+        SELECT
+          snapshot_date AS snapshotDate,
+          read_count AS readCount,
+          click_count AS clickCount,
+          pay_orders AS payOrders,
+          pay_amount AS payAmount
+        FROM note_race_raw_commerce
+        WHERE note_key = ? AND snapshot_date <= ?
+        ORDER BY snapshot_date ASC
+        `
+      )
+      .all(noteKey, snapshotDate)
+    const startDate = normalizeText(cumulativeRows[0]?.snapshotDate) || snapshotDate
+    const startMs = parseYmdToUtcMs(startDate)
+    const endMs = parseYmdToUtcMs(snapshotDate)
+    const spanDays =
+      startMs != null && endMs != null && endMs >= startMs
+        ? Math.floor((endMs - startMs) / (24 * 60 * 60 * 1000)) + 1
+        : Math.max(1, cumulativeRows.length)
+    const activeDays = cumulativeRows.length
+    const totalRead = cumulativeRows.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.readCount ?? 0)),
+      0
+    )
+    const totalClick = cumulativeRows.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.clickCount ?? 0)),
+      0
+    )
+    const totalOrders = cumulativeRows.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.payOrders ?? 0)),
+      0
+    )
+    const totalAmount = cumulativeRows.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.payAmount ?? 0)),
+      0
+    )
+    const coverageRate = spanDays > 0 ? clamp(activeDays / spanDays, 0, 1) : 0
+    const clickRate = totalRead > 0 ? totalClick / totalRead : 0
+    const payRate = totalClick > 0 ? totalOrders / totalClick : 0
+
     const read = Number(commerce.read_count ?? 0)
     const like = Number(commerce.like_count ?? 0)
     const collect = Number(commerce.collect_count ?? 0)
@@ -2087,6 +2143,19 @@ export class NoteRaceService {
         click: Number(rank.dClick ?? 0),
         acceleration: Number(rank.acceleration ?? 1),
         stability: toStability(rank.stabilityLabel)
+      },
+      cumulative: {
+        startDate,
+        endDate: snapshotDate,
+        spanDays,
+        activeDays,
+        coverageRate,
+        totalRead,
+        totalClick,
+        totalOrders,
+        totalAmount,
+        clickRate,
+        payRate
       }
     }
   }
