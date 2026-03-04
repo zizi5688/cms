@@ -171,6 +171,15 @@ type NoteRaceMeta = {
   trendReadyDates: string[]
 }
 
+type NoteRaceDeleteSnapshotResult = {
+  snapshotDate: string
+  deletedCommerceRows: number
+  deletedContentRows: number
+  deletedMatchRows: number
+  deletedRankRows: number
+  recomputedSnapshots: number
+}
+
 type NoteRaceListRow = {
   id: string
   rank: number
@@ -775,6 +784,9 @@ const api = {
       scanFolderImports: (payload: { dirPath: string; sinceMs?: number }): Promise<NoteRaceScanFolderResult> =>
         ipcRenderer.invoke('cms.noteRace.scanFolderImports', payload),
       meta: (): Promise<NoteRaceMeta> => ipcRenderer.invoke('cms.noteRace.meta'),
+      deleteSnapshot: (payload: {
+        snapshotDate: string
+      }): Promise<NoteRaceDeleteSnapshotResult> => ipcRenderer.invoke('cms.noteRace.deleteSnapshot', payload),
       list: (payload?: {
         snapshotDate?: string
         account?: string
@@ -932,6 +944,10 @@ const electronAPI = {
     dynamicWatermarkOpacity: number
     dynamicWatermarkSize: number
     dynamicWatermarkTrajectory: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+    storageMaintenanceEnabled: boolean
+    storageMaintenanceStartTime: string
+    storageMaintenanceRetainDays: number
+    storageArchivePath: string
     scoutDashboardAutoImportDir: string
     watermarkBox: { x: number; y: number; width: number; height: number }
     defaultStartTime: string
@@ -946,6 +962,10 @@ const electronAPI = {
     dynamicWatermarkOpacity?: number
     dynamicWatermarkSize?: number
     dynamicWatermarkTrajectory?: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+    storageMaintenanceEnabled?: boolean
+    storageMaintenanceStartTime?: string
+    storageMaintenanceRetainDays?: number
+    storageArchivePath?: string
     scoutDashboardAutoImportDir?: string
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string

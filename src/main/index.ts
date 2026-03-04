@@ -4086,6 +4086,12 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cms.noteRace.meta', async () => noteRaceService.getMeta())
 
+  ipcMain.handle('cms.noteRace.deleteSnapshot', async (_event, payload: unknown) => {
+    const query = (payload ?? {}) as Record<string, unknown>
+    const snapshotDate = typeof query.snapshotDate === 'string' ? query.snapshotDate : ''
+    return noteRaceService.deleteSnapshotDate(snapshotDate)
+  })
+
   ipcMain.handle('cms.noteRace.list', async (_event, payload: unknown) => {
     const query = (payload ?? {}) as Record<string, unknown>
     const noteType = query.noteType === '图文' || query.noteType === '视频' || query.noteType === '全部'

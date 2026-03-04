@@ -127,6 +127,15 @@ export type NoteRaceMeta = {
   trendReadyDates: string[]
 }
 
+export type NoteRaceDeleteSnapshotResult = {
+  snapshotDate: string
+  deletedCommerceRows: number
+  deletedContentRows: number
+  deletedMatchRows: number
+  deletedRankRows: number
+  recomputedSnapshots: number
+}
+
 export type NoteRaceListQuery = {
   snapshotDate?: string
   account?: string
@@ -1163,6 +1172,106 @@ export class NoteRaceService {
       matchedNotes: matched,
       matchRate: total > 0 ? matched / total : 0,
       trendReadyDates
+    }
+  }
+
+  deleteSnapshotDate(snapshotDate: string): NoteRaceDeleteSnapshotResult {
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    const date = normalizeText(snapshotDate)
+    if (!date) {
+      throw new Error('快照日期不能为空')
+    }
+    if (!db) {
+      return {
+        snapshotDate: date,
+        deletedCommerceRows: 0,
+        deletedContentRows: 0,
+        deletedMatchRows: 0,
+        deletedRankRows: 0,
+        recomputedSnapshots: 0
+      }
+    }
+
+    const tx = db.transaction(() => {
+      const deletedMatchRows = Number(
+        (
+          db.prepare(`DELETE FROM note_race_match_map WHERE snapshot_date = ?`).run(date) as {
+            changes?: unknown
+          }
+        ).changes ?? 0
+      )
+      const deletedRankRows = Number(
+        (
+          db.prepare(`DELETE FROM note_race_daily_rank WHERE snapshot_date = ?`).run(date) as {
+            changes?: unknown
+          }
+        ).changes ?? 0
+      )
+      const deletedCommerceRows = Number(
+        (
+          db.prepare(`DELETE FROM note_race_raw_commerce WHERE snapshot_date = ?`).run(date) as {
+            changes?: unknown
+          }
+        ).changes ?? 0
+      )
+      const deletedContentRows = Number(
+        (
+          db.prepare(`DELETE FROM note_race_raw_content WHERE snapshot_date = ?`).run(date) as {
+            changes?: unknown
+          }
+        ).changes ?? 0
+      )
+
+      const snapshotsToRecompute = db
+        .prepare(
+          `
+          SELECT DISTINCT snapshot_date AS snapshotDate
+          FROM note_race_raw_commerce
+          WHERE snapshot_date > ?
+          ORDER BY snapshot_date ASC
+          `
+        )
+        .all(date)
+        .map((row) => normalizeText(row.snapshotDate))
+        .filter(Boolean)
+
+      return {
+        snapshotDate: date,
+        deletedCommerceRows,
+        deletedContentRows,
+        deletedMatchRows,
+        deletedRankRows,
+        snapshotsToRecompute
+      }
+    })
+
+    const result = tx() as {
+      snapshotDate: string
+      deletedCommerceRows: number
+      deletedContentRows: number
+      deletedMatchRows: number
+      deletedRankRows: number
+      snapshotsToRecompute: string[]
+    }
+
+    let recomputedSnapshots = 0
+    for (const currentDate of result.snapshotsToRecompute) {
+      try {
+        this.rebuildSnapshot(currentDate)
+        recomputedSnapshots += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[NoteRace] rebuild snapshot failed after delete: ${currentDate} ${message}`)
+      }
+    }
+
+    return {
+      snapshotDate: result.snapshotDate,
+      deletedCommerceRows: result.deletedCommerceRows,
+      deletedContentRows: result.deletedContentRows,
+      deletedMatchRows: result.deletedMatchRows,
+      deletedRankRows: result.deletedRankRows,
+      recomputedSnapshots
     }
   }
 

@@ -1,6 +1,6 @@
 import * as React from 'react'
 
-import { ChevronDown, ChevronRight, Copy, Download, RefreshCcw, Settings2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, Download, RefreshCcw, Settings2, Trash2 } from 'lucide-react'
 
 import { Drawer } from '@renderer/components/ui/drawer'
 import { Tabs, type TabsItem } from '@renderer/components/ui/tabs'
@@ -29,6 +29,15 @@ type RaceMeta = {
   matchedNotes: number
   matchRate: number
   trendReadyDates: string[]
+}
+
+type RaceDeleteSnapshotResult = {
+  snapshotDate: string
+  deletedCommerceRows: number
+  deletedContentRows: number
+  deletedMatchRows: number
+  deletedRankRows: number
+  recomputedSnapshots: number
 }
 
 type RaceFolderScanResult = {
@@ -903,6 +912,7 @@ function NoteRaceBoard(): React.JSX.Element {
   const [detailLoading, setDetailLoading] = React.useState<boolean>(false)
   const [importing, setImporting] = React.useState<boolean>(false)
   const [scanLoading, setScanLoading] = React.useState<boolean>(false)
+  const [deletingSnapshot, setDeletingSnapshot] = React.useState<boolean>(false)
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
   const [copyToastMessage, setCopyToastMessage] = React.useState<string>('')
@@ -1418,6 +1428,38 @@ function NoteRaceBoard(): React.JSX.Element {
     }
   }, [refresh])
 
+  const handleDeleteSnapshot = React.useCallback(async (): Promise<void> => {
+    const targetDate = String(snapshotDate ?? '').trim()
+    if (!targetDate) {
+      setError('请先选择要删除的快照日期')
+      return
+    }
+
+    const accepted = window.confirm(
+      `确认删除 ${targetDate} 的导入数据吗？\n\n该操作会删除当日商品/内容/匹配/榜单数据，且不可恢复。`
+    )
+    if (!accepted) return
+
+    setDeletingSnapshot(true)
+    setError('')
+    try {
+      const result = (await window.api.cms.noteRace.deleteSnapshot({
+        snapshotDate: targetDate
+      })) as RaceDeleteSnapshotResult
+      const summaryText =
+        `已删除 ${result.snapshotDate}：商品 ${result.deletedCommerceRows} 行，` +
+        `内容 ${result.deletedContentRows} 行，匹配 ${result.deletedMatchRows} 行，榜单 ${result.deletedRankRows} 行。`
+      const recomputeText =
+        result.recomputedSnapshots > 0 ? `已重算后续 ${result.recomputedSnapshots} 个日期。` : ''
+      setLastImportMessage(`${summaryText}${recomputeText ? ` ${recomputeText}` : ''}`)
+      await refresh()
+    } catch (err) {
+      setError(`删除失败：${normalizeError(err)}`)
+    } finally {
+      setDeletingSnapshot(false)
+    }
+  }, [refresh, snapshotDate])
+
   const handlePickMonitorDir = React.useCallback(async (): Promise<void> => {
     try {
       const picked = await window.electronAPI.openDirectory()
@@ -1664,6 +1706,17 @@ function NoteRaceBoard(): React.JSX.Element {
                 ))
               )}
             </select>
+
+            <button
+              type="button"
+              onClick={() => void handleDeleteSnapshot()}
+              disabled={!snapshotDate || deletingSnapshot}
+              className="inline-flex h-7 items-center gap-1 rounded border border-rose-500/40 bg-rose-500/10 px-2 text-rose-200 transition hover:border-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+              title="删除当前日期导入数据（不可恢复）"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deletingSnapshot ? '删除中...' : '删除当日'}
+            </button>
 
             <select
               value={account}
