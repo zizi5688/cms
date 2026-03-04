@@ -1,6 +1,6 @@
 import * as React from 'react'
 
-import { ChevronDown, ChevronRight, Copy, Download, RefreshCcw, Settings2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, Download, RefreshCcw, Settings2, Trash2 } from 'lucide-react'
 
 import { Drawer } from '@renderer/components/ui/drawer'
 import { Tabs, type TabsItem } from '@renderer/components/ui/tabs'
@@ -29,6 +29,52 @@ type RaceMeta = {
   matchedNotes: number
   matchRate: number
   trendReadyDates: string[]
+}
+
+type RaceDeleteSnapshotResult = {
+  snapshotDate: string
+  deletedCommerceRows: number
+  deletedContentRows: number
+  deletedMatchRows: number
+  deletedRankRows: number
+  recomputedSnapshots: number
+}
+
+type RaceSnapshotStat = {
+  snapshotDate: string
+  commerceRows: number
+  contentRows: number
+  rankRows: number
+  matchedRows: number
+  latestImportedAt: number | null
+}
+
+type RaceSnapshotBatchStat = {
+  snapshotDate: string
+  importedAt: number
+  commerceRows: number
+  contentRows: number
+  sourceFiles: string[]
+  status: 'active' | 'deleted'
+  deletedAt: number | null
+  restorableUntil: number | null
+  restorable: boolean
+}
+
+type RaceDeleteBatchResult = {
+  snapshotDate: string
+  importedAt: number
+  deletedCommerceRows: number
+  deletedContentRows: number
+  recomputedSnapshots: number
+}
+
+type RaceRestoreBatchResult = {
+  snapshotDate: string
+  importedAt: number
+  restoredCommerceRows: number
+  restoredContentRows: number
+  recomputedSnapshots: number
 }
 
 type RaceFolderScanResult = {
@@ -899,14 +945,22 @@ function NoteRaceBoard(): React.JSX.Element {
     matchRate: 0,
     trendReadyDates: []
   })
+  const [snapshotStats, setSnapshotStats] = React.useState<RaceSnapshotStat[]>([])
+  const [managerSnapshotDate, setManagerSnapshotDate] = React.useState<string>('')
+  const [snapshotBatches, setSnapshotBatches] = React.useState<RaceSnapshotBatchStat[]>([])
   const [loading, setLoading] = React.useState<boolean>(false)
   const [detailLoading, setDetailLoading] = React.useState<boolean>(false)
   const [importing, setImporting] = React.useState<boolean>(false)
   const [scanLoading, setScanLoading] = React.useState<boolean>(false)
+  const [snapshotStatsLoading, setSnapshotStatsLoading] = React.useState<boolean>(false)
+  const [snapshotBatchesLoading, setSnapshotBatchesLoading] = React.useState<boolean>(false)
+  const [deletingSnapshot, setDeletingSnapshot] = React.useState<boolean>(false)
+  const [batchOperatingKey, setBatchOperatingKey] = React.useState<string>('')
   const [error, setError] = React.useState<string>('')
   const [lastImportMessage, setLastImportMessage] = React.useState<string>('')
   const [copyToastMessage, setCopyToastMessage] = React.useState<string>('')
   const [detailDrawerOpen, setDetailDrawerOpen] = React.useState<boolean>(false)
+  const [dataManagerOpen, setDataManagerOpen] = React.useState<boolean>(false)
   const [monitorMenuOpen, setMonitorMenuOpen] = React.useState<boolean>(false)
   const [noticeCursor, setNoticeCursor] = React.useState<number>(0)
   const [expandedGroups, setExpandedGroups] = React.useState<Record<string, boolean>>({})
@@ -922,6 +976,12 @@ function NoteRaceBoard(): React.JSX.Element {
     if (snapshotDates.length === 0) return 'EMPTY'
     return isTrendReady ? 'DAY2_PLUS' : 'LOW_CONFIDENCE'
   }, [isTrendReady, snapshotDates.length])
+
+  const managerDateOptions = React.useMemo(() => {
+    const fromStats = snapshotStats.map((item) => String(item.snapshotDate ?? '').trim()).filter(Boolean)
+    if (fromStats.length > 0) return Array.from(new Set(fromStats))
+    return snapshotDates
+  }, [snapshotDates, snapshotStats])
 
   const loadMeta = React.useCallback(async (): Promise<string> => {
     const nextRaw = (await window.api.cms.noteRace.meta()) as RaceMeta
@@ -982,21 +1042,81 @@ function NoteRaceBoard(): React.JSX.Element {
     []
   )
 
+  const loadSnapshotStats = React.useCallback(async (): Promise<void> => {
+    setSnapshotStatsLoading(true)
+    try {
+      const stats = (await window.api.cms.noteRace.snapshotStats()) as RaceSnapshotStat[]
+      setSnapshotStats(Array.isArray(stats) ? stats : [])
+    } catch (err) {
+      setSnapshotStats([])
+      setError(`加载日期统计失败：${normalizeError(err)}`)
+    } finally {
+      setSnapshotStatsLoading(false)
+    }
+  }, [])
+
+  const loadSnapshotBatches = React.useCallback(async (targetSnapshotDate: string): Promise<void> => {
+    const normalizedDate = String(targetSnapshotDate ?? '').trim()
+    if (!normalizedDate) {
+      setSnapshotBatches([])
+      return
+    }
+    setSnapshotBatchesLoading(true)
+    try {
+      const rows = (await window.api.cms.noteRace.snapshotBatchStats({
+        snapshotDate: normalizedDate,
+        includeDeleted: true
+      })) as RaceSnapshotBatchStat[]
+      setSnapshotBatches(Array.isArray(rows) ? rows : [])
+      setError('')
+    } catch (err) {
+      setSnapshotBatches([])
+      setError(`加载批次统计失败：${normalizeError(err)}`)
+    } finally {
+      setSnapshotBatchesLoading(false)
+    }
+  }, [])
+
   const refresh = React.useCallback(
     async (options: LoadRowsOptions = {}): Promise<void> => {
       const date = await loadMeta()
+      await loadSnapshotStats()
+      if (dataManagerOpen) {
+        const managerDate = managerSnapshotDate || date
+        if (managerDate) {
+          await loadSnapshotBatches(managerDate)
+        }
+      }
       if (date) {
         await loadRows(date, options)
         return
       }
       setAllRows([])
     },
-    [loadMeta, loadRows]
+    [dataManagerOpen, loadMeta, loadRows, loadSnapshotBatches, loadSnapshotStats, managerSnapshotDate]
   )
 
   React.useEffect(() => {
     void refresh()
   }, [refresh])
+
+  React.useEffect(() => {
+    if (!dataManagerOpen) return
+    const managerDateValid =
+      managerSnapshotDate && Array.isArray(managerDateOptions) && managerDateOptions.includes(managerSnapshotDate)
+    const fallbackDate = managerDateValid
+      ? managerSnapshotDate
+      : snapshotDate || managerDateOptions[0] || ''
+    if (!fallbackDate) {
+      setSnapshotBatches([])
+      return
+    }
+    if (managerSnapshotDate !== fallbackDate) {
+      setManagerSnapshotDate(fallbackDate)
+      return
+    }
+    void loadSnapshotBatches(fallbackDate)
+  }, [dataManagerOpen, loadSnapshotBatches, managerDateOptions, managerSnapshotDate, snapshotDate])
 
   const scopedRows = React.useMemo(() => {
     return allRows.filter((row) => {
@@ -1418,6 +1538,141 @@ function NoteRaceBoard(): React.JSX.Element {
     }
   }, [refresh])
 
+  const executeDeleteSnapshot = React.useCallback(
+    async (rawSnapshotDate: string): Promise<void> => {
+      const targetDate = String(rawSnapshotDate ?? '').trim()
+      if (!targetDate) {
+        setError('请先选择要删除的快照日期')
+        return
+      }
+
+      const stat = snapshotStats.find((item) => item.snapshotDate === targetDate) ?? null
+      const detailText = stat
+        ? `商品 ${stat.commerceRows} 行，内容 ${stat.contentRows} 行，榜单 ${stat.rankRows} 行`
+        : '当日全部导入数据'
+      const accepted = window.confirm(
+        `确认删除 ${targetDate} 的导入数据吗？\n\n` +
+          `预计影响：${detailText}。\n` +
+          '该操作不可恢复。'
+      )
+      if (!accepted) return
+
+      setDeletingSnapshot(true)
+      setError('')
+      try {
+        const result = (await window.api.cms.noteRace.deleteSnapshot({
+          snapshotDate: targetDate
+        })) as RaceDeleteSnapshotResult
+        const summaryText =
+          `已删除 ${result.snapshotDate}：商品 ${result.deletedCommerceRows} 行，` +
+          `内容 ${result.deletedContentRows} 行，匹配 ${result.deletedMatchRows} 行，榜单 ${result.deletedRankRows} 行。`
+        const recomputeText =
+          result.recomputedSnapshots > 0 ? `已重算后续 ${result.recomputedSnapshots} 个日期。` : ''
+        setLastImportMessage(`${summaryText}${recomputeText ? ` ${recomputeText}` : ''}`)
+        await refresh()
+      } catch (err) {
+        setError(`删除失败：${normalizeError(err)}`)
+      } finally {
+        setDeletingSnapshot(false)
+      }
+    },
+    [refresh, snapshotStats]
+  )
+
+  const executeDeleteBatch = React.useCallback(
+    async (targetDate: string, importedAt: number): Promise<void> => {
+      const normalizedDate = String(targetDate ?? '').trim()
+      if (!normalizedDate) return
+      if (!Number.isFinite(importedAt) || importedAt <= 0) return
+
+      const batch = snapshotBatches.find(
+        (item) =>
+          item.status === 'active' &&
+          item.snapshotDate === normalizedDate &&
+          item.importedAt === importedAt
+      )
+      const detailText = batch
+        ? `商品 ${batch.commerceRows} 行，内容 ${batch.contentRows} 行`
+        : `批次 ${formatDateTime(importedAt)}`
+      const accepted = window.confirm(
+        `确认删除批次 ${formatDateTime(importedAt)} 吗？\n\n预计影响：${detailText}。\n该操作可在 7 天内恢复。`
+      )
+      if (!accepted) return
+
+      const opKey = `${normalizedDate}:${importedAt}:delete`
+      setBatchOperatingKey(opKey)
+      setError('')
+      try {
+        const result = (await window.api.cms.noteRace.deleteSnapshotBatch({
+          snapshotDate: normalizedDate,
+          importedAt,
+          reason: 'manual-ui'
+        })) as RaceDeleteBatchResult
+        setLastImportMessage(
+          `已删除批次 ${formatDateTime(result.importedAt)}：商品 ${result.deletedCommerceRows} 行，` +
+            `内容 ${result.deletedContentRows} 行。` +
+            (result.recomputedSnapshots > 0 ? ` 已重算后续 ${result.recomputedSnapshots} 个日期。` : '')
+        )
+        await refresh()
+        await loadSnapshotBatches(normalizedDate)
+      } catch (err) {
+        setError(`批次删除失败：${normalizeError(err)}`)
+      } finally {
+        setBatchOperatingKey('')
+      }
+    },
+    [loadSnapshotBatches, refresh, snapshotBatches]
+  )
+
+  const executeRestoreBatch = React.useCallback(
+    async (targetDate: string, importedAt: number): Promise<void> => {
+      const normalizedDate = String(targetDate ?? '').trim()
+      if (!normalizedDate) return
+      if (!Number.isFinite(importedAt) || importedAt <= 0) return
+
+      const accepted = window.confirm(
+        `确认恢复批次 ${formatDateTime(importedAt)} 吗？\n\n系统将把该批次数据恢复到 ${normalizedDate} 并重算后续日期。`
+      )
+      if (!accepted) return
+
+      const opKey = `${normalizedDate}:${importedAt}:restore`
+      setBatchOperatingKey(opKey)
+      setError('')
+      try {
+        const result = (await window.api.cms.noteRace.restoreSnapshotBatch({
+          snapshotDate: normalizedDate,
+          importedAt
+        })) as RaceRestoreBatchResult
+        setLastImportMessage(
+          `已恢复批次 ${formatDateTime(result.importedAt)}：商品 ${result.restoredCommerceRows} 行，` +
+            `内容 ${result.restoredContentRows} 行。` +
+            (result.recomputedSnapshots > 0 ? ` 已重算后续 ${result.recomputedSnapshots} 个日期。` : '')
+        )
+        await refresh()
+        await loadSnapshotBatches(normalizedDate)
+      } catch (err) {
+        setError(`批次恢复失败：${normalizeError(err)}`)
+      } finally {
+        setBatchOperatingKey('')
+      }
+    },
+    [loadSnapshotBatches, refresh]
+  )
+
+  const handleDeleteSnapshot = React.useCallback(async (): Promise<void> => {
+    await executeDeleteSnapshot(snapshotDate)
+  }, [executeDeleteSnapshot, snapshotDate])
+
+  const handleOpenDataManager = React.useCallback((): void => {
+    setMonitorMenuOpen(false)
+    const preferredDate = snapshotDate || managerDateOptions[0] || ''
+    setManagerSnapshotDate(preferredDate)
+    setDataManagerOpen(true)
+    if (preferredDate) {
+      void loadSnapshotBatches(preferredDate)
+    }
+  }, [loadSnapshotBatches, managerDateOptions, snapshotDate])
+
   const handlePickMonitorDir = React.useCallback(async (): Promise<void> => {
     try {
       const picked = await window.electronAPI.openDirectory()
@@ -1585,6 +1840,13 @@ function NoteRaceBoard(): React.JSX.Element {
                     </button>
                     <button
                       type="button"
+                      onClick={handleOpenDataManager}
+                      className="flex h-8 w-full items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-left text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200"
+                    >
+                      导入日期管理
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleToggleAutoMonitor}
                       className={cn(
                         'flex h-8 w-full items-center rounded border px-2 text-left transition',
@@ -1664,6 +1926,17 @@ function NoteRaceBoard(): React.JSX.Element {
                 ))
               )}
             </select>
+
+            <button
+              type="button"
+              onClick={() => void handleDeleteSnapshot()}
+              disabled={!snapshotDate || deletingSnapshot}
+              className="inline-flex h-7 items-center gap-1 rounded border border-rose-500/40 bg-rose-500/10 px-2 text-rose-200 transition hover:border-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+              title="删除当前日期导入数据（不可恢复）"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deletingSnapshot ? '删除中...' : '删除当日'}
+            </button>
 
             <select
               value={account}
@@ -2061,6 +2334,216 @@ function NoteRaceBoard(): React.JSX.Element {
           {copyToastMessage}
         </div>
       ) : null}
+
+      <Drawer
+        open={dataManagerOpen}
+        onOpenChange={setDataManagerOpen}
+        title="导入日期管理"
+        description="按日期查看导入规模并执行删除"
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300">
+            批次删除支持 7 天内恢复；日期删除属于最终删除（不可恢复）。
+          </div>
+
+          <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-zinc-400">批次日期</span>
+              <select
+                value={managerSnapshotDate}
+                onChange={(event) => {
+                  const nextDate = event.target.value
+                  setManagerSnapshotDate(nextDate)
+                  void loadSnapshotBatches(nextDate)
+                }}
+                className="h-7 rounded border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 focus:border-cyan-500 focus:outline-none"
+              >
+                {managerDateOptions.length === 0 ? (
+                  <option value="">暂无快照</option>
+                ) : (
+                  managerDateOptions.map((date) => (
+                    <option key={date} value={date}>
+                      {date}
+                    </option>
+                  ))
+                )}
+              </select>
+              <button
+                type="button"
+                onClick={() => void loadSnapshotBatches(managerSnapshotDate || snapshotDate)}
+                disabled={snapshotBatchesLoading || !(managerSnapshotDate || snapshotDate)}
+                className="inline-flex h-7 items-center rounded border border-zinc-700 bg-zinc-900 px-2 text-zinc-200 transition hover:border-cyan-500 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                刷新批次
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900/60">
+            <div className="border-b border-zinc-700 bg-zinc-900/80 px-3 py-2 text-[11px] text-zinc-400">
+              批次管理（单批次可删除/恢复）
+            </div>
+
+            {snapshotBatchesLoading ? (
+              <div className="px-3 py-2 text-xs text-zinc-500">批次统计加载中...</div>
+            ) : null}
+
+            {!snapshotBatchesLoading && snapshotBatches.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-zinc-500">当前日期暂无批次数据</div>
+            ) : null}
+
+            {!snapshotBatchesLoading && snapshotBatches.length > 0 ? (
+              <div className="max-h-[44vh] overflow-auto">
+                <div className="grid grid-cols-[132px_72px_150px_1fr_88px] border-b border-zinc-700 px-3 py-2 text-[11px] text-zinc-400">
+                  <span>批次时间</span>
+                  <span>状态</span>
+                  <span>导入规模</span>
+                  <span>来源文件</span>
+                  <span className="text-right">操作</span>
+                </div>
+                {snapshotBatches.map((item) => {
+                  const sourceSummary =
+                    item.sourceFiles.length <= 0
+                      ? '-'
+                      : item.sourceFiles.length <= 2
+                        ? item.sourceFiles.join(' / ')
+                        : `${item.sourceFiles.slice(0, 2).join(' / ')} 等${item.sourceFiles.length}个`
+                  const opDeleteKey = `${item.snapshotDate}:${item.importedAt}:delete`
+                  const opRestoreKey = `${item.snapshotDate}:${item.importedAt}:restore`
+                  const isOperating =
+                    batchOperatingKey === opDeleteKey || batchOperatingKey === opRestoreKey
+                  return (
+                    <div
+                      key={`${item.snapshotDate}:${item.importedAt}:${item.status}`}
+                      className="grid grid-cols-[132px_72px_150px_1fr_88px] items-center border-b border-zinc-800/70 px-3 py-2 text-[12px] text-zinc-200"
+                    >
+                      <span className="tabular-nums text-zinc-300">{formatDateTime(item.importedAt)}</span>
+                      <span>
+                        <span
+                          className={cn(
+                            'inline-flex rounded border px-1.5 py-0.5 text-[10px]',
+                            item.status === 'active'
+                              ? 'border-emerald-500/45 bg-emerald-500/10 text-emerald-200'
+                              : 'border-amber-500/45 bg-amber-500/10 text-amber-200'
+                          )}
+                        >
+                          {item.status === 'active' ? '生效中' : '已删除'}
+                        </span>
+                      </span>
+                      <span className="truncate text-zinc-300">
+                        商品 {item.commerceRows} · 内容 {item.contentRows}
+                      </span>
+                      <span className="truncate text-zinc-400" title={item.sourceFiles.join('\n')}>
+                        {sourceSummary}
+                      </span>
+                      <div className="text-right">
+                        {item.status === 'active' ? (
+                          <button
+                            type="button"
+                            onClick={() => void executeDeleteBatch(item.snapshotDate, item.importedAt)}
+                            disabled={deletingSnapshot || isOperating}
+                            className="inline-flex h-6 items-center rounded border border-rose-500/40 bg-rose-500/10 px-2 text-[11px] text-rose-200 transition hover:border-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                            title="删除该批次（7天内可恢复）"
+                          >
+                            {isOperating ? '处理中...' : '删除'}
+                          </button>
+                        ) : item.restorable ? (
+                          <button
+                            type="button"
+                            onClick={() => void executeRestoreBatch(item.snapshotDate, item.importedAt)}
+                            disabled={deletingSnapshot || isOperating}
+                            className="inline-flex h-6 items-center rounded border border-cyan-500/40 bg-cyan-500/10 px-2 text-[11px] text-cyan-200 transition hover:border-cyan-400 hover:bg-cyan-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                            title={`可恢复至：${item.restorableUntil ? formatDateTime(item.restorableUntil) : '-'}`}
+                          >
+                            {isOperating ? '处理中...' : '恢复'}
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-zinc-500">已过期</span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+          </div>
+
+          {snapshotStatsLoading ? (
+            <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
+              日期统计加载中...
+            </div>
+          ) : null}
+
+          {!snapshotStatsLoading && snapshotStats.length === 0 ? (
+            <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-500">
+              暂无可管理的导入日期
+            </div>
+          ) : null}
+
+          {!snapshotStatsLoading && snapshotStats.length > 0 ? (
+            <div className="overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900/60">
+              <div className="grid grid-cols-[120px_1fr_90px_130px_70px] border-b border-zinc-700 bg-zinc-900/80 px-3 py-2 text-[11px] text-zinc-400">
+                <span>快照日期</span>
+                <span>导入规模</span>
+                <span className="text-right">匹配率</span>
+                <span className="text-right">最近导入</span>
+                <span className="text-right">操作</span>
+              </div>
+              <div className="max-h-[56vh] overflow-auto">
+                {snapshotStats.map((item) => {
+                  const isCurrent = snapshotDate === item.snapshotDate
+                  const matchRate =
+                    item.rankRows > 0
+                      ? Math.round((Math.max(0, item.matchedRows) / Math.max(1, item.rankRows)) * 100)
+                      : 0
+                  return (
+                    <div
+                      key={item.snapshotDate}
+                      className={cn(
+                        'grid grid-cols-[120px_1fr_90px_130px_70px] items-center border-b border-zinc-800/70 px-3 py-2 text-[12px] text-zinc-200',
+                        isCurrent && 'bg-cyan-500/10'
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className={cn(
+                          'truncate text-left transition hover:text-cyan-300',
+                          isCurrent && 'font-semibold text-cyan-200'
+                        )}
+                        onClick={() => {
+                          setSnapshotDate(item.snapshotDate)
+                          void loadRows(item.snapshotDate, { preserveScroll: true })
+                        }}
+                        title="定位到该日期"
+                      >
+                        {item.snapshotDate}
+                      </button>
+                      <span className="truncate text-zinc-300">
+                        商品 {item.commerceRows} · 内容 {item.contentRows} · 榜单 {item.rankRows}
+                      </span>
+                      <span className="text-right tabular-nums text-zinc-300">{matchRate}%</span>
+                      <span className="text-right tabular-nums text-zinc-400">
+                        {item.latestImportedAt ? formatDateTime(item.latestImportedAt) : '-'}
+                      </span>
+                      <div className="text-right">
+                        <button
+                          type="button"
+                          onClick={() => void executeDeleteSnapshot(item.snapshotDate)}
+                          disabled={deletingSnapshot}
+                          className="inline-flex h-6 items-center rounded border border-rose-500/40 bg-rose-500/10 px-2 text-[11px] text-rose-200 transition hover:border-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                          title="删除该日期"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </Drawer>
 
       <Drawer
         open={detailDrawerOpen}
