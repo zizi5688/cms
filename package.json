@@ -29,7 +29,8 @@
     "publish:win": "npm run publish:win:x64",
     "build:mac:engine": "bash scripts/build-cms-engine-mac.sh",
     "build:mac:verify-engine": "bash scripts/verify-cms-engine-mac.sh",
-    "build:mac": "npm run build:mac:engine && npm run build:mac:verify-engine && npm run build:app && electron-builder --mac --config electron-builder.json",
+    "prepare:mac:deps": "bash scripts/prepare-mac-runtime-deps.sh",
+    "build:mac": "npm run build:mac:engine && npm run build:mac:verify-engine && npm run prepare:mac:deps && npm run build:app && electron-builder --mac --config electron-builder.json",
     "build:linux": "npm run build:app && electron-builder --linux --config electron-builder.json"
   },
   "dependencies": {
