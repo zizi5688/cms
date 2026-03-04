@@ -2607,7 +2607,7 @@ function NoteRaceBoard(): React.JSX.Element {
               <h4 className="text-sm font-semibold text-zinc-100">趋势信号</h4>
               {dataPhase !== 'DAY2_PLUS' ? (
                 <div className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
-                  样本不足或口径不可比：仅当连续两天均为“近1日”同口径快照时才显示增量趋势
+                  样本不足或口径不可比：仅当连续两天均为“商品笔记近1日”同口径快照时才显示增量趋势
                 </div>
               ) : null}
               <div className="mt-2">

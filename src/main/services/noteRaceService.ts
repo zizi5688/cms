@@ -485,7 +485,7 @@ type TrendComparabilityReason =
   | 'ok'
   | 'missing_previous_snapshot'
   | 'snapshot_gap'
-  | 'missing_dual_source'
+  | 'missing_commerce_source'
   | 'non_daily_scope'
 
 type SnapshotImportProfile = {
@@ -555,11 +555,11 @@ function describeTrendComparabilityReason(
   if (reason === 'snapshot_gap') {
     return `与上一快照不连续（上一快照：${previousSnapshotDate ?? '-'}），已禁用增量趋势计算。`
   }
-  if (reason === 'missing_dual_source') {
-    return '当前或上一快照缺少“商品+内容”配对导入，已禁用增量趋势计算。'
+  if (reason === 'missing_commerce_source') {
+    return '当前或上一快照缺少商品侧导入，已禁用增量趋势计算。'
   }
   if (reason === 'non_daily_scope') {
-    return '当前或上一快照不是“近1日”同口径，已禁用增量趋势计算。'
+    return '当前或上一快照商品侧不是“近1日”同口径，已禁用增量趋势计算。'
   }
   return '快照口径不可比，已禁用增量趋势计算。'
 }
@@ -856,20 +856,16 @@ export class NoteRaceService {
 
     const currentProfile = this.getSnapshotImportProfile(db, snapshotDate)
     const previousProfile = this.getSnapshotImportProfile(db, previousSnapshotDate)
-    const hasDualSource =
-      currentProfile.commerceCount > 0 &&
-      currentProfile.contentCount > 0 &&
-      previousProfile.commerceCount > 0 &&
-      previousProfile.contentCount > 0
-    if (!hasDualSource) {
+    const hasCommerceSource = currentProfile.commerceCount > 0 && previousProfile.commerceCount > 0
+    if (!hasCommerceSource) {
       return {
         comparable: false,
         previousSnapshotDate,
-        reason: 'missing_dual_source'
+        reason: 'missing_commerce_source'
       }
     }
 
-    if (currentProfile.mergedScope !== 'daily' || previousProfile.mergedScope !== 'daily') {
+    if (currentProfile.commerceScope !== 'daily' || previousProfile.commerceScope !== 'daily') {
       return {
         comparable: false,
         previousSnapshotDate,
