@@ -40,6 +40,7 @@ export interface TaskCardProps {
   select?: {
     checked: boolean
     ariaLabel?: string
+    disabled?: boolean
     onChange: (checked: boolean) => void
   }
   className?: string
@@ -127,10 +128,11 @@ const TaskCard = React.memo(function TaskCard({
           <input
             type="checkbox"
             checked={select.checked}
+            disabled={select.disabled}
             onChange={(e) => select.onChange(e.target.checked)}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
-            className="h-4 w-4"
+            className="h-4 w-4 disabled:cursor-not-allowed disabled:opacity-50"
             aria-label={select.ariaLabel ?? '选择任务'}
           />
         </div>

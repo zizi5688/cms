@@ -654,6 +654,7 @@ function DataBuilder(): React.JSX.Element {
   }, [setCsvContent, setDataWorkshopFolderPath, setWorkshopImport, setTasks, setUploadTasks])
 
   const toggleSelected = (taskId: string): void => {
+    if (queuedTaskIds.has(taskId)) return
     setSelectedImageIds((prev) => {
       const next = new Set(prev)
       if (next.has(taskId)) next.delete(taskId)
@@ -662,20 +663,31 @@ function DataBuilder(): React.JSX.Element {
     })
   }
 
+  const selectedDispatchCount = useMemo(() => {
+    let count = 0
+    for (const task of tasks) {
+      if (queuedTaskIds.has(task.id)) continue
+      if (selectedImageIds.has(task.id)) count += 1
+    }
+    return count
+  }, [queuedTaskIds, selectedImageIds, tasks])
+
   const isAllPreviewSelected = useMemo(() => {
-    if (tasks.length === 0) return false
-    return tasks.every((task) => selectedImageIds.has(task.id))
-  }, [selectedImageIds, tasks])
+    const selectableTasks = tasks.filter((task) => !queuedTaskIds.has(task.id))
+    if (selectableTasks.length === 0) return false
+    return selectableTasks.every((task) => selectedImageIds.has(task.id))
+  }, [queuedTaskIds, selectedImageIds, tasks])
 
   const toggleSelectAllPreview = (): void => {
     setSelectedImageIds((prev) => {
       const next = new Set(prev)
-      if (tasks.length === 0) return next
+      const selectableTasks = tasks.filter((task) => !queuedTaskIds.has(task.id))
+      if (selectableTasks.length === 0) return next
       if (isAllPreviewSelected) {
-        for (const task of tasks) next.delete(task.id)
+        for (const task of selectableTasks) next.delete(task.id)
         return next
       }
-      for (const task of tasks) next.add(task.id)
+      for (const task of selectableTasks) next.add(task.id)
       return next
     })
   }
@@ -691,7 +703,7 @@ function DataBuilder(): React.JSX.Element {
     const productId = selectedProductId.trim()
     const productName = productId ? allProducts.find((p) => p.id === productId)?.name ?? '' : ''
 
-    const selectedTasks = tasks.filter((t) => selectedImageIds.has(t.id))
+    const selectedTasks = tasks.filter((t) => selectedImageIds.has(t.id) && !queuedTaskIds.has(t.id))
     if (selectedTasks.length === 0) return
 
     const requestId =
@@ -739,7 +751,27 @@ function DataBuilder(): React.JSX.Element {
         { requestId }
       )
       addLog(`[Super CMS] 已派发 ${created.length} 条任务到账号队列。`)
-      resetDataBuilderToInitial()
+      const dispatchedTaskIdSet = new Set(selectedTasks.map((task) => task.id))
+      const nextQueuedTaskIds = new Set(queuedTaskIds)
+      for (const taskId of dispatchedTaskIdSet) nextQueuedTaskIds.add(taskId)
+      const allTasksQueued = tasks.length > 0 && tasks.every((task) => nextQueuedTaskIds.has(task.id))
+
+      if (allTasksQueued) {
+        resetDataBuilderToInitial()
+        return
+      }
+
+      setQueuedTaskIds(nextQueuedTaskIds)
+      setSelectedImageIds((prev) => {
+        const next = new Set(prev)
+        for (const taskId of dispatchedTaskIdSet) next.delete(taskId)
+        return next
+      })
+      const remainingCount = tasks.reduce((count, task) => {
+        if (nextQueuedTaskIds.has(task.id)) return count
+        return count + 1
+      }, 0)
+      setToastMessage(`已派发 ${created.length} 条任务，剩余 ${remainingCount} 条待派发。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setDispatchProgress((prev) => ({
@@ -979,17 +1011,22 @@ function DataBuilder(): React.JSX.Element {
               itemContent={(index, task) => {
                 const isSelected = selectedImageIds.has(task.id)
                 const isQueued = queuedTaskIds.has(task.id)
+                const isSelectable = !isQueued
 
                 return (
                   <div className="px-6 pb-4">
                     <div
                       className="relative"
-                      onClick={() => toggleSelected(task.id)}
+                      onClick={() => {
+                        if (!isSelectable) return
+                        toggleSelected(task.id)
+                      }}
                       onKeyDown={(e) => {
+                        if (!isSelectable) return
                         if (e.key === 'Enter' || e.key === ' ') toggleSelected(task.id)
                       }}
-                      role="button"
-                      tabIndex={0}
+                      role={isSelectable ? 'button' : undefined}
+                      tabIndex={isSelectable ? 0 : -1}
                     >
                       {isQueued ? (
                         <div className="absolute right-2 top-2 z-10 rounded-md bg-emerald-500/15 px-2 py-1 text-xs text-emerald-300">
@@ -1008,13 +1045,17 @@ function DataBuilder(): React.JSX.Element {
                         note={task.log}
                         select={{
                           checked: isSelected,
+                          disabled: !isSelectable,
                           ariaLabel: `${isSelected ? '取消选择' : '选择'}：${task.title || `第${index + 1}组`}`,
                           onChange: (checked) => {
+                            if (!isSelectable) return
                             if (checked !== isSelected) toggleSelected(task.id)
                           }
                         }}
                         className={
-                          isSelected
+                          isQueued
+                            ? 'border-emerald-500/50 bg-emerald-950/10 transition-colors'
+                            : isSelected
                             ? 'border-zinc-300 bg-zinc-900/30 transition-colors'
                             : 'hover:bg-zinc-900/20 transition-colors'
                         }
@@ -1141,10 +1182,10 @@ function DataBuilder(): React.JSX.Element {
         </div>
       ) : null}
 
-      {selectedImageIds.size > 0 ? (
+      {selectedDispatchCount > 0 ? (
         <div className="fixed bottom-6 left-1/2 z-50 w-[min(820px,calc(100vw-48px))] -translate-x-1/2 rounded-xl border border-zinc-800 bg-zinc-950/95 p-4 shadow-xl backdrop-blur">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-zinc-200">已选 {selectedImageIds.size} 项</div>
+            <div className="text-sm text-zinc-200">已选 {selectedDispatchCount} 项</div>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
               <select
                 value={selectedAccountId}
