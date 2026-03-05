@@ -9,6 +9,7 @@ import { cn } from '@renderer/lib/utils'
 type NoteType = '全部' | '图文' | '视频'
 type NoteTag = '起飞' | '维稳' | '掉速' | '长尾复活' | '风险'
 type SignalTone = 'positive' | 'negative' | 'neutral'
+type ContentCoverage = 'matched' | 'out_of_scope' | 'missing' | 'no_content_snapshot'
 
 type Signal = {
   label: string
@@ -28,6 +29,7 @@ type RaceMeta = {
   totalNotes: number
   matchedNotes: number
   matchRate: number
+  scopeDescription: string
   trendReadyDates: string[]
 }
 
@@ -46,6 +48,8 @@ type RaceSnapshotStat = {
   contentRows: number
   rankRows: number
   matchedRows: number
+  scopedRows: number
+  scopedMatchedRows: number
   latestImportedAt: number | null
 }
 
@@ -99,6 +103,14 @@ type RaceListRow = {
   title: string
   ageDays: number
   score: number
+  totalRead: number
+  dRead: number
+  dClick: number
+  dOrder: number
+  contentScore: number
+  commerceScore: number
+  trendScore: number
+  refundPenalty: number
   trendDelta: number
   trendHint: string[]
   contentSignals: Signal[]
@@ -107,6 +119,7 @@ type RaceListRow = {
   stageIndex: 1 | 2 | 3 | 4 | 5
   noteType: '图文' | '视频'
   productName: string
+  contentCoverage: ContentCoverage
   sparkline?: number[]
 }
 
@@ -123,6 +136,7 @@ type RaceDetail = {
   deltas: {
     read: number
     click: number
+    order: number
     acceleration: number
     stability: '高' | '中' | '低'
   }
@@ -207,8 +221,9 @@ const NOTE_TYPES: NoteType[] = ['全部', '图文', '视频']
 const MONITOR_DIR_STORAGE_KEY = 'note-race:monitor-dir:v1'
 const MONITOR_ENABLE_STORAGE_KEY = 'note-race:monitor-enable:v1'
 const MONITOR_CURSOR_STORAGE_KEY = 'note-race:monitor-cursor:v1'
+const NOTE_RACE_DATA_RESET_EVENT = 'note-race:data-reset'
 const MONITOR_TABLE_COLUMNS =
-  '48px 96px 138px minmax(220px,1.8fr) 92px 120px 108px 160px 160px 96px'
+  '48px 110px 132px minmax(220px,1.7fr) 156px 170px 86px 150px 150px 96px'
 const MAIN_VIEW_TABS: TabsItem[] = [
   { value: 'action-console', label: '🎯 行动指挥台' },
   { value: 'monitor-hall', label: '📊 全盘监控大厅' }
@@ -240,6 +255,13 @@ function tagTextClasses(tag: NoteTag): string {
   return 'text-zinc-300'
 }
 
+function tagDisplayText(tag: NoteTag): string {
+  if (tag === '起飞') return '🚀 起飞'
+  if (tag === '风险') return '⚠️ 风险'
+  if (tag === '掉速') return '📉 掉速'
+  return tag
+}
+
 function stageGhostClass(stageIndex: number): string {
   if (stageIndex >= 4) return 'border-zinc-500/40 text-zinc-300'
   if (stageIndex === 3) return 'border-cyan-500/30 text-cyan-200'
@@ -247,29 +269,11 @@ function stageGhostClass(stageIndex: number): string {
   return 'border-zinc-600 text-zinc-400'
 }
 
-function scoreBarClasses(score: number): string {
-  if (score >= 80) return 'bg-cyan-400'
-  if (score >= 50) return 'bg-zinc-500'
-  return 'bg-amber-400'
-}
-
-function ageDotClass(ageDays: number): string {
-  if (ageDays <= 7) return 'bg-emerald-400'
-  if (ageDays <= 30) return 'bg-cyan-400'
-  return 'bg-zinc-500'
-}
-
 function formatTrendDelta(delta: number): string {
   const abs = Math.abs(delta).toFixed(1)
   if (delta > 0) return `↑ +${abs}`
   if (delta < 0) return `↓ -${abs}`
   return '→ 0.0'
-}
-
-function trendDeltaClass(delta: number): string {
-  if (delta > 0) return 'text-emerald-300'
-  if (delta < 0) return 'text-rose-300'
-  return 'text-zinc-400'
 }
 
 function priorityClass(priority: ActionPriority): string {
@@ -305,6 +309,13 @@ function firstSignalLabel(signals: Signal[]): string {
   return first ? first.label : '无明显波动'
 }
 
+function contentSignalSummary(row: RaceListRow): string {
+  if (row.contentCoverage === 'out_of_scope') return '未覆盖（非异常）'
+  if (row.contentCoverage === 'no_content_snapshot') return '无内容快照'
+  if (row.contentCoverage === 'missing') return '待匹配'
+  return firstSignalLabel(row.contentSignals)
+}
+
 function buildActionItem(row: RaceListRow): RaceActionItem {
   if (row.tag === '起飞') {
     return {
@@ -314,7 +325,7 @@ function buildActionItem(row: RaceListRow): RaceActionItem {
       account: row.account,
       tag: row.tag,
       priority: 'P0',
-      reason: `趋势 ${formatTrendDelta(row.trendDelta)}；内容信号 ${firstSignalLabel(row.contentSignals)}`,
+      reason: `趋势 ${formatTrendDelta(row.trendDelta)}；内容信号 ${contentSignalSummary(row)}`,
       action: '优先跟进：复刻同题材2条，评论区加引导，明天重点看点击与评论是否延续'
     }
   }
@@ -350,7 +361,7 @@ function buildActionItem(row: RaceListRow): RaceActionItem {
       account: row.account,
       tag: row.tag,
       priority: 'P1',
-      reason: `趋势 ${formatTrendDelta(row.trendDelta)}；内容信号 ${firstSignalLabel(row.contentSignals)}`,
+      reason: `趋势 ${formatTrendDelta(row.trendDelta)}；内容信号 ${contentSignalSummary(row)}`,
       action: '回拉动作：改封面标题和首屏卖点，必要时重剪前3秒，观察次日回升'
     }
   }
@@ -418,6 +429,24 @@ function buildActionItemDay1(row: RaceListRow): RaceActionItem {
 function normalizeError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message
   return String(error ?? '未知错误')
+}
+
+async function showErrorDialog(title: string, message: string): Promise<void> {
+  const normalizedTitle = String(title ?? '').trim() || '操作失败'
+  const normalizedMessage = String(message ?? '').trim() || '未知错误'
+  try {
+    await window.electronAPI.showMessageBox({
+      type: 'error',
+      title: normalizedTitle,
+      message: normalizedMessage,
+      buttons: ['知道了'],
+      defaultId: 0,
+      cancelId: 0
+    })
+    return
+  } catch {
+    window.alert(normalizedMessage)
+  }
 }
 
 function readStoredString(key: string, fallback = ''): string {
@@ -648,7 +677,7 @@ function resolveScoreBreakdown(row: RaceListRow, detail: RaceDetail | null): Sco
   }
 }
 
-function FunnelChart({
+function FunnelPanel({
   title,
   metrics
 }: {
@@ -737,6 +766,25 @@ function FunnelChart({
   )
 }
 
+function DualFunnelChart({
+  contentMetrics,
+  commerceMetrics
+}: {
+  contentMetrics: FunnelMetric[]
+  commerceMetrics: FunnelMetric[]
+}): React.JSX.Element {
+  return (
+    <div className="flex w-full gap-6">
+      <div className="min-w-0 flex-1">
+        <FunnelPanel title="内容漏斗（昨日增量）" metrics={contentMetrics} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <FunnelPanel title="商品漏斗（昨日增量）" metrics={commerceMetrics} />
+      </div>
+    </div>
+  )
+}
+
 function TrendSparkline({ values }: { values: number[] }): React.JSX.Element {
   if (!Array.isArray(values) || values.length < 2) {
     return <div className="text-[11px] text-zinc-500">暂无趋势数据</div>
@@ -783,48 +831,10 @@ function TrendSparkline({ values }: { values: number[] }): React.JSX.Element {
   )
 }
 
-function MiniSparkline({ values }: { values: number[] }): React.JSX.Element | null {
-  if (!Array.isArray(values) || values.length < 2) return null
-  const width = 72
-  const height = 18
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const range = max - min || 1
-  const points = values.map((value, index) => {
-    const x = (index / (values.length - 1)) * width
-    const y = height - ((value - min) / range) * height
-    return { x, y }
-  })
-  const path = points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-    .join(' ')
-  const end = points[points.length - 1]
-
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      className="h-[16px] w-[72px]"
-      preserveAspectRatio="none"
-    >
-      <path
-        d={path}
-        fill="none"
-        stroke="#FBBF24"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx={end.x} cy={end.y} r="1.8" fill="#FBBF24" stroke="rgba(24,24,27,0.95)" />
-    </svg>
-  )
-}
-
 type MonitorTableRowProps = {
   row: RaceListRow
   priority: ActionPriority
   isSelected: boolean
-  trendLabel: string
-  trendClass: string
   onSelect: (id: string) => void
   onOpenLink: (id: string) => void
   indented?: boolean
@@ -835,8 +845,6 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
   row,
   priority,
   isSelected,
-  trendLabel,
-  trendClass,
   onSelect,
   onOpenLink,
   indented = false,
@@ -844,14 +852,15 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
 }: MonitorTableRowProps): React.JSX.Element {
   const stageIndex = normalizeStageIndex(row.stageIndex)
   const stageLabel = row.stageLabel?.trim() || '-'
-  const hasSparkline = Array.isArray(row.sparkline) && row.sparkline.length >= 2
+  const ctr = row.dRead > 0 ? Number(((row.dClick / row.dRead) * 100).toFixed(2)) : 0
+  const isCtrExcellent = ctr > 2
 
   return (
     <button
       type="button"
       onClick={() => onSelect(row.id)}
       className={cn(
-        'grid h-[56px] w-full items-center border-b border-zinc-800/35 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
+        'grid h-[64px] w-full items-center border-b border-zinc-800/35 px-2 text-left text-[12px] transition hover:bg-zinc-800/50',
         priority === 'P0' && 'bg-rose-500/5',
         priority === 'P1' && 'bg-amber-500/5',
         isSelected && 'bg-zinc-800/70',
@@ -895,28 +904,33 @@ const MonitorTableRow = React.memo(function MonitorTableRow({
           <Copy className="h-3 w-3" />
         </span>
       </span>
-      <span className="inline-flex items-center justify-end gap-1 text-right tabular-nums text-zinc-300">
-        <span className={cn('h-1.5 w-1.5 rounded-full', ageDotClass(row.ageDays))} />
-        <span>第{row.ageDays}天</span>
+      <span className="flex flex-col items-end justify-center tabular-nums leading-tight">
+        <span className="text-lg font-bold text-zinc-100">{formatMetricInteger(row.dRead)}</span>
+        <span className="text-[10px] text-zinc-600">累计 {formatMetricInteger(row.totalRead)}</span>
       </span>
-      <span className="px-2 tabular-nums">
-        <div className="text-right text-zinc-100">{row.score.toFixed(1)}</div>
-        <div className="mt-0.5 h-1 overflow-hidden rounded bg-zinc-800">
-          <div
-            className={cn('h-full rounded', scoreBarClasses(row.score))}
-            style={{ width: `${Math.min(100, Math.max(0, row.score))}%` }}
-          />
-        </div>
-      </span>
-      <span className="flex flex-col items-end justify-center">
-        {hasSparkline ? (
-          <MiniSparkline values={row.sparkline ?? []} />
+      <span className="flex flex-col items-end justify-center tabular-nums leading-tight">
+        <span
+          className={cn(
+            'font-semibold',
+            isCtrExcellent ? 'text-emerald-300' : 'text-zinc-200'
+          )}
+        >
+          {ctr.toFixed(2)}%
+        </span>
+        {isCtrExcellent ? (
+          <span className="mt-0.5 inline-flex rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-400">
+            转化优秀
+          </span>
         ) : (
-          <span className="text-[10px] text-zinc-600">-</span>
+          <span className="mt-0.5 text-[10px] text-zinc-600">
+            点 {formatMetricInteger(row.dClick)} · 单 {formatMetricInteger(row.dOrder)}
+          </span>
         )}
-        <span className={cn('text-right font-medium tabular-nums', trendClass)}>{trendLabel}</span>
       </span>
-      <SignalColumn signals={row.contentSignals} />
+      <span className="text-right tabular-nums text-[11px] text-zinc-500">
+        {row.score.toFixed(1)}
+      </span>
+      <SignalColumn signals={row.contentSignals} coverage={row.contentCoverage} />
       <SignalColumn signals={row.commerceSignals} />
       <span>
         <span
@@ -937,8 +951,6 @@ function areMonitorRowsEqual(prev: MonitorTableRowProps, next: MonitorTableRowPr
     prev.row === next.row &&
     prev.priority === next.priority &&
     prev.isSelected === next.isSelected &&
-    prev.trendLabel === next.trendLabel &&
-    prev.trendClass === next.trendClass &&
     prev.onSelect === next.onSelect &&
     prev.onOpenLink === next.onOpenLink &&
     prev.indented === next.indented &&
@@ -974,6 +986,7 @@ function NoteRaceBoard(): React.JSX.Element {
     totalNotes: 0,
     matchedNotes: 0,
     matchRate: 0,
+    scopeDescription: '口径内（待内容快照）',
     trendReadyDates: []
   })
   const [snapshotStats, setSnapshotStats] = React.useState<RaceSnapshotStat[]>([])
@@ -1027,6 +1040,7 @@ function NoteRaceBoard(): React.JSX.Element {
       totalNotes: Number(nextRaw?.totalNotes ?? 0),
       matchedNotes: Number(nextRaw?.matchedNotes ?? 0),
       matchRate: Number(nextRaw?.matchRate ?? 0),
+      scopeDescription: String(nextRaw?.scopeDescription ?? '口径内（待内容快照）'),
       trendReadyDates
     }
     const availableDates = Array.isArray(next.availableDates) ? next.availableDates : []
@@ -1132,6 +1146,20 @@ function NoteRaceBoard(): React.JSX.Element {
   }, [refresh])
 
   React.useEffect(() => {
+    const handleReset = (): void => {
+      setSelectedDetail(null)
+      setSelectedId('')
+      setLastImportMessage('赛马数据已重置，请重新导入文件')
+      setError('')
+      void refresh()
+    }
+    window.addEventListener(NOTE_RACE_DATA_RESET_EVENT, handleReset)
+    return () => {
+      window.removeEventListener(NOTE_RACE_DATA_RESET_EVENT, handleReset)
+    }
+  }, [refresh])
+
+  React.useEffect(() => {
     if (!dataManagerOpen) return
     const managerDateValid =
       managerSnapshotDate && Array.isArray(managerDateOptions) && managerDateOptions.includes(managerSnapshotDate)
@@ -1183,9 +1211,6 @@ function NoteRaceBoard(): React.JSX.Element {
       riskCount: byTag['风险']
     }
   }, [scopedRows, meta.matchRate])
-
-  const qualityLevel =
-    summary.matchRate < 0.5 ? 'danger' : summary.matchRate < 0.7 ? 'warning' : 'ok'
 
   const actionMap = React.useMemo(() => {
     const builder = dataPhase === 'DAY2_PLUS' ? buildActionItem : buildActionItemDay1
@@ -1335,6 +1360,28 @@ function NoteRaceBoard(): React.JSX.Element {
   const detail =
     selectedDetail && selected && selectedDetail.row.id === selected.id ? selectedDetail : null
   const selectedStageIndex = normalizeStageIndex(selected?.stageIndex)
+  const contentDeltaMetrics = React.useMemo<FunnelMetric[]>(() => {
+    if (!detail) return []
+    const read = Math.max(0, Number(detail.deltas.read ?? 0))
+    const click = Math.max(0, Number(detail.deltas.click ?? 0))
+    const order = Math.max(0, Number(detail.deltas.order ?? 0))
+    return [
+      { label: '阅读变化量', value: read, conversionLabel: '点击率' },
+      { label: '昨日商品点击', value: click, conversionLabel: '支付率' },
+      { label: '昨日支付订单', value: order }
+    ]
+  }, [detail])
+  const commerceDeltaMetrics = React.useMemo<FunnelMetric[]>(() => {
+    if (!detail) return []
+    const read = Math.max(0, Number(detail.deltas.read ?? 0))
+    const click = Math.max(0, Number(detail.deltas.click ?? 0))
+    const order = Math.max(0, Number(detail.deltas.order ?? 0))
+    return [
+      { label: '阅读', value: read, conversionLabel: '点击率' },
+      { label: '商品点击', value: click, conversionLabel: '支付率' },
+      { label: '支付订单', value: order }
+    ]
+  }, [detail])
 
   React.useEffect(() => {
     if (mainView !== 'monitor-hall' && detailDrawerOpen) {
@@ -1381,19 +1428,6 @@ function NoteRaceBoard(): React.JSX.Element {
     if (error) {
       items.push({ id: 'error', level: 'danger', message: error })
     }
-    if (qualityLevel === 'danger') {
-      items.push({
-        id: 'quality-danger',
-        level: 'danger',
-        message: '数据匹配率严重偏低，建议先修复数据后再解读排名。'
-      })
-    } else if (qualityLevel === 'warning') {
-      items.push({
-        id: 'quality-warning',
-        level: 'warning',
-        message: '数据匹配率偏低，请核对标题/发布时间格式。'
-      })
-    }
     if (dataPhase === 'LOW_CONFIDENCE') {
       items.push({
         id: 'low-confidence',
@@ -1424,7 +1458,6 @@ function NoteRaceBoard(): React.JSX.Element {
     error,
     lastImportMessage,
     monitorDir,
-    qualityLevel,
     scanCursorMs
   ])
 
@@ -1548,14 +1581,16 @@ function NoteRaceBoard(): React.JSX.Element {
           (sum, item) => sum + Number(item.importedRows || 0),
           0
         )
+        const contentHint =
+          result.importedContentFiles > 0 ? '；内容按“下载日-1”入库快照' : ''
         setLastImportMessage(
-          `已导入 ${result.importedFiles}/${result.selectedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），共 ${totalImportedRows} 行`
+          `已导入 ${result.importedFiles}/${result.selectedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），共 ${totalImportedRows} 行${contentHint}`
         )
         if (result.failedFiles > 0) {
           const firstFailure = result.failures[0]
-          setError(
-            `自动识别导入失败 ${result.failedFiles} 个，首个：${firstFailure?.fileName ?? '-'} ${firstFailure?.message ?? ''}`.trim()
-          )
+          const message = `自动识别导入失败 ${result.failedFiles} 个，首个：${firstFailure?.fileName ?? '-'} ${firstFailure?.message ?? ''}`.trim()
+          setError(message)
+          await showErrorDialog('导入失败', message)
         } else {
           setError('')
         }
@@ -1563,7 +1598,9 @@ function NoteRaceBoard(): React.JSX.Element {
 
       await refresh()
     } catch (err) {
-      setError(`导入失败：${normalizeError(err)}`)
+      const message = `导入失败：${normalizeError(err)}`
+      setError(message)
+      await showErrorDialog('导入失败', message)
     } finally {
       setImporting(false)
     }
@@ -1749,8 +1786,10 @@ function NoteRaceBoard(): React.JSX.Element {
         window.localStorage.setItem(MONITOR_CURSOR_STORAGE_KEY, String(nextCursor))
 
         if (result.importedFiles > 0) {
+          const contentHint =
+            result.importedContentFiles > 0 ? '；内容按“下载日-1”入库快照' : ''
           setLastImportMessage(
-            `目录新增 ${result.importedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），已自动导入`
+            `目录新增 ${result.importedFiles} 个文件（商品 ${result.importedCommerceFiles}，内容 ${result.importedContentFiles}），已自动导入${contentHint}`
           )
           await refresh({ preserveScroll: mode === 'auto' })
         } else if (mode === 'manual') {
@@ -1758,18 +1797,23 @@ function NoteRaceBoard(): React.JSX.Element {
             `扫描完成：扫描 ${result.scannedFiles}，历史跳过 ${result.skippedOldFiles}，未发现新可导入文件`
           )
         }
-
         if (result.failedFiles > 0) {
           const first = result.failures[0]
-          setError(
-            `目录导入失败 ${result.failedFiles} 个，首个：${first?.fileName ?? '-'} ${first?.message ?? ''}`.trim()
-          )
+          const message = `目录导入失败 ${result.failedFiles} 个，首个：${first?.fileName ?? '-'} ${first?.message ?? ''}`.trim()
+          setError(message)
+          if (mode === 'manual') {
+            await showErrorDialog('目录导入失败', message)
+          }
           return
         }
 
         setError('')
       } catch (err) {
-        setError(`目录扫描失败：${normalizeError(err)}`)
+        const message = `目录扫描失败：${normalizeError(err)}`
+        setError(message)
+        if (mode === 'manual') {
+          await showErrorDialog('目录扫描失败', message)
+        }
       } finally {
         scanInFlightRef.current = false
         if (mode === 'manual') {
@@ -1997,8 +2041,11 @@ function NoteRaceBoard(): React.JSX.Element {
           </div>
           <div className="hidden shrink-0 items-center gap-2 text-[11px] text-zinc-400 lg:flex">
             <span>评估 {summary.assessedCount}</span>
-            <span>
-              匹配率 {dataPhase === 'EMPTY' ? '-' : `${Math.round(summary.matchRate * 100)}%`}
+            <span title={meta.scopeDescription}>
+              口径内匹配率{' '}
+              {dataPhase === 'EMPTY' || meta.totalNotes <= 0
+                ? '-'
+                : `${Math.round(summary.matchRate * 100)}%`}
             </span>
             <span>P0 {p0Count}</span>
             <span>P1 {p1Count}</span>
@@ -2179,11 +2226,11 @@ function NoteRaceBoard(): React.JSX.Element {
               </div>
             </section>
 
-            <section className="min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/45">
+            <section className="min-h-0 flex flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/45">
               <div className="border-b border-zinc-800 px-3 py-2 text-sm font-semibold text-zinc-100">
                 重点监控清单（Top 12）
               </div>
-              <div ref={tableScrollRef} className="min-h-0 h-full overflow-auto">
+              <div ref={tableScrollRef} className="min-h-0 flex-1 overflow-auto">
                 <div
                   className="sticky top-0 z-10 grid h-11 items-center border-b border-zinc-800 bg-zinc-900/90 px-2 text-[11px] font-medium text-zinc-400 backdrop-blur"
                   style={{ gridTemplateColumns: MONITOR_TABLE_COLUMNS }}
@@ -2194,9 +2241,9 @@ function NoteRaceBoard(): React.JSX.Element {
                       <span>标签</span>
                       <span>账号</span>
                       <span>笔记标题</span>
-                      <span className="text-right">笔记年龄</span>
+                      <span className="text-right">阅读变化量</span>
+                      <span className="text-right">带货转化效率</span>
                       <span className="text-right">赛马分</span>
-                      <span className="text-right">趋势</span>
                       <span className="text-right">内容信号</span>
                       <span className="text-right">商品信号</span>
                       <span>阶段</span>
@@ -2234,20 +2281,12 @@ function NoteRaceBoard(): React.JSX.Element {
                         (dataPhase === 'DAY2_PLUS'
                           ? buildActionItem(row)
                           : buildActionItemDay1(row))
-                      const trendLabel =
-                        dataPhase === 'DAY2_PLUS' ? formatTrendDelta(row.trendDelta) : '样本不足'
-                      const trendClass =
-                        dataPhase === 'DAY2_PLUS'
-                          ? trendDeltaClass(row.trendDelta)
-                          : 'text-zinc-500'
                       return (
                         <MonitorTableRow
                           key={row.id}
                           row={row}
                           priority={rowAction.priority}
                           isSelected={selected?.id === row.id}
-                          trendLabel={trendLabel}
-                          trendClass={trendClass}
                           onSelect={handleSelectRow}
                           onOpenLink={handleOpenNoteLink}
                         />
@@ -2326,14 +2365,6 @@ function NoteRaceBoard(): React.JSX.Element {
                                   (dataPhase === 'DAY2_PLUS'
                                     ? buildActionItem(row)
                                     : buildActionItemDay1(row))
-                                const trendLabel =
-                                  dataPhase === 'DAY2_PLUS'
-                                    ? formatTrendDelta(row.trendDelta)
-                                    : '样本不足'
-                                const trendClass =
-                                  dataPhase === 'DAY2_PLUS'
-                                    ? trendDeltaClass(row.trendDelta)
-                                    : 'text-zinc-500'
 
                                 return (
                                   <MonitorTableRow
@@ -2341,8 +2372,6 @@ function NoteRaceBoard(): React.JSX.Element {
                                     row={row}
                                     priority={rowAction.priority}
                                     isSelected={selected?.id === row.id}
-                                    trendLabel={trendLabel}
-                                    trendClass={trendClass}
                                     onSelect={handleSelectRow}
                                     onOpenLink={handleOpenNoteLink}
                                     indented
@@ -2516,17 +2545,19 @@ function NoteRaceBoard(): React.JSX.Element {
               <div className="grid grid-cols-[120px_1fr_90px_130px_70px] border-b border-zinc-700 bg-zinc-900/80 px-3 py-2 text-[11px] text-zinc-400">
                 <span>快照日期</span>
                 <span>导入规模</span>
-                <span className="text-right">匹配率</span>
+                <span className="text-right">口径内匹配率</span>
                 <span className="text-right">最近导入</span>
                 <span className="text-right">操作</span>
               </div>
               <div className="max-h-[56vh] overflow-auto">
                 {snapshotStats.map((item) => {
                   const isCurrent = snapshotDate === item.snapshotDate
-                  const matchRate =
-                    item.rankRows > 0
-                      ? Math.round((Math.max(0, item.matchedRows) / Math.max(1, item.rankRows)) * 100)
-                      : 0
+                  const matchRateText =
+                    item.scopedRows > 0
+                      ? `${Math.round(
+                          (Math.max(0, item.scopedMatchedRows) / Math.max(1, item.scopedRows)) * 100
+                        )}%`
+                      : '-'
                   return (
                     <div
                       key={item.snapshotDate}
@@ -2552,7 +2583,7 @@ function NoteRaceBoard(): React.JSX.Element {
                       <span className="truncate text-zinc-300">
                         商品 {item.commerceRows} · 内容 {item.contentRows} · 榜单 {item.rankRows}
                       </span>
-                      <span className="text-right tabular-nums text-zinc-300">{matchRate}%</span>
+                      <span className="text-right tabular-nums text-zinc-300">{matchRateText}</span>
                       <span className="text-right tabular-nums text-zinc-400">
                         {item.latestImportedAt ? formatDateTime(item.latestImportedAt) : '-'}
                       </span>
@@ -2678,8 +2709,10 @@ function NoteRaceBoard(): React.JSX.Element {
 
             <ScoreBreakdownCard row={selected} detail={detail} />
 
-            <FunnelChart title="内容漏斗" metrics={detail?.contentFunnel ?? []} />
-            <FunnelChart title="商品漏斗" metrics={detail?.commerceFunnel ?? []} />
+            <DualFunnelChart
+              contentMetrics={contentDeltaMetrics}
+              commerceMetrics={commerceDeltaMetrics}
+            />
 
             <section className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3">
               <h4 className="text-sm font-semibold text-zinc-100">趋势信号</h4>
@@ -2764,12 +2797,45 @@ function TagStatus({
       className={cn('inline-flex items-center gap-1.5', compact ? 'text-[10px]' : 'text-[11px]')}
     >
       <span className={cn('h-1.5 w-1.5 rounded-full', tagDotClasses(tag))} />
-      <span className={tagTextClasses(tag)}>{tag}</span>
+      <span className={tagTextClasses(tag)}>{tagDisplayText(tag)}</span>
     </span>
   )
 }
 
-function SignalColumn({ signals }: { signals: Signal[] }): React.JSX.Element {
+function SignalColumn({
+  signals,
+  coverage
+}: {
+  signals: Signal[]
+  coverage?: ContentCoverage
+}): React.JSX.Element {
+  if (coverage === 'out_of_scope') {
+    return (
+      <span className="flex items-center justify-end">
+        <span className="inline-flex rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-200">
+          未覆盖（非异常）
+        </span>
+      </span>
+    )
+  }
+  if (coverage === 'no_content_snapshot') {
+    return (
+      <span className="flex items-center justify-end">
+        <span className="inline-flex rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-500">
+          无内容快照
+        </span>
+      </span>
+    )
+  }
+  if (coverage === 'missing') {
+    return (
+      <span className="flex items-center justify-end">
+        <span className="inline-flex rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+          待匹配
+        </span>
+      </span>
+    )
+  }
   const display = signals.slice(0, 2)
   return (
     <span className="flex items-center justify-end gap-1 overflow-hidden tabular-nums">

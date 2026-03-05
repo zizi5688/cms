@@ -172,6 +172,8 @@ declare global {
     tone: NoteRaceSignalTone
   }
 
+  type NoteRaceContentCoverage = 'matched' | 'out_of_scope' | 'missing' | 'no_content_snapshot'
+
   type NoteRaceImportResult = {
     snapshotDate: string
     sourceFile: string
@@ -219,6 +221,7 @@ declare global {
     totalNotes: number
     matchedNotes: number
     matchRate: number
+    scopeDescription: string
     trendReadyDates: string[]
   }
 
@@ -237,6 +240,8 @@ declare global {
     contentRows: number
     rankRows: number
     matchedRows: number
+    scopedRows: number
+    scopedMatchedRows: number
     latestImportedAt: number | null
   }
 
@@ -268,6 +273,15 @@ declare global {
     recomputedSnapshots: number
   }
 
+  type NoteRaceResetResult = {
+    deletedCommerceRows: number
+    deletedContentRows: number
+    deletedDeletedCommerceRows: number
+    deletedDeletedContentRows: number
+    deletedMatchRows: number
+    deletedRankRows: number
+  }
+
   type NoteRaceListRow = {
     id: string
     rank: number
@@ -276,6 +290,14 @@ declare global {
     title: string
     ageDays: number
     score: number
+    totalRead: number
+    dRead: number
+    dClick: number
+    dOrder: number
+    contentScore: number
+    commerceScore: number
+    trendScore: number
+    refundPenalty: number
     trendDelta: number
     trendHint: string[]
     contentSignals: NoteRaceSignal[]
@@ -284,6 +306,7 @@ declare global {
     stageIndex: 1 | 2 | 3 | 4 | 5
     noteType: '图文' | '视频'
     productName: string
+    contentCoverage: NoteRaceContentCoverage
   }
 
   type NoteRaceDetail = {
@@ -309,6 +332,7 @@ declare global {
     deltas: {
       read: number
       click: number
+      order: number
       acceleration: number
       stability: '高' | '中' | '低'
     }
@@ -737,6 +761,7 @@ declare global {
           snapshotDate: string
           importedAt: number
         }) => Promise<NoteRaceRestoreBatchResult>
+        resetAll: () => Promise<NoteRaceResetResult>
         list: (payload?: {
           snapshotDate?: string
           account?: string
