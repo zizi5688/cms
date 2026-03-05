@@ -43,6 +43,8 @@ type AutoImportScanProgress = {
   message?: string
 }
 
+const NOTE_RACE_DATA_RESET_EVENT = 'note-race:data-reset'
+
 function formatDateTime(value: number | null): string {
   if (!Number.isFinite(Number(value))) return '--'
   const time = Number(value)
@@ -85,6 +87,7 @@ function Settings(): React.JSX.Element {
 
   const [isTesting, setIsTesting] = useState(false)
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
+  const [isResettingNoteRace, setIsResettingNoteRace] = useState(false)
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false)
   const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false)
   const [autoImportScanProgress, setAutoImportScanProgress] = useState<AutoImportScanProgress | null>(null)
@@ -223,6 +226,45 @@ function Settings(): React.JSX.Element {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[工作区] 切换失败：${message}`)
       window.alert(message)
+    }
+  }
+
+  const resetNoteRaceData = async (): Promise<void> => {
+    if (isResettingNoteRace) return
+    const accepted = window.confirm(
+      '确认重置「笔记赛马监控」全部数据吗？\n\n这会清空商品快照、内容快照、匹配关系、榜单结果和回收区数据，且不可恢复。'
+    )
+    if (!accepted) return
+
+    setIsResettingNoteRace(true)
+    try {
+      const result = await window.api.cms.noteRace.resetAll()
+      const totalDeleted =
+        result.deletedCommerceRows +
+        result.deletedContentRows +
+        result.deletedMatchRows +
+        result.deletedRankRows +
+        result.deletedDeletedCommerceRows +
+        result.deletedDeletedContentRows
+      const message =
+        totalDeleted > 0
+          ? `重置完成：商品 ${result.deletedCommerceRows} 行，内容 ${result.deletedContentRows} 行，` +
+            `匹配 ${result.deletedMatchRows} 行，榜单 ${result.deletedRankRows} 行，` +
+            `回收区商品 ${result.deletedDeletedCommerceRows} 行，回收区内容 ${result.deletedDeletedContentRows} 行。`
+          : '重置完成：当前赛马库已是空数据（0 行）。'
+      window.dispatchEvent(
+        new CustomEvent(NOTE_RACE_DATA_RESET_EVENT, {
+          detail: result
+        })
+      )
+      addLog(`[笔记赛马] ${message}`)
+      window.alert(message)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[笔记赛马] 数据重置失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsResettingNoteRace(false)
     }
   }
 
@@ -546,6 +588,26 @@ function Settings(): React.JSX.Element {
           <div className="flex items-center gap-2">
             <Button onClick={changeWorkspace}>切换工作区</Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>笔记赛马数据重置</CardTitle>
+          <CardDescription>当口径频繁调整导致历史数据混入脏数据时，可一键清空赛马监控模块数据后重新导入。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-3">
+          <div className="text-xs text-zinc-400">
+            仅影响「笔记赛马监控」模块数据，不会删除账号、任务、素材等其他模块数据。
+          </div>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={() => void resetNoteRaceData()}
+            disabled={isResettingNoteRace}
+          >
+            {isResettingNoteRace ? '重置中...' : '重置赛马数据'}
+          </Button>
         </CardContent>
       </Card>
 

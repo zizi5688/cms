@@ -103,6 +103,8 @@ export type NoteRaceSignal = {
   tone: NoteRaceSignalTone
 }
 
+export type NoteRaceContentCoverage = 'matched' | 'out_of_scope' | 'missing' | 'no_content_snapshot'
+
 export type NoteRaceImportResult = {
   snapshotDate: string
   sourceFile: string
@@ -124,6 +126,7 @@ export type NoteRaceMeta = {
   totalNotes: number
   matchedNotes: number
   matchRate: number
+  scopeDescription: string
   trendReadyDates: string[]
 }
 
@@ -142,6 +145,8 @@ export type NoteRaceSnapshotStat = {
   contentRows: number
   rankRows: number
   matchedRows: number
+  scopedRows: number
+  scopedMatchedRows: number
   latestImportedAt: number | null
 }
 
@@ -173,6 +178,15 @@ export type NoteRaceRestoreBatchResult = {
   recomputedSnapshots: number
 }
 
+export type NoteRaceResetResult = {
+  deletedCommerceRows: number
+  deletedContentRows: number
+  deletedDeletedCommerceRows: number
+  deletedDeletedContentRows: number
+  deletedMatchRows: number
+  deletedRankRows: number
+}
+
 export type NoteRaceListQuery = {
   snapshotDate?: string
   account?: string
@@ -188,6 +202,14 @@ export type NoteRaceListRow = {
   title: string
   ageDays: number
   score: number
+  totalRead: number
+  dRead: number
+  dClick: number
+  dOrder: number
+  contentScore: number
+  commerceScore: number
+  trendScore: number
+  refundPenalty: number
   trendDelta: number
   trendHint: string[]
   contentSignals: NoteRaceSignal[]
@@ -196,6 +218,7 @@ export type NoteRaceListRow = {
   stageIndex: 1 | 2 | 3 | 4 | 5
   noteType: '图文' | '视频'
   productName: string
+  contentCoverage: NoteRaceContentCoverage
 }
 
 export type NoteRaceDetail = {
@@ -221,6 +244,7 @@ export type NoteRaceDetail = {
   deltas: {
     read: number
     click: number
+    order: number
     acceleration: number
     stability: '高' | '中' | '低'
   }
@@ -332,8 +356,11 @@ function parseDateValue(value: unknown): number | null {
   return Math.floor(parsed)
 }
 
-function formatDateYmd(timestamp: number): string {
+function formatDateYmdLocal(timestamp: number): string {
+  if (!Number.isFinite(timestamp)) return '-'
   const date = new Date(timestamp)
+  const ms = date.getTime()
+  if (!Number.isFinite(ms)) return '-'
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
@@ -357,10 +384,71 @@ function parseSnapshotDateFromName(filePath: string): string | null {
   return null
 }
 
+function parseSnapshotDateRangeFromName(filePath: string): { startDate: string; endDate: string } | null {
+  const fileName = basename(filePath)
+  const fullRange = fileName.match(
+    /(20\d{2})[-_.年](\d{1,2})[-_.月](\d{1,2})\s*[~～]\s*(20\d{2})[-_.年](\d{1,2})[-_.月](\d{1,2})/
+  )
+  if (!fullRange) return null
+  const startDate = normalizeDateParts(
+    Number(fullRange[1]),
+    Number(fullRange[2]),
+    Number(fullRange[3])
+  )
+  const endDate = normalizeDateParts(Number(fullRange[4]), Number(fullRange[5]), Number(fullRange[6]))
+  if (!startDate || !endDate) return null
+  return { startDate, endDate }
+}
+
+function resolveSnapshotDateOrThrow(
+  filePath: string,
+  kind: NoteRaceImportKind
+): string {
+  const sourceDate = parseSnapshotDateFromName(filePath)
+  if (!sourceDate) {
+    if (kind === 'commerce') {
+      throw new Error(
+        '未识别到商品快照日期。请将文件名改为“商品笔记数据-(2026-03-03~2026-03-03).xlsx”后重试。'
+      )
+    }
+    throw new Error(
+      '未识别到内容下载日期。请将文件名改为“03-05笔记列表明细表.xlsx”或“2026-03-05笔记列表明细表.xlsx”后重试。'
+    )
+  }
+
+  if (kind === 'commerce') {
+    const range = parseSnapshotDateRangeFromName(filePath)
+    if (range && range.startDate !== range.endDate) {
+      throw new Error(
+        `商品笔记数据仅支持单日快照导入（当前为 ${range.startDate}~${range.endDate}）。请导出同一天区间后重试。`
+      )
+    }
+    return sourceDate
+  }
+
+  // 内容文件名日期是下载日，业务快照口径按 D-1 对齐商品当日快照。
+  const effectiveSnapshotDate = shiftSnapshotDate(sourceDate, -1)
+  if (!effectiveSnapshotDate) {
+    throw new Error(`内容下载日期非法：${sourceDate}`)
+  }
+  return effectiveSnapshotDate
+}
+
 function normalizeDateParts(year: number, month: number, day: number): string | null {
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
   if (month < 1 || month > 12 || day < 1 || day > 31) return null
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function shiftSnapshotDate(date: string, deltaDays: number): string | null {
+  const baseMs = parseYmdToUtcMs(date)
+  if (baseMs == null || !Number.isFinite(deltaDays)) return null
+  const shifted = baseMs + Math.trunc(deltaDays) * 24 * 60 * 60 * 1000
+  const d = new Date(shifted)
+  const year = d.getUTCFullYear()
+  const month = d.getUTCMonth() + 1
+  const day = d.getUTCDate()
+  return normalizeDateParts(year, month, day)
 }
 
 function createNoteKey(noteId: string | null, title: string, createdAt: number | null): string {
@@ -425,7 +513,7 @@ function inferTag(entry: IntermediateRank, score: number): NoteRaceTag {
   if (entry.refundRatePayTime >= 0.3) return '风险'
   if (entry.trendDelta >= 3) return '起飞'
   if (entry.trendDelta <= -2.5) {
-    if (score <= 45 || entry.dOrder < 0) return '风险'
+    if (score <= 45 || entry.dOrder <= 0) return '风险'
     return '掉速'
   }
   return '维稳'
@@ -516,6 +604,13 @@ type TrendComparability = {
   reason: TrendComparabilityReason
 }
 
+type ContentScopeProfile = {
+  hasContentSnapshot: boolean
+  minFirstPublishedAt: number | null
+  maxFirstPublishedAt: number | null
+  accountScope: Set<string>
+}
+
 const NOTE_RACE_BATCH_RESTORE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 function inferSnapshotScopeFromSourceFile(sourceFile: string): SnapshotScope {
@@ -587,6 +682,8 @@ function describeTrendComparabilityReason(
 
 export class NoteRaceService {
   private sqlite: SqliteService
+  private rankScoreSchemaChecked = false
+  private dailyDeltaModeChecked = false
 
   constructor(sqlite?: SqliteService) {
     this.sqlite = sqlite ?? SqliteService.getInstance()
@@ -760,6 +857,10 @@ export class NoteRaceService {
         d_read REAL NOT NULL DEFAULT 0,
         d_click REAL NOT NULL DEFAULT 0,
         d_order REAL NOT NULL DEFAULT 0,
+        content_score REAL NOT NULL DEFAULT 0,
+        commerce_score REAL NOT NULL DEFAULT 0,
+        trend_score REAL NOT NULL DEFAULT 0,
+        refund_penalty REAL NOT NULL DEFAULT 0,
         acceleration REAL NOT NULL DEFAULT 1,
         stability_label TEXT NOT NULL DEFAULT '中',
         updated_at INTEGER NOT NULL,
@@ -769,6 +870,193 @@ export class NoteRaceService {
       CREATE INDEX IF NOT EXISTS idx_note_race_rank_snapshot_rank ON note_race_daily_rank (snapshot_date, rank_position);
       CREATE INDEX IF NOT EXISTS idx_note_race_rank_snapshot_score ON note_race_daily_rank (snapshot_date, score DESC);
     `)
+    this.ensureRankScoreSchema(db)
+    this.ensureDailyDeltaMode(db)
+  }
+
+  private ensureRankScoreSchema(db: DbConnection): void {
+    if (this.rankScoreSchemaChecked) return
+
+    const rankColumns = new Set(
+      db
+        .prepare(`PRAGMA table_info(note_race_daily_rank)`)
+        .all()
+        .map((row) => normalizeText(row.name).toLowerCase())
+        .filter(Boolean)
+    )
+    if (rankColumns.size === 0) {
+      this.rankScoreSchemaChecked = true
+      return
+    }
+
+    const missingColumns: Array<{ name: string; sql: string }> = [
+      {
+        name: 'content_score',
+        sql: `ALTER TABLE note_race_daily_rank ADD COLUMN content_score REAL NOT NULL DEFAULT 0`
+      },
+      {
+        name: 'commerce_score',
+        sql: `ALTER TABLE note_race_daily_rank ADD COLUMN commerce_score REAL NOT NULL DEFAULT 0`
+      },
+      {
+        name: 'trend_score',
+        sql: `ALTER TABLE note_race_daily_rank ADD COLUMN trend_score REAL NOT NULL DEFAULT 0`
+      },
+      {
+        name: 'refund_penalty',
+        sql: `ALTER TABLE note_race_daily_rank ADD COLUMN refund_penalty REAL NOT NULL DEFAULT 0`
+      }
+    ].filter((column) => !rankColumns.has(column.name))
+
+    let addedColumns = false
+    for (const column of missingColumns) {
+      try {
+        db.exec(column.sql)
+        addedColumns = true
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[NoteRace] ensure rank score column failed: ${column.name} ${message}`)
+      }
+    }
+
+    const latestColumns = new Set(
+      db
+        .prepare(`PRAGMA table_info(note_race_daily_rank)`)
+        .all()
+        .map((row) => normalizeText(row.name).toLowerCase())
+        .filter(Boolean)
+    )
+    const requiredColumns = ['content_score', 'commerce_score', 'trend_score', 'refund_penalty']
+    if (!requiredColumns.every((column) => latestColumns.has(column))) {
+      this.rankScoreSchemaChecked = true
+      return
+    }
+
+    const shouldBackfill = addedColumns || this.shouldBackfillRankScore(db)
+    if (shouldBackfill) {
+      this.rebuildAllSnapshots(db, 'rank score backfill')
+    }
+    this.rankScoreSchemaChecked = true
+  }
+
+  private shouldBackfillRankScore(db: DbConnection): boolean {
+    const totalRows = Number(
+      db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank`).get()?.cnt ?? 0
+    )
+    if (!Number.isFinite(totalRows) || totalRows <= 0) return false
+
+    const missingRows = Number(
+      db
+        .prepare(
+          `
+          SELECT COUNT(*) AS cnt
+          FROM note_race_daily_rank
+          WHERE content_score IS NULL
+            OR commerce_score IS NULL
+            OR trend_score IS NULL
+            OR refund_penalty IS NULL
+          `
+        )
+        .get()?.cnt ?? 0
+    )
+    if (Number.isFinite(missingRows) && missingRows > 0) return true
+
+    const positiveScoreRows = Number(
+      db
+        .prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank WHERE COALESCE(score, 0) > 0`)
+        .get()?.cnt ?? 0
+    )
+    if (!Number.isFinite(positiveScoreRows) || positiveScoreRows <= 0) return false
+
+    const zeroBreakdownRows = Number(
+      db
+        .prepare(
+          `
+          SELECT COUNT(*) AS cnt
+          FROM note_race_daily_rank
+          WHERE COALESCE(score, 0) > 0
+            AND COALESCE(content_score, 0) = 0
+            AND COALESCE(commerce_score, 0) = 0
+            AND COALESCE(trend_score, 0) = 0
+          `
+        )
+        .get()?.cnt ?? 0
+    )
+    return Number.isFinite(zeroBreakdownRows) && zeroBreakdownRows === positiveScoreRows
+  }
+
+  private ensureDailyDeltaMode(db: DbConnection): void {
+    if (this.dailyDeltaModeChecked) return
+    const shouldRebuild = this.shouldBackfillDailyDelta(db)
+    if (shouldRebuild) {
+      this.rebuildAllSnapshots(db, 'daily delta migration')
+    }
+    this.dailyDeltaModeChecked = true
+  }
+
+  private shouldBackfillDailyDelta(db: DbConnection): boolean {
+    const totalRows = Number(
+      db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank`).get()?.cnt ?? 0
+    )
+    if (!Number.isFinite(totalRows) || totalRows <= 0) return false
+
+    const hasNegativeDelta = Number(
+      db
+        .prepare(
+          `
+          SELECT COUNT(*) AS cnt
+          FROM note_race_daily_rank
+          WHERE COALESCE(d_read, 0) < 0
+            OR COALESCE(d_click, 0) < 0
+            OR COALESCE(d_order, 0) < 0
+          `
+        )
+        .get()?.cnt ?? 0
+    )
+    if (Number.isFinite(hasNegativeDelta) && hasNegativeDelta > 0) return true
+
+    const mismatch = db
+      .prepare(
+        `
+        SELECT 1
+        FROM note_race_daily_rank r
+        JOIN note_race_raw_commerce c
+          ON c.snapshot_date = r.snapshot_date AND c.note_key = r.note_key
+        WHERE ABS(COALESCE(r.d_read, 0) - COALESCE(c.read_count, 0)) > 0.0001
+           OR ABS(COALESCE(r.d_click, 0) - COALESCE(c.click_count, 0)) > 0.0001
+           OR ABS(COALESCE(r.d_order, 0) - COALESCE(c.pay_orders, 0)) > 0.0001
+        LIMIT 1
+        `
+      )
+      .get()
+    return Boolean(mismatch)
+  }
+
+  private rebuildAllSnapshots(db: DbConnection, reason: string): void {
+    const dates = db
+      .prepare(
+        `
+        SELECT DISTINCT snapshot_date AS snapshotDate
+        FROM note_race_raw_commerce
+        ORDER BY snapshot_date ASC
+        `
+      )
+      .all()
+      .map((row) => normalizeText(row.snapshotDate))
+      .filter(Boolean)
+    if (dates.length === 0) return
+
+    let rebuilt = 0
+    for (const snapshotDate of dates) {
+      try {
+        this.rebuildSnapshot(snapshotDate)
+        rebuilt += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[NoteRace] rebuild snapshot failed (${reason}): ${snapshotDate} ${message}`)
+      }
+    }
+    console.info(`[NoteRace] ${reason} completed: ${rebuilt}/${dates.length}`)
   }
 
   private getSnapshotImportProfile(db: DbConnection, snapshotDate: string): SnapshotImportProfile {
@@ -983,7 +1271,7 @@ export class NoteRaceService {
     const sheet = workbook.worksheets[0]
     if (!sheet) throw new Error('未找到可导入工作表')
 
-    const snapshotDate = parseSnapshotDateFromName(filePath) ?? formatDateYmd(Date.now())
+    const snapshotDate = resolveSnapshotDateOrThrow(filePath, 'commerce')
     const sourceFile = basename(filePath)
     const now = Date.now()
     const headerMap = buildHeaderIndex(sheet.getRow(1).values as unknown[])
@@ -1141,7 +1429,7 @@ export class NoteRaceService {
     const sheet = workbook.worksheets[0]
     if (!sheet) throw new Error('未找到可导入工作表')
 
-    const snapshotDate = parseSnapshotDateFromName(filePath) ?? formatDateYmd(Date.now())
+    const snapshotDate = resolveSnapshotDateOrThrow(filePath, 'content')
     const sourceFile = basename(filePath)
     const now = Date.now()
     const firstRowMap = buildHeaderIndex(sheet.getRow(1).values as unknown[])
@@ -1307,6 +1595,140 @@ export class NoteRaceService {
     }
   }
 
+  private getContentScopeProfile(db: DbConnection, snapshotDate: string): ContentScopeProfile {
+    const contentAgg = db
+      .prepare(
+        `
+        SELECT
+          COUNT(*) AS contentCount,
+          MIN(first_published_at) AS minFirstPublishedAt,
+          MAX(first_published_at) AS maxFirstPublishedAt
+        FROM note_race_raw_content
+        WHERE snapshot_date = ?
+        `
+      )
+      .get(snapshotDate)
+    const contentCount = Number(contentAgg?.contentCount ?? 0)
+    if (!Number.isFinite(contentCount) || contentCount <= 0) {
+      return {
+        hasContentSnapshot: false,
+        minFirstPublishedAt: null,
+        maxFirstPublishedAt: null,
+        accountScope: new Set<string>()
+      }
+    }
+
+    const accountRows = db
+      .prepare(
+        `
+        SELECT DISTINCT c.account_name AS accountName
+        FROM note_race_match_map m
+        JOIN note_race_raw_commerce c
+          ON c.snapshot_date = m.snapshot_date AND c.note_key = m.note_key
+        WHERE m.snapshot_date = ? AND m.confidence > 0
+          AND LENGTH(TRIM(COALESCE(c.account_name, ''))) > 0
+        `
+      )
+      .all(snapshotDate)
+    const accountScope = new Set<string>()
+    for (const row of accountRows) {
+      const account = normalizeText(row.accountName)
+      if (account) accountScope.add(account)
+    }
+
+    return {
+      hasContentSnapshot: true,
+      minFirstPublishedAt: toNullableNumber(contentAgg?.minFirstPublishedAt),
+      maxFirstPublishedAt: toNullableNumber(contentAgg?.maxFirstPublishedAt),
+      accountScope
+    }
+  }
+
+  private isInContentScope(
+    scope: ContentScopeProfile,
+    accountName: string | null,
+    noteCreatedAt: number | null
+  ): boolean {
+    if (!scope.hasContentSnapshot) return false
+    const account = normalizeText(accountName)
+    const accountCovered =
+      scope.accountScope.size === 0 || (account.length > 0 && scope.accountScope.has(account))
+    if (!accountCovered) return false
+
+    if (scope.minFirstPublishedAt == null || scope.maxFirstPublishedAt == null) return true
+    if (noteCreatedAt == null) return false
+    return noteCreatedAt >= scope.minFirstPublishedAt && noteCreatedAt <= scope.maxFirstPublishedAt
+  }
+
+  private classifyContentCoverage(
+    scope: ContentScopeProfile,
+    accountName: string | null,
+    noteCreatedAt: number | null,
+    matchConfidence: number
+  ): NoteRaceContentCoverage {
+    if (!scope.hasContentSnapshot) return 'no_content_snapshot'
+    if (matchConfidence > 0) return 'matched'
+    return this.isInContentScope(scope, accountName, noteCreatedAt) ? 'missing' : 'out_of_scope'
+  }
+
+  private getScopedMatchStats(
+    db: DbConnection,
+    snapshotDate: string
+  ): { scopedTotal: number; scopedMatched: number; scopeDescription: string } {
+    const scope = this.getContentScopeProfile(db, snapshotDate)
+    if (!scope.hasContentSnapshot) {
+      return {
+        scopedTotal: 0,
+        scopedMatched: 0,
+        scopeDescription: '当前快照无内容数据'
+      }
+    }
+
+    const rows = db
+      .prepare(
+        `
+        SELECT
+          r.note_key AS noteKey,
+          c.account_name AS accountName,
+          c.note_created_at AS noteCreatedAt,
+          COALESCE(m.confidence, 0) AS matchConfidence
+        FROM note_race_daily_rank r
+        LEFT JOIN note_race_raw_commerce c
+          ON c.snapshot_date = r.snapshot_date AND c.note_key = r.note_key
+        LEFT JOIN note_race_match_map m
+          ON m.snapshot_date = r.snapshot_date AND m.note_key = r.note_key
+        WHERE r.snapshot_date = ?
+        `
+      )
+      .all(snapshotDate)
+
+    let scopedTotal = 0
+    let scopedMatched = 0
+    for (const row of rows) {
+      const coverage = this.classifyContentCoverage(
+        scope,
+        normalizeText(row.accountName) || null,
+        toNullableNumber(row.noteCreatedAt),
+        Number(row.matchConfidence ?? 0)
+      )
+      if (coverage === 'out_of_scope' || coverage === 'no_content_snapshot') continue
+      scopedTotal += 1
+      if (coverage === 'matched') scopedMatched += 1
+    }
+
+    const accountText =
+      scope.accountScope.size > 0 ? Array.from(scope.accountScope).join(' / ') : '已匹配账号'
+    const dateText =
+      scope.minFirstPublishedAt != null && scope.maxFirstPublishedAt != null
+        ? `${formatDateYmdLocal(scope.minFirstPublishedAt)}~${formatDateYmdLocal(scope.maxFirstPublishedAt)}`
+        : '首发时间窗口'
+    return {
+      scopedTotal,
+      scopedMatched,
+      scopeDescription: `口径内（账号：${accountText}；首发：${dateText}）`
+    }
+  }
+
   getMeta(): NoteRaceMeta {
     const db = this.sqlite.tryGetConnection() as DbConnection | null
     if (!db) {
@@ -1316,6 +1738,7 @@ export class NoteRaceService {
         totalNotes: 0,
         matchedNotes: 0,
         matchRate: 0,
+        scopeDescription: '口径内（待内容快照）',
         trendReadyDates: []
       }
     }
@@ -1334,31 +1757,23 @@ export class NoteRaceService {
         totalNotes: 0,
         matchedNotes: 0,
         matchRate: 0,
+        scopeDescription: '口径内（待内容快照）',
         trendReadyDates: []
       }
     }
     this.refreshTrendReadySnapshots(db, [...dates].reverse())
-    const total = Number(
-      db
-        .prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank WHERE snapshot_date = ?`)
-        .get(latestDate)?.cnt ?? 0
-    )
-    const matched = Number(
-      db
-        .prepare(
-          `SELECT COUNT(*) AS cnt FROM note_race_match_map WHERE snapshot_date = ? AND confidence > 0`
-        )
-        .get(latestDate)?.cnt ?? 0
-    )
+    const scopedStats = this.getScopedMatchStats(db, latestDate)
     const trendReadyDates = dates.filter(
       (date) => this.evaluateTrendComparability(db, date).comparable
     )
     return {
       latestDate,
       availableDates: dates,
-      totalNotes: total,
-      matchedNotes: matched,
-      matchRate: total > 0 ? matched / total : 0,
+      totalNotes: scopedStats.scopedTotal,
+      matchedNotes: scopedStats.scopedMatched,
+      matchRate:
+        scopedStats.scopedTotal > 0 ? scopedStats.scopedMatched / scopedStats.scopedTotal : 0,
+      scopeDescription: scopedStats.scopeDescription,
       trendReadyDates
     }
   }
@@ -1487,17 +1902,79 @@ export class NoteRaceService {
       )
       .all()
 
-    return rows.map((row) => ({
-      snapshotDate: normalizeText(row.snapshotDate),
-      commerceRows: Math.max(0, Number(row.commerceRows ?? 0)),
-      contentRows: Math.max(0, Number(row.contentRows ?? 0)),
-      rankRows: Math.max(0, Number(row.rankRows ?? 0)),
-      matchedRows: Math.max(0, Number(row.matchedRows ?? 0)),
-      latestImportedAt:
-        row.latestImportedAt == null || !Number.isFinite(Number(row.latestImportedAt))
-          ? null
-          : Number(row.latestImportedAt)
-    }))
+    return rows.map((row) => {
+      const snapshotDate = normalizeText(row.snapshotDate)
+      const scoped = snapshotDate
+        ? this.getScopedMatchStats(db, snapshotDate)
+        : { scopedTotal: 0, scopedMatched: 0, scopeDescription: '' }
+      return {
+        snapshotDate,
+        commerceRows: Math.max(0, Number(row.commerceRows ?? 0)),
+        contentRows: Math.max(0, Number(row.contentRows ?? 0)),
+        rankRows: Math.max(0, Number(row.rankRows ?? 0)),
+        matchedRows: Math.max(0, Number(row.matchedRows ?? 0)),
+        scopedRows: Math.max(0, Number(scoped.scopedTotal ?? 0)),
+        scopedMatchedRows: Math.max(0, Number(scoped.scopedMatched ?? 0)),
+        latestImportedAt:
+          row.latestImportedAt == null || !Number.isFinite(Number(row.latestImportedAt))
+            ? null
+            : Number(row.latestImportedAt)
+      }
+    })
+  }
+
+  resetAllData(): NoteRaceResetResult {
+    this.ensureSchema()
+    const db = this.sqlite.tryGetConnection() as DbConnection | null
+    if (!db) {
+      return {
+        deletedCommerceRows: 0,
+        deletedContentRows: 0,
+        deletedDeletedCommerceRows: 0,
+        deletedDeletedContentRows: 0,
+        deletedMatchRows: 0,
+        deletedRankRows: 0
+      }
+    }
+
+    const tx = db.transaction(() => {
+      const deletedCommerceRows = Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_raw_commerce`).get()?.cnt ?? 0
+      )
+      const deletedContentRows = Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_raw_content`).get()?.cnt ?? 0
+      )
+      const deletedDeletedCommerceRows = Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_deleted_commerce`).get()?.cnt ?? 0
+      )
+      const deletedDeletedContentRows = Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_deleted_content`).get()?.cnt ?? 0
+      )
+      const deletedMatchRows = Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_match_map`).get()?.cnt ?? 0
+      )
+      const deletedRankRows = Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM note_race_daily_rank`).get()?.cnt ?? 0
+      )
+
+      db.prepare(`DELETE FROM note_race_match_map`).run()
+      db.prepare(`DELETE FROM note_race_daily_rank`).run()
+      db.prepare(`DELETE FROM note_race_raw_commerce`).run()
+      db.prepare(`DELETE FROM note_race_raw_content`).run()
+      db.prepare(`DELETE FROM note_race_deleted_commerce`).run()
+      db.prepare(`DELETE FROM note_race_deleted_content`).run()
+
+      return {
+        deletedCommerceRows: Math.max(0, deletedCommerceRows),
+        deletedContentRows: Math.max(0, deletedContentRows),
+        deletedDeletedCommerceRows: Math.max(0, deletedDeletedCommerceRows),
+        deletedDeletedContentRows: Math.max(0, deletedDeletedContentRows),
+        deletedMatchRows: Math.max(0, deletedMatchRows),
+        deletedRankRows: Math.max(0, deletedRankRows)
+      }
+    })
+
+    return tx() as NoteRaceResetResult
   }
 
   getSnapshotBatchStats(payload: {
@@ -1892,14 +2369,15 @@ export class NoteRaceService {
     const meta = this.getMeta()
     const snapshotDate = normalizeText(query.snapshotDate) || meta.latestDate || ''
     if (!snapshotDate) return []
+    const scope = this.getContentScopeProfile(db, snapshotDate)
     const params: unknown[] = [snapshotDate]
-    const where: string[] = ['snapshot_date = ?']
+    const where: string[] = ['r.snapshot_date = ?']
     if (normalizeText(query.account) && normalizeText(query.account) !== '全部账号') {
-      where.push('account_name = ?')
+      where.push('r.account_name = ?')
       params.push(normalizeText(query.account))
     }
     if (query.noteType && query.noteType !== '全部') {
-      where.push('note_type = ?')
+      where.push('r.note_type = ?')
       params.push(query.noteType)
     }
     const limit = clamp(Number(query.limit ?? 12) || 12, 1, 100)
@@ -1908,45 +2386,84 @@ export class NoteRaceService {
       .prepare(
         `
         SELECT
-          note_key AS id,
-          rank_position AS rank,
-          tag,
-          account_name AS account,
-          title,
-          age_days AS ageDays,
-          score,
-          trend_delta AS trendDelta,
-          trend_hint_json AS trendHintJson,
-          content_signals_json AS contentSignalsJson,
-          commerce_signals_json AS commerceSignalsJson,
-          stage_label AS stageLabel,
-          stage_index AS stageIndex,
-          note_type AS noteType,
-          product_name AS productName
-        FROM note_race_daily_rank
+          r.note_key AS id,
+          r.rank_position AS rank,
+          r.tag,
+          r.account_name AS account,
+          r.title,
+          r.age_days AS ageDays,
+          r.score,
+          (
+            SELECT COALESCE(SUM(CASE WHEN c.read_count > 0 THEN c.read_count ELSE 0 END), 0)
+            FROM note_race_raw_commerce c
+            WHERE c.note_key = r.note_key
+              AND c.snapshot_date <= r.snapshot_date
+          ) AS totalRead,
+          r.d_read AS dRead,
+          r.d_click AS dClick,
+          r.d_order AS dOrder,
+          r.content_score AS contentScore,
+          r.commerce_score AS commerceScore,
+          r.trend_score AS trendScore,
+          r.refund_penalty AS refundPenalty,
+          r.trend_delta AS trendDelta,
+          r.trend_hint_json AS trendHintJson,
+          r.content_signals_json AS contentSignalsJson,
+          r.commerce_signals_json AS commerceSignalsJson,
+          r.stage_label AS stageLabel,
+          r.stage_index AS stageIndex,
+          r.note_type AS noteType,
+          r.product_name AS productName,
+          rc.note_created_at AS noteCreatedAt,
+          COALESCE(mm.confidence, 0) AS matchConfidence
+        FROM note_race_daily_rank r
+        LEFT JOIN note_race_raw_commerce rc
+          ON rc.snapshot_date = r.snapshot_date AND rc.note_key = r.note_key
+        LEFT JOIN note_race_match_map mm
+          ON mm.snapshot_date = r.snapshot_date AND mm.note_key = r.note_key
         WHERE ${where.join(' AND ')}
-        ORDER BY rank_position ASC
+        ORDER BY r.rank_position ASC
         LIMIT ?
         `
       )
       .all(...params)
-    return rows.map((row) => ({
-      id: String(row.id ?? ''),
-      rank: Number(row.rank ?? 0),
-      tag: toTag(row.tag),
-      account: String(row.account ?? ''),
-      title: String(row.title ?? ''),
-      ageDays: Number(row.ageDays ?? 0),
-      score: Number(row.score ?? 0),
-      trendDelta: Number(row.trendDelta ?? 0),
-      trendHint: parseStringArray(row.trendHintJson),
-      contentSignals: parseSignalArray(row.contentSignalsJson),
-      commerceSignals: parseSignalArray(row.commerceSignalsJson),
-      stageLabel: String(row.stageLabel ?? 'S1 起量'),
-      stageIndex: toStageIndex(row.stageIndex),
-      noteType: toNoteType(row.noteType),
-      productName: String(row.productName ?? '')
-    }))
+    return rows.map((row) => {
+      const account = String(row.account ?? '')
+      const noteCreatedAt = toNullableNumber(row.noteCreatedAt)
+      const matchConfidence = Number(row.matchConfidence ?? 0)
+      const contentCoverage = this.classifyContentCoverage(
+        scope,
+        account || null,
+        noteCreatedAt,
+        matchConfidence
+      )
+      return {
+        id: String(row.id ?? ''),
+        rank: Number(row.rank ?? 0),
+        tag: toTag(row.tag),
+        account,
+        title: String(row.title ?? ''),
+        ageDays: Number(row.ageDays ?? 0),
+        score: Number(row.score ?? 0),
+        totalRead: Number(row.totalRead ?? 0),
+        dRead: Number(row.dRead ?? 0),
+        dClick: Number(row.dClick ?? 0),
+        dOrder: Number(row.dOrder ?? 0),
+        contentScore: Number(row.contentScore ?? 0),
+        commerceScore: Number(row.commerceScore ?? 0),
+        trendScore: Number(row.trendScore ?? 0),
+        refundPenalty: Number(row.refundPenalty ?? 0),
+        trendDelta: Number(row.trendDelta ?? 0),
+        trendHint: parseStringArray(row.trendHintJson),
+        contentSignals: parseSignalArray(row.contentSignalsJson),
+        commerceSignals: parseSignalArray(row.commerceSignalsJson),
+        stageLabel: String(row.stageLabel ?? 'S1 起量'),
+        stageIndex: toStageIndex(row.stageIndex),
+        noteType: toNoteType(row.noteType),
+        productName: String(row.productName ?? ''),
+        contentCoverage
+      }
+    })
   }
 
   getRaceDetail(payload: { snapshotDate?: string; noteKey?: string }): NoteRaceDetail | null {
@@ -1978,6 +2495,10 @@ export class NoteRaceService {
           d_read AS dRead,
           d_click AS dClick,
           d_order AS dOrder,
+          content_score AS contentScore,
+          commerce_score AS commerceScore,
+          trend_score AS trendScore,
+          refund_penalty AS refundPenalty,
           acceleration,
           stability_label AS stabilityLabel
         FROM note_race_daily_rank
@@ -2110,6 +2631,13 @@ export class NoteRaceService {
       { label: '支付', value: payOrders, conversionLabel: '退款率' },
       { label: '退款', value: refundCount }
     ])
+    const scope = this.getContentScopeProfile(db, snapshotDate)
+    const contentCoverage = this.classifyContentCoverage(
+      scope,
+      normalizeText(commerce.account_name) || null,
+      toNullableNumber(commerce.note_created_at),
+      Number(match?.confidence ?? 0)
+    )
 
     return {
       row: {
@@ -2120,6 +2648,14 @@ export class NoteRaceService {
         title: String(rank.title ?? ''),
         ageDays: Number(rank.ageDays ?? 0),
         score: Number(rank.score ?? 0),
+        totalRead,
+        dRead: Number(rank.dRead ?? 0),
+        dClick: Number(rank.dClick ?? 0),
+        dOrder: Number(rank.dOrder ?? 0),
+        contentScore: Number(rank.contentScore ?? 0),
+        commerceScore: Number(rank.commerceScore ?? 0),
+        trendScore: Number(rank.trendScore ?? 0),
+        refundPenalty: Number(rank.refundPenalty ?? 0),
         trendDelta: Number(rank.trendDelta ?? 0),
         trendHint: parseStringArray(rank.trendHintJson),
         contentSignals: parseSignalArray(rank.contentSignalsJson),
@@ -2127,7 +2663,8 @@ export class NoteRaceService {
         stageLabel: String(rank.stageLabel ?? 'S1 起量'),
         stageIndex: toStageIndex(rank.stageIndex),
         noteType: toNoteType(rank.noteType),
-        productName: String(rank.productName ?? '')
+        productName: String(rank.productName ?? ''),
+        contentCoverage
       },
       noteId: normalizeText(commerce.note_id) || null,
       productId: normalizeText(commerce.product_id) || null,
@@ -2141,6 +2678,7 @@ export class NoteRaceService {
       deltas: {
         read: Number(rank.dRead ?? 0),
         click: Number(rank.dClick ?? 0),
+        order: Number(rank.dOrder ?? 0),
         acceleration: Number(rank.acceleration ?? 1),
         stability: toStability(rank.stabilityLabel)
       },
@@ -2287,26 +2825,31 @@ export class NoteRaceService {
       const content = match?.contentRowId ? (contentById.get(match.contentRowId) ?? null) : null
       const prevRows = prevRowStmt.all(row.noteKey, snapshotDate)
       const prev = prevRows.length > 0 ? mapCommerceRow(prevRows[0]) : null
-      const prev2 = prevRows.length > 1 ? mapCommerceRow(prevRows[1]) : null
 
       const prevContent = content
         ? mapContentRow(prevContentStmt.get(content.rowId, snapshotDate) ?? null)
         : null
 
-      const rawDRead = row.readCount - (prev?.readCount ?? 0)
-      const rawDClick = row.clickCount - (prev?.clickCount ?? 0)
-      const rawDOrder = row.payOrders - (prev?.payOrders ?? 0)
-      const dRead = trendComparable ? rawDRead : 0
-      const dClick = trendComparable ? rawDClick : 0
-      const dOrder = trendComparable ? rawDOrder : 0
+      const dRead = Math.max(0, row.readCount)
+      const dClick = Math.max(0, row.clickCount)
+      const dOrder = Math.max(0, row.payOrders)
 
-      const rawPrevDRead = prev ? prev.readCount - (prev2?.readCount ?? 0) : 0
+      const prevReadSeries = prevRows.map((item) => Number(item.read_count ?? 0))
+      const prevClickSeries = prevRows.map((item) => Number(item.click_count ?? 0))
+      const prevOrderSeries = prevRows.map((item) => Number(item.pay_orders ?? 0))
+      const readBaseline = computeBaseline(prevReadSeries, dRead)
+      const clickBaseline = computeBaseline(prevClickSeries, dClick)
+      const orderBaseline = computeBaseline(prevOrderSeries, dOrder)
+      const readDeltaVsBaseline = trendComparable ? dRead - readBaseline : 0
+      const clickDeltaVsBaseline = trendComparable ? dClick - clickBaseline : 0
+      const orderDeltaVsBaseline = trendComparable ? dOrder - orderBaseline : 0
+
       const acceleration = trendComparable
-        ? rawPrevDRead === 0
+        ? readBaseline === 0
           ? dRead === 0
             ? 1
             : 1.2
-          : Number((dRead / rawPrevDRead).toFixed(2))
+          : Number((dRead / readBaseline).toFixed(2))
         : 1
 
       const stableSeries = prevSeriesStmt
@@ -2322,29 +2865,20 @@ export class NoteRaceService {
           : 0
 
       const trendDeltaRaw = trendComparable
-        ? dRead * 0.02 + dClick * 0.3 + dOrder * 2 + (acceleration - 1) * 2
+        ? readDeltaVsBaseline * 0.01 +
+          clickDeltaVsBaseline * 0.2 +
+          orderDeltaVsBaseline * 3 +
+          (acceleration - 1) * 2
         : 0
       const trendDelta = Number(clamp(trendDeltaRaw, -9.9, 9.9).toFixed(1))
 
       const trendHint = trendComparable
         ? (() => {
-            const readBaseline = computeBaseline(
-              prevRows.map((item) => Number(item.read_count ?? 0)),
-              row.readCount
-            )
-            const clickBaseline = computeBaseline(
-              prevRows.map((item) => Number(item.click_count ?? 0)),
-              row.clickCount
-            )
-            const ctrBaseline = computeBaseline(
-              prevRows.map((item) => Number(item.click_rate_pv ?? 0)),
-              row.clickRatePv
-            )
             return [
               '昨对比前3日均值',
-              `阅读 ${formatDelta(dRead)} (${formatPercent(dRead, readBaseline)})`,
-              `点击 ${formatDelta(dClick)} (${formatPercent(dClick, clickBaseline)})`,
-              `CTR ${formatDeltaRate(row.clickRatePv - ctrBaseline)}`
+              `阅读 ${Math.round(dRead)} (${formatPercent(dRead - readBaseline, readBaseline)})`,
+              `点击 ${Math.round(dClick)} (${formatPercent(dClick - clickBaseline, clickBaseline)})`,
+              `下单 ${Math.round(dOrder)} (${formatPercent(dOrder - orderBaseline, orderBaseline)})`
             ]
           })()
         : ['样本不足或口径不可比', trendBlockedReason ?? '快照口径不可比，已禁用增量趋势计算。']
@@ -2370,7 +2904,7 @@ export class NoteRaceService {
 
       const contentRaw = Math.max(
         0,
-        (content?.coverClickRate ?? row.clickRatePv) * 220 +
+        (content?.coverClickRate ?? 0) * 220 +
           dComment * 8 +
           dCollect * 3 +
           dLike +
@@ -2378,11 +2912,13 @@ export class NoteRaceService {
       )
       const commerceRaw = Math.max(
         0,
-        row.clickCount * 3 + dClick * 4 + row.payOrders * 40 + dOrder * 80 + row.payAmount * 0.2
+        dClick * 4 + dOrder * 120 + row.payAmount * 0.2 + row.clickRatePv * 40
       )
-      const trendRaw = trendComparable
-        ? dRead + dClick * 8 + dOrder * 80 + (acceleration - 1) * 30
+      const trendRawLevel = dRead + dClick * 6 + dOrder * 100
+      const trendRawLift = trendComparable
+        ? readDeltaVsBaseline + clickDeltaVsBaseline * 4 + orderDeltaVsBaseline * 60 + (acceleration - 1) * 30
         : 0
+      const trendRaw = Math.max(0, trendRawLevel + trendRawLift)
 
       intermediate.push({
         noteKey: row.noteKey,
@@ -2415,22 +2951,29 @@ export class NoteRaceService {
 
     const ranked = intermediate
       .map((item) => {
-        const trendScore = trendNorm(item.trendRaw)
-        const contentScore = contentNorm(item.contentRaw)
-        const commerceScore = commerceNorm(item.commerceRaw)
-        const refundPenalty = clamp(item.refundRatePayTime * 20, 0, 20)
+        const trendScore = Number(trendNorm(item.trendRaw).toFixed(1))
+        const contentScore = Number(contentNorm(item.contentRaw).toFixed(1))
+        const commerceScore = Number(commerceNorm(item.commerceRaw).toFixed(1))
+        const refundPenalty = Number(clamp(item.refundRatePayTime * 20, 0, 20).toFixed(1))
         const score = clamp(
-          0.55 * trendScore + 0.3 * contentScore + 0.15 * commerceScore - refundPenalty,
+          0.3 * trendScore + 0.25 * contentScore + 0.45 * commerceScore - refundPenalty,
           0,
           100
         )
         return {
           ...item,
+          trendScore,
+          contentScore,
+          commerceScore,
+          refundPenalty,
           score: Number(score.toFixed(1))
         }
       })
       .sort((a, b) => {
+        if (b.dOrder !== a.dOrder) return b.dOrder - a.dOrder
         if (b.score !== a.score) return b.score - a.score
+        if (b.dClick !== a.dClick) return b.dClick - a.dClick
+        if (b.dRead !== a.dRead) return b.dRead - a.dRead
         if (b.trendDelta !== a.trendDelta) return b.trendDelta - a.trendDelta
         return a.title.localeCompare(b.title)
       })
@@ -2451,8 +2994,9 @@ export class NoteRaceService {
       INSERT INTO note_race_daily_rank (
         snapshot_date, note_key, rank_position, tag, stage_label, stage_index, score, trend_delta, trend_hint_json,
         content_signals_json, commerce_signals_json, account_name, title, note_type, age_days, product_name,
-        d_read, d_click, d_order, acceleration, stability_label, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        d_read, d_click, d_order, content_score, commerce_score, trend_score, refund_penalty,
+        acceleration, stability_label, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const now = Date.now()
@@ -2488,6 +3032,10 @@ export class NoteRaceService {
           row.dRead,
           row.dClick,
           row.dOrder,
+          row.contentScore,
+          row.commerceScore,
+          row.trendScore,
+          row.refundPenalty,
           row.acceleration,
           row.stability,
           now
@@ -2637,12 +3185,6 @@ function computeBaseline(previous: number[], fallback: number): number {
   return valid.reduce((sum, item) => sum + item, 0) / valid.length
 }
 
-function formatDelta(value: number): string {
-  const rounded = Math.round(value)
-  if (rounded > 0) return `+${rounded}`
-  return String(rounded)
-}
-
 function formatPercent(delta: number, baseline: number): string {
   if (!Number.isFinite(baseline) || baseline === 0) {
     return delta === 0 ? '0%' : 'n/a'
@@ -2651,13 +3193,6 @@ function formatPercent(delta: number, baseline: number): string {
   const rounded = Number(rate.toFixed(1))
   if (rounded > 0) return `+${rounded}%`
   return `${rounded}%`
-}
-
-function formatDeltaRate(delta: number): string {
-  const pp = Number((delta * 100).toFixed(1))
-  if (pp > 0) return `+${pp}pp`
-  if (pp < 0) return `${pp}pp`
-  return '持平'
 }
 
 function buildFunnel(
