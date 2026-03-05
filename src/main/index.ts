@@ -32,7 +32,7 @@ import {
 import { listDouyinHotMusicTracks, syncDouyinHotMusic } from './services/douyinHotMusic'
 import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
-import { ScoutService } from './services/scoutService'
+import { ScoutService, isDashboardIntermediateTemplateSourceFile } from './services/scoutService'
 import { NoteRaceService } from './services/noteRaceService'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
@@ -863,6 +863,7 @@ async function listDashboardExcelFilesRecursive(rootDir: string): Promise<Dashbo
 
       const ext = extname(name).toLowerCase()
       if (!DASHBOARD_AUTO_IMPORT_EXTENSIONS.has(ext)) continue
+      if (isDashboardIntermediateTemplateSourceFile(name)) continue
 
       const fileStats = await stat(absolutePath).catch(() => null)
       if (!fileStats || !fileStats.isFile()) continue
