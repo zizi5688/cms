@@ -920,13 +920,16 @@ export class ScoutService {
   async importExcelSnapshotFromFile(filePath: string): Promise<ScoutExcelImportResult> {
     const normalizedPath = String(filePath ?? '').trim()
     if (!normalizedPath) throw new Error('文件路径不能为空')
+    const sourceFile = basename(normalizedPath)
+    if (isDashboardIntermediateTemplateSourceFile(sourceFile)) {
+      throw new Error(`检测到中间模板文件，已阻止导入：${sourceFile}`)
+    }
 
     const workbook = await createExcelWorkbook()
     await workbook.xlsx.readFile(normalizedPath)
 
     const db = this.sqlite.connection
     const now = Date.now()
-    const sourceFile = basename(normalizedPath)
     const snapshotDateFromFile = extractSnapshotDateFromSourceFile(sourceFile)
     if (!snapshotDateFromFile) {
       throw new Error(`文件名未包含可识别日期，需包含 YYYYMMDD：${sourceFile}`)
@@ -2968,6 +2971,13 @@ function extractCategoryTagFromSourceFile(sourceFile: string): string | null {
     .trim()
 
   return normalizeCategoryTag(stem)
+}
+
+export function isDashboardIntermediateTemplateSourceFile(sourceFile: string): boolean {
+  const baseName = normalizeText(sourceFile).split(/[\\/]/).filter(Boolean).pop() ?? ''
+  const stem = baseName.replace(/\.[^.]+$/, '').toLowerCase()
+  if (!stem.endsWith('_template')) return false
+  return !/_24h_ge.*_template$/i.test(stem)
 }
 
 function extractSnapshotDateFromSourceFile(sourceFile: string): string | null {
