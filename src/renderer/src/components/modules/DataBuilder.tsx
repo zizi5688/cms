@@ -3,13 +3,24 @@ import type * as React from 'react'
 
 import { Virtuoso } from 'react-virtuoso'
 
-import { Loader2, RotateCcw } from 'lucide-react'
+import {
+  Film,
+  FolderOpen,
+  Images,
+  ListChecks,
+  Loader2,
+  RotateCcw,
+  ScanSearch,
+  Send,
+  Sparkles
+} from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
 import { TaskCard } from '@renderer/components/ui/TaskCard'
 import { generateManifest, generateVideoManifest } from '@renderer/lib/cms-engine'
+import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
 function numberOr(value: string, fallback: number): number {
@@ -81,6 +92,38 @@ function formatTimeLabel(seconds: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
 }
 
+type WorkshopMetricTone = 'amber' | 'emerald' | 'sky' | 'rose'
+
+interface WorkshopMetricCardProps {
+  icon: React.ReactNode
+  label: string
+  value: string
+  tone?: WorkshopMetricTone
+}
+
+const metricToneClasses: Record<WorkshopMetricTone, string> = {
+  amber: 'border-amber-400/20 bg-amber-400/10 text-amber-100',
+  emerald: 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100',
+  sky: 'border-sky-400/20 bg-sky-400/10 text-sky-100',
+  rose: 'border-rose-400/20 bg-rose-400/10 text-rose-100'
+}
+
+function WorkshopMetricCard({
+  icon,
+  label,
+  value,
+  tone = 'amber'
+}: WorkshopMetricCardProps): React.JSX.Element {
+  return (
+    <div className="rounded-[18px] border border-zinc-800/80 bg-black/20 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{label}</div>
+        <div className={cn('rounded-xl border p-2', metricToneClasses[tone])}>{icon}</div>
+      </div>
+      <div className="mt-2 text-xl font-semibold tracking-[0.02em] text-zinc-50">{value}</div>
+    </div>
+  )
+}
 
 function DataBuilder(): React.JSX.Element {
   const [imageFiles, setImageFiles] = useState<string[]>([])
@@ -104,7 +147,9 @@ function DataBuilder(): React.JSX.Element {
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(() => new Set())
   const [queuedTaskIds, setQueuedTaskIds] = useState<Set<string>>(() => new Set())
   const [toastMessage, setToastMessage] = useState<string>('')
-  const [videoCoverMode, setVideoCoverMode] = useState<'auto-first-frame' | 'manual'>('auto-first-frame')
+  const [videoCoverMode, setVideoCoverMode] = useState<'auto-first-frame' | 'manual'>(
+    'auto-first-frame'
+  )
   const [manualCoverMap, setManualCoverMap] = useState<Record<string, string>>({})
   const [isPreparingVideoCover, setIsPreparingVideoCover] = useState(false)
   const [isSavingManualCover, setIsSavingManualCover] = useState(false)
@@ -155,8 +200,11 @@ function DataBuilder(): React.JSX.Element {
   const isManualCoverEditorOpen = Boolean(manualCoverEditorVideoPath.trim())
   const normalizedManualEditorPath = manualCoverEditorVideoPath.trim()
   const normalizedManualEditorPlayablePath = manualCoverEditorPlayablePath.trim()
-  const manualCoverEditorSourcePath = normalizedManualEditorPlayablePath || normalizedManualEditorPath
-  const activeManualCoverPath = normalizedManualEditorPath ? manualCoverMap[normalizedManualEditorPath] ?? '' : ''
+  const manualCoverEditorSourcePath =
+    normalizedManualEditorPlayablePath || normalizedManualEditorPath
+  const activeManualCoverPath = normalizedManualEditorPath
+    ? (manualCoverMap[normalizedManualEditorPath] ?? '')
+    : ''
   const manualCoverConfiguredCount = useMemo(() => {
     let count = 0
     for (const path of importedVideoPaths) {
@@ -208,7 +256,9 @@ function DataBuilder(): React.JSX.Element {
       return
     }
 
-    const currentVideoPathSet = new Set(importedVideoPaths.map((path) => path.trim()).filter(Boolean))
+    const currentVideoPathSet = new Set(
+      importedVideoPaths.map((path) => path.trim()).filter(Boolean)
+    )
     const cache = videoCoverCacheRef.current
     for (const key of cache.keys()) {
       if (!currentVideoPathSet.has(key)) cache.delete(key)
@@ -285,67 +335,75 @@ function DataBuilder(): React.JSX.Element {
     }
   }, [addLog, manualCoverEditorVideoPath])
 
-  const prepareAutoCoverMap = useCallback(async (videoPaths: string[]): Promise<Map<string, string>> => {
-    const uniquePaths = Array.from(new Set(videoPaths.map((item) => String(item ?? '').trim()).filter(Boolean)))
-    const nextCoverMap = new Map<string, string>()
-    if (uniquePaths.length === 0) return nextCoverMap
+  const prepareAutoCoverMap = useCallback(
+    async (videoPaths: string[]): Promise<Map<string, string>> => {
+      const uniquePaths = Array.from(
+        new Set(videoPaths.map((item) => String(item ?? '').trim()).filter(Boolean))
+      )
+      const nextCoverMap = new Map<string, string>()
+      if (uniquePaths.length === 0) return nextCoverMap
 
-    const cache = videoCoverCacheRef.current
+      const cache = videoCoverCacheRef.current
 
-    for (let i = 0; i < uniquePaths.length; i += 1) {
-      const path = uniquePaths[i]
-      if (!path) continue
+      for (let i = 0; i < uniquePaths.length; i += 1) {
+        const path = uniquePaths[i]
+        if (!path) continue
 
-      const indexLabel = `${i + 1}/${uniquePaths.length}`
-      const cached = cache.get(path)
-      if (cached) {
-        nextCoverMap.set(path, cached)
-        setVideoCoverProgress(`封面提取中（${indexLabel}，命中缓存）`)
-        continue
+        const indexLabel = `${i + 1}/${uniquePaths.length}`
+        const cached = cache.get(path)
+        if (cached) {
+          nextCoverMap.set(path, cached)
+          setVideoCoverProgress(`封面提取中（${indexLabel}，命中缓存）`)
+          continue
+        }
+
+        setVideoCoverProgress(`封面提取中（${indexLabel}）`)
+        addLog(`[Super CMS] 正在提取视频首帧封面（${indexLabel}）：${path}`)
+
+        try {
+          const coverPath = await captureVideoFirstFrame(path)
+          cache.set(path, coverPath)
+          nextCoverMap.set(path, coverPath)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          addLog(`[Super CMS] 首帧封面提取失败：${path}，${message}`)
+        }
+
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), 0)
+        })
       }
 
-      setVideoCoverProgress(`封面提取中（${indexLabel}）`)
-      addLog(`[Super CMS] 正在提取视频首帧封面（${indexLabel}）：${path}`)
+      return nextCoverMap
+    },
+    [addLog]
+  )
 
+  const handleScan = useCallback(
+    async (nextPath?: string): Promise<void> => {
+      if (isVideoMode) return
+      const path = (nextPath ?? dataWorkshopFolderPath).trim()
+      if (!path) {
+        addLog('[Super CMS] 请输入文件夹路径后再扫描。')
+        return
+      }
+
+      lastScannedPathRef.current = path
+      setIsScanning(true)
       try {
-        const coverPath = await captureVideoFirstFrame(path)
-        cache.set(path, coverPath)
-        nextCoverMap.set(path, coverPath)
+        addLog(`[Super CMS] 扫描文件夹：${path}`)
+        const files = await window.electronAPI.scanDirectory(path)
+        setImageFiles(files)
+        addLog(`[Super CMS] 扫描完成：找到 ${files.length} 张图片。`)
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        addLog(`[Super CMS] 首帧封面提取失败：${path}，${message}`)
+        addLog(`[Super CMS] 扫描失败：${String(error)}`)
+        setImageFiles([])
+      } finally {
+        setIsScanning(false)
       }
-
-      await new Promise<void>((resolve) => {
-        window.setTimeout(() => resolve(), 0)
-      })
-    }
-
-    return nextCoverMap
-  }, [addLog])
-
-  const handleScan = useCallback(async (nextPath?: string): Promise<void> => {
-    if (isVideoMode) return
-    const path = (nextPath ?? dataWorkshopFolderPath).trim()
-    if (!path) {
-      addLog('[Super CMS] 请输入文件夹路径后再扫描。')
-      return
-    }
-
-    lastScannedPathRef.current = path
-    setIsScanning(true)
-    try {
-      addLog(`[Super CMS] 扫描文件夹：${path}`)
-      const files = await window.electronAPI.scanDirectory(path)
-      setImageFiles(files)
-      addLog(`[Super CMS] 扫描完成：找到 ${files.length} 张图片。`)
-    } catch (error) {
-      addLog(`[Super CMS] 扫描失败：${String(error)}`)
-      setImageFiles([])
-    } finally {
-      setIsScanning(false)
-    }
-  }, [addLog, dataWorkshopFolderPath, isVideoMode])
+    },
+    [addLog, dataWorkshopFolderPath, isVideoMode]
+  )
 
   const handleBrowse = async (): Promise<void> => {
     if (isScanning) return
@@ -383,27 +441,32 @@ function DataBuilder(): React.JSX.Element {
     setManualCoverEditorTimeSec(0)
   }
 
-  const setManualCoverForVideo = useCallback((videoPath: string, coverPath: string): void => {
-    const normalizedVideoPath = String(videoPath ?? '').trim()
-    const normalizedCoverPath = String(coverPath ?? '').trim()
-    if (!normalizedVideoPath) return
+  const setManualCoverForVideo = useCallback(
+    (videoPath: string, coverPath: string): void => {
+      const normalizedVideoPath = String(videoPath ?? '').trim()
+      const normalizedCoverPath = String(coverPath ?? '').trim()
+      if (!normalizedVideoPath) return
 
-    let configuredCount = 0
-    setManualCoverMap((prev) => {
-      const next: Record<string, string> = { ...prev }
-      if (normalizedCoverPath) next[normalizedVideoPath] = normalizedCoverPath
-      else delete next[normalizedVideoPath]
+      let configuredCount = 0
+      setManualCoverMap((prev) => {
+        const next: Record<string, string> = { ...prev }
+        if (normalizedCoverPath) next[normalizedVideoPath] = normalizedCoverPath
+        else delete next[normalizedVideoPath]
 
-      configuredCount = 0
-      for (const path of importedVideoPaths) {
-        const normalizedPath = path.trim()
-        if (normalizedPath && next[normalizedPath]) configuredCount += 1
-      }
-      return next
-    })
+        configuredCount = 0
+        for (const path of importedVideoPaths) {
+          const normalizedPath = path.trim()
+          if (normalizedPath && next[normalizedPath]) configuredCount += 1
+        }
+        return next
+      })
 
-    setVideoCoverProgress(`手动模式：已设置 ${configuredCount}/${importedVideoPaths.length} 条视频封面。`)
-  }, [importedVideoPaths])
+      setVideoCoverProgress(
+        `手动模式：已设置 ${configuredCount}/${importedVideoPaths.length} 条视频封面。`
+      )
+    },
+    [importedVideoPaths]
+  )
 
   const handleUploadManualCover = async (): Promise<void> => {
     const targetVideoPath = manualCoverEditorVideoPath.trim()
@@ -493,12 +556,16 @@ function DataBuilder(): React.JSX.Element {
               if (manualCoverConfiguredCount === 0) {
                 addLog('[Super CMS] 手动封面模式未设置封面图，本次预览将显示“未设置封面图”。')
               }
-              setVideoCoverProgress(`手动模式：已设置 ${manualCoverConfiguredCount}/${importedVideoPaths.length} 条视频封面。`)
+              setVideoCoverProgress(
+                `手动模式：已设置 ${manualCoverConfiguredCount}/${importedVideoPaths.length} 条视频封面。`
+              )
               return videoTasks.map((task) => ({
                 ...task,
                 assignedImages: (() => {
                   const normalizedVideoPath = String(task.videoPath ?? '').trim()
-                  const mappedCoverPath = normalizedVideoPath ? manualCoverMap[normalizedVideoPath] ?? '' : ''
+                  const mappedCoverPath = normalizedVideoPath
+                    ? (manualCoverMap[normalizedVideoPath] ?? '')
+                    : ''
                   return mappedCoverPath ? [mappedCoverPath] : []
                 })()
               }))
@@ -507,14 +574,18 @@ function DataBuilder(): React.JSX.Element {
             setIsPreparingVideoCover(true)
             const coverMap = await prepareAutoCoverMap(importedVideoPaths)
             const successCount = coverMap.size
-            setVideoCoverProgress(`自动首帧模式：已提取 ${successCount}/${importedVideoPaths.length} 条视频封面。`)
+            setVideoCoverProgress(
+              `自动首帧模式：已提取 ${successCount}/${importedVideoPaths.length} 条视频封面。`
+            )
             if (successCount === 0) {
-              addLog('[Super CMS] 自动首帧封面提取失败，本次预览仍会生成，但任务将显示“未设置封面图”。')
+              addLog(
+                '[Super CMS] 自动首帧封面提取失败，本次预览仍会生成，但任务将显示“未设置封面图”。'
+              )
             }
 
             return videoTasks.map((task) => {
               const normalizedVideoPath = String(task.videoPath ?? '').trim()
-              const coverPath = normalizedVideoPath ? coverMap.get(normalizedVideoPath) ?? '' : ''
+              const coverPath = normalizedVideoPath ? (coverMap.get(normalizedVideoPath) ?? '') : ''
               return {
                 ...task,
                 assignedImages: coverPath ? [coverPath] : []
@@ -527,7 +598,11 @@ function DataBuilder(): React.JSX.Element {
           })
       setTasks(next)
       setUploadTasks(
-        next.map((task) => ({ title: task.title, body: task.body, images: task.mediaType === 'video' ? [] : task.assignedImages }))
+        next.map((task) => ({
+          title: task.title,
+          body: task.body,
+          images: task.mediaType === 'video' ? [] : task.assignedImages
+        }))
       )
       addLog(`[Super CMS] 生成预览完成：共 ${next.length} 组。`)
     } catch (error) {
@@ -544,7 +619,6 @@ function DataBuilder(): React.JSX.Element {
     if (!window.confirm('确定要清空当前所有输入和预览吗？')) return
     resetDataBuilderToInitial()
   }
-
 
   useEffect(() => {
     if (isVideoMode) return
@@ -577,7 +651,8 @@ function DataBuilder(): React.JSX.Element {
         setAccounts(list)
         setSelectedAccountId((prev) => {
           const normalizedPrev = String(prev ?? '').trim()
-          if (normalizedPrev && list.some((item) => item.id === normalizedPrev)) return normalizedPrev
+          if (normalizedPrev && list.some((item) => item.id === normalizedPrev))
+            return normalizedPrev
           return list[0]?.id || ''
         })
       } catch (error) {
@@ -672,6 +747,29 @@ function DataBuilder(): React.JSX.Element {
     return count
   }, [queuedTaskIds, selectedImageIds, tasks])
 
+  const csvRowCount = useMemo(() => {
+    return csvContent
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean).length
+  }, [csvContent])
+
+  const queuedTaskCount = useMemo(() => {
+    let count = 0
+    for (const task of tasks) {
+      if (queuedTaskIds.has(task.id)) count += 1
+    }
+    return count
+  }, [queuedTaskIds, tasks])
+
+  const selectableTaskCount = useMemo(
+    () => Math.max(tasks.length - queuedTaskCount, 0),
+    [queuedTaskCount, tasks.length]
+  )
+  const sourceCount = isVideoMode ? importedVideoPaths.length : imageFiles.length
+  const sourceLabel = isVideoMode ? '视频' : '图片'
+  const isBuilderBusy = isGenerating || isPreparingVideoCover || isSavingManualCover
+
   const isAllPreviewSelected = useMemo(() => {
     const selectableTasks = tasks.filter((task) => !queuedTaskIds.has(task.id))
     if (selectableTasks.length === 0) return false
@@ -701,9 +799,11 @@ function DataBuilder(): React.JSX.Element {
     }
 
     const productId = selectedProductId.trim()
-    const productName = productId ? allProducts.find((p) => p.id === productId)?.name ?? '' : ''
+    const productName = productId ? (allProducts.find((p) => p.id === productId)?.name ?? '') : ''
 
-    const selectedTasks = tasks.filter((t) => selectedImageIds.has(t.id) && !queuedTaskIds.has(t.id))
+    const selectedTasks = tasks.filter(
+      (t) => selectedImageIds.has(t.id) && !queuedTaskIds.has(t.id)
+    )
     if (selectedTasks.length === 0) return
 
     const requestId =
@@ -729,7 +829,10 @@ function DataBuilder(): React.JSX.Element {
         const processed = typeof payload.processed === 'number' ? payload.processed : 0
         const total = typeof payload.total === 'number' ? payload.total : selectedTasks.length
         const created = typeof payload.created === 'number' ? payload.created : 0
-        const message = typeof payload.message === 'string' ? payload.message : `派发处理中（${processed}/${total}）`
+        const message =
+          typeof payload.message === 'string'
+            ? payload.message
+            : `派发处理中（${processed}/${total}）`
         setDispatchProgress({ processed, total, created, message })
       })
 
@@ -754,7 +857,8 @@ function DataBuilder(): React.JSX.Element {
       const dispatchedTaskIdSet = new Set(selectedTasks.map((task) => task.id))
       const nextQueuedTaskIds = new Set(queuedTaskIds)
       for (const taskId of dispatchedTaskIdSet) nextQueuedTaskIds.add(taskId)
-      const allTasksQueued = tasks.length > 0 && tasks.every((task) => nextQueuedTaskIds.has(task.id))
+      const allTasksQueued =
+        tasks.length > 0 && tasks.every((task) => nextQueuedTaskIds.has(task.id))
 
       if (allTasksQueued) {
         resetDataBuilderToInitial()
@@ -795,226 +899,310 @@ function DataBuilder(): React.JSX.Element {
   }
 
   return (
-    <div ref={containerRef} className="mx-auto flex w-full max-w-5xl flex-col gap-6 pb-28">
-      <Card>
-        <CardHeader>
-          <CardTitle>数据工坊</CardTitle>
-          <CardDescription>
-            {isVideoMode ? '导入视频素材，输入 CSV，生成视频任务预览。' : '扫描图片文件夹，输入 CSV，生成任务清单预览。'}
-          </CardDescription>
-          <div className="text-xs text-zinc-400 break-all">📂 当前存储位置：{workspacePath || '未设置'}</div>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-5">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <div className="text-sm text-zinc-300">CSV 导入（标题, 正文）</div>
+    <div ref={containerRef} className="mx-auto flex w-full max-w-[1180px] flex-col gap-4 pb-28">
+      <Card className="overflow-hidden border-zinc-800/80 bg-zinc-950/85 shadow-[0_20px_80px_-45px_rgba(245,158,11,0.32)]">
+        <CardContent className="space-y-4 p-4 sm:p-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex items-center gap-2 rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-[11px] text-amber-200">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {isVideoMode ? '视频' : '图片'}
+                </div>
+                <div className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-full border border-zinc-700/80 bg-black/25 px-3 py-1 text-[11px] text-zinc-300">
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+                  <span className="truncate">{workspacePath || '未设置'}</span>
+                </div>
+              </div>
+              <CardTitle className="text-[22px] font-semibold tracking-[0.02em] text-zinc-50">
+                结果预览
+              </CardTitle>
+            </div>
+
+            <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[420px]">
+              <WorkshopMetricCard
+                icon={isVideoMode ? <Film className="h-4 w-4" /> : <Images className="h-4 w-4" />}
+                label={sourceLabel}
+                value={`${sourceCount}`}
+                tone="amber"
+              />
+              <WorkshopMetricCard
+                icon={<ListChecks className="h-4 w-4" />}
+                label="CSV"
+                value={`${csvRowCount}`}
+                tone="sky"
+              />
+              <WorkshopMetricCard
+                icon={<Sparkles className="h-4 w-4" />}
+                label="预览"
+                value={`${tasks.length}`}
+                tone="rose"
+              />
+              <WorkshopMetricCard
+                icon={<Send className="h-4 w-4" />}
+                label="待派发"
+                value={`${selectableTaskCount}`}
+                tone="emerald"
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="rounded-[24px] border border-zinc-800/80 bg-black/20 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-sm text-zinc-100">CSV</div>
+                <div className="rounded-full border border-zinc-700/80 bg-zinc-900/70 px-3 py-1 text-xs text-zinc-300">
+                  {csvRowCount}
+                </div>
+              </div>
               <textarea
                 value={csvContent}
                 onChange={(e) => setCsvContent(e.target.value)}
-                rows={8}
-                className="w-full resize-y rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-50 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+                rows={10}
+                className="min-h-[220px] w-full resize-y rounded-[20px] border border-zinc-800/80 bg-zinc-950/80 px-4 py-3 text-sm leading-6 text-zinc-50 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
               />
             </div>
 
-            <div className="flex flex-col gap-4">
-              {isVideoMode ? (
-                <div className="flex flex-col gap-2">
-                  <div className="text-sm text-zinc-300">当前视频素材（{importedVideoPaths.length} 条）</div>
-                  <div className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100">
-                    {fileNameFromPath(importedVideoPath)}
-                    {importedVideoPaths.length > 1 ? ` 等 ${importedVideoPaths.length} 条` : ''}
-                  </div>
-                  <div className="text-xs text-zinc-500 break-all">
-                    {importedVideoPaths.length > 1
-                      ? `首条：${importedVideoPath}`
-                      : importedVideoPath}
-                  </div>
-                  <div className="mt-1 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
-                    <div className="mb-2 text-xs text-zinc-300">封面设置</div>
-                    <div className="flex flex-col gap-2">
-                      <label className="inline-flex items-center gap-2 text-xs text-zinc-300">
+            <div className="flex flex-col gap-3">
+              <div className="rounded-[24px] border border-zinc-800/80 bg-black/20 p-4">
+                {isVideoMode ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="text-sm text-zinc-100">视频素材</div>
+                    <div className="rounded-[20px] border border-zinc-800/80 bg-zinc-950/80 px-4 py-3 text-sm text-zinc-100">
+                      {fileNameFromPath(importedVideoPath)}
+                      {importedVideoPaths.length > 1 ? ` 等 ${importedVideoPaths.length}` : ''}
+                    </div>
+                    <div className="grid gap-2">
+                      <label
+                        className={cn(
+                          'flex items-center gap-3 rounded-2xl border px-3 py-3 text-sm',
+                          videoCoverMode === 'auto-first-frame'
+                            ? 'border-amber-400/30 bg-amber-400/10 text-zinc-100'
+                            : 'border-zinc-800/80 bg-black/10 text-zinc-300'
+                        )}
+                      >
                         <input
                           type="radio"
                           name="video-cover-mode"
                           checked={videoCoverMode === 'auto-first-frame'}
                           onChange={() => setVideoCoverMode('auto-first-frame')}
-                          disabled={isGenerating || isPreparingVideoCover || isSavingManualCover}
+                          disabled={isBuilderBusy}
+                          className="h-4 w-4"
                         />
-                        自动首帧封面（默认）
+                        自动首帧
                       </label>
-                      <label className="inline-flex items-center gap-2 text-xs text-zinc-300">
+                      <label
+                        className={cn(
+                          'flex items-center gap-3 rounded-2xl border px-3 py-3 text-sm',
+                          videoCoverMode === 'manual'
+                            ? 'border-amber-400/30 bg-amber-400/10 text-zinc-100'
+                            : 'border-zinc-800/80 bg-black/10 text-zinc-300'
+                        )}
+                      >
                         <input
                           type="radio"
                           name="video-cover-mode"
                           checked={videoCoverMode === 'manual'}
                           onChange={() => setVideoCoverMode('manual')}
-                          disabled={isGenerating || isPreparingVideoCover || isSavingManualCover}
+                          disabled={isBuilderBusy}
+                          className="h-4 w-4"
                         />
-                        手动封面（逐视频设置）
+                        手动封面
                       </label>
                     </div>
 
                     {videoCoverMode === 'manual' ? (
-                      <div className="mt-3 flex flex-col gap-2">
-                        <div className="text-xs text-zinc-400">
-                          已设置 {manualCoverConfiguredCount}/{importedVideoPaths.length} 条视频封面
-                        </div>
-                        <div className="max-h-52 space-y-2 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950/60 p-2">
-                          {importedVideoPaths.map((videoPath, index) => {
-                            const normalizedPath = videoPath.trim()
-                            const mappedCoverPath = normalizedPath ? manualCoverMap[normalizedPath] ?? '' : ''
-                            const hasCover = Boolean(mappedCoverPath)
-                            return (
-                              <div
-                                key={videoPath}
-                                className="flex items-center justify-between gap-3 rounded-md border border-zinc-800/80 bg-zinc-950/70 px-2 py-2"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-xs text-zinc-200">
-                                    {index + 1}. {fileNameFromPath(videoPath)}
-                                  </div>
-                                  <div className={`truncate text-[11px] ${hasCover ? 'text-emerald-300' : 'text-zinc-500'}`}>
-                                    {hasCover ? `封面：${fileNameFromPath(mappedCoverPath)}` : '未设置封面图'}
-                                  </div>
-                                </div>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="h-8 px-3 text-xs"
-                                  onClick={() => openManualCoverEditor(videoPath)}
-                                  disabled={isGenerating || isPreparingVideoCover || isSavingManualCover}
-                                >
-                                  {hasCover ? '修改' : '设置'}
-                                </Button>
+                      <div className="max-h-56 space-y-2 overflow-y-auto rounded-[20px] border border-zinc-800/80 bg-black/20 p-2">
+                        {importedVideoPaths.map((videoPath, index) => {
+                          const normalizedPath = videoPath.trim()
+                          const mappedCoverPath = normalizedPath
+                            ? (manualCoverMap[normalizedPath] ?? '')
+                            : ''
+                          const hasCover = Boolean(mappedCoverPath)
+                          return (
+                            <div
+                              key={videoPath}
+                              className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 px-3 py-2.5"
+                            >
+                              <div className="min-w-0 flex-1 truncate text-xs text-zinc-200">
+                                {index + 1}. {fileNameFromPath(videoPath)}
                               </div>
-                            )
-                          })}
-                        </div>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 rounded-full border-zinc-700 px-3 text-xs"
+                                onClick={() => openManualCoverEditor(videoPath)}
+                                disabled={isBuilderBusy}
+                              >
+                                {hasCover ? '修改' : '设置'}
+                              </Button>
+                            </div>
+                          )
+                        })}
                       </div>
-                    ) : (
-                      <div className="mt-3 text-xs text-zinc-500">生成预览时会自动提取每条视频的首帧作为封面。</div>
-                    )}
+                    ) : null}
 
                     {isPreparingVideoCover ? (
-                      <div className="mt-2 inline-flex items-center gap-2 text-xs text-zinc-400">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        {videoCoverProgress || '封面提取中...'}
-                      </div>
-                    ) : videoCoverProgress ? (
-                      <div className="mt-2 text-xs text-zinc-500">{videoCoverProgress}</div>
+                      <div className="text-xs text-zinc-500">{videoCoverProgress || '处理中'}</div>
                     ) : null}
                   </div>
-                </div>
-              ) : (
-                <>
-                  <div className="flex flex-col gap-2">
-                    <div className="text-sm text-zinc-300">图片文件夹路径</div>
-                    <div className="flex gap-2">
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    <div className="text-sm text-zinc-100">图片素材</div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
                       <Input
                         value={dataWorkshopFolderPath}
                         onChange={(e) => setDataWorkshopFolderPath(e.target.value)}
-                        placeholder="请输入或选择图片文件夹"
+                        placeholder="图片文件夹"
+                        className="h-10 rounded-2xl bg-zinc-950/80"
                       />
-                      <Button onClick={handleBrowse} disabled={isScanning}>
-                        浏览
-                      </Button>
-                      <Button onClick={() => handleScan()} disabled={isScanning || !dataWorkshopFolderPath.trim()}>
-                        扫描
-                      </Button>
+                      <div className="flex gap-2 sm:shrink-0">
+                        <Button
+                          onClick={handleBrowse}
+                          disabled={isScanning}
+                          className="h-10 rounded-2xl px-4"
+                        >
+                          浏览
+                        </Button>
+                        <Button
+                          onClick={() => void handleScan()}
+                          disabled={isScanning || !dataWorkshopFolderPath.trim()}
+                          className="h-10 rounded-2xl px-4"
+                        >
+                          {isScanning ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <ScanSearch className="h-4 w-4" />
+                          )}
+                          扫描
+                        </Button>
+                      </div>
                     </div>
-                    <div className="text-xs text-zinc-500">已载入图片：{imageFiles.length} 张</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <div className="text-xs text-zinc-400">分组</div>
+                        <Input
+                          type="number"
+                          value={groupCount}
+                          onChange={(e) => setGroupCount(e.target.value)}
+                          min={0}
+                          className="h-10 rounded-2xl bg-black/20"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="text-xs text-zinc-400">复用</div>
+                        <Input
+                          type="number"
+                          value={maxReuse}
+                          onChange={(e) => setMaxReuse(e.target.value)}
+                          min={1}
+                          className="h-10 rounded-2xl bg-black/20"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="text-xs text-zinc-400">最少</div>
+                        <Input
+                          type="number"
+                          value={minImages}
+                          onChange={(e) => setMinImages(e.target.value)}
+                          min={0}
+                          className="h-10 rounded-2xl bg-black/20"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="text-xs text-zinc-400">最多</div>
+                        <Input
+                          type="number"
+                          value={maxImages}
+                          onChange={(e) => setMaxImages(e.target.value)}
+                          min={0}
+                          className="h-10 rounded-2xl bg-black/20"
+                        />
+                      </div>
+                    </div>
                   </div>
+                )}
+              </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="flex flex-col gap-1">
-                      <div className="text-xs text-zinc-400">分组数量（0=按 CSV 行数）</div>
-                      <Input type="number" value={groupCount} onChange={(e) => setGroupCount(e.target.value)} min={0} />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="text-xs text-zinc-400">最大复用次数</div>
-                      <Input type="number" value={maxReuse} onChange={(e) => setMaxReuse(e.target.value)} min={1} />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="text-xs text-zinc-400">每组最少图片数</div>
-                      <Input type="number" value={minImages} onChange={(e) => setMinImages(e.target.value)} min={0} />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="text-xs text-zinc-400">每组最多图片数</div>
-                      <Input type="number" value={maxImages} onChange={(e) => setMaxImages(e.target.value)} min={0} />
-                    </div>
-                  </div>
-                </>
-              )}
-
-              <div className="flex items-center gap-3">
-                <Button onClick={() => void handleGenerate()} disabled={isGenerating || isPreparingVideoCover || isSavingManualCover}>
-                  生成预览
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  onClick={() => void handleGenerate()}
+                  disabled={isBuilderBusy}
+                  className="h-11 rounded-2xl bg-zinc-50 text-zinc-950 hover:bg-amber-100"
+                >
+                  {isGenerating ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  {isGenerating ? '生成中' : '生成'}
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   onClick={handleReset}
-                  disabled={isScanning || isGenerating || isPreparingVideoCover || isSavingManualCover}
+                  disabled={isScanning || isBuilderBusy}
+                  className="h-11 rounded-2xl border-zinc-700 bg-transparent"
                 >
-                  <RotateCcw className="mr-2 h-4 w-4" />
+                  <RotateCcw className="h-4 w-4" />
                   重置
                 </Button>
-                <div className="text-xs text-zinc-500">
-                  {isVideoMode
-                    ? '每行 CSV 将生成 1 条视频任务，并按顺序循环使用导入的视频素材。'
-                    : '会根据图片最大复用次数自动控制图片复用。'}
-                </div>
               </div>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="flex-row items-start gap-4">
-          <div className="min-w-0">
-            <CardTitle>任务清单预览</CardTitle>
-            <CardDescription>生成结果会写入状态管理，供后续上传模块使用。</CardDescription>
+      <Card className="overflow-hidden border-zinc-800/80 bg-zinc-950/85 shadow-[0_20px_80px_-55px_rgba(56,189,248,0.22)]">
+        <CardHeader className="gap-3 border-b border-zinc-800/80 bg-[linear-gradient(180deg,rgba(15,23,42,0.3),rgba(9,9,11,0))] p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <CardTitle className="text-lg font-semibold tracking-[0.02em] text-zinc-50">
+              任务清单
+            </CardTitle>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <div className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1">
+                {tasks.length}
+              </div>
+              <div className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1">
+                {selectableTaskCount}
+              </div>
+              <div className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1">
+                {queuedTaskCount}
+              </div>
+              {tasks.length > 0 ? (
+                <label className="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1 text-zinc-200">
+                  <input
+                    type="checkbox"
+                    checked={isAllPreviewSelected}
+                    onChange={toggleSelectAllPreview}
+                    className="h-4 w-4"
+                  />
+                  全选
+                </label>
+              ) : null}
+            </div>
           </div>
         </CardHeader>
+
         <CardContent className="p-0">
           {tasks.length === 0 ? (
-            <div className="p-6 text-sm text-zinc-400">
-              {isVideoMode ? '暂无任务。请先输入 CSV 并生成预览。' : '暂无任务。请先扫描图片并生成预览。'}
-            </div>
+            <div className="px-4 py-10 text-center text-sm text-zinc-500">暂无任务</div>
           ) : (
             <Virtuoso
               key={scrollParent ? 'scroll-parent' : 'window-scroll'}
               customScrollParent={scrollParent}
               useWindowScroll={!scrollParent}
               data={tasks}
-              defaultItemHeight={200}
+              defaultItemHeight={260}
               overscan={{ main: 500, reverse: 500 }}
               computeItemKey={(_, task) => task.id}
-              components={{
-                Header: () => (
-                  <div className="px-6 pt-6 pb-4">
-                    <div className="pl-3">
-                      <label className="inline-flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/60 py-1 pr-2 text-xs text-zinc-200">
-                        <input
-                          type="checkbox"
-                          checked={isAllPreviewSelected}
-                          onChange={toggleSelectAllPreview}
-                          className="h-4 w-4"
-                        />
-                        全选
-                      </label>
-                    </div>
-                  </div>
-                )
-              }}
               itemContent={(index, task) => {
                 const isSelected = selectedImageIds.has(task.id)
                 const isQueued = queuedTaskIds.has(task.id)
                 const isSelectable = !isQueued
 
                 return (
-                  <div className="px-6 pb-4">
+                  <div className="overflow-x-auto px-4 pb-3 pt-3">
                     <div
                       className="relative"
                       onClick={() => {
@@ -1029,7 +1217,7 @@ function DataBuilder(): React.JSX.Element {
                       tabIndex={isSelectable ? 0 : -1}
                     >
                       {isQueued ? (
-                        <div className="absolute right-2 top-2 z-10 rounded-md bg-emerald-500/15 px-2 py-1 text-xs text-emerald-300">
+                        <div className="absolute right-4 top-4 z-10 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200">
                           队列中
                         </div>
                       ) : null}
@@ -1054,10 +1242,10 @@ function DataBuilder(): React.JSX.Element {
                         }}
                         className={
                           isQueued
-                            ? 'border-emerald-500/50 bg-emerald-950/10 transition-colors'
+                            ? 'border-emerald-400/35 bg-emerald-400/5 ring-1 ring-inset ring-emerald-400/10 transition-colors'
                             : isSelected
-                            ? 'border-zinc-300 bg-zinc-900/30 transition-colors'
-                            : 'hover:bg-zinc-900/20 transition-colors'
+                              ? 'border-amber-300/35 bg-amber-400/5 ring-1 ring-inset ring-amber-300/10 transition-colors'
+                              : 'hover:border-zinc-700/80 hover:bg-white/[0.02] transition-colors'
                         }
                       />
                     </div>
@@ -1068,7 +1256,6 @@ function DataBuilder(): React.JSX.Element {
           )}
         </CardContent>
       </Card>
-
       {isManualCoverEditorOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -1080,9 +1267,16 @@ function DataBuilder(): React.JSX.Element {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-sm text-zinc-200">视频封面编辑</div>
-                <div className="mt-1 truncate text-xs text-zinc-500">{normalizedManualEditorPath}</div>
+                <div className="mt-1 truncate text-xs text-zinc-500">
+                  {normalizedManualEditorPath}
+                </div>
               </div>
-              <Button type="button" variant="outline" onClick={closeManualCoverEditor} disabled={isSavingManualCover}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={closeManualCoverEditor}
+                disabled={isSavingManualCover}
+              >
                 关闭
               </Button>
             </div>
@@ -1100,7 +1294,11 @@ function DataBuilder(): React.JSX.Element {
                   <video
                     key={manualCoverEditorSourcePath}
                     ref={manualCoverEditorVideoRef}
-                    src={manualCoverEditorSourcePath ? fileUrlFromPath(manualCoverEditorSourcePath) : ''}
+                    src={
+                      manualCoverEditorSourcePath
+                        ? fileUrlFromPath(manualCoverEditorSourcePath)
+                        : ''
+                    }
                     controls
                     preload="metadata"
                     className="h-[300px] w-full rounded bg-black object-contain lg:h-[360px]"
@@ -1122,28 +1320,40 @@ function DataBuilder(): React.JSX.Element {
                     type="button"
                     variant="outline"
                     onClick={() => void handleToggleManualEditorPlayback()}
-                    disabled={isSavingManualCover || isManualCoverEditorPreparing || !manualCoverEditorSourcePath}
+                    disabled={
+                      isSavingManualCover ||
+                      isManualCoverEditorPreparing ||
+                      !manualCoverEditorSourcePath
+                    }
                   >
                     {isManualCoverEditorPlaying ? '暂停' : '播放'}
                   </Button>
                   <div className="text-xs text-zinc-500">
-                    当前帧时间：{formatTimeLabel(manualCoverEditorTimeSec)}（拖动进度条后点击“截取当前帧”）
+                    当前帧时间：{formatTimeLabel(manualCoverEditorTimeSec)}
+                    （拖动进度条后点击“截取当前帧”）
                   </div>
                 </div>
               </div>
 
               <div className="flex flex-col gap-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
-                <div className="text-xs text-zinc-400">当前视频：{fileNameFromPath(normalizedManualEditorPath)}</div>
+                <div className="text-xs text-zinc-400">
+                  当前视频：{fileNameFromPath(normalizedManualEditorPath)}
+                </div>
                 <div className="text-[11px] text-zinc-500 break-all">
                   预览源：{manualCoverEditorSourcePath || '准备中...'}
                 </div>
                 <div className="text-xs text-zinc-500 break-all">
-                  当前封面：{activeManualCoverPath ? fileNameFromPath(activeManualCoverPath) : '未设置'}
+                  当前封面：
+                  {activeManualCoverPath ? fileNameFromPath(activeManualCoverPath) : '未设置'}
                 </div>
                 <Button
                   type="button"
                   onClick={() => void handleCaptureManualCover()}
-                  disabled={isSavingManualCover || isManualCoverEditorPreparing || !manualCoverEditorSourcePath}
+                  disabled={
+                    isSavingManualCover ||
+                    isManualCoverEditorPreparing ||
+                    !manualCoverEditorSourcePath
+                  }
                 >
                   {isSavingManualCover ? (
                     <span className="inline-flex items-center gap-2">
@@ -1158,7 +1368,11 @@ function DataBuilder(): React.JSX.Element {
                   type="button"
                   variant="outline"
                   onClick={() => void handleUploadManualCover()}
-                  disabled={isSavingManualCover || isManualCoverEditorPreparing || !normalizedManualEditorPath}
+                  disabled={
+                    isSavingManualCover ||
+                    isManualCoverEditorPreparing ||
+                    !normalizedManualEditorPath
+                  }
                 >
                   手动上传图片
                 </Button>
@@ -1213,14 +1427,19 @@ function DataBuilder(): React.JSX.Element {
                   </option>
                 ))}
               </select>
-              <Button onClick={() => void dispatchSelected()} disabled={isDispatching || !selectedAccountId.trim()}>
+              <Button
+                onClick={() => void dispatchSelected()}
+                disabled={isDispatching || !selectedAccountId.trim()}
+              >
                 {isDispatching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {isDispatching
                   ? `派发中 ${Math.min(dispatchProgress?.processed ?? 0, dispatchProgress?.total ?? 0)}/${dispatchProgress?.total ?? 0}`
                   : '📤 派发至队列'}
               </Button>
             </div>
-            {dispatchProgress ? <div className="text-xs text-zinc-400">{dispatchProgress.message}</div> : null}
+            {dispatchProgress ? (
+              <div className="text-xs text-zinc-400">{dispatchProgress.message}</div>
+            ) : null}
           </div>
         </div>
       ) : null}
