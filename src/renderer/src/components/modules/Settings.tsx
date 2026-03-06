@@ -86,6 +86,7 @@ function Settings(): React.JSX.Element {
   const updatePreferences = useCmsStore((s) => s.updatePreferences)
 
   const [isTesting, setIsTesting] = useState(false)
+  const [isTestingAiService, setIsTestingAiService] = useState(false)
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
   const [isResettingNoteRace, setIsResettingNoteRace] = useState(false)
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false)
@@ -575,9 +576,35 @@ function Settings(): React.JSX.Element {
     }
   }
 
-  const testAiServiceConnection = (): void => {
-    addLog('[AI服务] 测试连接占位已触发；后续任务会接入实际 IPC。')
-    window.alert('AI 服务测试连接将在后续任务接入。')
+  const testAiServiceConnection = async (): Promise<void> => {
+    if (isTestingAiService) return
+    if (!isNonEmpty(config.aiApiKey)) {
+      const message = '请先填写 AI API Key。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+
+    setIsTestingAiService(true)
+    try {
+      await window.electronAPI.saveConfig({
+        aiProvider: config.aiProvider,
+        aiBaseUrl: config.aiBaseUrl,
+        aiApiKey: config.aiApiKey,
+        aiDefaultImageModel: config.aiDefaultImageModel
+      })
+      addLog('[AI服务] 测试连接中...')
+      const result = await window.api.cms.aiStudio.provider.testConnection()
+      addLog(`[AI服务] ${result.message}（${result.baseUrl}）`)
+      window.alert(`${result.message}
+${result.baseUrl}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI服务] 连接失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsTestingAiService(false)
+    }
   }
 
   return (
@@ -939,8 +966,13 @@ function Settings(): React.JSX.Element {
             />
           </div>
           <div className="flex items-end md:col-span-2">
-            <Button type="button" variant="outline" onClick={testAiServiceConnection}>
-              测试连接
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void testAiServiceConnection()}
+              disabled={isTestingAiService}
+            >
+              {isTestingAiService ? '测试中...' : '测试连接'}
             </Button>
           </div>
         </CardContent>

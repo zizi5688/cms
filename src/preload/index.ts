@@ -920,6 +920,16 @@ const api = {
       }
     },
     aiStudio: {
+      provider: {
+        testConnection: (): Promise<{
+          success: boolean
+          provider: string
+          baseUrl: string
+          checkedAt: number
+          statusCode: number | null
+          message: string
+        }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection')
+      },
       template: {
         list: (): Promise<AiStudioTemplateRecord[]> => ipcRenderer.invoke('cms.aiStudio.template.list'),
         upsert: (payload: {
@@ -1024,7 +1034,40 @@ const api = {
           priceMaxSnapshot?: number | null
           runId?: string | null
           remoteTaskId?: string | null
-        }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.updateBilledState', payload)
+        }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.updateBilledState', payload),
+        startRun: (payload: { taskId: string }): Promise<{
+          task: AiStudioTaskRecord
+          run: AiStudioRunRecord
+          outputs: AiStudioAssetRecord[]
+          completed: boolean
+          status: string
+          remoteTaskId: string | null
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot: number | null
+          priceMaxSnapshot: number | null
+        }> => ipcRenderer.invoke('cms.aiStudio.task.startRun', payload),
+        pollRun: (payload: { taskId: string; runId?: string | null }): Promise<{
+          task: AiStudioTaskRecord
+          run: AiStudioRunRecord
+          outputs: AiStudioAssetRecord[]
+          completed: boolean
+          status: string
+          remoteTaskId: string | null
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot: number | null
+          priceMaxSnapshot: number | null
+        }> => ipcRenderer.invoke('cms.aiStudio.task.pollRun', payload),
+        retryRun: (payload: { taskId: string }): Promise<{
+          task: AiStudioTaskRecord
+          run: AiStudioRunRecord
+          outputs: AiStudioAssetRecord[]
+          completed: boolean
+          status: string
+          remoteTaskId: string | null
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot: number | null
+          priceMaxSnapshot: number | null
+        }> => ipcRenderer.invoke('cms.aiStudio.task.retryRun', payload)
       },
       asset: {
         list: (payload?: {

@@ -1066,7 +1066,16 @@ app.whenReady().then(async () => {
 
   const scoutService = new ScoutService()
   const noteRaceService = new NoteRaceService()
-  const aiStudioService = new AiStudioService(() => workspaceService.currentPath)
+  const aiStudioService = new AiStudioService(
+    () => workspaceService.currentPath,
+    () => ({
+      provider: 'grsai',
+      baseUrl: typeof configStore.get('aiBaseUrl') === 'string' ? configStore.get('aiBaseUrl') : '',
+      apiKey: typeof configStore.get('aiApiKey') === 'string' ? configStore.get('aiApiKey') : '',
+      defaultImageModel:
+        typeof configStore.get('aiDefaultImageModel') === 'string' ? configStore.get('aiDefaultImageModel') : ''
+    })
+  )
   if (sqliteReady) {
     try { scoutService.ensureSchema() } catch (e) { console.error('[Scout] ensureSchema failed:', e) }
     try { noteRaceService.ensureSchema() } catch (e) { console.error('[NoteRace] ensureSchema failed:', e) }
@@ -4220,6 +4229,8 @@ app.whenReady().then(async () => {
     })
   })
 
+  ipcMain.handle('cms.aiStudio.provider.testConnection', async () => aiStudioService.testConnection())
+
   ipcMain.handle('cms.aiStudio.task.importFolders', async (event, payload?: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const explicitFolders = Array.isArray(body.folderPaths)
@@ -4341,6 +4352,26 @@ app.whenReady().then(async () => {
       startedAt: typeof body.startedAt === 'number' ? body.startedAt : Number(body.startedAt),
       finishedAt: typeof body.finishedAt === 'number' ? body.finishedAt : Number(body.finishedAt)
     })
+  })
+
+  ipcMain.handle('cms.aiStudio.task.startRun', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : ''
+    return aiStudioService.startRun(taskId)
+  })
+
+  ipcMain.handle('cms.aiStudio.task.pollRun', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    return aiStudioService.pollRunResult({
+      taskId: typeof body.taskId === 'string' ? body.taskId : '',
+      runId: typeof body.runId === 'string' ? body.runId : undefined
+    })
+  })
+
+  ipcMain.handle('cms.aiStudio.task.retryRun', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : ''
+    return aiStudioService.retryRun(taskId)
   })
 
   ipcMain.handle('cms.aiStudio.task.updateBilledState', async (_event, payload: unknown) => {

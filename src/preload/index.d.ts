@@ -808,6 +808,16 @@ declare global {
         }
       }
       aiStudio: {
+        provider: {
+          testConnection: () => Promise<{
+            success: boolean
+            provider: string
+            baseUrl: string
+            checkedAt: number
+            statusCode: number | null
+            message: string
+          }>
+        }
         template: {
           list: () => Promise<AiStudioTemplateRecord[]>
           upsert: (payload: {
@@ -911,6 +921,39 @@ declare global {
             runId?: string | null
             remoteTaskId?: string | null
           }) => Promise<AiStudioTaskRecord>
+          startRun: (payload: { taskId: string }) => Promise<{
+            task: AiStudioTaskRecord
+            run: AiStudioRunRecord
+            outputs: AiStudioAssetRecord[]
+            completed: boolean
+            status: string
+            remoteTaskId: string | null
+            billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            priceMinSnapshot: number | null
+            priceMaxSnapshot: number | null
+          }>
+          pollRun: (payload: { taskId: string; runId?: string | null }) => Promise<{
+            task: AiStudioTaskRecord
+            run: AiStudioRunRecord
+            outputs: AiStudioAssetRecord[]
+            completed: boolean
+            status: string
+            remoteTaskId: string | null
+            billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            priceMinSnapshot: number | null
+            priceMaxSnapshot: number | null
+          }>
+          retryRun: (payload: { taskId: string }) => Promise<{
+            task: AiStudioTaskRecord
+            run: AiStudioRunRecord
+            outputs: AiStudioAssetRecord[]
+            completed: boolean
+            status: string
+            remoteTaskId: string | null
+            billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            priceMinSnapshot: number | null
+            priceMaxSnapshot: number | null
+          }>
         }
         asset: {
           list: (payload?: {

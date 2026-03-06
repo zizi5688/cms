@@ -1,6 +1,6 @@
-import { randomUUID } from 'crypto'
-import { mkdir } from 'fs/promises'
-import { join, resolve } from 'path'
+import { createHash, randomUUID } from 'crypto'
+import { mkdir, readFile, writeFile } from 'fs/promises'
+import { basename, extname, join, resolve } from 'path'
 
 import { SqliteService } from './sqliteService'
 
@@ -134,6 +134,34 @@ export type AiStudioRunWriteInput = {
   finishedAt?: number | null
 }
 
+export type AiStudioProviderConnectionResult = {
+  success: boolean
+  provider: string
+  baseUrl: string
+  checkedAt: number
+  statusCode: number | null
+  message: string
+}
+
+export type AiStudioRunExecutionResult = {
+  task: AiStudioTaskRecord
+  run: AiStudioRunRecord
+  outputs: AiStudioAssetRecord[]
+  completed: boolean
+  status: string
+  remoteTaskId: string | null
+  billedState: AiStudioBilledState
+  priceMinSnapshot: number | null
+  priceMaxSnapshot: number | null
+}
+
+type AiStudioProviderConfig = {
+  provider: string
+  baseUrl: string
+  apiKey: string
+  defaultImageModel: string
+}
+
 type DbConnection = {
   prepare: (sql: string) => {
     run: (...args: unknown[]) => unknown
@@ -235,6 +263,173 @@ function normalizeBilledState(value: unknown): AiStudioBilledState {
   return 'unbilled'
 }
 
+const GRSAI_DEFAULT_BASE_URL = 'https://grsaiapi.com'
+const GRSAI_DRAW_PATH = '/v1/draw/nano-banana'
+const GRSAI_RESULT_PATH = '/v1/draw/result'
+const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
+const DEFAULT_IMAGE_SIZE = '1K'
+const OUTPUT_POLL_INTERVAL_MS = 2500
+const OUTPUT_POLL_TIMEOUT_MS = 90_000
+const CONNECTION_TEST_ID = '__codex_connection_test__'
+const HTTP_IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
+const GRSAI_PRICE_FALLBACKS: Record<string, { min: number; max: number }> = {
+  'nano-banana-fast': { min: 0.022, max: 0.044 },
+  'nano-banana': { min: 0.04, max: 0.08 },
+  'nano-banana-pro': { min: 0.08, max: 0.16 },
+  'gemini-2.5-flash-image-preview': { min: 0.022, max: 0.044 },
+  'image-default': { min: 0.022, max: 0.044 }
+}
+
+function sanitizeBaseUrl(baseUrl: string): string {
+  const normalized = normalizeText(baseUrl).replace(/\/+$/, '')
+  return normalized || GRSAI_DEFAULT_BASE_URL
+}
+
+function buildProviderUrl(baseUrl: string, apiPath: string): string {
+  const normalizedBase = sanitizeBaseUrl(baseUrl)
+  const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`
+  if (normalizedBase.endsWith('/v1') && normalizedPath.startsWith('/v1/')) {
+    return `${normalizedBase}${normalizedPath.slice(3)}`
+  }
+  return `${normalizedBase}${normalizedPath}`
+}
+
+function normalizeAspectRatio(value: unknown): string {
+  const normalized = normalizeText(value)
+  if (normalized === '1:1' || normalized === '3:4' || normalized === '9:16' || normalized === 'auto') {
+    return normalized
+  }
+  return '3:4'
+}
+
+function inferImageExtensionFromUrlOrType(source: string, contentType?: string | null): string {
+  const type = normalizeText(contentType).toLowerCase()
+  if (type.includes('png')) return 'png'
+  if (type.includes('webp')) return 'webp'
+  if (type.includes('gif')) return 'gif'
+  if (type.includes('bmp')) return 'bmp'
+  if (type.includes('avif')) return 'avif'
+  if (type.includes('jpg') || type.includes('jpeg')) return 'jpg'
+
+  const ext = extname(source).toLowerCase().replace('.', '')
+  if (['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif', 'bmp'].includes(ext)) {
+    return ext === 'jpeg' ? 'jpg' : ext
+  }
+  const match = source.match(/\.([a-z0-9]{2,5})(?:$|[?#])/i)
+  const parsed = String(match?.[1] ?? '').toLowerCase()
+  if (['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif', 'bmp'].includes(parsed)) {
+    return parsed === 'jpeg' ? 'jpg' : parsed
+  }
+  return 'jpg'
+}
+
+function inferMimeType(filePath: string): string {
+  const ext = inferImageExtensionFromUrlOrType(filePath)
+  if (ext === 'png') return 'image/png'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'bmp') return 'image/bmp'
+  if (ext === 'avif') return 'image/avif'
+  return 'image/jpeg'
+}
+
+async function filePathToDataUrl(filePath: string): Promise<string> {
+  const normalized = normalizeText(filePath)
+  if (!normalized) throw new Error('[AI Studio] 图片路径不能为空。')
+  const buffer = await readFile(normalized)
+  if (!buffer || buffer.length <= 0) throw new Error(`[AI Studio] 图片为空：${basename(normalized)}`)
+  return `data:${inferMimeType(normalized)};base64,${buffer.toString('base64')}`
+}
+
+function extractRemoteTaskId(payload: Record<string, unknown>): string | null {
+  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  return (
+    normalizeNullableText(data.id) ??
+    normalizeNullableText(data.taskId) ??
+    normalizeNullableText(data.task_id) ??
+    normalizeNullableText(payload.id) ??
+    null
+  )
+}
+
+function normalizeRunStatus(value: unknown, fallback = 'running'): string {
+  const normalized = normalizeText(value).toLowerCase()
+  if (!normalized) return fallback
+  if (normalized === 'submitted' || normalized === 'queued' || normalized === 'running') return normalized
+  if (normalized === 'succeeded' || normalized === 'completed' || normalized === 'success') return 'succeeded'
+  if (normalized === 'failed' || normalized === 'error') return 'failed'
+  return fallback
+}
+
+function extractResultStatus(payload: Record<string, unknown>, fallback = 'running'): string {
+  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  return normalizeRunStatus(data.status ?? payload.status, fallback)
+}
+
+function extractFailureReason(payload: Record<string, unknown>): string | null {
+  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  return (
+    normalizeNullableText(data.failure_reason) ??
+    normalizeNullableText(data.error) ??
+    normalizeNullableText(payload.msg) ??
+    normalizeNullableText(payload.message) ??
+    null
+  )
+}
+
+function extractResultItems(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  const results = Array.isArray(data.results) ? data.results : []
+  return results.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+}
+
+function resolvePrompt(task: AiStudioTaskRecord, template: AiStudioTemplateRecord | null): string {
+  const segments = [normalizeText(template?.promptText), normalizeText(task.promptExtra)].filter(Boolean)
+  if (segments.length > 0) return segments.join('\n\n')
+  const productName = normalizeText(task.productName) || '当前商品'
+  return `为商品「${productName}」生成一张电商静物图，保留主体材质与结构，适合后续筛图。`
+}
+
+function detectFallbackPrice(model: string): { min: number | null; max: number | null } {
+  const normalized = normalizeText(model).toLowerCase()
+  const exact = GRSAI_PRICE_FALLBACKS[normalized]
+  if (exact) return exact
+  if (normalized.includes('pro')) return GRSAI_PRICE_FALLBACKS['nano-banana-pro']
+  if (normalized.includes('fast')) return GRSAI_PRICE_FALLBACKS['nano-banana-fast']
+  if (normalized.includes('nano-banana')) return GRSAI_PRICE_FALLBACKS['nano-banana']
+  return { min: null, max: null }
+}
+
+function toExecutionResult(task: AiStudioTaskRecord, run: AiStudioRunRecord, outputs: AiStudioAssetRecord[]): AiStudioRunExecutionResult {
+  return {
+    task,
+    run,
+    outputs,
+    completed: run.status === 'succeeded',
+    status: run.status,
+    remoteTaskId: run.remoteTaskId,
+    billedState: run.billedState,
+    priceMinSnapshot: run.priceMinSnapshot,
+    priceMaxSnapshot: run.priceMaxSnapshot
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms)
+  })
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return {}
+}
+
 function mapTemplateRow(row: Record<string, unknown>): AiStudioTemplateRecord {
   return {
     id: normalizeText(row.id),
@@ -314,7 +509,10 @@ function mapRunRow(row: Record<string, unknown>): AiStudioRunRecord {
 }
 
 export class AiStudioService {
-  constructor(private readonly resolveWorkspacePath: () => string) {}
+  constructor(
+    private readonly resolveWorkspacePath: () => string,
+    private readonly resolveProviderConfig: () => Partial<AiStudioProviderConfig> = () => ({})
+  ) {}
 
   private get db(): DbConnection {
     const sqlite = SqliteService.getInstance()
@@ -341,6 +539,391 @@ export class AiStudioService {
   private getRunById(runId: string): AiStudioRunRecord | null {
     const row = this.db.prepare(`SELECT * FROM ai_studio_runs WHERE id = ? LIMIT 1`).get(runId)
     return row ? mapRunRow(row) : null
+  }
+
+  private getTemplateById(templateId: string | null | undefined): AiStudioTemplateRecord | null {
+    const normalized = normalizeText(templateId)
+    if (!normalized) return null
+    const row = this.db.prepare(`SELECT * FROM ai_studio_templates WHERE id = ? LIMIT 1`).get(normalized)
+    return row ? mapTemplateRow(row) : null
+  }
+
+  private getProviderConfig(): AiStudioProviderConfig {
+    const provided = asObject(this.resolveProviderConfig())
+    return {
+      provider: normalizeText(provided.provider) || 'grsai',
+      baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl)),
+      apiKey: normalizeText(provided.apiKey),
+      defaultImageModel: normalizeText(provided.defaultImageModel) || DEFAULT_IMAGE_MODEL
+    }
+  }
+
+  private async requestProvider(
+    apiPath: string,
+    payload: Record<string, unknown>,
+    options?: { allowStatusCodes?: number[] }
+  ): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
+    const config = this.getProviderConfig()
+    if (!config.apiKey) {
+      throw new Error('[AI Studio] 未配置 AI API Key。')
+    }
+
+    const response = await fetch(buildProviderUrl(config.baseUrl, apiPath), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/plain, */*',
+        'User-Agent': DEFAULT_USER_AGENT
+      },
+      body: JSON.stringify(payload)
+    })
+
+    const statusCode = response.status
+    const rawText = await response.text()
+    let parsedPayload: Record<string, unknown> = {}
+    if (rawText) {
+      try {
+        parsedPayload = asObject(JSON.parse(rawText))
+      } catch {
+        parsedPayload = { rawText }
+      }
+    }
+
+    if (statusCode === 401 || statusCode === 403) {
+      throw new Error('[AI Studio] AI 服务认证失败，请检查 API Key。')
+    }
+
+    if (statusCode === 404) {
+      throw new Error('[AI Studio] AI 服务地址无效，请检查 Base URL。')
+    }
+
+    const allowStatusCodes = new Set(options?.allowStatusCodes ?? [])
+    if (!response.ok && !allowStatusCodes.has(statusCode)) {
+      throw new Error(extractFailureReason(parsedPayload) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}）。`)
+    }
+
+    return { statusCode, payload: parsedPayload }
+  }
+
+  private async resolvePriceSnapshot(model: string): Promise<{ min: number | null; max: number | null }> {
+    return detectFallbackPrice(model)
+  }
+
+  private async buildSubmitContext(taskId: string): Promise<{
+    task: AiStudioTaskRecord
+    template: AiStudioTemplateRecord | null
+    model: string
+    prompt: string
+    requestPayload: Record<string, unknown>
+    requestSnapshot: Record<string, unknown>
+  }> {
+    const task = this.getTaskOrThrow(taskId)
+    if (!task.primaryImagePath) {
+      throw new Error('[AI Studio] 请先设置主图后再开始生成。')
+    }
+
+    const config = this.getProviderConfig()
+    const template = this.getTemplateById(task.templateId)
+    const prompt = resolvePrompt(task, template)
+    const model = normalizeText(task.model) || config.defaultImageModel || DEFAULT_IMAGE_MODEL
+    const sourceImagePaths = Array.from(
+      new Set([task.primaryImagePath, ...task.referenceImagePaths].map((item) => String(item ?? '').trim()).filter(Boolean))
+    )
+    if (sourceImagePaths.length === 0) {
+      throw new Error('[AI Studio] 至少需要一张输入图片。')
+    }
+
+    const urls = await Promise.all(sourceImagePaths.map((filePath) => filePathToDataUrl(filePath)))
+    const requestPayload = {
+      model,
+      prompt,
+      aspectRatio: normalizeAspectRatio(task.aspectRatio),
+      imageSize: DEFAULT_IMAGE_SIZE,
+      urls,
+      shutProgress: false
+    } satisfies Record<string, unknown>
+
+    const requestSnapshot = {
+      model,
+      prompt,
+      aspectRatio: normalizeAspectRatio(task.aspectRatio),
+      imageSize: DEFAULT_IMAGE_SIZE,
+      outputCount: task.outputCount,
+      inputCount: urls.length,
+      sourceFiles: sourceImagePaths.map((filePath) => basename(filePath))
+    } satisfies Record<string, unknown>
+
+    return { task, template, model, prompt, requestPayload, requestSnapshot }
+  }
+
+  private async persistFailedSubmit(taskId: string, requestSnapshot: Record<string, unknown>, errorMessage: string): Promise<void> {
+    await this.recordRunAttempt({
+      taskId,
+      provider: 'grsai',
+      status: 'failed',
+      billedState: 'not_billable',
+      requestPayload: requestSnapshot,
+      responsePayload: {},
+      errorMessage,
+      finishedAt: Date.now()
+    })
+  }
+
+  private decodeBase64Content(value: string): { buffer: Buffer; contentType: string | null } | null {
+    const normalized = normalizeText(value)
+    if (!normalized) return null
+
+    const dataUrlMatch = normalized.match(/^data:([^;,]+)?;base64,(.+)$/i)
+    if (dataUrlMatch) {
+      const contentType = normalizeNullableText(dataUrlMatch[1])
+      const raw = dataUrlMatch[2] ?? ''
+      return { buffer: Buffer.from(raw, 'base64'), contentType }
+    }
+
+    const compact = normalized.replace(/\s+/g, '')
+    if (!compact || compact.length < 32 || compact.length % 4 !== 0 || !/^[a-z0-9+/=]+$/i.test(compact)) {
+      return null
+    }
+
+    try {
+      const buffer = Buffer.from(compact, 'base64')
+      if (!buffer || buffer.length <= 0) return null
+      return { buffer, contentType: null }
+    } catch {
+      return null
+    }
+  }
+
+  private async persistOutputItem(payload: {
+    taskId: string
+    runId: string
+    runDir: string
+    index: number
+    item: Record<string, unknown>
+  }): Promise<AiStudioAssetWriteInput | null> {
+    const remoteUrl = normalizeText(payload.item.url)
+    const inlineContent = normalizeText(payload.item.content)
+
+    let buffer: Buffer | null = null
+    let contentType: string | null = null
+    let sourceLabel = remoteUrl || inlineContent
+
+    if (/^https?:\/\//i.test(remoteUrl)) {
+      const response = await fetch(remoteUrl, {
+        headers: {
+          Accept: HTTP_IMAGE_ACCEPT,
+          'User-Agent': DEFAULT_USER_AGENT
+        }
+      })
+      if (!response.ok) {
+        throw new Error(`[AI Studio] 下载结果失败（HTTP ${response.status}）。`)
+      }
+      contentType = normalizeNullableText(response.headers.get('content-type'))
+      buffer = Buffer.from(await response.arrayBuffer())
+    } else {
+      const decoded = this.decodeBase64Content(remoteUrl || inlineContent)
+      if (!decoded) return null
+      buffer = decoded.buffer
+      contentType = decoded.contentType
+      sourceLabel = remoteUrl || `inline-${payload.index + 1}`
+    }
+
+    if (!buffer || buffer.length <= 0) return null
+
+    const ext = inferImageExtensionFromUrlOrType(sourceLabel, contentType)
+    const fileName = `output-${String(payload.index + 1).padStart(3, '0')}.${ext}`
+    const filePath = join(payload.runDir, fileName)
+    await writeFile(filePath, buffer)
+
+    return {
+      id: `ai-output-${createHash('sha1').update(`${payload.runId}:${payload.index}`).digest('hex')}`,
+      taskId: payload.taskId,
+      runId: payload.runId,
+      kind: 'output',
+      role: 'candidate',
+      filePath,
+      previewPath: filePath,
+      originPath: remoteUrl || null,
+      selected: false,
+      sortOrder: payload.index,
+      metadata: {
+        remoteUrl: remoteUrl || null,
+        remoteContent: inlineContent ? '[inline-content]' : null,
+        contentType
+      }
+    }
+  }
+
+  async testConnection(): Promise<AiStudioProviderConnectionResult> {
+    const config = this.getProviderConfig()
+    const checkedAt = Date.now()
+    const response = await this.requestProvider(GRSAI_RESULT_PATH, { id: CONNECTION_TEST_ID }, { allowStatusCodes: [400] })
+    return {
+      success: true,
+      provider: config.provider,
+      baseUrl: config.baseUrl,
+      checkedAt,
+      statusCode: response.statusCode,
+      message: '连接成功，接口已响应。'
+    }
+  }
+
+  async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
+    const context = await this.buildSubmitContext(taskId)
+    const priceSnapshot = await this.resolvePriceSnapshot(context.model)
+
+    try {
+      const response = await this.requestProvider(GRSAI_DRAW_PATH, context.requestPayload)
+      const remoteTaskId = extractRemoteTaskId(response.payload)
+      if (!remoteTaskId) {
+        throw new Error('[AI Studio] AI 服务返回了空任务 ID。')
+      }
+
+      const run = await this.recordRunAttempt({
+        taskId,
+        provider: 'grsai',
+        status: 'submitted',
+        remoteTaskId,
+        billedState: 'billable',
+        priceMinSnapshot: priceSnapshot.min,
+        priceMaxSnapshot: priceSnapshot.max,
+        requestPayload: context.requestSnapshot,
+        responsePayload: response.payload,
+        errorMessage: null,
+        startedAt: Date.now()
+      })
+
+      return toExecutionResult(this.getTaskOrThrow(taskId), run, this.listAssets({ taskId, runId: run.id, kind: 'output' }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
+      throw error
+    }
+  }
+
+  async downloadOutputs(payload: {
+    taskId: string
+    runId: string
+    responsePayload?: Record<string, unknown>
+  }): Promise<AiStudioAssetRecord[]> {
+    const taskId = normalizeText(payload.taskId)
+    const runId = normalizeText(payload.runId)
+    if (!taskId || !runId) throw new Error('[AI Studio] taskId / runId 不能为空。')
+
+    const run = this.getRunById(runId)
+    if (!run || run.taskId !== taskId) {
+      throw new Error('[AI Studio] 运行记录不存在。')
+    }
+
+    const responsePayload = asObject(payload.responsePayload)
+    const results = extractResultItems(responsePayload)
+    if (results.length === 0) {
+      return this.listAssets({ taskId, runId, kind: 'output' })
+    }
+
+    const runDir = normalizeText(run.runDir) || (await this.ensureTaskRunDirectory(taskId, run.runIndex)).dirPath
+    const assetsToWrite: AiStudioAssetWriteInput[] = []
+    const failures: string[] = []
+
+    for (const [index, item] of results.entries()) {
+      try {
+        const written = await this.persistOutputItem({ taskId, runId, runDir, index, item })
+        if (written) {
+          assetsToWrite.push(written)
+        } else {
+          failures.push(`结果 ${index + 1} 缺少可下载内容。`)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push(`结果 ${index + 1} 下载失败：${message}`)
+      }
+    }
+
+    const persisted = assetsToWrite.length > 0 ? this.upsertAssets(assetsToWrite) : this.listAssets({ taskId, runId, kind: 'output' })
+
+    if (failures.length > 0) {
+      await this.recordRunAttempt({
+        runId,
+        taskId,
+        responsePayload: { ...run.responsePayload, downloadFailures: failures, resultCount: results.length },
+        errorMessage: failures[0]
+      })
+    }
+
+    return persisted
+  }
+
+  async pollRunResult(payload: { taskId: string; runId?: string | null }): Promise<AiStudioRunExecutionResult> {
+    const taskId = normalizeText(payload.taskId)
+    if (!taskId) throw new Error('[AI Studio] taskId 不能为空。')
+
+    const task = this.getTaskOrThrow(taskId)
+    const runId = normalizeText(payload.runId) || normalizeText(task.latestRunId)
+    if (!runId) throw new Error('[AI Studio] 当前任务没有可轮询的运行记录。')
+
+    const existingRun = this.getRunById(runId)
+    if (!existingRun || existingRun.taskId !== taskId) {
+      throw new Error('[AI Studio] 运行记录不存在。')
+    }
+
+    if (!existingRun.remoteTaskId) {
+      throw new Error('[AI Studio] 当前运行缺少远端任务 ID。')
+    }
+
+    const response = await this.requestProvider(GRSAI_RESULT_PATH, { id: existingRun.remoteTaskId })
+    const status = extractResultStatus(response.payload, existingRun.status)
+    const errorMessage = status === 'failed' ? extractFailureReason(response.payload) : null
+
+    const run = await this.recordRunAttempt({
+      runId: existingRun.id,
+      taskId,
+      status,
+      remoteTaskId: existingRun.remoteTaskId,
+      billedState: existingRun.billedState,
+      priceMinSnapshot: existingRun.priceMinSnapshot,
+      priceMaxSnapshot: existingRun.priceMaxSnapshot,
+      requestPayload: existingRun.requestPayload,
+      responsePayload: response.payload,
+      errorMessage,
+      finishedAt: status === 'succeeded' || status === 'failed' ? Date.now() : null
+    })
+
+    const outputs = status === 'succeeded' ? await this.downloadOutputs({ taskId, runId: run.id, responsePayload: response.payload }) : this.listAssets({ taskId, runId: run.id, kind: 'output' })
+
+    return toExecutionResult(this.getTaskOrThrow(taskId), run, outputs)
+  }
+
+  async startRun(taskId: string): Promise<AiStudioRunExecutionResult> {
+    const submitted = await this.submitImageRun(taskId)
+    const startedAt = Date.now()
+    let latest = submitted
+
+    while (latest.status === 'submitted' || latest.status === 'queued' || latest.status === 'running') {
+      if (Date.now() - startedAt >= OUTPUT_POLL_TIMEOUT_MS) {
+        return latest
+      }
+      await delay(OUTPUT_POLL_INTERVAL_MS)
+      try {
+        latest = await this.pollRunResult({ taskId, runId: latest.run.id })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const run = await this.recordRunAttempt({
+          runId: latest.run.id,
+          taskId,
+          status: latest.run.status,
+          responsePayload: { ...latest.run.responsePayload, pollError: message },
+          errorMessage: message
+        })
+        return toExecutionResult(this.getTaskOrThrow(taskId), run, this.listAssets({ taskId, runId: run.id, kind: 'output' }))
+      }
+    }
+
+    return latest
+  }
+
+  async retryRun(taskId: string): Promise<AiStudioRunExecutionResult> {
+    return this.startRun(taskId)
   }
 
   listTemplates(): AiStudioTemplateRecord[] {

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type * as React from 'react'
 
 import { ImagePlus, Wand2 } from 'lucide-react'
@@ -5,6 +6,7 @@ import { ImagePlus, Wand2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { cn } from '@renderer/lib/utils'
+import { useCmsStore } from '@renderer/store/useCmsStore'
 
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
@@ -71,6 +73,49 @@ function PreviewTile({
 
 function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
   const task = state.activeTask
+  const addLog = useCmsStore((store) => store.addLog)
+  const aiConfig = useCmsStore((store) => store.config)
+  const [isStartingRun, setIsStartingRun] = useState(false)
+
+  const handleStartRun = async (): Promise<void> => {
+    if (!task || isStartingRun) return
+    if (!aiConfig.aiApiKey.trim()) {
+      const message = '请先在 Settings > AI服务 中填写 API Key。'
+      addLog(`[AI Studio] ${message}`)
+      window.alert(message)
+      return
+    }
+
+    setIsStartingRun(true)
+    try {
+      await window.electronAPI.saveConfig({
+        aiProvider: aiConfig.aiProvider,
+        aiBaseUrl: aiConfig.aiBaseUrl,
+        aiApiKey: aiConfig.aiApiKey,
+        aiDefaultImageModel: aiConfig.aiDefaultImageModel
+      })
+      addLog(`[AI Studio] 开始提交生成：${task.productName || task.id}`)
+      const result = await window.api.cms.aiStudio.task.startRun({ taskId: task.id })
+      await state.refresh()
+
+      if (result.completed) {
+        const message = `生成完成：共落盘 ${result.outputs.length} 张，任务 ${result.remoteTaskId ?? '已完成'}`
+        addLog(`[AI Studio] ${message}`)
+        window.alert(message)
+      } else {
+        const message = `已提交到 GRSAI，远端任务 ID：${result.remoteTaskId ?? '待返回'}。可继续在结果区查看后续状态。`
+        addLog(`[AI Studio] ${message}`)
+        window.alert(message)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 提交失败：${message}`)
+      window.alert(message)
+      await state.refresh()
+    } finally {
+      setIsStartingRun(false)
+    }
+  }
 
   if (!task) {
     return (
@@ -214,15 +259,20 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
         </div>
       </div>
 
-      <Button
-        type="button"
-        className="mt-auto h-11 rounded-xl bg-zinc-50 text-zinc-950 hover:bg-white"
-        disabled={!task.primaryImagePath}
-        onClick={() => window.alert('生成链路将在下一任务接入。')}
-      >
-        <Wand2 className="h-4 w-4" />
-        开始生成
-      </Button>
+      <div className="mt-auto space-y-2">
+        {!aiConfig.aiApiKey.trim() ? (
+          <div className="text-xs text-amber-400">请先在 Settings &gt; AI服务 中填写 API Key。</div>
+        ) : null}
+        <Button
+          type="button"
+          className="h-11 w-full rounded-xl bg-zinc-50 text-zinc-950 hover:bg-white"
+          disabled={!task.primaryImagePath || !aiConfig.aiApiKey.trim() || isStartingRun}
+          onClick={() => void handleStartRun()}
+        >
+          <Wand2 className="h-4 w-4" />
+          {isStartingRun ? '生成中...' : '开始生成'}
+        </Button>
+      </div>
     </div>
   )
 }
