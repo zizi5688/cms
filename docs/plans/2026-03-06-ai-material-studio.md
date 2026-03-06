@@ -10,6 +10,18 @@
 
 ---
 
+## Execution Status (2026-03-06)
+
+- Task 1 完成，提交：`6fd975f`
+- Task 2 完成，提交：`df3b869`
+- Task 3 完成，提交：`bb14d0c`
+- Task 4 完成，提交：`e0848cc`
+- Task 5 完成，提交：`631abc9`
+- Task 6 完成，提交：`044dcb6`
+- Task 7 为当前文档同步节点，内容已按实现状态回填。
+
+---
+
 > Note: This repo currently has no automated test suite under `tests/` or `src/**/*.test.*`. Do not introduce a new test framework in this feature. Use typecheck, targeted linting if needed, `git diff --check`, and explicit manual verification steps instead.
 
 ### Task 1: Extend global config for AI service credentials
@@ -410,6 +422,7 @@ Verify end-to-end:
 - all previews stay portrait `3:4`
 - missing API key blocks generation
 - selected outputs can be handed off to `ImageLab`
+- docs/architecture.md 与 docs/user-manual.md 已同步到第一阶段落地状态
 
 **Step 5: Commit**
 
