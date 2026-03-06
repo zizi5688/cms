@@ -110,6 +110,12 @@ type NativeDialogSelectResult = {
 }
 
 type AiProvider = 'grsai'
+type AiStudioImportedFolder = {
+  folderPath: string
+  productName: string
+  imageFilePaths: string[]
+}
+
 
 async function pickFileInMacNativeDialog(filePath: string): Promise<NativeDialogSelectResult> {
   if (process.platform !== 'darwin') {
@@ -4212,6 +4218,36 @@ app.whenReady().then(async () => {
       promptText: typeof body.promptText === 'string' ? body.promptText : undefined,
       config: body.config && typeof body.config === 'object' ? (body.config as Record<string, unknown>) : undefined
     })
+  })
+
+  ipcMain.handle('cms.aiStudio.task.importFolders', async (event, payload?: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const explicitFolders = Array.isArray(body.folderPaths)
+      ? body.folderPaths.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : []
+
+    let folderPaths = explicitFolders
+    if (folderPaths.length === 0) {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      const result = window
+        ? await dialog.showOpenDialog(window, { properties: ['openDirectory', 'multiSelections'] })
+        : await dialog.showOpenDialog({ properties: ['openDirectory', 'multiSelections'] })
+      if (result.canceled || result.filePaths.length === 0) return []
+      folderPaths = result.filePaths.map((item) => String(item ?? '').trim()).filter(Boolean)
+    }
+
+    const imports: AiStudioImportedFolder[] = []
+    for (const folderPath of folderPaths) {
+      const imageFilePaths = await scanDirectoryRecursive(folderPath)
+      if (imageFilePaths.length === 0) continue
+      imports.push({
+        folderPath,
+        productName: basename(folderPath).trim() || '未命名商品',
+        imageFilePaths
+      })
+    }
+
+    return imports
   })
 
   ipcMain.handle('cms.aiStudio.task.create', async (_event, payload: unknown) => {

@@ -309,6 +309,12 @@ declare global {
     contentCoverage: NoteRaceContentCoverage
   }
 
+  type AiStudioImportedFolder = {
+    folderPath: string
+    productName: string
+    imageFilePaths: string[]
+  }
+
   type AiStudioTemplateRecord = {
     id: string
     provider: string
@@ -813,6 +819,7 @@ declare global {
           }) => Promise<AiStudioTemplateRecord>
         }
         task: {
+          importFolders: (payload?: { folderPaths?: string[] }) => Promise<AiStudioImportedFolder[]>
           create: (payload: {
             id?: string
             templateId?: string | null

@@ -300,6 +300,12 @@ type NoteRaceDetail = {
   }
 }
 
+type AiStudioImportedFolder = {
+  folderPath: string
+  productName: string
+  imageFilePaths: string[]
+}
+
 type AiStudioTemplateRecord = {
   id: string
   provider: string
@@ -925,6 +931,8 @@ const api = {
         }): Promise<AiStudioTemplateRecord> => ipcRenderer.invoke('cms.aiStudio.template.upsert', payload)
       },
       task: {
+        importFolders: (payload?: { folderPaths?: string[] }): Promise<AiStudioImportedFolder[]> =>
+          ipcRenderer.invoke('cms.aiStudio.task.importFolders', payload),
         create: (payload: {
           id?: string
           templateId?: string | null
