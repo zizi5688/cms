@@ -20,6 +20,11 @@ export type WorkshopImport = {
   source: 'imagelab' | null
 }
 
+export type MaterialImport = {
+  paths: string[]
+  source: 'aiStudio' | null
+}
+
 export interface Task {
   id: string
   title: string
@@ -87,6 +92,7 @@ export interface CmsState {
   csvContent: string
   dataWorkshopFolderPath: string
   workshopImport: WorkshopImport
+  materialImport: MaterialImport
   uploadFiles: string[]
   workspacePath: string
   activeModule: ActiveModuleKey
@@ -108,6 +114,8 @@ export interface CmsState {
     coverPath?: string | null,
     paths?: string[] | null
   ) => void
+  setMaterialImport: (paths: string[] | null, source?: MaterialImport['source']) => void
+  clearMaterialImport: () => void
   addFiles: (paths: string[]) => void
   addFilesToUpload: (paths: string[]) => void
   setWorkspacePath: (path: string) => void
@@ -170,6 +178,7 @@ const useCmsStore = create<CmsState>((set) => ({
   csvContent: '',
   dataWorkshopFolderPath: '',
   workshopImport: { type: null, path: null, source: null },
+  materialImport: { paths: [], source: null },
   uploadFiles: [],
   workspacePath: '',
   activeModule: 'material',
@@ -215,6 +224,19 @@ const useCmsStore = create<CmsState>((set) => ({
         }
       }
     }),
+  setMaterialImport: (paths, source = 'aiStudio') =>
+    set(() => {
+      const normalizedPaths = Array.from(
+        new Set(
+          (Array.isArray(paths) ? paths : [])
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        )
+      )
+      if (normalizedPaths.length === 0 || !source) return { materialImport: { paths: [], source: null } }
+      return { materialImport: { paths: normalizedPaths, source } }
+    }),
+  clearMaterialImport: () => set(() => ({ materialImport: { paths: [], source: null } })),
   addFiles: (paths) =>
     set((state) => {
       const normalized = (paths ?? []).map((p) => String(p ?? '').trim()).filter(Boolean)
@@ -311,6 +333,7 @@ const useCmsStore = create<CmsState>((set) => ({
       csvContent: '',
       dataWorkshopFolderPath: '',
       workshopImport: { type: null, path: null, source: null },
+      materialImport: { paths: [], source: null },
       uploadFiles: [],
       selectedKeywordId: null,
       selectedProductId: null,

@@ -269,6 +269,21 @@ function useAiStudioState() {
 
   const activeInputAssets = activeTask?.inputAssets ?? []
   const activeOutputAssets = activeTask?.outputAssets ?? []
+  const selectedOutputIdsByTask = useMemo<Record<string, string[]>>(() => {
+    const map: Record<string, string[]> = {}
+    for (const task of taskViews) {
+      map[task.id] = task.outputAssets.filter((asset) => asset.selected).map((asset) => asset.id)
+    }
+    return map
+  }, [taskViews])
+  const activeSelectedOutputAssets = useMemo(
+    () => activeOutputAssets.filter((asset) => asset.selected),
+    [activeOutputAssets]
+  )
+  const activeSelectedOutputIds = useMemo(
+    () => activeSelectedOutputAssets.map((asset) => asset.id),
+    [activeSelectedOutputAssets]
+  )
   const primaryImagePath = activeTask?.primaryImagePath ?? null
   const referenceImagePaths = activeTask?.referenceImagePaths ?? []
 
@@ -289,6 +304,10 @@ function useAiStudioState() {
       delete next[nextTask.id]
       return next
     })
+  }, [])
+
+  const replaceAssets = useCallback((nextAssets: AiStudioAssetRecord[]) => {
+    setAssets((prev) => mergeById(prev, nextAssets.map(coerceAssetRecord)))
   }, [])
 
   const updateTaskPatch = useCallback(
@@ -380,6 +399,33 @@ function useAiStudioState() {
     )
   }, [])
 
+  const setOutputSelection = useCallback(
+    async (assetIds: string[], selected: boolean, clearOthers?: boolean) => {
+      if (!activeTask) return [] as AiStudioAssetRecord[]
+      const normalizedIds = uniqueStrings(assetIds)
+      const nextAssets = await window.api.cms.aiStudio.asset.markSelected({
+        taskId: activeTask.id,
+        assetIds: normalizedIds,
+        selected,
+        clearOthers
+      })
+      const normalized = (nextAssets ?? []).map(coerceAssetRecord)
+      replaceAssets(normalized)
+      return normalized
+    },
+    [activeTask, replaceAssets]
+  )
+
+  const toggleOutputSelection = useCallback(
+    async (assetId: string) => {
+      if (!activeTask) return [] as AiStudioAssetRecord[]
+      const target = activeOutputAssets.find((asset) => asset.id === assetId)
+      if (!target) return [] as AiStudioAssetRecord[]
+      return setOutputSelection([assetId], !target.selected, false)
+    },
+    [activeOutputAssets, activeTask, setOutputSelection]
+  )
+
   const assignPrimaryImage = useCallback(
     async (filePath: string | null) => {
       if (!activeTask) return
@@ -462,6 +508,9 @@ function useAiStudioState() {
     activeTaskId,
     activeInputAssets,
     activeOutputAssets,
+    activeSelectedOutputAssets,
+    activeSelectedOutputIds,
+    selectedOutputIdsByTask,
     selectedTaskIds,
     statusFilter,
     batchCostSummary,
@@ -475,6 +524,8 @@ function useAiStudioState() {
     setStatusFilter,
     setActiveTaskId,
     toggleTaskSelection,
+    toggleOutputSelection,
+    setOutputSelection,
     assignPrimaryImage,
     toggleReferenceImage,
     setPromptExtra,

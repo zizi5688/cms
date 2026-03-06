@@ -5,21 +5,9 @@ import { Sparkles } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 
 import { ControlPanel } from './ControlPanel'
+import { ResultPanel } from './ResultPanel'
 import { TaskQueue } from './TaskQueue'
 import { useAiStudioState } from './useAiStudioState'
-
-function basename(filePath: string | null | undefined): string {
-  const normalized = String(filePath ?? '').trim()
-  if (!normalized) return '待生成'
-  const parts = normalized.split(/[\\/]/).filter(Boolean)
-  return parts[parts.length - 1] ?? normalized
-}
-
-function toFileSrc(filePath: string | null | undefined): string | undefined {
-  const normalized = String(filePath ?? '').trim()
-  if (!normalized) return undefined
-  return encodeURI(normalized.startsWith('file://') ? normalized : `file://${normalized}`)
-}
 
 function AiStudio(): React.JSX.Element {
   const state = useAiStudioState()
@@ -69,43 +57,7 @@ function AiStudio(): React.JSX.Element {
             </div>
           </CardHeader>
           <CardContent className="flex h-full min-h-0 flex-col gap-4">
-            {state.activeTask ? (
-              <>
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Current Task</div>
-                      <div className="mt-2 text-lg font-medium text-zinc-100">
-                        {state.activeTask.productName || '未命名任务'}
-                      </div>
-                    </div>
-                    <div className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400">
-                      {state.activeTask.costLabel}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-                  {state.activeInputAssets.slice(0, 6).map((asset) => (
-                    <div key={asset.id} className="space-y-2 rounded-2xl border border-zinc-800 bg-zinc-950/75 p-3">
-                      <div
-                        className="aspect-[3/4] rounded-xl border border-zinc-800 bg-zinc-950 bg-cover bg-center"
-                        style={toFileSrc(asset.filePath) ? { backgroundImage: `url(${toFileSrc(asset.filePath)})` } : undefined}
-                      />
-                      <div className="truncate text-xs text-zinc-400">{basename(asset.filePath)}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="rounded-2xl border border-dashed border-zinc-800 bg-black/20 p-4 text-xs text-zinc-500">
-                  候选结果将在下一任务接入
-                </div>
-              </>
-            ) : (
-              <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 p-8 text-sm text-zinc-500">
-                导入文件夹后显示结果区上下文
-              </div>
-            )}
+            <ResultPanel state={state} />
           </CardContent>
         </Card>
       </div>
