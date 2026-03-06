@@ -108,6 +108,8 @@ type NativeDialogSelectResult = {
   detail?: string
 }
 
+type AiProvider = 'grsai'
+
 async function pickFileInMacNativeDialog(filePath: string): Promise<NativeDialogSelectResult> {
   if (process.platform !== 'darwin') {
     return { ok: false, reason: 'unsupported-platform', detail: process.platform }
@@ -574,6 +576,14 @@ const defaultDynamicWatermarkSize = 5
 const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
 type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
+function normalizeAiProvider(_value: unknown): AiProvider {
+  return 'grsai'
+}
+
+function normalizeConfigText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
   if (!value || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
@@ -618,6 +628,10 @@ function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTr
 
 const configStore = new StoreCtor<{
   feishuConfig: { appId: string; appSecret: string; baseToken: string; tableId: string }
+  aiProvider?: AiProvider
+  aiBaseUrl?: string
+  aiApiKey?: string
+  aiDefaultImageModel?: string
   realEsrganPath: string
   pythonPath: string
   watermarkScriptPath: string
@@ -3175,6 +3189,26 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('get-config', async () => {
+    const storedAiProvider = configStore.get('aiProvider')
+    const aiProvider = normalizeAiProvider(storedAiProvider)
+    if (storedAiProvider !== aiProvider) {
+      configStore.set('aiProvider', aiProvider)
+    }
+    const storedAiBaseUrl = configStore.get('aiBaseUrl')
+    const aiBaseUrl = normalizeConfigText(storedAiBaseUrl)
+    if (storedAiBaseUrl !== aiBaseUrl) {
+      configStore.set('aiBaseUrl', aiBaseUrl)
+    }
+    const storedAiApiKey = configStore.get('aiApiKey')
+    const aiApiKey = normalizeConfigText(storedAiApiKey)
+    if (storedAiApiKey !== aiApiKey) {
+      configStore.set('aiApiKey', aiApiKey)
+    }
+    const storedAiDefaultImageModel = configStore.get('aiDefaultImageModel')
+    const aiDefaultImageModel = normalizeConfigText(storedAiDefaultImageModel)
+    if (storedAiDefaultImageModel !== aiDefaultImageModel) {
+      configStore.set('aiDefaultImageModel', aiDefaultImageModel)
+    }
     const storedBox = configStore.get('watermarkBox')
     const watermarkBox = isValidWatermarkBox(storedBox) ? storedBox : defaultWatermarkBox
     if (!isValidWatermarkBox(storedBox)) {
@@ -3245,6 +3279,10 @@ app.whenReady().then(async () => {
     }
 
     return {
+      aiProvider,
+      aiBaseUrl,
+      aiApiKey,
+      aiDefaultImageModel,
       importStrategy,
       realEsrganPath: configStore.get('realEsrganPath') ?? '',
       pythonPath: configStore.get('pythonPath') ?? '',
@@ -3267,6 +3305,10 @@ app.whenReady().then(async () => {
       _event,
       patch:
         | {
+            aiProvider?: AiProvider
+            aiBaseUrl?: string
+            aiApiKey?: string
+            aiDefaultImageModel?: string
             importStrategy?: 'copy' | 'move'
             realEsrganPath?: string
             pythonPath?: string
@@ -3290,6 +3332,22 @@ app.whenReady().then(async () => {
         | null
         | undefined
     ) => {
+    if (patch?.aiProvider) {
+      configStore.set('aiProvider', normalizeAiProvider(patch.aiProvider))
+    }
+    const nextAiBaseUrl = typeof patch?.aiBaseUrl === 'string' ? patch.aiBaseUrl.trim() : undefined
+    if (nextAiBaseUrl !== undefined) {
+      configStore.set('aiBaseUrl', nextAiBaseUrl)
+    }
+    const nextAiApiKey = typeof patch?.aiApiKey === 'string' ? patch.aiApiKey.trim() : undefined
+    if (nextAiApiKey !== undefined) {
+      configStore.set('aiApiKey', nextAiApiKey)
+    }
+    const nextAiDefaultImageModel =
+      typeof patch?.aiDefaultImageModel === 'string' ? patch.aiDefaultImageModel.trim() : undefined
+    if (nextAiDefaultImageModel !== undefined) {
+      configStore.set('aiDefaultImageModel', nextAiDefaultImageModel)
+    }
     if (patch?.importStrategy === 'copy' || patch?.importStrategy === 'move') {
       configStore.set('importStrategy', patch.importStrategy)
     }

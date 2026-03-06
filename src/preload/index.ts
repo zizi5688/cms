@@ -1026,6 +1026,10 @@ const electronAPI = {
   setWorkspacePath: (path: string): Promise<{ path: string }> => ipcRenderer.invoke('workspace.setPath', path),
   relaunch: (): Promise<{ success: true }> => ipcRenderer.invoke('workspace.relaunch'),
   getConfig: (): Promise<{
+    aiProvider: 'grsai'
+    aiBaseUrl: string
+    aiApiKey: string
+    aiDefaultImageModel: string
     importStrategy: 'copy' | 'move'
     realEsrganPath: string
     pythonPath: string
@@ -1044,6 +1048,10 @@ const electronAPI = {
     defaultInterval: number
   }> => ipcRenderer.invoke('get-config'),
   saveConfig: (patch: {
+    aiProvider?: 'grsai'
+    aiBaseUrl?: string
+    aiApiKey?: string
+    aiDefaultImageModel?: string
     importStrategy?: 'copy' | 'move'
     realEsrganPath?: string
     pythonPath?: string

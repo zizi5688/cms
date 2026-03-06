@@ -161,6 +161,10 @@ function Settings(): React.JSX.Element {
         const savedTools = await window.electronAPI.getConfig()
         if (!cancelled && savedTools) {
           updateConfig({
+            aiProvider: savedTools.aiProvider === 'grsai' ? savedTools.aiProvider : 'grsai',
+            aiBaseUrl: savedTools.aiBaseUrl ?? '',
+            aiApiKey: savedTools.aiApiKey ?? '',
+            aiDefaultImageModel: savedTools.aiDefaultImageModel ?? '',
             importStrategy: savedTools.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: savedTools.realEsrganPath ?? '',
             pythonPath: savedTools.pythonPath ?? '',
@@ -277,6 +281,10 @@ function Settings(): React.JSX.Element {
     const handle = window.setTimeout(() => {
       void window.electronAPI
         .saveConfig({
+          aiProvider: config.aiProvider,
+          aiBaseUrl: config.aiBaseUrl,
+          aiApiKey: config.aiApiKey,
+          aiDefaultImageModel: config.aiDefaultImageModel,
           importStrategy: config.importStrategy,
           realEsrganPath: config.realEsrganPath,
           pythonPath: config.pythonPath,
@@ -290,7 +298,7 @@ function Settings(): React.JSX.Element {
           defaultInterval: preferences.defaultInterval
         })
         .catch(() => {
-          addLog('[设置] 保存工具路径失败。')
+          addLog('[设置] 保存本地配置失败。')
         })
     }, 200)
 
@@ -299,6 +307,10 @@ function Settings(): React.JSX.Element {
     }
   }, [
     addLog,
+    config.aiApiKey,
+    config.aiBaseUrl,
+    config.aiDefaultImageModel,
+    config.aiProvider,
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
@@ -561,6 +573,11 @@ function Settings(): React.JSX.Element {
     } finally {
       setIsTesting(false)
     }
+  }
+
+  const testAiServiceConnection = (): void => {
+    addLog('[AI服务] 测试连接占位已触发；后续任务会接入实际 IPC。')
+    window.alert('AI 服务测试连接将在后续任务接入。')
   }
 
   return (
@@ -879,6 +896,52 @@ function Settings(): React.JSX.Element {
               </div>
             </div>
             <div className="mt-2 text-xs text-zinc-500">用于模拟轨迹运动效果，便于实时选择水印方案。</div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI服务</CardTitle>
+          <CardDescription>配置 GRSAI 图像生成服务入口；凭证仅保存在本机，后续工作台任务会直接复用。</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">Provider</div>
+            <Input value="GRSAI" readOnly className="font-medium tracking-[0.18em] text-zinc-100" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">默认模型</div>
+            <Input
+              value={config.aiDefaultImageModel}
+              onChange={(e) => updateConfig({ aiDefaultImageModel: e.target.value })}
+              placeholder="grsai-image-v1"
+            />
+          </div>
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <div className="text-xs text-zinc-400">Base URL</div>
+            <Input
+              value={config.aiBaseUrl}
+              onChange={(e) => updateConfig({ aiBaseUrl: e.target.value })}
+              placeholder="https://your-grsai-endpoint/v1"
+              spellCheck={false}
+            />
+          </div>
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <div className="text-xs text-zinc-400">API Key</div>
+            <Input
+              type="password"
+              value={config.aiApiKey}
+              onChange={(e) => updateConfig({ aiApiKey: e.target.value })}
+              placeholder="grs_********************************"
+              autoComplete="new-password"
+              spellCheck={false}
+            />
+          </div>
+          <div className="flex items-end md:col-span-2">
+            <Button type="button" variant="outline" onClick={testAiServiceConnection}>
+              测试连接
+            </Button>
           </div>
         </CardContent>
       </Card>

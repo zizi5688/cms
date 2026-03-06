@@ -929,6 +929,10 @@ declare global {
     setWorkspacePath: (path: string) => Promise<{ path: string }>
     relaunch: () => Promise<{ success: true }>
     getConfig: () => Promise<{
+      aiProvider: 'grsai'
+      aiBaseUrl: string
+      aiApiKey: string
+      aiDefaultImageModel: string
       importStrategy: 'copy' | 'move'
       realEsrganPath: string
       pythonPath: string
@@ -947,6 +951,10 @@ declare global {
       defaultInterval: number
     }>
     saveConfig: (patch: {
+      aiProvider?: 'grsai'
+      aiBaseUrl?: string
+      aiApiKey?: string
+      aiDefaultImageModel?: string
       importStrategy?: 'copy' | 'move'
       realEsrganPath?: string
       pythonPath?: string

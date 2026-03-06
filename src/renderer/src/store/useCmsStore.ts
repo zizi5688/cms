@@ -56,6 +56,10 @@ export interface CmsConfig {
   appSecret: string
   baseToken: string
   tableId: string
+  aiProvider: 'grsai'
+  aiBaseUrl: string
+  aiApiKey: string
+  aiDefaultImageModel: string
   titleField: string
   bodyField: string
   imageField: string
@@ -130,6 +134,10 @@ const initialConfig: CmsConfig = {
   appSecret: '',
   baseToken: '',
   tableId: '',
+  aiProvider: 'grsai',
+  aiBaseUrl: '',
+  aiApiKey: '',
+  aiDefaultImageModel: '',
   titleField: '标题',
   bodyField: '正文',
   imageField: '图片',
