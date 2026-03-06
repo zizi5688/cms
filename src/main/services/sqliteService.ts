@@ -77,6 +77,97 @@ export class SqliteService {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
   }
 
+  ensureAiStudioSchema(): void {
+    const db = this.db
+    if (!db) return
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ai_studio_templates (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'grsai',
+        name TEXT NOT NULL,
+        prompt_text TEXT NOT NULL DEFAULT '',
+        config_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_studio_templates_provider_name
+        ON ai_studio_templates (provider, name);
+
+      CREATE TABLE IF NOT EXISTS ai_studio_tasks (
+        id TEXT PRIMARY KEY,
+        template_id TEXT,
+        provider TEXT NOT NULL DEFAULT 'grsai',
+        source_folder_path TEXT,
+        product_name TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft',
+        aspect_ratio TEXT NOT NULL DEFAULT '3:4',
+        output_count INTEGER NOT NULL DEFAULT 1,
+        model TEXT NOT NULL DEFAULT '',
+        prompt_extra TEXT NOT NULL DEFAULT '',
+        primary_image_path TEXT,
+        reference_image_paths_json TEXT NOT NULL DEFAULT '[]',
+        input_image_paths_json TEXT NOT NULL DEFAULT '[]',
+        remote_task_id TEXT,
+        latest_run_id TEXT,
+        price_min_snapshot REAL,
+        price_max_snapshot REAL,
+        billed_state TEXT NOT NULL DEFAULT 'unbilled',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_tasks_status ON ai_studio_tasks (status);
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_tasks_updated_at ON ai_studio_tasks (updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS ai_studio_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_index INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'grsai',
+        status TEXT NOT NULL DEFAULT 'queued',
+        remote_task_id TEXT,
+        billed_state TEXT NOT NULL DEFAULT 'unbilled',
+        price_min_snapshot REAL,
+        price_max_snapshot REAL,
+        run_dir TEXT,
+        request_payload_json TEXT NOT NULL DEFAULT '{}',
+        response_payload_json TEXT NOT NULL DEFAULT '{}',
+        error_message TEXT,
+        started_at INTEGER,
+        finished_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES ai_studio_tasks(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_runs_task_id ON ai_studio_runs (task_id);
+
+      CREATE TABLE IF NOT EXISTS ai_studio_assets (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_id TEXT,
+        kind TEXT NOT NULL DEFAULT 'input',
+        role TEXT NOT NULL DEFAULT 'candidate',
+        file_path TEXT NOT NULL,
+        preview_path TEXT,
+        origin_path TEXT,
+        selected INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES ai_studio_tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES ai_studio_runs(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_assets_task_id ON ai_studio_assets (task_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_assets_selected ON ai_studio_assets (selected);
+    `)
+  }
+
   async init(workspacePath: string): Promise<{
     migrationResult?: { migrated: boolean; inserted: { accounts: number; tasks: number; products: number }; source: string }
   }> {

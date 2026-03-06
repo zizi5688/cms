@@ -309,6 +309,76 @@ declare global {
     contentCoverage: NoteRaceContentCoverage
   }
 
+  type AiStudioTemplateRecord = {
+    id: string
+    provider: string
+    name: string
+    promptText: string
+    config: Record<string, unknown>
+    createdAt: number
+    updatedAt: number
+  }
+
+  type AiStudioTaskRecord = {
+    id: string
+    templateId: string | null
+    provider: string
+    sourceFolderPath: string | null
+    productName: string
+    status: 'draft' | 'ready' | 'running' | 'completed' | 'failed' | 'archived'
+    aspectRatio: string
+    outputCount: number
+    model: string
+    promptExtra: string
+    primaryImagePath: string | null
+    referenceImagePaths: string[]
+    inputImagePaths: string[]
+    remoteTaskId: string | null
+    latestRunId: string | null
+    priceMinSnapshot: number | null
+    priceMaxSnapshot: number | null
+    billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+    metadata: Record<string, unknown>
+    createdAt: number
+    updatedAt: number
+  }
+
+  type AiStudioAssetRecord = {
+    id: string
+    taskId: string
+    runId: string | null
+    kind: 'input' | 'output'
+    role: string
+    filePath: string
+    previewPath: string | null
+    originPath: string | null
+    selected: boolean
+    sortOrder: number
+    metadata: Record<string, unknown>
+    createdAt: number
+    updatedAt: number
+  }
+
+  type AiStudioRunRecord = {
+    id: string
+    taskId: string
+    runIndex: number
+    provider: string
+    status: string
+    remoteTaskId: string | null
+    billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+    priceMinSnapshot: number | null
+    priceMaxSnapshot: number | null
+    runDir: string | null
+    requestPayload: Record<string, unknown>
+    responsePayload: Record<string, unknown>
+    errorMessage: string | null
+    startedAt: number | null
+    finishedAt: number | null
+    createdAt: number
+    updatedAt: number
+  }
+
   type NoteRaceDetail = {
     row: NoteRaceListRow
     noteId: string | null
@@ -729,6 +799,138 @@ declare global {
             onlyAlerts?: boolean
             onlyNew?: boolean
           }) => Promise<string | null>
+        }
+      }
+      aiStudio: {
+        template: {
+          list: () => Promise<AiStudioTemplateRecord[]>
+          upsert: (payload: {
+            id?: string
+            provider?: string
+            name: string
+            promptText?: string
+            config?: Record<string, unknown>
+          }) => Promise<AiStudioTemplateRecord>
+        }
+        task: {
+          create: (payload: {
+            id?: string
+            templateId?: string | null
+            provider?: string
+            sourceFolderPath?: string | null
+            productName?: string
+            status?: 'draft' | 'ready' | 'running' | 'completed' | 'failed' | 'archived'
+            aspectRatio?: string
+            outputCount?: number
+            model?: string
+            promptExtra?: string
+            primaryImagePath?: string | null
+            referenceImagePaths?: string[]
+            inputImagePaths?: string[]
+            remoteTaskId?: string | null
+            latestRunId?: string | null
+            priceMinSnapshot?: number | null
+            priceMaxSnapshot?: number | null
+            billedState?: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            metadata?: Record<string, unknown>
+            assets?: Array<{
+              id?: string
+              taskId: string
+              runId?: string | null
+              kind?: 'input' | 'output'
+              role?: string
+              filePath: string
+              previewPath?: string | null
+              originPath?: string | null
+              selected?: boolean
+              sortOrder?: number
+              metadata?: Record<string, unknown>
+            }>
+          }) => Promise<AiStudioTaskRecord>
+          list: (payload?: {
+            status?: string
+            ids?: string[]
+            limit?: number
+          }) => Promise<AiStudioTaskRecord[]>
+          update: (payload: {
+            taskId: string
+            patch?: {
+              templateId?: string | null
+              provider?: string
+              sourceFolderPath?: string | null
+              productName?: string
+              status?: 'draft' | 'ready' | 'running' | 'completed' | 'failed' | 'archived'
+              aspectRatio?: string
+              outputCount?: number
+              model?: string
+              promptExtra?: string
+              primaryImagePath?: string | null
+              referenceImagePaths?: string[]
+              inputImagePaths?: string[]
+              remoteTaskId?: string | null
+              latestRunId?: string | null
+              priceMinSnapshot?: number | null
+              priceMaxSnapshot?: number | null
+              billedState?: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+              metadata?: Record<string, unknown>
+            }
+          }) => Promise<AiStudioTaskRecord>
+          delete: (payload: { taskId: string } | string) => Promise<{ success: boolean }>
+          ensureRunDirectory: (payload: { taskId: string; runIndex?: number }) => Promise<{
+            taskId: string
+            runIndex: number
+            dirPath: string
+          }>
+          recordRunAttempt: (payload: {
+            runId?: string
+            taskId: string
+            provider?: string
+            status?: string
+            remoteTaskId?: string | null
+            billedState?: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            priceMinSnapshot?: number | null
+            priceMaxSnapshot?: number | null
+            requestPayload?: Record<string, unknown>
+            responsePayload?: Record<string, unknown>
+            errorMessage?: string | null
+            startedAt?: number | null
+            finishedAt?: number | null
+          }) => Promise<AiStudioRunRecord>
+          updateBilledState: (payload: {
+            taskId: string
+            billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            priceMinSnapshot?: number | null
+            priceMaxSnapshot?: number | null
+            runId?: string | null
+            remoteTaskId?: string | null
+          }) => Promise<AiStudioTaskRecord>
+        }
+        asset: {
+          list: (payload?: {
+            taskId?: string
+            runId?: string
+            kind?: 'input' | 'output'
+            ids?: string[]
+          }) => Promise<AiStudioAssetRecord[]>
+          upsert: (payload: Array<{
+            id?: string
+            taskId: string
+            runId?: string | null
+            kind?: 'input' | 'output'
+            role?: string
+            filePath: string
+            previewPath?: string | null
+            originPath?: string | null
+            selected?: boolean
+            sortOrder?: number
+            metadata?: Record<string, unknown>
+          }>) => Promise<AiStudioAssetRecord[]>
+          markSelected: (payload: {
+            taskId: string
+            assetIds: string[]
+            selected?: boolean
+            clearOthers?: boolean
+          }) => Promise<AiStudioAssetRecord[]>
         }
       }
       noteRace: {
