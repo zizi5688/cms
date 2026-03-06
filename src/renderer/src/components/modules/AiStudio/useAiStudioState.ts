@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 
 export type AiStudioImportedFolder = {
   folderPath: string
@@ -73,6 +74,8 @@ export type AiStudioBatchCostSummary = {
   label: string
 }
 
+export const MAX_AI_STUDIO_REFERENCE_IMAGES = 4
+
 const DEFAULT_TEMPLATE: AiStudioTemplateRecord = {
   id: 'builtin-product-studio',
   provider: 'grsai',
@@ -85,6 +88,92 @@ const DEFAULT_TEMPLATE: AiStudioTemplateRecord = {
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
+}
+
+function basenameWithoutExtension(filePath: string): string {
+  const normalized = String(filePath ?? '').trim()
+  if (!normalized) return ''
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  const fileName = parts[parts.length - 1] ?? normalized
+  return fileName.replace(/\.[^.]+$/, '').trim()
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+function normalizeReferencePaths(filePaths: string[], primaryImagePath: string | null): string[] {
+  return uniqueStrings(filePaths)
+    .filter((item) => item !== primaryImagePath)
+    .slice(0, MAX_AI_STUDIO_REFERENCE_IMAGES)
+}
+
+function buildInputAssetPayload(
+  taskId: string,
+  primaryImagePath: string | null,
+  referenceImagePaths: string[]
+) {
+  const normalizedReferences = normalizeReferencePaths(referenceImagePaths, primaryImagePath)
+  const writes: Array<{
+    id: string
+    taskId: string
+    kind: 'input'
+    role: string
+    filePath: string
+    previewPath: string
+    originPath: string
+    sortOrder: number
+    metadata: Record<string, unknown>
+  }> = []
+
+  if (primaryImagePath) {
+    writes.push({
+      id: `${taskId}:input:primary`,
+      taskId,
+      kind: 'input',
+      role: 'primary',
+      filePath: primaryImagePath,
+      previewPath: primaryImagePath,
+      originPath: primaryImagePath,
+      sortOrder: 0,
+      metadata: { importedAt: Date.now(), slot: 'primary' }
+    })
+  }
+
+  normalizedReferences.forEach((filePath, index) => {
+    writes.push({
+      id: `${taskId}:input:reference:${index}`,
+      taskId,
+      kind: 'input',
+      role: 'reference',
+      filePath,
+      previewPath: filePath,
+      originPath: filePath,
+      sortOrder: index + 1,
+      metadata: { importedAt: Date.now(), slot: `reference-${index}` }
+    })
+  })
+
+  return writes
+}
+
+async function confirmResetGeneratedTask(): Promise<boolean> {
+  const message = '更换输入素材会清空当前结果并重置为草稿，是否继续？'
+  try {
+    const result = await window.electronAPI.showMessageBox({
+      type: 'warning',
+      title: '确认重置任务',
+      message,
+      detail: '这会删除当前任务的已生成结果与运行记录。',
+      buttons: ['继续', '取消'],
+      defaultId: 1,
+      cancelId: 1
+    })
+    return result.response === 0
+  } catch {
+    return window.confirm(message)
+  }
 }
 
 function mergeById<T extends { id: string }>(prev: T[], next: T[]): T[] {
@@ -112,7 +201,10 @@ function inferStatusFilter(status: AiStudioTaskRecord['status']): AiStudioTaskSt
 function normalizeTask(task: AiStudioTaskRecord): AiStudioTaskRecord {
   return {
     ...task,
-    outputCount: Number.isFinite(Number(task.outputCount)) && Number(task.outputCount) > 0 ? Math.floor(Number(task.outputCount)) : 1,
+    outputCount:
+      Number.isFinite(Number(task.outputCount)) && Number(task.outputCount) > 0
+        ? Math.floor(Number(task.outputCount))
+        : 1,
     referenceImagePaths: uniqueStrings(task.referenceImagePaths ?? []),
     inputImagePaths: uniqueStrings(task.inputImagePaths ?? [])
   }
@@ -144,17 +236,26 @@ function coerceTaskRecord(task: unknown): AiStudioTaskRecord {
     model: typeof record.model === 'string' ? record.model : '',
     promptExtra: typeof record.promptExtra === 'string' ? record.promptExtra : '',
     primaryImagePath: typeof record.primaryImagePath === 'string' ? record.primaryImagePath : null,
-    referenceImagePaths: Array.isArray(record.referenceImagePaths) ? (record.referenceImagePaths as string[]) : [],
-    inputImagePaths: Array.isArray(record.inputImagePaths) ? (record.inputImagePaths as string[]) : [],
+    referenceImagePaths: Array.isArray(record.referenceImagePaths)
+      ? (record.referenceImagePaths as string[])
+      : [],
+    inputImagePaths: Array.isArray(record.inputImagePaths)
+      ? (record.inputImagePaths as string[])
+      : [],
     remoteTaskId: typeof record.remoteTaskId === 'string' ? record.remoteTaskId : null,
     latestRunId: typeof record.latestRunId === 'string' ? record.latestRunId : null,
     priceMinSnapshot: typeof record.priceMinSnapshot === 'number' ? record.priceMinSnapshot : null,
     priceMaxSnapshot: typeof record.priceMaxSnapshot === 'number' ? record.priceMaxSnapshot : null,
     billedState:
-      record.billedState === 'billable' || record.billedState === 'not_billable' || record.billedState === 'settled'
+      record.billedState === 'billable' ||
+      record.billedState === 'not_billable' ||
+      record.billedState === 'settled'
         ? (record.billedState as AiStudioTaskRecord['billedState'])
         : 'unbilled',
-    metadata: record.metadata && typeof record.metadata === 'object' ? (record.metadata as Record<string, unknown>) : {},
+    metadata:
+      record.metadata && typeof record.metadata === 'object'
+        ? (record.metadata as Record<string, unknown>)
+        : {},
     createdAt: typeof record.createdAt === 'number' ? record.createdAt : 0,
     updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
   })
@@ -173,7 +274,10 @@ function coerceAssetRecord(asset: unknown): AiStudioAssetRecord {
     originPath: typeof record.originPath === 'string' ? record.originPath : null,
     selected: record.selected === true,
     sortOrder: typeof record.sortOrder === 'number' ? record.sortOrder : 0,
-    metadata: record.metadata && typeof record.metadata === 'object' ? (record.metadata as Record<string, unknown>) : {},
+    metadata:
+      record.metadata && typeof record.metadata === 'object'
+        ? (record.metadata as Record<string, unknown>)
+        : {},
     createdAt: typeof record.createdAt === 'number' ? record.createdAt : 0,
     updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
   }
@@ -186,7 +290,9 @@ function useAiStudioState() {
   const [templates, setTemplates] = useState<AiStudioTemplateRecord[]>([])
   const [tasks, setTasks] = useState<AiStudioTaskRecord[]>([])
   const [assets, setAssets] = useState<AiStudioAssetRecord[]>([])
-  const [draftByTaskId, setDraftByTaskId] = useState<Record<string, Partial<AiStudioTaskRecord>>>({})
+  const [draftByTaskId, setDraftByTaskId] = useState<Record<string, Partial<AiStudioTaskRecord>>>(
+    {}
+  )
   const [statusFilter, setStatusFilter] = useState<AiStudioTaskStatusFilter>('all')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
@@ -217,7 +323,9 @@ function useAiStudioState() {
       setTemplates(nextTemplates)
       setTasks(nextTasks)
       setAssets(nextAssets)
-      setActiveTaskId((prev) => prev && nextTasks.some((task) => task.id === prev) ? prev : nextTasks[0]?.id ?? null)
+      setActiveTaskId((prev) =>
+        prev && nextTasks.some((task) => task.id === prev) ? prev : (nextTasks[0]?.id ?? null)
+      )
       setSelectedTaskIds((prev) => prev.filter((id) => nextTasks.some((task) => task.id === id)))
     } finally {
       setIsLoading(false)
@@ -236,7 +344,9 @@ function useAiStudioState() {
       map.set(asset.taskId, group)
     }
     for (const group of map.values()) {
-      group.sort((left, right) => left.sortOrder - right.sortOrder || left.createdAt - right.createdAt)
+      group.sort(
+        (left, right) => left.sortOrder - right.sortOrder || left.createdAt - right.createdAt
+      )
     }
     return map
   }, [assets])
@@ -246,13 +356,17 @@ function useAiStudioState() {
       const draftPatch = draftByTaskId[task.id] ?? {}
       const mergedTask = normalizeTask({ ...task, ...draftPatch })
       const relatedAssets = assetsByTaskId.get(task.id) ?? []
-      const inputAssets = relatedAssets.filter((asset) => asset.kind === 'input')
+      const currentInputPaths = new Set(mergedTask.inputImagePaths)
+      const inputAssets = relatedAssets.filter(
+        (asset) => asset.kind === 'input' && currentInputPaths.has(asset.filePath)
+      )
       const outputAssets = relatedAssets.filter((asset) => asset.kind === 'output')
       return {
         ...mergedTask,
         inputAssets,
         outputAssets,
-        sourceCount: inputAssets.length > 0 ? inputAssets.length : mergedTask.inputImagePaths.length,
+        sourceCount:
+          inputAssets.length > 0 ? inputAssets.length : mergedTask.inputImagePaths.length,
         costLabel: formatCost(mergedTask.priceMinSnapshot, mergedTask.priceMaxSnapshot)
       }
     })
@@ -288,9 +402,15 @@ function useAiStudioState() {
   const referenceImagePaths = activeTask?.referenceImagePaths ?? []
 
   const batchCostSummary = useMemo<AiStudioBatchCostSummary>(() => {
-    const basis = selectedTaskIds.length > 0 ? taskViews.filter((task) => selectedTaskIds.includes(task.id)) : visibleTasks
+    const basis =
+      selectedTaskIds.length > 0
+        ? taskViews.filter((task) => selectedTaskIds.includes(task.id))
+        : visibleTasks
     const min = basis.reduce((total, task) => total + (task.priceMinSnapshot ?? 0), 0)
-    const max = basis.reduce((total, task) => total + (task.priceMaxSnapshot ?? task.priceMinSnapshot ?? 0), 0)
+    const max = basis.reduce(
+      (total, task) => total + (task.priceMaxSnapshot ?? task.priceMinSnapshot ?? 0),
+      0
+    )
     return { min, max, label: formatCost(min, max) }
   }, [selectedTaskIds, taskViews, visibleTasks])
 
@@ -310,10 +430,25 @@ function useAiStudioState() {
     setAssets((prev) => mergeById(prev, nextAssets.map(coerceAssetRecord)))
   }, [])
 
+  const removeTaskLocally = useCallback((taskId: string) => {
+    setTasks((prev) => prev.filter((task) => task.id !== taskId))
+    setAssets((prev) => prev.filter((asset) => asset.taskId !== taskId))
+    setDraftByTaskId((prev) => {
+      if (!prev[taskId]) return prev
+      const next = { ...prev }
+      delete next[taskId]
+      return next
+    })
+    setSelectedTaskIds((prev) => prev.filter((id) => id !== taskId))
+    setActiveTaskId((prev) => (prev === taskId ? null : prev))
+  }, [])
+
   const updateTaskPatch = useCallback(
     async (taskId: string, patch: Record<string, unknown>) => {
       const optimisticPatch = Object.fromEntries(
-        Object.entries(patch).filter(([, value]) => value !== undefined && !(typeof value === 'number' && Number.isNaN(value)))
+        Object.entries(patch).filter(
+          ([, value]) => value !== undefined && !(typeof value === 'number' && Number.isNaN(value))
+        )
       ) as Partial<AiStudioTaskRecord>
 
       if (Object.keys(optimisticPatch).length > 0) {
@@ -324,7 +459,10 @@ function useAiStudioState() {
       }
 
       try {
-        const updated = await window.api.cms.aiStudio.task.update({ taskId, patch: optimisticPatch })
+        const updated = await window.api.cms.aiStudio.task.update({
+          taskId,
+          patch: optimisticPatch
+        })
         const normalized = coerceTaskRecord(updated)
         replaceTask(normalized)
         return normalized
@@ -344,7 +482,8 @@ function useAiStudioState() {
   const importFolders = useCallback(async () => {
     setIsImporting(true)
     try {
-      const folders = (await window.api.cms.aiStudio.task.importFolders()) as AiStudioImportedFolder[]
+      const folders =
+        (await window.api.cms.aiStudio.task.importFolders()) as AiStudioImportedFolder[]
       if (!Array.isArray(folders) || folders.length === 0) return []
 
       const createdTasks: AiStudioTaskRecord[] = []
@@ -359,7 +498,7 @@ function useAiStudioState() {
             status: 'draft',
             aspectRatio: '3:4',
             outputCount: 1,
-            model: defaultModel || 'image-default',
+            model: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
             inputImagePaths: folder.imageFilePaths,
             metadata: { importedImageCount: folder.imageFilePaths.length }
           })
@@ -393,9 +532,173 @@ function useAiStudioState() {
     }
   }, [defaultModel])
 
+  const createTaskWithInputs = useCallback(
+    async (payload: {
+      primaryImagePath: string | null
+      referenceImagePaths: string[]
+      inheritFrom?: AiStudioTaskView | null
+    }) => {
+      const primaryImagePath = String(payload.primaryImagePath ?? '').trim() || null
+      const referenceImagePaths = normalizeReferencePaths(
+        payload.referenceImagePaths,
+        primaryImagePath
+      )
+      const inputImagePaths = uniqueStrings(
+        [primaryImagePath, ...referenceImagePaths].filter(Boolean) as string[]
+      )
+      const baseTask = payload.inheritFrom ?? null
+      const inferredName = basenameWithoutExtension(
+        primaryImagePath ?? referenceImagePaths[0] ?? ''
+      )
+      const created = coerceTaskRecord(
+        await window.api.cms.aiStudio.task.create({
+          templateId: baseTask?.templateId ?? templateOptions[0]?.id ?? null,
+          provider: 'grsai',
+          sourceFolderPath: null,
+          productName: inferredName || baseTask?.productName || '未命名任务',
+          status: 'draft',
+          aspectRatio: baseTask?.aspectRatio ?? '3:4',
+          outputCount: baseTask?.outputCount ?? 1,
+          model: baseTask?.model || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
+          promptExtra: baseTask?.promptExtra ?? '',
+          primaryImagePath,
+          referenceImagePaths,
+          inputImagePaths,
+          remoteTaskId: null,
+          latestRunId: null,
+          priceMinSnapshot: null,
+          priceMaxSnapshot: null,
+          billedState: 'unbilled',
+          metadata: {
+            ...(baseTask?.metadata ?? {}),
+            importedImageCount: inputImagePaths.length,
+            mode: 'single-task'
+          }
+        })
+      )
+
+      const nextAssets =
+        inputImagePaths.length > 0
+          ? (
+              await window.api.cms.aiStudio.asset.upsert(
+                buildInputAssetPayload(created.id, primaryImagePath, referenceImagePaths)
+              )
+            ).map(coerceAssetRecord)
+          : []
+
+      replaceTask(created)
+      replaceAssets(nextAssets)
+      setSelectedTaskIds([created.id])
+      setActiveTaskId(created.id)
+      return created
+    },
+    [defaultModel, replaceAssets, replaceTask, templateOptions]
+  )
+
+  const syncTaskInputs = useCallback(
+    async (
+      task: AiStudioTaskView,
+      primaryImagePath: string | null,
+      referenceImagePaths: string[]
+    ) => {
+      const normalizedPrimary = String(primaryImagePath ?? '').trim() || null
+      const normalizedReferences = normalizeReferencePaths(referenceImagePaths, normalizedPrimary)
+      const inputImagePaths = uniqueStrings(
+        [normalizedPrimary, ...normalizedReferences].filter(Boolean) as string[]
+      )
+      const inferredName = basenameWithoutExtension(
+        normalizedPrimary ?? normalizedReferences[0] ?? ''
+      )
+
+      const updated = await updateTaskPatch(task.id, {
+        sourceFolderPath: null,
+        status: 'draft',
+        productName: inferredName || task.productName || '未命名任务',
+        primaryImagePath: normalizedPrimary,
+        referenceImagePaths: normalizedReferences,
+        inputImagePaths,
+        remoteTaskId: null,
+        latestRunId: null,
+        priceMinSnapshot: null,
+        priceMaxSnapshot: null,
+        billedState: 'unbilled',
+        metadata: {
+          ...(task.metadata ?? {}),
+          importedImageCount: inputImagePaths.length,
+          mode: 'single-task'
+        }
+      })
+
+      const nextAssets =
+        inputImagePaths.length > 0
+          ? (
+              await window.api.cms.aiStudio.asset.upsert(
+                buildInputAssetPayload(task.id, normalizedPrimary, normalizedReferences)
+              )
+            ).map(coerceAssetRecord)
+          : []
+      replaceAssets(nextAssets)
+      setSelectedTaskIds([task.id])
+      setActiveTaskId(task.id)
+      return updated
+    },
+    [replaceAssets, updateTaskPatch]
+  )
+
+  const applyInputSelection = useCallback(
+    async (payload: { primaryImagePath: string | null; referenceImagePaths: string[] }) => {
+      const normalizedPrimary = String(payload.primaryImagePath ?? '').trim() || null
+      const normalizedReferences = normalizeReferencePaths(
+        payload.referenceImagePaths,
+        normalizedPrimary
+      )
+      const currentTask = activeTask
+
+      if (!currentTask) {
+        return createTaskWithInputs({
+          primaryImagePath: normalizedPrimary,
+          referenceImagePaths: normalizedReferences
+        })
+      }
+
+      const inputsChanged =
+        normalizedPrimary !== currentTask.primaryImagePath ||
+        !sameStringArray(normalizedReferences, currentTask.referenceImagePaths)
+      if (!inputsChanged) return currentTask
+
+      const needsReset =
+        currentTask.outputAssets.length > 0 ||
+        Boolean(currentTask.latestRunId) ||
+        Boolean(currentTask.remoteTaskId) ||
+        currentTask.status === 'running' ||
+        currentTask.status === 'completed' ||
+        currentTask.status === 'failed'
+
+      if (needsReset) {
+        const confirmed = await confirmResetGeneratedTask()
+        if (!confirmed) return currentTask
+        const replacement = await createTaskWithInputs({
+          primaryImagePath: normalizedPrimary,
+          referenceImagePaths: normalizedReferences,
+          inheritFrom: currentTask
+        })
+        await window.api.cms.aiStudio.task.delete({ taskId: currentTask.id }).catch(() => void 0)
+        removeTaskLocally(currentTask.id)
+        setSelectedTaskIds([replacement.id])
+        setActiveTaskId(replacement.id)
+        return replacement
+      }
+
+      return syncTaskInputs(currentTask, normalizedPrimary, normalizedReferences)
+    },
+    [activeTask, createTaskWithInputs, removeTaskLocally, syncTaskInputs]
+  )
+
   const toggleTaskSelection = useCallback((taskId: string) => {
     setSelectedTaskIds((prev) =>
-      prev.includes(taskId) ? prev.filter((value) => value !== taskId) : uniqueStrings([...prev, taskId])
+      prev.includes(taskId)
+        ? prev.filter((value) => value !== taskId)
+        : uniqueStrings([...prev, taskId])
     )
   }, [])
 
@@ -428,34 +731,62 @@ function useAiStudioState() {
 
   const assignPrimaryImage = useCallback(
     async (filePath: string | null) => {
-      if (!activeTask) return
       const normalized = String(filePath ?? '').trim() || null
       const nextReferences = normalized
-        ? activeTask.referenceImagePaths.filter((item) => item !== normalized)
-        : activeTask.referenceImagePaths
-      await updateTaskPatch(activeTask.id, {
+        ? referenceImagePaths.filter((item) => item !== normalized)
+        : referenceImagePaths
+      await applyInputSelection({
         primaryImagePath: normalized,
         referenceImagePaths: nextReferences
       })
     },
-    [activeTask, updateTaskPatch]
+    [applyInputSelection, referenceImagePaths]
+  )
+
+  const addReferenceImages = useCallback(
+    async (filePaths: string[]) => {
+      const normalizedIncoming = uniqueStrings(filePaths).filter(
+        (item) => item !== primaryImagePath
+      )
+      if (normalizedIncoming.length === 0) {
+        return { added: 0, overflow: 0 }
+      }
+      const current = referenceImagePaths
+      const existingSet = new Set(current)
+      const dedupedIncoming = normalizedIncoming.filter((item) => !existingSet.has(item))
+      const nextReferences = normalizeReferencePaths(
+        [...current, ...dedupedIncoming],
+        primaryImagePath
+      )
+      const added = nextReferences.filter((item) => !existingSet.has(item)).length
+      const overflow = Math.max(0, current.length + dedupedIncoming.length - nextReferences.length)
+      await applyInputSelection({ primaryImagePath, referenceImagePaths: nextReferences })
+      return { added, overflow }
+    },
+    [applyInputSelection, primaryImagePath, referenceImagePaths]
+  )
+
+  const removeReferenceImage = useCallback(
+    async (filePath: string) => {
+      const normalized = String(filePath ?? '').trim()
+      if (!normalized) return
+      const nextReferences = referenceImagePaths.filter((item) => item !== normalized)
+      await applyInputSelection({ primaryImagePath, referenceImagePaths: nextReferences })
+    },
+    [applyInputSelection, primaryImagePath, referenceImagePaths]
   )
 
   const toggleReferenceImage = useCallback(
     async (filePath: string) => {
-      if (!activeTask) return
       const normalized = String(filePath ?? '').trim()
       if (!normalized) return
-      const set = new Set(activeTask.referenceImagePaths)
-      if (set.has(normalized)) {
-        set.delete(normalized)
-      } else {
-        set.add(normalized)
+      if (referenceImagePaths.includes(normalized)) {
+        await removeReferenceImage(normalized)
+        return
       }
-      const nextReferences = Array.from(set).filter((item) => item !== activeTask.primaryImagePath)
-      await updateTaskPatch(activeTask.id, { referenceImagePaths: nextReferences })
+      await addReferenceImages([normalized])
     },
-    [activeTask, updateTaskPatch]
+    [addReferenceImages, referenceImagePaths, removeReferenceImage]
   )
 
   const setPromptExtra = useCallback(
@@ -498,7 +829,10 @@ function useAiStudioState() {
     [activeTask, updateTaskPatch]
   )
 
-  const exceptionCount = useMemo(() => taskViews.filter((task) => task.status === 'failed').length, [taskViews])
+  const exceptionCount = useMemo(
+    () => taskViews.filter((task) => task.status === 'failed').length,
+    [taskViews]
+  )
 
   return {
     templates: templateOptions,
@@ -527,6 +861,8 @@ function useAiStudioState() {
     toggleOutputSelection,
     setOutputSelection,
     assignPrimaryImage,
+    addReferenceImages,
+    removeReferenceImage,
     toggleReferenceImage,
     setPromptExtra,
     setOutputCount,

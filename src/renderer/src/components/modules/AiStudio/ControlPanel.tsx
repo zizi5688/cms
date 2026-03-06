@@ -1,10 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type * as React from 'react'
 
 import { ImagePlus, Wand2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
+import {
+  CUSTOM_GRSAI_MODEL_SENTINEL,
+  DEFAULT_GRSAI_IMAGE_MODEL,
+  GRSAI_MODEL_OPTIONS,
+  isKnownGrsaiModel,
+  normalizeGrsaiModelValue,
+  resolveDisplayedGrsaiModel
+} from '@renderer/lib/grsaiModels'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
@@ -15,12 +24,6 @@ function basename(filePath: string | null | undefined): string {
   if (!normalized) return '未设置'
   const parts = normalized.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? normalized
-}
-
-function toFileSrc(filePath: string | null | undefined): string | undefined {
-  const normalized = String(filePath ?? '').trim()
-  if (!normalized) return undefined
-  return encodeURI(normalized.startsWith('file://') ? normalized : `file://${normalized}`)
 }
 
 function PreviewTile({
@@ -36,26 +39,39 @@ function PreviewTile({
   onClick?: () => void
   footer?: React.ReactNode
 }): React.JSX.Element {
-  const src = toFileSrc(asset?.previewPath ?? asset?.filePath)
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const src = resolveLocalImage(asset?.previewPath ?? asset?.filePath ?? '', workspacePath)
+  const clickable = typeof onClick === 'function'
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'group flex w-full flex-col gap-2 text-left',
-        !onClick && 'cursor-default'
-      )}
-    >
+    <div className="flex w-full flex-col gap-2 text-left">
       <div
+        role={clickable ? 'button' : undefined}
+        tabIndex={clickable ? 0 : undefined}
+        onClick={onClick}
+        onKeyDown={(event) => {
+          if (!clickable) return
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onClick?.()
+          }
+        }}
         className={cn(
           'relative aspect-[3/4] overflow-hidden rounded-2xl border bg-zinc-950',
+          clickable &&
+            'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500',
           active ? 'border-zinc-100 shadow-[0_0_0_1px_rgba(255,255,255,0.18)]' : 'border-zinc-800'
         )}
       >
-        <div
-          className="absolute inset-0 bg-gradient-to-br from-zinc-900 via-zinc-950 to-black bg-cover bg-center"
-          style={src ? { backgroundImage: `url(${src})` } : undefined}
-        />
+        {src ? (
+          <img
+            src={src}
+            alt={basename(asset?.filePath)}
+            className="absolute inset-0 h-full w-full object-cover"
+            draggable={false}
+            loading="lazy"
+          />
+        ) : null}
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(0,0,0,0.46))]" />
         {badge ? (
           <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-black/35 px-2 py-1 text-[10px] text-zinc-100 backdrop-blur">
@@ -67,7 +83,7 @@ function PreviewTile({
         </div>
       </div>
       {footer}
-    </button>
+    </div>
   )
 }
 
@@ -76,6 +92,12 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   const addLog = useCmsStore((store) => store.addLog)
   const aiConfig = useCmsStore((store) => store.config)
   const [isStartingRun, setIsStartingRun] = useState(false)
+  const [isCustomModel, setIsCustomModel] = useState(false)
+
+  useEffect(() => {
+    const normalized = normalizeGrsaiModelValue(task?.model)
+    setIsCustomModel(Boolean(normalized) && !isKnownGrsaiModel(normalized))
+  }, [task?.id, task?.model])
 
   const handleStartRun = async (): Promise<void> => {
     if (!task || isStartingRun) return
@@ -120,15 +142,24 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   if (!task) {
     return (
       <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 p-6 text-sm text-zinc-500">
-        导入后开始编辑
+        先添加主图，再继续配置参数
       </div>
     )
   }
 
-  const primaryAsset = state.activeInputAssets.find((asset) => asset.filePath === state.primaryImagePath) ?? null
-  const referenceAssets = state.activeInputAssets.filter((asset) => state.referenceImagePaths.includes(asset.filePath))
+  const primaryAsset =
+    state.activeInputAssets.find((asset) => asset.filePath === state.primaryImagePath) ?? null
+  const referenceAssets = state.activeInputAssets.filter((asset) =>
+    state.referenceImagePaths.includes(asset.filePath)
+  )
   const templateValue = task.templateId || state.templates[0]?.id || ''
-  const modelValue = task.model || 'image-default'
+  const configuredModel = normalizeGrsaiModelValue(task.model)
+  const inheritedModel = resolveDisplayedGrsaiModel(
+    aiConfig.aiDefaultImageModel,
+    DEFAULT_GRSAI_IMAGE_MODEL
+  )
+  const selectedPresetModel = isKnownGrsaiModel(configuredModel) ? configuredModel : inheritedModel
+  const customModelValue = isCustomModel ? configuredModel : ''
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -173,7 +204,46 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
 
         <label className="flex flex-col gap-1">
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模型</span>
-          <Input value={modelValue} onChange={(event) => void state.setModel(event.target.value)} placeholder="image-default" />
+          <select
+            value={isCustomModel ? CUSTOM_GRSAI_MODEL_SENTINEL : selectedPresetModel}
+            onChange={(event) => {
+              const nextValue = event.target.value
+              if (nextValue === CUSTOM_GRSAI_MODEL_SENTINEL) {
+                setIsCustomModel(true)
+                void state.setModel(isKnownGrsaiModel(configuredModel) ? '' : configuredModel)
+                return
+              }
+              setIsCustomModel(false)
+              void state.setModel(nextValue)
+            }}
+            className="h-10 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+          >
+            {GRSAI_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+            <option value={CUSTOM_GRSAI_MODEL_SENTINEL}>自定义模型…</option>
+          </select>
+          {!isCustomModel ? (
+            <div className="text-[11px] text-zinc-500">
+              {configuredModel
+                ? `当前任务固定使用：${selectedPresetModel}`
+                : `未单独指定，当前继承默认模型：${inheritedModel}`}
+            </div>
+          ) : (
+            <>
+              <Input
+                value={customModelValue}
+                onChange={(event) => void state.setModel(event.target.value)}
+                placeholder="输入文档里的完整模型名"
+                spellCheck={false}
+              />
+              <div className="text-[11px] text-amber-300/80">
+                自定义模式：请粘贴 GRSAI 文档中的完整模型名。
+              </div>
+            </>
+          )}
         </label>
       </div>
 
@@ -186,7 +256,9 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
           <div className="mb-2 text-xs text-zinc-500">参考</div>
           <div className="grid grid-cols-2 gap-2">
             {referenceAssets.length > 0 ? (
-              referenceAssets.slice(0, 4).map((asset) => <PreviewTile key={asset.id} asset={asset} badge="Ref" active />)
+              referenceAssets
+                .slice(0, 4)
+                .map((asset) => <PreviewTile key={asset.id} asset={asset} badge="Ref" active />)
             ) : (
               <div className="col-span-2 flex aspect-[3/4] items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 text-xs text-zinc-500">
                 未设置
@@ -253,7 +325,7 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
           {state.activeInputAssets.length === 0 ? (
             <div className="col-span-2 flex aspect-[3/4] items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 text-xs text-zinc-500 2xl:col-span-3">
               <ImagePlus className="mr-2 h-4 w-4" />
-              暂无素材
+              先在左侧添加主图 / 参考图
             </div>
           ) : null}
         </div>
@@ -262,6 +334,9 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
       <div className="mt-auto space-y-2">
         {!aiConfig.aiApiKey.trim() ? (
           <div className="text-xs text-amber-400">请先在 Settings &gt; AI服务 中填写 API Key。</div>
+        ) : null}
+        {!task.primaryImagePath ? (
+          <div className="text-xs text-zinc-500">主图未设置，暂时无法开始生成。</div>
         ) : null}
         <Button
           type="button"

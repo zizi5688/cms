@@ -2,8 +2,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
 import { Button } from '@renderer/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
+import {
+  CUSTOM_GRSAI_MODEL_SENTINEL,
+  DEFAULT_GRSAI_IMAGE_MODEL,
+  GRSAI_MODEL_OPTIONS,
+  isKnownGrsaiModel,
+  normalizeGrsaiModelValue,
+  resolveDisplayedGrsaiModel
+} from '@renderer/lib/grsaiModels'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
 function isNonEmpty(value: string): boolean {
@@ -20,7 +34,12 @@ function clampSizePercent(value: number): number {
   return Math.min(10, Math.max(2, Math.round(value)))
 }
 
-type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+type DynamicWatermarkTrajectory =
+  | 'smoothSine'
+  | 'figureEight'
+  | 'diagonalWrap'
+  | 'largeEllipse'
+  | 'pseudoRandom'
 
 type TrajectoryOption = {
   value: DynamicWatermarkTrajectory
@@ -54,11 +73,27 @@ function formatDateTime(value: number | null): string {
 }
 
 const WATERMARK_TRAJECTORY_OPTIONS: TrajectoryOption[] = [
-  { value: 'smoothSine', label: '方案 A · 柔和正弦漂移', description: '横向平移 + 纵向正弦起伏，轨迹柔和。' },
+  {
+    value: 'smoothSine',
+    label: '方案 A · 柔和正弦漂移',
+    description: '横向平移 + 纵向正弦起伏，轨迹柔和。'
+  },
   { value: 'figureEight', label: '方案 B · 8字李萨如', description: '围绕中心画“∞”，闭环平滑。' },
-  { value: 'diagonalWrap', label: '方案 C · 对角线回环', description: '沿对角方向巡航，越界后从对侧穿出。' },
-  { value: 'largeEllipse', label: '方案 D · 大椭圆巡航', description: '贴近边缘大轨道运动，尽量避开核心画面。' },
-  { value: 'pseudoRandom', label: '方案 E · 伪随机漫步', description: '叠加快慢波形成非线性游走（当前默认）。' }
+  {
+    value: 'diagonalWrap',
+    label: '方案 C · 对角线回环',
+    description: '沿对角方向巡航，越界后从对侧穿出。'
+  },
+  {
+    value: 'largeEllipse',
+    label: '方案 D · 大椭圆巡航',
+    description: '贴近边缘大轨道运动，尽量避开核心画面。'
+  },
+  {
+    value: 'pseudoRandom',
+    label: '方案 E · 伪随机漫步',
+    description: '叠加快慢波形成非线性游走（当前默认）。'
+  }
 ]
 
 function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTrajectory {
@@ -87,20 +122,35 @@ function Settings(): React.JSX.Element {
 
   const [isTesting, setIsTesting] = useState(false)
   const [isTestingAiService, setIsTestingAiService] = useState(false)
+  const [isCustomDefaultModel, setIsCustomDefaultModel] = useState(false)
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
   const [isResettingNoteRace, setIsResettingNoteRace] = useState(false)
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false)
   const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false)
-  const [autoImportScanProgress, setAutoImportScanProgress] = useState<AutoImportScanProgress | null>(null)
+  const [autoImportScanProgress, setAutoImportScanProgress] =
+    useState<AutoImportScanProgress | null>(null)
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
   const [workspacePath, setWorkspacePath] = useState('')
-  const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>('uninitialized')
+  const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>(
+    'uninitialized'
+  )
   const [previewTime, setPreviewTime] = useState(0)
   const exePickerRef = useRef<HTMLInputElement | null>(null)
   const pythonPickerRef = useRef<HTMLInputElement | null>(null)
   const scriptPickerRef = useRef<HTMLInputElement | null>(null)
   const skipFirstSaveRef = useRef(true)
   const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
+
+  useEffect(() => {
+    const normalized = normalizeGrsaiModelValue(config.aiDefaultImageModel)
+    if (normalized && !isKnownGrsaiModel(normalized)) {
+      setIsCustomDefaultModel(true)
+      return
+    }
+    if (normalized && isKnownGrsaiModel(normalized)) {
+      setIsCustomDefaultModel(false)
+    }
+  }, [config.aiDefaultImageModel])
 
   useEffect(() => {
     const startedAt = performance.now()
@@ -151,7 +201,12 @@ function Settings(): React.JSX.Element {
   }, [config.dynamicWatermarkSize, previewTime, selectedTrajectory])
 
   const isFeishuConfigReady = useMemo(() => {
-    return isNonEmpty(config.appId) && isNonEmpty(config.appSecret) && isNonEmpty(config.baseToken) && isNonEmpty(config.tableId)
+    return (
+      isNonEmpty(config.appId) &&
+      isNonEmpty(config.appSecret) &&
+      isNonEmpty(config.baseToken) &&
+      isNonEmpty(config.tableId)
+    )
   }, [config])
 
   useEffect(() => {
@@ -173,7 +228,9 @@ function Settings(): React.JSX.Element {
             dynamicWatermarkEnabled: savedTools.dynamicWatermarkEnabled === true,
             dynamicWatermarkOpacity: clampOpacity(Number(savedTools.dynamicWatermarkOpacity)),
             dynamicWatermarkSize: clampSizePercent(Number(savedTools.dynamicWatermarkSize)),
-            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(savedTools.dynamicWatermarkTrajectory),
+            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(
+              savedTools.dynamicWatermarkTrajectory
+            ),
             scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
           })
           updatePreferences({
@@ -549,8 +606,11 @@ function Settings(): React.JSX.Element {
 
   const autoImportProgressPercent = useMemo(() => {
     if (!autoImportScanProgress) return 0
-    if (autoImportScanProgress.scannedFiles <= 0) return autoImportScanProgress.phase === 'done' ? 100 : 0
-    const raw = Math.round((autoImportScanProgress.processedFiles / autoImportScanProgress.scannedFiles) * 100)
+    if (autoImportScanProgress.scannedFiles <= 0)
+      return autoImportScanProgress.phase === 'done' ? 100 : 0
+    const raw = Math.round(
+      (autoImportScanProgress.processedFiles / autoImportScanProgress.scannedFiles) * 100
+    )
     return Math.max(0, Math.min(100, raw))
   }, [autoImportScanProgress])
 
@@ -564,7 +624,12 @@ function Settings(): React.JSX.Element {
     setIsTesting(true)
     try {
       addLog('[Feishu] 测试连接中...')
-      await window.electronAPI.testFeishuConnection(config.appId, config.appSecret, config.baseToken, config.tableId)
+      await window.electronAPI.testFeishuConnection(
+        config.appId,
+        config.appSecret,
+        config.baseToken,
+        config.tableId
+      )
       addLog('[Feishu] 连接成功并已保存配置。')
       window.alert('连接成功并已保存配置')
     } catch (error) {
@@ -607,26 +672,41 @@ ${result.baseUrl}`)
     }
   }
 
+  const configuredDefaultModel = normalizeGrsaiModelValue(config.aiDefaultImageModel)
+  const selectedDefaultModel = isKnownGrsaiModel(configuredDefaultModel)
+    ? configuredDefaultModel
+    : resolveDisplayedGrsaiModel('', DEFAULT_GRSAI_IMAGE_MODEL)
+
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <Card>
         <CardHeader>
           <CardTitle>设置</CardTitle>
-          <CardDescription>管理飞书连接信息；配置会保存到本地并在下次启动时自动加载。</CardDescription>
+          <CardDescription>
+            管理飞书连接信息；配置会保存到本地并在下次启动时自动加载。
+          </CardDescription>
         </CardHeader>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle>工作区管理</CardTitle>
-          <CardDescription>切换本地工作区后，数据将写入该目录下的 SQLite 数据库；切换后应用会重启。</CardDescription>
+          <CardDescription>
+            切换本地工作区后，数据将写入该目录下的 SQLite 数据库；切换后应用会重启。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">当前工作区路径</div>
-            <Input value={workspacePath || '(未设置，使用默认路径)'} readOnly className={workspacePath ? '' : 'text-zinc-500 italic'} />
+            <Input
+              value={workspacePath || '(未设置，使用默认路径)'}
+              readOnly
+              className={workspacePath ? '' : 'text-zinc-500 italic'}
+            />
             {workspaceStatus !== 'initialized' ? (
-              <div className="text-xs text-amber-400">工作区状态异常：请点击「切换工作区」重新选择一个可写目录。</div>
+              <div className="text-xs text-amber-400">
+                工作区状态异常：请点击「切换工作区」重新选择一个可写目录。
+              </div>
             ) : null}
           </div>
           <div className="flex items-center gap-2">
@@ -638,7 +718,9 @@ ${result.baseUrl}`)
       <Card>
         <CardHeader>
           <CardTitle>笔记赛马数据重置</CardTitle>
-          <CardDescription>当口径频繁调整导致历史数据混入脏数据时，可一键清空赛马监控模块数据后重新导入。</CardDescription>
+          <CardDescription>
+            当口径频繁调整导致历史数据混入脏数据时，可一键清空赛马监控模块数据后重新导入。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center justify-between gap-3">
           <div className="text-xs text-zinc-400">
@@ -658,7 +740,9 @@ ${result.baseUrl}`)
       <Card>
         <CardHeader>
           <CardTitle>热度看板自动导入</CardTitle>
-          <CardDescription>设置爆款表文件夹后，系统会递归监听该目录，并按配置生效时的目录快照识别后续新增/变更模板文件。</CardDescription>
+          <CardDescription>
+            设置爆款表文件夹后，系统会递归监听该目录，并按配置生效时的目录快照识别后续新增/变更模板文件。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
@@ -669,7 +753,8 @@ ${result.baseUrl}`)
               className={config.scoutDashboardAutoImportDir ? '' : 'text-zinc-500 italic'}
             />
             <div className="text-xs text-zinc-400">
-              支持多层子目录（如按年份/日期分层）和 `.xlsx`/`.xlsm`。若需补导历史文件，可点击“手动扫描导入”。
+              支持多层子目录（如按年份/日期分层）和
+              `.xlsx`/`.xlsm`。若需补导历史文件，可点击“手动扫描导入”。
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -721,8 +806,8 @@ ${result.baseUrl}`)
                   : autoImportScanProgress.message || '等待扫描任务启动...'}
               </div>
               <div className="mt-1 text-xs text-zinc-500">
-                导入 {autoImportScanProgress.importedFiles}，失败 {autoImportScanProgress.failedFiles}，跳过
-                {' '}
+                导入 {autoImportScanProgress.importedFiles}，失败{' '}
+                {autoImportScanProgress.failedFiles}，跳过{' '}
                 {autoImportScanProgress.skippedBaselineFiles +
                   autoImportScanProgress.skippedProcessedFiles +
                   autoImportScanProgress.skippedRetryFiles}
@@ -736,30 +821,16 @@ ${result.baseUrl}`)
       <Card>
         <CardHeader>
           <CardTitle>应用更新（Windows）</CardTitle>
-          <CardDescription>基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。</CardDescription>
+          <CardDescription>
+            基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-2 text-xs text-zinc-300 md:grid-cols-2">
-            <div>
-              当前版本：
-              {' '}
-              {appUpdateState?.currentVersion ?? '--'}
-            </div>
-            <div>
-              最新版本：
-              {' '}
-              {appUpdateState?.latestVersion ?? '--'}
-            </div>
-            <div>
-              最近检查：
-              {' '}
-              {formatDateTime(appUpdateState?.checkedAt ?? null)}
-            </div>
-            <div>
-              下载完成：
-              {' '}
-              {formatDateTime(appUpdateState?.downloadedAt ?? null)}
-            </div>
+            <div>当前版本： {appUpdateState?.currentVersion ?? '--'}</div>
+            <div>最新版本： {appUpdateState?.latestVersion ?? '--'}</div>
+            <div>最近检查： {formatDateTime(appUpdateState?.checkedAt ?? null)}</div>
+            <div>下载完成： {formatDateTime(appUpdateState?.downloadedAt ?? null)}</div>
           </div>
 
           <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-sm text-zinc-200">
@@ -788,7 +859,9 @@ ${result.baseUrl}`)
               onClick={() => void checkAppUpdateNow()}
               disabled={isCheckingAppUpdate || appUpdateState?.phase === 'checking'}
             >
-              {isCheckingAppUpdate || appUpdateState?.phase === 'checking' ? '检查中...' : '检查更新'}
+              {isCheckingAppUpdate || appUpdateState?.phase === 'checking'
+                ? '检查中...'
+                : '检查更新'}
             </Button>
             <Button
               type="button"
@@ -834,7 +907,9 @@ ${result.baseUrl}`)
               type="button"
               role="switch"
               aria-checked={config.dynamicWatermarkEnabled}
-              onClick={() => updateConfig({ dynamicWatermarkEnabled: !config.dynamicWatermarkEnabled })}
+              onClick={() =>
+                updateConfig({ dynamicWatermarkEnabled: !config.dynamicWatermarkEnabled })
+              }
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
                 config.dynamicWatermarkEnabled ? 'bg-emerald-500' : 'bg-zinc-700'
               }`}
@@ -858,7 +933,9 @@ ${result.baseUrl}`)
               max={100}
               step={1}
               value={clampOpacity(config.dynamicWatermarkOpacity)}
-              onChange={(e) => updateConfig({ dynamicWatermarkOpacity: clampOpacity(Number(e.target.value)) })}
+              onChange={(e) =>
+                updateConfig({ dynamicWatermarkOpacity: clampOpacity(Number(e.target.value)) })
+              }
               className="w-full accent-zinc-200"
             />
           </div>
@@ -874,7 +951,9 @@ ${result.baseUrl}`)
               max={10}
               step={1}
               value={clampSizePercent(config.dynamicWatermarkSize)}
-              onChange={(e) => updateConfig({ dynamicWatermarkSize: clampSizePercent(Number(e.target.value)) })}
+              onChange={(e) =>
+                updateConfig({ dynamicWatermarkSize: clampSizePercent(Number(e.target.value)) })
+              }
               className="w-full accent-zinc-200"
             />
           </div>
@@ -897,7 +976,10 @@ ${result.baseUrl}`)
               ))}
             </select>
             <div className="mt-2 text-xs text-zinc-500">
-              {WATERMARK_TRAJECTORY_OPTIONS.find((option) => option.value === selectedTrajectory)?.description}
+              {
+                WATERMARK_TRAJECTORY_OPTIONS.find((option) => option.value === selectedTrajectory)
+                  ?.description
+              }
             </div>
           </div>
 
@@ -906,7 +988,10 @@ ${result.baseUrl}`)
             <div className="mx-auto w-full max-w-[360px]">
               <div
                 className="relative overflow-hidden rounded-md border border-zinc-700 bg-black"
-                style={{ width: `${previewMotion.frameWidth}px`, height: `${previewMotion.frameHeight}px` }}
+                style={{
+                  width: `${previewMotion.frameWidth}px`,
+                  height: `${previewMotion.frameHeight}px`
+                }}
               >
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.12),rgba(0,0,0,0)_55%)]" />
                 <div
@@ -922,7 +1007,9 @@ ${result.baseUrl}`)
                 </div>
               </div>
             </div>
-            <div className="mt-2 text-xs text-zinc-500">用于模拟轨迹运动效果，便于实时选择水印方案。</div>
+            <div className="mt-2 text-xs text-zinc-500">
+              用于模拟轨迹运动效果，便于实时选择水印方案。
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -930,7 +1017,9 @@ ${result.baseUrl}`)
       <Card>
         <CardHeader>
           <CardTitle>AI服务</CardTitle>
-          <CardDescription>配置 GRSAI 图像生成服务入口；凭证仅保存在本机，后续工作台任务会直接复用。</CardDescription>
+          <CardDescription>
+            配置 GRSAI 图像生成服务入口；凭证仅保存在本机，后续工作台任务会直接复用。
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1">
@@ -939,20 +1028,60 @@ ${result.baseUrl}`)
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">默认模型</div>
-            <Input
-              value={config.aiDefaultImageModel}
-              onChange={(e) => updateConfig({ aiDefaultImageModel: e.target.value })}
-              placeholder="grsai-image-v1"
-            />
+            <select
+              value={isCustomDefaultModel ? CUSTOM_GRSAI_MODEL_SENTINEL : selectedDefaultModel}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                if (nextValue === CUSTOM_GRSAI_MODEL_SENTINEL) {
+                  setIsCustomDefaultModel(true)
+                  updateConfig({
+                    aiDefaultImageModel: isKnownGrsaiModel(configuredDefaultModel)
+                      ? ''
+                      : configuredDefaultModel
+                  })
+                  return
+                }
+                setIsCustomDefaultModel(false)
+                updateConfig({ aiDefaultImageModel: nextValue })
+              }}
+              className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              {GRSAI_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+              <option value={CUSTOM_GRSAI_MODEL_SENTINEL}>自定义模型…</option>
+            </select>
+            {!isCustomDefaultModel ? (
+              <div className="text-[11px] text-zinc-500">
+                未单独指定任务模型时，默认使用：{selectedDefaultModel}
+              </div>
+            ) : (
+              <>
+                <Input
+                  value={configuredDefaultModel}
+                  onChange={(e) => updateConfig({ aiDefaultImageModel: e.target.value })}
+                  placeholder="输入文档里的完整模型名"
+                  spellCheck={false}
+                />
+                <div className="text-[11px] text-amber-300/80">
+                  自定义模式：请填写 GRSAI 文档中的精确模型名。
+                </div>
+              </>
+            )}
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
-            <div className="text-xs text-zinc-400">Base URL</div>
+            <div className="text-xs text-zinc-400">Host / Base URL</div>
             <Input
               value={config.aiBaseUrl}
               onChange={(e) => updateConfig({ aiBaseUrl: e.target.value })}
-              placeholder="https://your-grsai-endpoint/v1"
+              placeholder="https://grsaiapi.com"
               spellCheck={false}
             />
+            <div className="text-[11px] text-zinc-500">
+              只填 Host，例如 `https://grsaiapi.com`；不要填写 `/v1/draw/nano-banana` 这类接口路径。
+            </div>
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
             <div className="text-xs text-zinc-400">API Key</div>
@@ -981,12 +1110,18 @@ ${result.baseUrl}`)
       <Card>
         <CardHeader>
           <CardTitle>飞书配置</CardTitle>
-          <CardDescription>所有飞书 API 调用在主进程执行；此处仅配置参数并通过 IPC 调用。</CardDescription>
+          <CardDescription>
+            所有飞书 API 调用在主进程执行；此处仅配置参数并通过 IPC 调用。
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">应用 ID</div>
-            <Input value={config.appId} onChange={(e) => updateConfig({ appId: e.target.value })} placeholder="cli_xxx" />
+            <Input
+              value={config.appId}
+              onChange={(e) => updateConfig({ appId: e.target.value })}
+              placeholder="cli_xxx"
+            />
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">应用密钥</div>
@@ -999,11 +1134,19 @@ ${result.baseUrl}`)
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">Base Token（app_token）</div>
-            <Input value={config.baseToken} onChange={(e) => updateConfig({ baseToken: e.target.value })} placeholder="bascn..." />
+            <Input
+              value={config.baseToken}
+              onChange={(e) => updateConfig({ baseToken: e.target.value })}
+              placeholder="bascn..."
+            />
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">数据表 ID</div>
-            <Input value={config.tableId} onChange={(e) => updateConfig({ tableId: e.target.value })} placeholder="tbl..." />
+            <Input
+              value={config.tableId}
+              onChange={(e) => updateConfig({ tableId: e.target.value })}
+              placeholder="tbl..."
+            />
           </div>
 
           <div className="flex items-end md:col-span-2">
@@ -1014,15 +1157,27 @@ ${result.baseUrl}`)
 
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">标题字段 Key</div>
-            <Input value={config.titleField} onChange={(e) => updateConfig({ titleField: e.target.value })} placeholder="标题" />
+            <Input
+              value={config.titleField}
+              onChange={(e) => updateConfig({ titleField: e.target.value })}
+              placeholder="标题"
+            />
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">正文字段 Key</div>
-            <Input value={config.bodyField} onChange={(e) => updateConfig({ bodyField: e.target.value })} placeholder="正文" />
+            <Input
+              value={config.bodyField}
+              onChange={(e) => updateConfig({ bodyField: e.target.value })}
+              placeholder="正文"
+            />
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
             <div className="text-xs text-zinc-400">图片字段 Key（可选）</div>
-            <Input value={config.imageField} onChange={(e) => updateConfig({ imageField: e.target.value })} placeholder="图片" />
+            <Input
+              value={config.imageField}
+              onChange={(e) => updateConfig({ imageField: e.target.value })}
+              placeholder="图片"
+            />
           </div>
         </CardContent>
       </Card>
@@ -1112,7 +1267,11 @@ ${result.baseUrl}`)
                 onChange={(e) => updateConfig({ pythonPath: e.target.value })}
                 placeholder="/usr/local/bin/python3.10"
               />
-              <Button type="button" variant="outline" onClick={() => pythonPickerRef.current?.click()}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => pythonPickerRef.current?.click()}
+              >
                 浏览
               </Button>
             </div>
@@ -1126,7 +1285,11 @@ ${result.baseUrl}`)
                 onChange={(e) => updateConfig({ watermarkScriptPath: e.target.value })}
                 placeholder="/Users/z/AI_Tools/watermark_cli.py"
               />
-              <Button type="button" variant="outline" onClick={() => scriptPickerRef.current?.click()}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => scriptPickerRef.current?.click()}
+              >
                 浏览
               </Button>
             </div>

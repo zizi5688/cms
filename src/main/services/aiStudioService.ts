@@ -267,6 +267,7 @@ const GRSAI_DEFAULT_BASE_URL = 'https://grsaiapi.com'
 const GRSAI_DRAW_PATH = '/v1/draw/nano-banana'
 const GRSAI_RESULT_PATH = '/v1/draw/result'
 const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
+const LEGACY_DEFAULT_IMAGE_MODEL = 'image-default'
 const DEFAULT_IMAGE_SIZE = '1K'
 const OUTPUT_POLL_INTERVAL_MS = 2500
 const OUTPUT_POLL_TIMEOUT_MS = 90_000
@@ -288,6 +289,15 @@ function sanitizeBaseUrl(baseUrl: string): string {
   return normalized || GRSAI_DEFAULT_BASE_URL
 }
 
+function normalizeConfiguredModel(value: unknown): string {
+  const normalized = normalizeText(value)
+  return normalized === LEGACY_DEFAULT_IMAGE_MODEL ? '' : normalized
+}
+
+function resolveConfiguredModel(value: unknown, fallback = DEFAULT_IMAGE_MODEL): string {
+  return normalizeConfiguredModel(value) || fallback
+}
+
 function buildProviderUrl(baseUrl: string, apiPath: string): string {
   const normalizedBase = sanitizeBaseUrl(baseUrl)
   const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`
@@ -299,7 +309,12 @@ function buildProviderUrl(baseUrl: string, apiPath: string): string {
 
 function normalizeAspectRatio(value: unknown): string {
   const normalized = normalizeText(value)
-  if (normalized === '1:1' || normalized === '3:4' || normalized === '9:16' || normalized === 'auto') {
+  if (
+    normalized === '1:1' ||
+    normalized === '3:4' ||
+    normalized === '9:16' ||
+    normalized === 'auto'
+  ) {
     return normalized
   }
   return '3:4'
@@ -340,12 +355,16 @@ async function filePathToDataUrl(filePath: string): Promise<string> {
   const normalized = normalizeText(filePath)
   if (!normalized) throw new Error('[AI Studio] 图片路径不能为空。')
   const buffer = await readFile(normalized)
-  if (!buffer || buffer.length <= 0) throw new Error(`[AI Studio] 图片为空：${basename(normalized)}`)
+  if (!buffer || buffer.length <= 0)
+    throw new Error(`[AI Studio] 图片为空：${basename(normalized)}`)
   return `data:${inferMimeType(normalized)};base64,${buffer.toString('base64')}`
 }
 
 function extractRemoteTaskId(payload: Record<string, unknown>): string | null {
-  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  const data =
+    payload.data && typeof payload.data === 'object'
+      ? (payload.data as Record<string, unknown>)
+      : {}
   return (
     normalizeNullableText(data.id) ??
     normalizeNullableText(data.taskId) ??
@@ -358,19 +377,27 @@ function extractRemoteTaskId(payload: Record<string, unknown>): string | null {
 function normalizeRunStatus(value: unknown, fallback = 'running'): string {
   const normalized = normalizeText(value).toLowerCase()
   if (!normalized) return fallback
-  if (normalized === 'submitted' || normalized === 'queued' || normalized === 'running') return normalized
-  if (normalized === 'succeeded' || normalized === 'completed' || normalized === 'success') return 'succeeded'
+  if (normalized === 'submitted' || normalized === 'queued' || normalized === 'running')
+    return normalized
+  if (normalized === 'succeeded' || normalized === 'completed' || normalized === 'success')
+    return 'succeeded'
   if (normalized === 'failed' || normalized === 'error') return 'failed'
   return fallback
 }
 
 function extractResultStatus(payload: Record<string, unknown>, fallback = 'running'): string {
-  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  const data =
+    payload.data && typeof payload.data === 'object'
+      ? (payload.data as Record<string, unknown>)
+      : {}
   return normalizeRunStatus(data.status ?? payload.status, fallback)
 }
 
 function extractFailureReason(payload: Record<string, unknown>): string | null {
-  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  const data =
+    payload.data && typeof payload.data === 'object'
+      ? (payload.data as Record<string, unknown>)
+      : {}
   return (
     normalizeNullableText(data.failure_reason) ??
     normalizeNullableText(data.error) ??
@@ -381,13 +408,20 @@ function extractFailureReason(payload: Record<string, unknown>): string | null {
 }
 
 function extractResultItems(payload: Record<string, unknown>): Array<Record<string, unknown>> {
-  const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {}
+  const data =
+    payload.data && typeof payload.data === 'object'
+      ? (payload.data as Record<string, unknown>)
+      : {}
   const results = Array.isArray(data.results) ? data.results : []
-  return results.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+  return results.filter(
+    (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+  )
 }
 
 function resolvePrompt(task: AiStudioTaskRecord, template: AiStudioTemplateRecord | null): string {
-  const segments = [normalizeText(template?.promptText), normalizeText(task.promptExtra)].filter(Boolean)
+  const segments = [normalizeText(template?.promptText), normalizeText(task.promptExtra)].filter(
+    Boolean
+  )
   if (segments.length > 0) return segments.join('\n\n')
   const productName = normalizeText(task.productName) || '当前商品'
   return `为商品「${productName}」生成一张电商静物图，保留主体材质与结构，适合后续筛图。`
@@ -403,7 +437,11 @@ function detectFallbackPrice(model: string): { min: number | null; max: number |
   return { min: null, max: null }
 }
 
-function toExecutionResult(task: AiStudioTaskRecord, run: AiStudioRunRecord, outputs: AiStudioAssetRecord[]): AiStudioRunExecutionResult {
+function toExecutionResult(
+  task: AiStudioTaskRecord,
+  run: AiStudioRunRecord,
+  outputs: AiStudioAssetRecord[]
+): AiStudioRunExecutionResult {
   return {
     task,
     run,
@@ -519,6 +557,7 @@ export class AiStudioService {
     if (!sqlite.isInitialized) {
       throw new Error('[AI Studio] SQLite 未初始化。')
     }
+    sqlite.ensureAiStudioSchema()
     return sqlite.connection as DbConnection
   }
 
@@ -544,7 +583,9 @@ export class AiStudioService {
   private getTemplateById(templateId: string | null | undefined): AiStudioTemplateRecord | null {
     const normalized = normalizeText(templateId)
     if (!normalized) return null
-    const row = this.db.prepare(`SELECT * FROM ai_studio_templates WHERE id = ? LIMIT 1`).get(normalized)
+    const row = this.db
+      .prepare(`SELECT * FROM ai_studio_templates WHERE id = ? LIMIT 1`)
+      .get(normalized)
     return row ? mapTemplateRow(row) : null
   }
 
@@ -554,7 +595,7 @@ export class AiStudioService {
       provider: normalizeText(provided.provider) || 'grsai',
       baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl)),
       apiKey: normalizeText(provided.apiKey),
-      defaultImageModel: normalizeText(provided.defaultImageModel) || DEFAULT_IMAGE_MODEL
+      defaultImageModel: resolveConfiguredModel(provided.defaultImageModel, DEFAULT_IMAGE_MODEL)
     }
   }
 
@@ -600,13 +641,17 @@ export class AiStudioService {
 
     const allowStatusCodes = new Set(options?.allowStatusCodes ?? [])
     if (!response.ok && !allowStatusCodes.has(statusCode)) {
-      throw new Error(extractFailureReason(parsedPayload) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}）。`)
+      throw new Error(
+        extractFailureReason(parsedPayload) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}）。`
+      )
     }
 
     return { statusCode, payload: parsedPayload }
   }
 
-  private async resolvePriceSnapshot(model: string): Promise<{ min: number | null; max: number | null }> {
+  private async resolvePriceSnapshot(
+    model: string
+  ): Promise<{ min: number | null; max: number | null }> {
     return detectFallbackPrice(model)
   }
 
@@ -626,9 +671,16 @@ export class AiStudioService {
     const config = this.getProviderConfig()
     const template = this.getTemplateById(task.templateId)
     const prompt = resolvePrompt(task, template)
-    const model = normalizeText(task.model) || config.defaultImageModel || DEFAULT_IMAGE_MODEL
+    const model = resolveConfiguredModel(
+      task.model,
+      config.defaultImageModel || DEFAULT_IMAGE_MODEL
+    )
     const sourceImagePaths = Array.from(
-      new Set([task.primaryImagePath, ...task.referenceImagePaths].map((item) => String(item ?? '').trim()).filter(Boolean))
+      new Set(
+        [task.primaryImagePath, ...task.referenceImagePaths]
+          .map((item) => String(item ?? '').trim())
+          .filter(Boolean)
+      )
     )
     if (sourceImagePaths.length === 0) {
       throw new Error('[AI Studio] 至少需要一张输入图片。')
@@ -657,7 +709,11 @@ export class AiStudioService {
     return { task, template, model, prompt, requestPayload, requestSnapshot }
   }
 
-  private async persistFailedSubmit(taskId: string, requestSnapshot: Record<string, unknown>, errorMessage: string): Promise<void> {
+  private async persistFailedSubmit(
+    taskId: string,
+    requestSnapshot: Record<string, unknown>,
+    errorMessage: string
+  ): Promise<void> {
     await this.recordRunAttempt({
       taskId,
       provider: 'grsai',
@@ -670,7 +726,9 @@ export class AiStudioService {
     })
   }
 
-  private decodeBase64Content(value: string): { buffer: Buffer; contentType: string | null } | null {
+  private decodeBase64Content(
+    value: string
+  ): { buffer: Buffer; contentType: string | null } | null {
     const normalized = normalizeText(value)
     if (!normalized) return null
 
@@ -682,7 +740,12 @@ export class AiStudioService {
     }
 
     const compact = normalized.replace(/\s+/g, '')
-    if (!compact || compact.length < 32 || compact.length % 4 !== 0 || !/^[a-z0-9+/=]+$/i.test(compact)) {
+    if (
+      !compact ||
+      compact.length < 32 ||
+      compact.length % 4 !== 0 ||
+      !/^[a-z0-9+/=]+$/i.test(compact)
+    ) {
       return null
     }
 
@@ -758,7 +821,11 @@ export class AiStudioService {
   async testConnection(): Promise<AiStudioProviderConnectionResult> {
     const config = this.getProviderConfig()
     const checkedAt = Date.now()
-    const response = await this.requestProvider(GRSAI_RESULT_PATH, { id: CONNECTION_TEST_ID }, { allowStatusCodes: [400] })
+    const response = await this.requestProvider(
+      GRSAI_RESULT_PATH,
+      { id: CONNECTION_TEST_ID },
+      { allowStatusCodes: [400] }
+    )
     return {
       success: true,
       provider: config.provider,
@@ -794,7 +861,11 @@ export class AiStudioService {
         startedAt: Date.now()
       })
 
-      return toExecutionResult(this.getTaskOrThrow(taskId), run, this.listAssets({ taskId, runId: run.id, kind: 'output' }))
+      return toExecutionResult(
+        this.getTaskOrThrow(taskId),
+        run,
+        this.listAssets({ taskId, runId: run.id, kind: 'output' })
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
@@ -822,7 +893,8 @@ export class AiStudioService {
       return this.listAssets({ taskId, runId, kind: 'output' })
     }
 
-    const runDir = normalizeText(run.runDir) || (await this.ensureTaskRunDirectory(taskId, run.runIndex)).dirPath
+    const runDir =
+      normalizeText(run.runDir) || (await this.ensureTaskRunDirectory(taskId, run.runIndex)).dirPath
     const assetsToWrite: AiStudioAssetWriteInput[] = []
     const failures: string[] = []
 
@@ -840,13 +912,20 @@ export class AiStudioService {
       }
     }
 
-    const persisted = assetsToWrite.length > 0 ? this.upsertAssets(assetsToWrite) : this.listAssets({ taskId, runId, kind: 'output' })
+    const persisted =
+      assetsToWrite.length > 0
+        ? this.upsertAssets(assetsToWrite)
+        : this.listAssets({ taskId, runId, kind: 'output' })
 
     if (failures.length > 0) {
       await this.recordRunAttempt({
         runId,
         taskId,
-        responsePayload: { ...run.responsePayload, downloadFailures: failures, resultCount: results.length },
+        responsePayload: {
+          ...run.responsePayload,
+          downloadFailures: failures,
+          resultCount: results.length
+        },
         errorMessage: failures[0]
       })
     }
@@ -854,7 +933,10 @@ export class AiStudioService {
     return persisted
   }
 
-  async pollRunResult(payload: { taskId: string; runId?: string | null }): Promise<AiStudioRunExecutionResult> {
+  async pollRunResult(payload: {
+    taskId: string
+    runId?: string | null
+  }): Promise<AiStudioRunExecutionResult> {
     const taskId = normalizeText(payload.taskId)
     if (!taskId) throw new Error('[AI Studio] taskId 不能为空。')
 
@@ -889,7 +971,10 @@ export class AiStudioService {
       finishedAt: status === 'succeeded' || status === 'failed' ? Date.now() : null
     })
 
-    const outputs = status === 'succeeded' ? await this.downloadOutputs({ taskId, runId: run.id, responsePayload: response.payload }) : this.listAssets({ taskId, runId: run.id, kind: 'output' })
+    const outputs =
+      status === 'succeeded'
+        ? await this.downloadOutputs({ taskId, runId: run.id, responsePayload: response.payload })
+        : this.listAssets({ taskId, runId: run.id, kind: 'output' })
 
     return toExecutionResult(this.getTaskOrThrow(taskId), run, outputs)
   }
@@ -899,7 +984,11 @@ export class AiStudioService {
     const startedAt = Date.now()
     let latest = submitted
 
-    while (latest.status === 'submitted' || latest.status === 'queued' || latest.status === 'running') {
+    while (
+      latest.status === 'submitted' ||
+      latest.status === 'queued' ||
+      latest.status === 'running'
+    ) {
       if (Date.now() - startedAt >= OUTPUT_POLL_TIMEOUT_MS) {
         return latest
       }
@@ -915,7 +1004,11 @@ export class AiStudioService {
           responsePayload: { ...latest.run.responsePayload, pollError: message },
           errorMessage: message
         })
-        return toExecutionResult(this.getTaskOrThrow(taskId), run, this.listAssets({ taskId, runId: run.id, kind: 'output' }))
+        return toExecutionResult(
+          this.getTaskOrThrow(taskId),
+          run,
+          this.listAssets({ taskId, runId: run.id, kind: 'output' })
+        )
       }
     }
 
@@ -927,7 +1020,9 @@ export class AiStudioService {
   }
 
   listTemplates(): AiStudioTemplateRecord[] {
-    const rows = this.db.prepare(`SELECT * FROM ai_studio_templates ORDER BY updated_at DESC, created_at DESC`).all()
+    const rows = this.db
+      .prepare(`SELECT * FROM ai_studio_templates ORDER BY updated_at DESC, created_at DESC`)
+      .all()
     return rows.map(mapTemplateRow)
   }
 
@@ -960,7 +1055,9 @@ export class AiStudioService {
       )
       .run(id, provider, name, promptText, toJson(input.config ?? {}), now, now)
 
-    return mapTemplateRow(this.db.prepare(`SELECT * FROM ai_studio_templates WHERE id = ? LIMIT 1`).get(id) ?? {})
+    return mapTemplateRow(
+      this.db.prepare(`SELECT * FROM ai_studio_templates WHERE id = ? LIMIT 1`).get(id) ?? {}
+    )
   }
 
   createTask(input: AiStudioTaskCreateInput): AiStudioTaskRecord {
@@ -1042,31 +1139,64 @@ export class AiStudioService {
   updateTask(taskId: string, patch: AiStudioTaskUpdateInput): AiStudioTaskRecord {
     const existing = this.getTaskOrThrow(taskId)
     const next = {
-      templateId: patch.templateId !== undefined ? normalizeNullableText(patch.templateId) : existing.templateId,
-      provider: patch.provider !== undefined ? normalizeText(patch.provider) || existing.provider : existing.provider,
+      templateId:
+        patch.templateId !== undefined
+          ? normalizeNullableText(patch.templateId)
+          : existing.templateId,
+      provider:
+        patch.provider !== undefined
+          ? normalizeText(patch.provider) || existing.provider
+          : existing.provider,
       sourceFolderPath:
-        patch.sourceFolderPath !== undefined ? normalizeNullableText(patch.sourceFolderPath) : existing.sourceFolderPath,
-      productName: patch.productName !== undefined ? normalizeText(patch.productName) : existing.productName,
+        patch.sourceFolderPath !== undefined
+          ? normalizeNullableText(patch.sourceFolderPath)
+          : existing.sourceFolderPath,
+      productName:
+        patch.productName !== undefined ? normalizeText(patch.productName) : existing.productName,
       status: patch.status !== undefined ? normalizeTaskStatus(patch.status) : existing.status,
-      aspectRatio: patch.aspectRatio !== undefined ? normalizeText(patch.aspectRatio) || '3:4' : existing.aspectRatio,
+      aspectRatio:
+        patch.aspectRatio !== undefined
+          ? normalizeText(patch.aspectRatio) || '3:4'
+          : existing.aspectRatio,
       outputCount:
-        patch.outputCount !== undefined ? normalizePositiveInteger(patch.outputCount, existing.outputCount) : existing.outputCount,
+        patch.outputCount !== undefined
+          ? normalizePositiveInteger(patch.outputCount, existing.outputCount)
+          : existing.outputCount,
       model: patch.model !== undefined ? normalizeText(patch.model) : existing.model,
-      promptExtra: patch.promptExtra !== undefined ? normalizeText(patch.promptExtra) : existing.promptExtra,
+      promptExtra:
+        patch.promptExtra !== undefined ? normalizeText(patch.promptExtra) : existing.promptExtra,
       primaryImagePath:
-        patch.primaryImagePath !== undefined ? normalizeNullableText(patch.primaryImagePath) : existing.primaryImagePath,
+        patch.primaryImagePath !== undefined
+          ? normalizeNullableText(patch.primaryImagePath)
+          : existing.primaryImagePath,
       referenceImagePaths:
-        patch.referenceImagePaths !== undefined ? normalizeStringArray(patch.referenceImagePaths) : existing.referenceImagePaths,
+        patch.referenceImagePaths !== undefined
+          ? normalizeStringArray(patch.referenceImagePaths)
+          : existing.referenceImagePaths,
       inputImagePaths:
-        patch.inputImagePaths !== undefined ? normalizeStringArray(patch.inputImagePaths) : existing.inputImagePaths,
-      remoteTaskId: patch.remoteTaskId !== undefined ? normalizeNullableText(patch.remoteTaskId) : existing.remoteTaskId,
-      latestRunId: patch.latestRunId !== undefined ? normalizeNullableText(patch.latestRunId) : existing.latestRunId,
+        patch.inputImagePaths !== undefined
+          ? normalizeStringArray(patch.inputImagePaths)
+          : existing.inputImagePaths,
+      remoteTaskId:
+        patch.remoteTaskId !== undefined
+          ? normalizeNullableText(patch.remoteTaskId)
+          : existing.remoteTaskId,
+      latestRunId:
+        patch.latestRunId !== undefined
+          ? normalizeNullableText(patch.latestRunId)
+          : existing.latestRunId,
       priceMinSnapshot:
-        patch.priceMinSnapshot !== undefined ? normalizeNullableNumber(patch.priceMinSnapshot) : existing.priceMinSnapshot,
+        patch.priceMinSnapshot !== undefined
+          ? normalizeNullableNumber(patch.priceMinSnapshot)
+          : existing.priceMinSnapshot,
       priceMaxSnapshot:
-        patch.priceMaxSnapshot !== undefined ? normalizeNullableNumber(patch.priceMaxSnapshot) : existing.priceMaxSnapshot,
+        patch.priceMaxSnapshot !== undefined
+          ? normalizeNullableNumber(patch.priceMaxSnapshot)
+          : existing.priceMaxSnapshot,
       billedState:
-        patch.billedState !== undefined ? normalizeBilledState(patch.billedState) : existing.billedState,
+        patch.billedState !== undefined
+          ? normalizeBilledState(patch.billedState)
+          : existing.billedState,
       metadata: patch.metadata !== undefined ? parseJsonObject(patch.metadata) : existing.metadata,
       updatedAt: Date.now()
     }
@@ -1126,7 +1256,9 @@ export class AiStudioService {
   deleteTask(taskId: string): { success: boolean } {
     const normalizedTaskId = normalizeText(taskId)
     if (!normalizedTaskId) return { success: false }
-    const result = this.db.prepare(`DELETE FROM ai_studio_tasks WHERE id = ?`).run(normalizedTaskId) as { changes?: number }
+    const result = this.db
+      .prepare(`DELETE FROM ai_studio_tasks WHERE id = ?`)
+      .run(normalizedTaskId) as { changes?: number }
     return { success: Number(result?.changes ?? 0) > 0 }
   }
 
@@ -1202,7 +1334,9 @@ export class AiStudioService {
             normalizeNullableText(input.previewPath),
             normalizeNullableText(input.originPath),
             input.selected === true ? 1 : 0,
-            typeof input.sortOrder === 'number' && Number.isFinite(input.sortOrder) ? Math.floor(input.sortOrder) : 0,
+            typeof input.sortOrder === 'number' && Number.isFinite(input.sortOrder)
+              ? Math.floor(input.sortOrder)
+              : 0,
             toJson(input.metadata ?? {}),
             now,
             now
@@ -1214,7 +1348,12 @@ export class AiStudioService {
     return this.listAssets({ ids: persistedIds })
   }
 
-  listAssets(query?: { taskId?: string; runId?: string; kind?: string; ids?: string[] }): AiStudioAssetRecord[] {
+  listAssets(query?: {
+    taskId?: string
+    runId?: string
+    kind?: string
+    ids?: string[]
+  }): AiStudioAssetRecord[] {
     const where: string[] = []
     const params: unknown[] = []
 
@@ -1253,7 +1392,10 @@ export class AiStudioService {
     return rows.map(mapAssetRow)
   }
 
-  async ensureTaskRunDirectory(taskId: string, runIndex?: number): Promise<{
+  async ensureTaskRunDirectory(
+    taskId: string,
+    runIndex?: number
+  ): Promise<{
     taskId: string
     runIndex: number
     dirPath: string
@@ -1265,7 +1407,9 @@ export class AiStudioService {
     let resolvedRunIndex = runIndex
     if (!resolvedRunIndex || resolvedRunIndex <= 0) {
       const row = this.db
-        .prepare(`SELECT COALESCE(MAX(run_index), 0) AS max_run_index FROM ai_studio_runs WHERE task_id = ?`)
+        .prepare(
+          `SELECT COALESCE(MAX(run_index), 0) AS max_run_index FROM ai_studio_runs WHERE task_id = ?`
+        )
         .get(normalizedTaskId)
       const maxRunIndex = Number(row?.max_run_index ?? 0) || 0
       resolvedRunIndex = maxRunIndex + 1
@@ -1301,21 +1445,41 @@ export class AiStudioService {
         provider: normalizeText(input.provider) || existingRun.provider,
         status: normalizeText(input.status) || existingRun.status,
         remoteTaskId:
-          input.remoteTaskId !== undefined ? normalizeNullableText(input.remoteTaskId) : existingRun.remoteTaskId,
+          input.remoteTaskId !== undefined
+            ? normalizeNullableText(input.remoteTaskId)
+            : existingRun.remoteTaskId,
         billedState:
-          input.billedState !== undefined ? normalizeBilledState(input.billedState) : existingRun.billedState,
+          input.billedState !== undefined
+            ? normalizeBilledState(input.billedState)
+            : existingRun.billedState,
         priceMinSnapshot:
-          input.priceMinSnapshot !== undefined ? normalizeNullableNumber(input.priceMinSnapshot) : existingRun.priceMinSnapshot,
+          input.priceMinSnapshot !== undefined
+            ? normalizeNullableNumber(input.priceMinSnapshot)
+            : existingRun.priceMinSnapshot,
         priceMaxSnapshot:
-          input.priceMaxSnapshot !== undefined ? normalizeNullableNumber(input.priceMaxSnapshot) : existingRun.priceMaxSnapshot,
+          input.priceMaxSnapshot !== undefined
+            ? normalizeNullableNumber(input.priceMaxSnapshot)
+            : existingRun.priceMaxSnapshot,
         requestPayload:
-          input.requestPayload !== undefined ? parseJsonObject(input.requestPayload) : existingRun.requestPayload,
+          input.requestPayload !== undefined
+            ? parseJsonObject(input.requestPayload)
+            : existingRun.requestPayload,
         responsePayload:
-          input.responsePayload !== undefined ? parseJsonObject(input.responsePayload) : existingRun.responsePayload,
+          input.responsePayload !== undefined
+            ? parseJsonObject(input.responsePayload)
+            : existingRun.responsePayload,
         errorMessage:
-          input.errorMessage !== undefined ? normalizeNullableText(input.errorMessage) : existingRun.errorMessage,
-        startedAt: input.startedAt !== undefined ? normalizeNullableNumber(input.startedAt) : existingRun.startedAt,
-        finishedAt: input.finishedAt !== undefined ? normalizeNullableNumber(input.finishedAt) : existingRun.finishedAt,
+          input.errorMessage !== undefined
+            ? normalizeNullableText(input.errorMessage)
+            : existingRun.errorMessage,
+        startedAt:
+          input.startedAt !== undefined
+            ? normalizeNullableNumber(input.startedAt)
+            : existingRun.startedAt,
+        finishedAt:
+          input.finishedAt !== undefined
+            ? normalizeNullableNumber(input.finishedAt)
+            : existingRun.finishedAt,
         updatedAt: now
       }
 
@@ -1385,7 +1549,8 @@ export class AiStudioService {
     const responsePayload = parseJsonObject(input.responsePayload)
     const errorMessage = normalizeNullableText(input.errorMessage)
     const startedAt = input.startedAt !== undefined ? normalizeNullableNumber(input.startedAt) : now
-    const finishedAt = input.finishedAt !== undefined ? normalizeNullableNumber(input.finishedAt) : null
+    const finishedAt =
+      input.finishedAt !== undefined ? normalizeNullableNumber(input.finishedAt) : null
 
     this.db
       .prepare(
@@ -1505,7 +1670,9 @@ export class AiStudioService {
             .run(now, taskId, ...assetIds)
         } else {
           this.db
-            .prepare(`UPDATE ai_studio_assets SET selected = 0, updated_at = ? WHERE task_id = ? AND kind = 'output'`)
+            .prepare(
+              `UPDATE ai_studio_assets SET selected = 0, updated_at = ? WHERE task_id = ? AND kind = 'output'`
+            )
             .run(now, taskId)
         }
       }
