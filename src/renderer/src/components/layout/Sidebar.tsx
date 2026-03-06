@@ -6,6 +6,7 @@ import {
   Image,
   Rocket,
   Settings,
+  Sparkles,
   Trophy,
   UploadCloud
 } from 'lucide-react'
@@ -13,6 +14,7 @@ import {
 import { cn } from '@renderer/lib/utils'
 
 export type SidebarItemKey =
+  | 'aiStudio'
   | 'workshop'
   | 'upload'
   | 'material'
@@ -32,6 +34,7 @@ const iconMap = {
   Image,
   Rocket,
   Settings,
+  Sparkles,
   Trophy,
   UploadCloud
 } as const
@@ -45,6 +48,7 @@ type MenuItem = {
 }
 
 const menuItems: MenuItem[] = [
+  { id: 'aiStudio', icon: 'Sparkles', label: 'AI素材工作台' },
   { id: 'material', icon: 'Image', label: '素材处理' },
   { id: 'workshop', icon: 'Database', label: '数据工坊' },
   // { id: 'upload', icon: 'UploadCloud', label: '上传管理' },

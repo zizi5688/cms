@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 export type TaskStatus = 'idle' | 'uploading' | 'success' | 'error'
 export type ActiveModuleKey =
+  | 'aiStudio'
   | 'workshop'
   | 'upload'
   | 'material'
