@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type * as React from 'react'
 
-import { ImagePlus, Wand2 } from 'lucide-react'
+import { CopyPlus, ImagePlus, Plus, Save, Wand2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -92,17 +92,77 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   const addLog = useCmsStore((store) => store.addLog)
   const aiConfig = useCmsStore((store) => store.config)
   const [isStartingRun, setIsStartingRun] = useState(false)
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false)
   const [isCustomModel, setIsCustomModel] = useState(false)
+  const [templateNameDraft, setTemplateNameDraft] = useState('')
+  const [templatePromptDraft, setTemplatePromptDraft] = useState('')
 
   useEffect(() => {
     const normalized = normalizeGrsaiModelValue(task?.model)
     setIsCustomModel(Boolean(normalized) && !isKnownGrsaiModel(normalized))
   }, [task?.id, task?.model])
 
+  useEffect(() => {
+    setTemplateNameDraft(state.selectedTemplate?.name ?? '')
+    setTemplatePromptDraft(state.selectedTemplate?.promptText ?? '')
+  }, [state.selectedTemplate?.id, state.selectedTemplate?.updatedAt, task?.templateId])
+
+  const handleSaveTemplate = async (mode: 'save' | 'saveAs'): Promise<void> => {
+    const trimmedName = templateNameDraft.trim()
+    const trimmedPrompt = templatePromptDraft.trim()
+    if (!trimmedName) {
+      window.alert('请先填写模板名称。')
+      return
+    }
+    if (!trimmedPrompt) {
+      window.alert('请先填写主提示词。')
+      return
+    }
+
+    try {
+      setIsSavingTemplate(true)
+      const saved = await state.saveTemplate({
+        templateId: mode === 'save' ? (state.selectedTemplate?.id ?? null) : null,
+        name: trimmedName,
+        promptText: trimmedPrompt
+      })
+      setTemplateNameDraft(saved.name)
+      setTemplatePromptDraft(saved.promptText)
+      addLog(
+        `[AI Studio] 模板已${mode === 'save' && state.selectedTemplate ? '保存' : '创建'}：${saved.name}`
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 模板保存失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsSavingTemplate(false)
+    }
+  }
+
+  const handleCreateNewTemplate = async (): Promise<void> => {
+    await state.setTemplateId('')
+    setTemplateNameDraft('')
+    setTemplatePromptDraft('')
+    addLog('[AI Studio] 已切换到新建模板草稿')
+  }
+
   const handleStartRun = async (): Promise<void> => {
     if (!task || isStartingRun) return
     if (!aiConfig.aiApiKey.trim()) {
       const message = '请先在 Settings > AI服务 中填写 API Key。'
+      addLog(`[AI Studio] ${message}`)
+      window.alert(message)
+      return
+    }
+    if (!state.selectedTemplate?.promptText.trim()) {
+      const message = '请先保存一份包含主提示词的模板。'
+      addLog(`[AI Studio] ${message}`)
+      window.alert(message)
+      return
+    }
+    if (isTemplateDirty) {
+      const message = '模板主提示词有未保存修改，请先保存或另存为。'
       addLog(`[AI Studio] ${message}`)
       window.alert(message)
       return
@@ -152,7 +212,7 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   const referenceAssets = state.activeInputAssets.filter((asset) =>
     state.referenceImagePaths.includes(asset.filePath)
   )
-  const templateValue = task.templateId || state.templates[0]?.id || ''
+  const templateValue = state.selectedTemplate?.id ?? ''
   const configuredModel = normalizeGrsaiModelValue(task.model)
   const inheritedModel = resolveDisplayedGrsaiModel(
     aiConfig.aiDefaultImageModel,
@@ -160,24 +220,64 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   )
   const selectedPresetModel = isKnownGrsaiModel(configuredModel) ? configuredModel : inheritedModel
   const customModelValue = isCustomModel ? configuredModel : ''
+  const trimmedTemplateName = templateNameDraft.trim()
+  const trimmedTemplatePrompt = templatePromptDraft.trim()
+  const savedTemplateName = state.selectedTemplate?.name.trim() ?? ''
+  const savedTemplatePrompt = state.selectedTemplate?.promptText.trim() ?? ''
+  const isTemplateDirty =
+    trimmedTemplateName !== savedTemplateName || trimmedTemplatePrompt !== savedTemplatePrompt
+  const canSaveTemplate = Boolean(trimmedTemplateName && trimmedTemplatePrompt) && !isSavingTemplate
+  const hasSavedMainPrompt = Boolean(state.selectedTemplate?.promptText.trim())
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-        <label className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1 sm:col-span-2 xl:col-span-1 2xl:col-span-2">
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模板</span>
-          <select
-            value={templateValue}
-            onChange={(event) => void state.setTemplateId(event.target.value)}
-            className="h-10 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-          >
-            {state.templates.map((template) => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-              </option>
-            ))}
-          </select>
-        </label>
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+            <select
+              value={templateValue}
+              onChange={(event) => void state.setTemplateId(event.target.value)}
+              className="h-10 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              <option value="">未选择模板</option>
+              {state.templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <Button type="button" variant="outline" onClick={() => void handleCreateNewTemplate()}>
+              <Plus className="h-4 w-4" />
+              新建模板
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canSaveTemplate}
+              onClick={() => void handleSaveTemplate('save')}
+            >
+              <Save className="h-4 w-4" />
+              {isSavingTemplate ? '保存中...' : '保存'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canSaveTemplate}
+              onClick={() => void handleSaveTemplate('saveAs')}
+            >
+              <CopyPlus className="h-4 w-4" />
+              另存为
+            </Button>
+          </div>
+          <div className="text-[11px] text-zinc-500">
+            {state.selectedTemplate
+              ? isTemplateDirty
+                ? '当前模板有未保存修改，生成前请先保存或另存为。'
+                : `当前模板：${state.selectedTemplate.name}`
+              : '当前未选择模板，请先新建模板并保存主提示词。'}
+          </div>
+        </div>
 
         <label className="flex flex-col gap-1">
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">比例</span>
@@ -202,7 +302,7 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
           />
         </label>
 
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 sm:col-span-2 xl:col-span-1 2xl:col-span-2">
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模型</span>
           <select
             value={isCustomModel ? CUSTOM_GRSAI_MODEL_SENTINEL : selectedPresetModel}
@@ -247,6 +347,26 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
         </label>
       </div>
 
+      <label className="flex flex-col gap-1">
+        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模板名称</span>
+        <Input
+          value={templateNameDraft}
+          onChange={(event) => setTemplateNameDraft(event.target.value)}
+          placeholder="例如：电商女装镜前生活感"
+          spellCheck={false}
+        />
+      </label>
+
+      <label className="flex min-h-0 flex-col gap-1">
+        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">主提示词</span>
+        <textarea
+          value={templatePromptDraft}
+          onChange={(event) => setTemplatePromptDraft(event.target.value)}
+          className="min-h-[112px] rounded-2xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-zinc-100 outline-none ring-0 transition focus:border-zinc-700 focus-visible:ring-2 focus-visible:ring-zinc-500"
+          placeholder="描述主体、构图、光线、镜头语言与整体气质，这部分会保存到模板。"
+        />
+      </label>
+
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="mb-2 text-xs text-zinc-500">主图</div>
@@ -269,12 +389,12 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
       </div>
 
       <label className="flex min-h-0 flex-col gap-1">
-        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">要求</span>
+        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">附加要求</span>
         <textarea
           value={task.promptExtra}
           onChange={(event) => void state.setPromptExtra(event.target.value)}
           className="min-h-[96px] rounded-2xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-zinc-100 outline-none ring-0 transition focus:border-zinc-700 focus-visible:ring-2 focus-visible:ring-zinc-500"
-          placeholder="补充限制、场景、质感"
+          placeholder="补充本次任务的限制、场景、质感，不会写回模板。"
         />
       </label>
 
@@ -338,10 +458,22 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
         {!task.primaryImagePath ? (
           <div className="text-xs text-zinc-500">主图未设置，暂时无法开始生成。</div>
         ) : null}
+        {!hasSavedMainPrompt ? (
+          <div className="text-xs text-zinc-500">请先保存一份包含主提示词的模板。</div>
+        ) : null}
+        {isTemplateDirty ? (
+          <div className="text-xs text-amber-400">模板内容有未保存修改，请先保存或另存为。</div>
+        ) : null}
         <Button
           type="button"
           className="h-11 w-full rounded-xl bg-zinc-50 text-zinc-950 hover:bg-white"
-          disabled={!task.primaryImagePath || !aiConfig.aiApiKey.trim() || isStartingRun}
+          disabled={
+            !task.primaryImagePath ||
+            !aiConfig.aiApiKey.trim() ||
+            !hasSavedMainPrompt ||
+            isTemplateDirty ||
+            isStartingRun
+          }
           onClick={() => void handleStartRun()}
         >
           <Wand2 className="h-4 w-4" />

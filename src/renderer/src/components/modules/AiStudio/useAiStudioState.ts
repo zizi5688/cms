@@ -76,16 +76,6 @@ export type AiStudioBatchCostSummary = {
 
 export const MAX_AI_STUDIO_REFERENCE_IMAGES = 4
 
-const DEFAULT_TEMPLATE: AiStudioTemplateRecord = {
-  id: 'builtin-product-studio',
-  provider: 'grsai',
-  name: '电商静物棚拍',
-  promptText: '',
-  config: {},
-  createdAt: 0,
-  updatedAt: 0
-}
-
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
 }
@@ -210,9 +200,28 @@ function normalizeTask(task: AiStudioTaskRecord): AiStudioTaskRecord {
   }
 }
 
-function buildFallbackTemplates(templates: AiStudioTemplateRecord[]): AiStudioTemplateRecord[] {
-  if (templates.length > 0) return templates
-  return [DEFAULT_TEMPLATE]
+function coerceTemplateRecord(template: unknown): AiStudioTemplateRecord {
+  const record = (template ?? {}) as Record<string, unknown>
+  return {
+    id: String(record.id ?? ''),
+    provider: typeof record.provider === 'string' ? record.provider : 'grsai',
+    name: typeof record.name === 'string' ? record.name : '',
+    promptText: typeof record.promptText === 'string' ? record.promptText : '',
+    config:
+      record.config && typeof record.config === 'object'
+        ? (record.config as Record<string, unknown>)
+        : {},
+    createdAt: typeof record.createdAt === 'number' ? record.createdAt : 0,
+    updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
+  }
+}
+
+function sortTemplates(templates: AiStudioTemplateRecord[]): AiStudioTemplateRecord[] {
+  return [...templates].sort((left, right) => {
+    if (left.updatedAt !== right.updatedAt) return right.updatedAt - left.updatedAt
+    if (left.createdAt !== right.createdAt) return right.createdAt - left.createdAt
+    return left.name.localeCompare(right.name, 'zh-CN')
+  })
 }
 
 function coerceTaskRecord(task: unknown): AiStudioTaskRecord {
@@ -307,17 +316,7 @@ function useAiStudioState() {
         window.api.cms.aiStudio.task.list({ limit: 300 }),
         window.api.cms.aiStudio.asset.list().catch(() => [])
       ])
-      const nextTemplates = buildFallbackTemplates(
-        (templateRows ?? []).map((item) => ({
-          id: String(item.id ?? ''),
-          provider: String(item.provider ?? 'grsai'),
-          name: String(item.name ?? ''),
-          promptText: String(item.promptText ?? ''),
-          config: item.config && typeof item.config === 'object' ? item.config : {},
-          createdAt: typeof item.createdAt === 'number' ? item.createdAt : 0,
-          updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0
-        }))
-      )
+      const nextTemplates = sortTemplates((templateRows ?? []).map(coerceTemplateRecord))
       const nextTasks = (taskRows ?? []).map(coerceTaskRecord)
       const nextAssets = (assetRows ?? []).map(coerceAssetRecord)
       setTemplates(nextTemplates)
@@ -414,7 +413,7 @@ function useAiStudioState() {
     return { min, max, label: formatCost(min, max) }
   }, [selectedTaskIds, taskViews, visibleTasks])
 
-  const templateOptions = useMemo(() => buildFallbackTemplates(templates), [templates])
+  const templateOptions = useMemo(() => sortTemplates(templates), [templates])
 
   const replaceTask = useCallback((nextTask: AiStudioTaskRecord) => {
     setTasks((prev) => mergeById(prev, [normalizeTask(nextTask)]))
@@ -428,6 +427,10 @@ function useAiStudioState() {
 
   const replaceAssets = useCallback((nextAssets: AiStudioAssetRecord[]) => {
     setAssets((prev) => mergeById(prev, nextAssets.map(coerceAssetRecord)))
+  }, [])
+
+  const replaceTemplate = useCallback((nextTemplate: AiStudioTemplateRecord) => {
+    setTemplates((prev) => sortTemplates(mergeById(prev, [coerceTemplateRecord(nextTemplate)])))
   }, [])
 
   const removeTaskLocally = useCallback((taskId: string) => {
@@ -552,7 +555,7 @@ function useAiStudioState() {
       )
       const created = coerceTaskRecord(
         await window.api.cms.aiStudio.task.create({
-          templateId: baseTask?.templateId ?? templateOptions[0]?.id ?? null,
+          templateId: baseTask?.templateId ?? null,
           provider: 'grsai',
           sourceFolderPath: null,
           productName: inferredName || baseTask?.productName || '未命名任务',
@@ -829,6 +832,30 @@ function useAiStudioState() {
     [activeTask, updateTaskPatch]
   )
 
+  const saveTemplate = useCallback(
+    async (payload: { templateId?: string | null; name: string; promptText: string }) => {
+      const saved = coerceTemplateRecord(
+        await window.api.cms.aiStudio.template.upsert({
+          id: String(payload.templateId ?? '').trim() || undefined,
+          provider: 'grsai',
+          name: String(payload.name ?? '').trim(),
+          promptText: String(payload.promptText ?? '').trim()
+        })
+      )
+      replaceTemplate(saved)
+      if (activeTask && activeTask.templateId !== saved.id) {
+        await updateTaskPatch(activeTask.id, { templateId: saved.id })
+      }
+      return saved
+    },
+    [activeTask, replaceTemplate, updateTaskPatch]
+  )
+
+  const selectedTemplate = useMemo(() => {
+    if (!activeTask?.templateId) return null
+    return templateOptions.find((template) => template.id === activeTask.templateId) ?? null
+  }, [activeTask?.templateId, templateOptions])
+
   const exceptionCount = useMemo(
     () => taskViews.filter((task) => task.status === 'failed').length,
     [taskViews]
@@ -836,6 +863,7 @@ function useAiStudioState() {
 
   return {
     templates: templateOptions,
+    selectedTemplate,
     tasks: taskViews,
     visibleTasks,
     activeTask,
@@ -868,7 +896,8 @@ function useAiStudioState() {
     setOutputCount,
     setAspectRatio,
     setModel,
-    setTemplateId
+    setTemplateId,
+    saveTemplate
   }
 }
 
