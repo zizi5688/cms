@@ -813,6 +813,8 @@ declare global {
             success: boolean
             provider: string
             baseUrl: string
+            model: string
+            endpointPath: string
             checkedAt: number
             statusCode: number | null
             message: string
@@ -954,6 +956,9 @@ declare global {
             priceMinSnapshot: number | null
             priceMaxSnapshot: number | null
           }>
+        }
+        run: {
+          get: (payload: { runId: string }) => Promise<AiStudioRunRecord | null>
         }
         asset: {
           list: (payload?: {
@@ -1181,10 +1186,19 @@ declare global {
     setWorkspacePath: (path: string) => Promise<{ path: string }>
     relaunch: () => Promise<{ success: true }>
     getConfig: () => Promise<{
-      aiProvider: 'grsai'
+      aiProvider: string
       aiBaseUrl: string
       aiApiKey: string
       aiDefaultImageModel: string
+      aiEndpointPath: string
+      aiProviderProfiles: Array<{
+        id: string
+        providerName: string
+        baseUrl: string
+        apiKey: string
+        models: Array<{ id: string; modelName: string; endpointPath: string }>
+        defaultModelId: string | null
+      }>
       importStrategy: 'copy' | 'move'
       realEsrganPath: string
       pythonPath: string
@@ -1203,10 +1217,19 @@ declare global {
       defaultInterval: number
     }>
     saveConfig: (patch: {
-      aiProvider?: 'grsai'
+      aiProvider?: string
       aiBaseUrl?: string
       aiApiKey?: string
       aiDefaultImageModel?: string
+      aiEndpointPath?: string
+      aiProviderProfiles?: Array<{
+        id: string
+        providerName: string
+        baseUrl: string
+        apiKey: string
+        models: Array<{ id: string; modelName: string; endpointPath: string }>
+        defaultModelId: string | null
+      }>
       importStrategy?: 'copy' | 'move'
       realEsrganPath?: string
       pythonPath?: string
@@ -1260,6 +1283,7 @@ declare global {
     ) => () => void
     deleteFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
     shellShowItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>
+    shellOpenPath: (filePath: string) => Promise<{ success: boolean; error?: string }>
     exportFiles: (
       filePaths: string[]
     ) => Promise<{ success: true; copied: number; destinationDir: string } | { success: false; error: string } | null>

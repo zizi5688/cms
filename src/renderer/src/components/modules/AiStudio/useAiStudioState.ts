@@ -59,6 +59,26 @@ export type AiStudioAssetRecord = {
   updatedAt: number
 }
 
+export type AiStudioRunRecord = {
+  id: string
+  taskId: string
+  runIndex: number
+  provider: string
+  status: string
+  remoteTaskId: string | null
+  billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+  priceMinSnapshot: number | null
+  priceMaxSnapshot: number | null
+  runDir: string | null
+  requestPayload: Record<string, unknown>
+  responsePayload: Record<string, unknown>
+  errorMessage: string | null
+  startedAt: number | null
+  finishedAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
 export type AiStudioTaskStatusFilter = 'all' | 'draft' | 'running' | 'failed' | 'completed'
 
 export type AiStudioTaskView = AiStudioTaskRecord & {

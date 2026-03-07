@@ -10,15 +10,12 @@ import {
   CardTitle
 } from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
+import { CUSTOM_GRSAI_MODEL_SENTINEL, GRSAI_MODEL_OPTIONS } from '@renderer/lib/grsaiModels'
 import {
-  CUSTOM_GRSAI_MODEL_SENTINEL,
-  DEFAULT_GRSAI_IMAGE_MODEL,
-  GRSAI_MODEL_OPTIONS,
-  isKnownGrsaiModel,
-  normalizeGrsaiModelValue,
-  resolveDisplayedGrsaiModel
-} from '@renderer/lib/grsaiModels'
-import { useCmsStore } from '@renderer/store/useCmsStore'
+  useCmsStore,
+  type AiModelProfile,
+  type AiProviderProfile
+} from '@renderer/store/useCmsStore'
 
 function isNonEmpty(value: string): boolean {
   return value.trim().length > 0
@@ -63,6 +60,68 @@ type AutoImportScanProgress = {
 }
 
 const NOTE_RACE_DATA_RESET_EVENT = 'note-race:data-reset'
+const CUSTOM_AI_PROVIDER_SENTINEL = '__custom_provider__'
+
+function normalizeAiProviderValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeAiEndpointPath(value: unknown): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized) return ''
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized.replace(/\/+$/, '')
+  }
+  return normalized.startsWith('/') ? normalized : `/${normalized}`
+}
+
+function findProviderProfile(
+  profiles: AiProviderProfile[],
+  providerName: string
+): AiProviderProfile | null {
+  const normalized = normalizeAiProviderValue(providerName).toLowerCase()
+  if (!normalized) return profiles[0] ?? null
+  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? profiles[0] ?? null
+}
+
+function findModelProfile(
+  providerProfile: AiProviderProfile | null,
+  modelName: string
+): AiModelProfile | null {
+  if (!providerProfile) return null
+  const normalized = normalizeAiProviderValue(modelName).toLowerCase()
+  if (!normalized) return null
+  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+}
+
+function resolveProviderModel(
+  providerProfile: AiProviderProfile | null,
+  preferredModelName: string
+): AiModelProfile | null {
+  const preferred = findModelProfile(providerProfile, preferredModelName)
+  if (preferred) return preferred
+  if (providerProfile?.defaultModelId) {
+    return providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+  }
+  return providerProfile?.models[0] ?? null
+}
+
+function buildAiConfigPatch(
+  profiles: AiProviderProfile[],
+  providerName: string,
+  preferredModelName = ''
+) {
+  const activeProvider = findProviderProfile(profiles, providerName)
+  const activeModel = resolveProviderModel(activeProvider, preferredModelName)
+  return {
+    aiProviderProfiles: profiles,
+    aiProvider: activeProvider?.providerName || normalizeAiProviderValue(providerName) || 'grsai',
+    aiBaseUrl: activeProvider?.baseUrl ?? '',
+    aiApiKey: activeProvider?.apiKey ?? '',
+    aiDefaultImageModel: activeModel?.modelName ?? '',
+    aiEndpointPath: activeModel?.endpointPath ?? ''
+  }
+}
 
 function formatDateTime(value: number | null): string {
   if (!Number.isFinite(Number(value))) return '--'
@@ -122,7 +181,11 @@ function Settings(): React.JSX.Element {
 
   const [isTesting, setIsTesting] = useState(false)
   const [isTestingAiService, setIsTestingAiService] = useState(false)
+  const [isCustomProvider, setIsCustomProvider] = useState(false)
   const [isCustomDefaultModel, setIsCustomDefaultModel] = useState(false)
+  const [customProviderName, setCustomProviderName] = useState('')
+  const [customModelName, setCustomModelName] = useState('')
+  const [modelEndpointDraft, setModelEndpointDraft] = useState('')
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
   const [isResettingNoteRace, setIsResettingNoteRace] = useState(false)
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false)
@@ -140,17 +203,40 @@ function Settings(): React.JSX.Element {
   const scriptPickerRef = useRef<HTMLInputElement | null>(null)
   const skipFirstSaveRef = useRef(true)
   const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
+  const providerProfiles = config.aiProviderProfiles ?? []
+  const activeProviderProfile = useMemo(
+    () => findProviderProfile(providerProfiles, config.aiProvider),
+    [providerProfiles, config.aiProvider]
+  )
+  const activeModelProfile = useMemo(
+    () => resolveProviderModel(activeProviderProfile, config.aiDefaultImageModel),
+    [activeProviderProfile, config.aiDefaultImageModel]
+  )
+  const providerModelOptions = useMemo(() => {
+    const savedOptions = (activeProviderProfile?.models ?? []).map((model) => ({
+      value: model.modelName,
+      label: model.modelName
+    }))
+    if (activeProviderProfile?.providerName.toLowerCase() !== 'grsai') {
+      return savedOptions
+    }
+    const existingValues = new Set(savedOptions.map((option) => option.value.toLowerCase()))
+    const presetOptions = GRSAI_MODEL_OPTIONS.filter(
+      (option) => !existingValues.has(option.value.toLowerCase())
+    ).map((option) => ({ value: option.value, label: option.label }))
+    return [...savedOptions, ...presetOptions]
+  }, [activeProviderProfile])
 
   useEffect(() => {
-    const normalized = normalizeGrsaiModelValue(config.aiDefaultImageModel)
-    if (normalized && !isKnownGrsaiModel(normalized)) {
-      setIsCustomDefaultModel(true)
-      return
-    }
-    if (normalized && isKnownGrsaiModel(normalized)) {
-      setIsCustomDefaultModel(false)
-    }
-  }, [config.aiDefaultImageModel])
+    if (isCustomProvider) return
+    setCustomProviderName('')
+  }, [activeProviderProfile, isCustomProvider])
+
+  useEffect(() => {
+    if (isCustomDefaultModel) return
+    setCustomModelName('')
+    setModelEndpointDraft(activeModelProfile?.endpointPath ?? config.aiEndpointPath)
+  }, [activeModelProfile, config.aiEndpointPath, isCustomDefaultModel])
 
   useEffect(() => {
     const startedAt = performance.now()
@@ -217,10 +303,17 @@ function Settings(): React.JSX.Element {
         const savedTools = await window.electronAPI.getConfig()
         if (!cancelled && savedTools) {
           updateConfig({
-            aiProvider: savedTools.aiProvider === 'grsai' ? savedTools.aiProvider : 'grsai',
+            aiProvider:
+              typeof savedTools.aiProvider === 'string' && savedTools.aiProvider.trim()
+                ? savedTools.aiProvider.trim()
+                : 'grsai',
             aiBaseUrl: savedTools.aiBaseUrl ?? '',
             aiApiKey: savedTools.aiApiKey ?? '',
             aiDefaultImageModel: savedTools.aiDefaultImageModel ?? '',
+            aiEndpointPath: savedTools.aiEndpointPath ?? '',
+            aiProviderProfiles: Array.isArray(savedTools.aiProviderProfiles)
+              ? savedTools.aiProviderProfiles
+              : [],
             importStrategy: savedTools.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: savedTools.realEsrganPath ?? '',
             pythonPath: savedTools.pythonPath ?? '',
@@ -343,6 +436,8 @@ function Settings(): React.JSX.Element {
           aiBaseUrl: config.aiBaseUrl,
           aiApiKey: config.aiApiKey,
           aiDefaultImageModel: config.aiDefaultImageModel,
+          aiEndpointPath: config.aiEndpointPath,
+          aiProviderProfiles: config.aiProviderProfiles,
           importStrategy: config.importStrategy,
           realEsrganPath: config.realEsrganPath,
           pythonPath: config.pythonPath,
@@ -368,7 +463,9 @@ function Settings(): React.JSX.Element {
     config.aiApiKey,
     config.aiBaseUrl,
     config.aiDefaultImageModel,
+    config.aiEndpointPath,
     config.aiProvider,
+    config.aiProviderProfiles,
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
@@ -641,10 +738,161 @@ function Settings(): React.JSX.Element {
     }
   }
 
+  const handleSelectProvider = (providerName: string): void => {
+    const nextPatch = buildAiConfigPatch(providerProfiles, providerName)
+    updateConfig(nextPatch)
+    setIsCustomProvider(false)
+    setIsCustomDefaultModel(false)
+    setCustomProviderName('')
+    setCustomModelName('')
+    setModelEndpointDraft(nextPatch.aiEndpointPath)
+  }
+
+  const handleProviderFieldChange = (field: 'baseUrl' | 'apiKey', value: string): void => {
+    if (!activeProviderProfile) {
+      updateConfig(
+        field === 'baseUrl'
+          ? { aiBaseUrl: value }
+          : { aiApiKey: value }
+      )
+      return
+    }
+    const nextProfiles = providerProfiles.map((profile) =>
+      profile.id === activeProviderProfile.id ? { ...profile, [field]: value } : profile
+    )
+    updateConfig(buildAiConfigPatch(nextProfiles, activeProviderProfile.providerName, config.aiDefaultImageModel))
+  }
+
+  const handleSelectModel = (modelName: string): void => {
+    if (!activeProviderProfile) return
+    const normalizedModelName = normalizeAiProviderValue(modelName)
+    if (!normalizedModelName) return
+    const existingModel = findModelProfile(activeProviderProfile, normalizedModelName)
+    const nextProfiles = providerProfiles.map((profile) => {
+      if (profile.id !== activeProviderProfile.id) return profile
+      if (existingModel) {
+        return { ...profile, defaultModelId: existingModel.id }
+      }
+      const createdModel = {
+        id: crypto.randomUUID(),
+        modelName: normalizedModelName,
+        endpointPath: ''
+      }
+      return {
+        ...profile,
+        models: [...profile.models, createdModel],
+        defaultModelId: createdModel.id
+      }
+    })
+    const nextPatch = buildAiConfigPatch(nextProfiles, activeProviderProfile.providerName, normalizedModelName)
+    updateConfig(nextPatch)
+    setIsCustomDefaultModel(false)
+    setCustomModelName('')
+    setModelEndpointDraft(nextPatch.aiEndpointPath)
+  }
+
+  const handleSaveProvider = (): void => {
+    const providerName = normalizeAiProviderValue(customProviderName)
+    if (!providerName) {
+      const message = '请先填写供应商名称。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const existingProvider = findProviderProfile(providerProfiles, providerName)
+    if (existingProvider && existingProvider.providerName.toLowerCase() === providerName.toLowerCase()) {
+      handleSelectProvider(existingProvider.providerName)
+      return
+    }
+    const nextProfiles = [
+      ...providerProfiles,
+      {
+        id: crypto.randomUUID(),
+        providerName,
+        baseUrl: '',
+        apiKey: '',
+        models: [],
+        defaultModelId: null
+      }
+    ]
+    updateConfig(buildAiConfigPatch(nextProfiles, providerName))
+    setIsCustomProvider(false)
+    setIsCustomDefaultModel(false)
+    setCustomProviderName('')
+    setCustomModelName('')
+    setModelEndpointDraft('')
+    addLog(`[AI服务] 已保存供应商：${providerName}`)
+  }
+
+  const handleSaveModel = (): void => {
+    if (!activeProviderProfile) {
+      const message = '请先保存并选择供应商。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const modelName = normalizeAiProviderValue(
+      isCustomDefaultModel ? customModelName : config.aiDefaultImageModel
+    )
+    if (!modelName) {
+      const message = '请先填写模型名称。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const endpointPath = normalizeAiEndpointPath(modelEndpointDraft)
+    if (!endpointPath) {
+      const message = '请先填写 API 端点。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const nextProfiles = providerProfiles.map((profile) => {
+      if (profile.id !== activeProviderProfile.id) return profile
+      const existingModel = findModelProfile(profile, modelName)
+      if (existingModel) {
+        return {
+          ...profile,
+          models: profile.models.map((model) =>
+            model.id === existingModel.id ? { ...model, endpointPath } : model
+          ),
+          defaultModelId: existingModel.id
+        }
+      }
+      const createdModel = {
+        id: crypto.randomUUID(),
+        modelName,
+        endpointPath
+      }
+      return {
+        ...profile,
+        models: [...profile.models, createdModel],
+        defaultModelId: createdModel.id
+      }
+    })
+    updateConfig(buildAiConfigPatch(nextProfiles, activeProviderProfile.providerName, modelName))
+    setIsCustomDefaultModel(false)
+    setCustomModelName('')
+    setModelEndpointDraft(endpointPath)
+    addLog(`[AI服务] 已保存模型：${activeProviderProfile.providerName} / ${modelName}`)
+  }
+
   const testAiServiceConnection = async (): Promise<void> => {
     if (isTestingAiService) return
+    if (!activeProviderProfile) {
+      const message = '请先保存并选择供应商。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
     if (!isNonEmpty(config.aiApiKey)) {
       const message = '请先填写 AI API Key。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    if (!isNonEmpty(config.aiDefaultImageModel)) {
+      const message = '请先选择或保存模型。'
       addLog(`[AI服务] ${message}`)
       window.alert(message)
       return
@@ -656,13 +904,22 @@ function Settings(): React.JSX.Element {
         aiProvider: config.aiProvider,
         aiBaseUrl: config.aiBaseUrl,
         aiApiKey: config.aiApiKey,
-        aiDefaultImageModel: config.aiDefaultImageModel
+        aiDefaultImageModel: config.aiDefaultImageModel,
+        aiEndpointPath: config.aiEndpointPath,
+        aiProviderProfiles: config.aiProviderProfiles
       })
       addLog('[AI服务] 测试连接中...')
       const result = await window.api.cms.aiStudio.provider.testConnection()
-      addLog(`[AI服务] ${result.message}（${result.baseUrl}）`)
-      window.alert(`${result.message}
-${result.baseUrl}`)
+      addLog(
+        `[AI服务] ${result.message}（Provider: ${result.provider} / Model: ${result.model} / Endpoint: ${result.endpointPath}）`
+      )
+      window.alert(
+        `${result.message}
+Provider: ${result.provider}
+Model: ${result.model}
+Endpoint: ${result.endpointPath}
+Base URL: ${result.baseUrl}`
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI服务] 连接失败：${message}`)
@@ -672,10 +929,12 @@ ${result.baseUrl}`)
     }
   }
 
-  const configuredDefaultModel = normalizeGrsaiModelValue(config.aiDefaultImageModel)
-  const selectedDefaultModel = isKnownGrsaiModel(configuredDefaultModel)
-    ? configuredDefaultModel
-    : resolveDisplayedGrsaiModel('', DEFAULT_GRSAI_IMAGE_MODEL)
+  const selectedProvider = isCustomProvider
+    ? CUSTOM_AI_PROVIDER_SENTINEL
+    : activeProviderProfile?.providerName ?? config.aiProvider
+  const selectedDefaultModel = isCustomDefaultModel
+    ? CUSTOM_GRSAI_MODEL_SENTINEL
+    : config.aiDefaultImageModel || providerModelOptions[0]?.value || ''
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
@@ -1018,69 +1277,145 @@ ${result.baseUrl}`)
         <CardHeader>
           <CardTitle>AI服务</CardTitle>
           <CardDescription>
-            配置 GRSAI 图像生成服务入口；凭证仅保存在本机，后续工作台任务会直接复用。
+            按供应商维护 Host / Key，并在供应商下保存模型与 API 端点。当前运行链路仍优先兼容 GRSAI 风格接口。
           </CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-2">
             <div className="text-xs text-zinc-400">Provider</div>
-            <Input value="GRSAI" readOnly className="font-medium tracking-[0.18em] text-zinc-100" />
+            <select
+              value={selectedProvider}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                if (nextValue === CUSTOM_AI_PROVIDER_SENTINEL) {
+                  setIsCustomProvider(true)
+                  setCustomProviderName('')
+                  return
+                }
+                handleSelectProvider(nextValue)
+              }}
+              className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              {providerProfiles.map((profile) => (
+                <option key={profile.id} value={profile.providerName}>
+                  {profile.providerName}
+                </option>
+              ))}
+              <option value={CUSTOM_AI_PROVIDER_SENTINEL}>自定义供应商…</option>
+            </select>
+            {isCustomProvider ? (
+              <>
+                <div className="flex gap-2">
+                  <Input
+                    value={customProviderName}
+                    onChange={(e) => setCustomProviderName(e.target.value)}
+                    placeholder="例如：allapi / grsai / openrouter"
+                    spellCheck={false}
+                  />
+                  <Button type="button" variant="outline" onClick={handleSaveProvider}>
+                    保存供应商
+                  </Button>
+                </div>
+                <div className="text-[11px] text-amber-300/80">
+                  先保存供应商，再填写该供应商自己的 Host / API Key / 模型列表。
+                </div>
+              </>
+            ) : (
+              <div className="text-[11px] text-zinc-500">
+                当前供应商：{activeProviderProfile?.providerName ?? '未选择'}
+              </div>
+            )}
           </div>
-          <div className="flex flex-col gap-1">
+
+          <div className="flex flex-col gap-2">
             <div className="text-xs text-zinc-400">默认模型</div>
             <select
-              value={isCustomDefaultModel ? CUSTOM_GRSAI_MODEL_SENTINEL : selectedDefaultModel}
+              value={selectedDefaultModel}
               onChange={(event) => {
                 const nextValue = event.target.value
                 if (nextValue === CUSTOM_GRSAI_MODEL_SENTINEL) {
                   setIsCustomDefaultModel(true)
-                  updateConfig({
-                    aiDefaultImageModel: isKnownGrsaiModel(configuredDefaultModel)
-                      ? ''
-                      : configuredDefaultModel
-                  })
+                  setCustomModelName('')
+                  setModelEndpointDraft(config.aiEndpointPath)
                   return
                 }
-                setIsCustomDefaultModel(false)
-                updateConfig({ aiDefaultImageModel: nextValue })
+                handleSelectModel(nextValue)
               }}
               className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
             >
-              {GRSAI_MODEL_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
+              {providerModelOptions.length > 0 ? (
+                providerModelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              ) : (
+                <option value="">暂无已保存模型</option>
+              )}
               <option value={CUSTOM_GRSAI_MODEL_SENTINEL}>自定义模型…</option>
             </select>
-            {!isCustomDefaultModel ? (
-              <div className="text-[11px] text-zinc-500">
-                未单独指定任务模型时，默认使用：{selectedDefaultModel}
-              </div>
-            ) : (
+            {isCustomDefaultModel ? (
               <>
+                <div className="flex gap-2">
+                  <Input
+                    value={customModelName}
+                    onChange={(e) => setCustomModelName(e.target.value)}
+                    placeholder="输入完整模型名"
+                    spellCheck={false}
+                  />
+                  <Button type="button" variant="outline" onClick={handleSaveModel}>
+                    保存模型
+                  </Button>
+                </div>
                 <Input
-                  value={configuredDefaultModel}
-                  onChange={(e) => updateConfig({ aiDefaultImageModel: e.target.value })}
-                  placeholder="输入文档里的完整模型名"
+                  value={modelEndpointDraft}
+                  onChange={(e) => setModelEndpointDraft(e.target.value)}
+                  placeholder="/v1/chat/completions"
                   spellCheck={false}
                 />
                 <div className="text-[11px] text-amber-300/80">
-                  自定义模式：请填写 GRSAI 文档中的精确模型名。
+                  新模型会保存到当前供应商下，并绑定专属 API 端点。
+                </div>
+              </>
+            ) : (
+              <>
+                <Input
+                  value={modelEndpointDraft}
+                  onChange={(e) => setModelEndpointDraft(e.target.value)}
+                  placeholder="/v1/draw/nano-banana 或 /v1/chat/completions"
+                  spellCheck={false}
+                  disabled={!config.aiDefaultImageModel}
+                />
+                <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-500">
+                  <span>
+                    {config.aiDefaultImageModel
+                      ? `当前模型：${config.aiDefaultImageModel}`
+                      : '当前供应商暂无模型，请先保存模型。'}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleSaveModel}
+                    disabled={!config.aiDefaultImageModel}
+                  >
+                    保存模型
+                  </Button>
                 </div>
               </>
             )}
           </div>
+
           <div className="flex flex-col gap-1 md:col-span-2">
             <div className="text-xs text-zinc-400">Host / Base URL</div>
             <Input
               value={config.aiBaseUrl}
-              onChange={(e) => updateConfig({ aiBaseUrl: e.target.value })}
+              onChange={(e) => handleProviderFieldChange('baseUrl', e.target.value)}
               placeholder="https://grsaiapi.com"
               spellCheck={false}
+              disabled={isCustomProvider}
             />
             <div className="text-[11px] text-zinc-500">
-              只填 Host，例如 `https://grsaiapi.com`；不要填写 `/v1/draw/nano-banana` 这类接口路径。
+              只填 Host，例如 `https://allapi.store`；接口路径请填在模型的 `API 端点` 字段里。
             </div>
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
@@ -1088,11 +1423,15 @@ ${result.baseUrl}`)
             <Input
               type="password"
               value={config.aiApiKey}
-              onChange={(e) => updateConfig({ aiApiKey: e.target.value })}
+              onChange={(e) => handleProviderFieldChange('apiKey', e.target.value)}
               placeholder="grs_********************************"
               autoComplete="new-password"
               spellCheck={false}
+              disabled={isCustomProvider}
             />
+            <div className="text-[11px] text-zinc-500">
+              该 Key 绑定当前供应商；切换供应商时会自动切换到该供应商自己的凭证。
+            </div>
           </div>
           <div className="flex items-end md:col-span-2">
             <Button

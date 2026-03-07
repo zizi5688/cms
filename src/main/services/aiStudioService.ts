@@ -138,6 +138,8 @@ export type AiStudioProviderConnectionResult = {
   success: boolean
   provider: string
   baseUrl: string
+  model: string
+  endpointPath: string
   checkedAt: number
   statusCode: number | null
   message: string
@@ -160,6 +162,7 @@ type AiStudioProviderConfig = {
   baseUrl: string
   apiKey: string
   defaultImageModel: string
+  endpointPath: string
 }
 
 type DbConnection = {
@@ -266,11 +269,13 @@ function normalizeBilledState(value: unknown): AiStudioBilledState {
 const GRSAI_DEFAULT_BASE_URL = 'https://grsaiapi.com'
 const GRSAI_DRAW_PATH = '/v1/draw/nano-banana'
 const GRSAI_RESULT_PATH = '/v1/draw/result'
+const GRSAI_POLL_WEBHOOK_SENTINEL = '-1'
 const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
 const LEGACY_DEFAULT_IMAGE_MODEL = 'image-default'
 const DEFAULT_IMAGE_SIZE = '1K'
-const OUTPUT_POLL_INTERVAL_MS = 2500
-const OUTPUT_POLL_TIMEOUT_MS = 90_000
+const MODEL_IMAGE_SIZE_MAP: Record<string, string> = {
+  'nano-banana-pro-4k-vip': '4K'
+}
 const CONNECTION_TEST_ID = '__codex_connection_test__'
 const HTTP_IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
 const DEFAULT_USER_AGENT =
@@ -299,12 +304,16 @@ function resolveConfiguredModel(value: unknown, fallback = DEFAULT_IMAGE_MODEL):
 }
 
 function buildProviderUrl(baseUrl: string, apiPath: string): string {
-  const normalizedBase = sanitizeBaseUrl(baseUrl)
-  const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`
-  if (normalizedBase.endsWith('/v1') && normalizedPath.startsWith('/v1/')) {
-    return `${normalizedBase}${normalizedPath.slice(3)}`
+  const normalizedPath = normalizeText(apiPath)
+  if (/^https?:\/\//i.test(normalizedPath)) {
+    return normalizedPath
   }
-  return `${normalizedBase}${normalizedPath}`
+  const normalizedBase = sanitizeBaseUrl(baseUrl)
+  const safePath = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`
+  if (normalizedBase.endsWith('/v1') && safePath.startsWith('/v1/')) {
+    return `${normalizedBase}${safePath.slice(3)}`
+  }
+  return `${normalizedBase}${safePath}`
 }
 
 function normalizeAspectRatio(value: unknown): string {
@@ -360,7 +369,10 @@ async function filePathToDataUrl(filePath: string): Promise<string> {
   return `data:${inferMimeType(normalized)};base64,${buffer.toString('base64')}`
 }
 
-function extractRemoteTaskId(payload: Record<string, unknown>): string | null {
+function extractRemoteTaskId(
+  payload: Record<string, unknown>,
+  options?: { allowTopLevelId?: boolean }
+): string | null {
   const data =
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)
@@ -369,9 +381,297 @@ function extractRemoteTaskId(payload: Record<string, unknown>): string | null {
     normalizeNullableText(data.id) ??
     normalizeNullableText(data.taskId) ??
     normalizeNullableText(data.task_id) ??
-    normalizeNullableText(payload.id) ??
+    normalizeNullableText(payload.taskId) ??
+    normalizeNullableText(payload.task_id) ??
+    (options?.allowTopLevelId === false ? null : normalizeNullableText(payload.id)) ??
     null
   )
+}
+
+function isGeminiGenerateContentPath(apiPath: string): boolean {
+  return /:generatecontent(?:$|[?#])/i.test(normalizeText(apiPath))
+}
+
+function isChatCompletionsPath(apiPath: string): boolean {
+  return /\/chat\/completions(?:$|[?#])/i.test(normalizeText(apiPath))
+}
+
+function parseDataUrl(value: string): { mimeType: string; data: string } | null {
+  const match = normalizeText(value).match(/^data:([^;,]+)?;base64,(.+)$/i)
+  if (!match) return null
+  return {
+    mimeType: normalizeText(match[1]) || 'image/jpeg',
+    data: normalizeText(match[2])
+  }
+}
+
+function buildImagePromptDirective(payload: {
+  prompt: string
+  aspectRatio: string
+  outputCount: number
+  referenceCount: number
+}): string {
+  const lines = [normalizeText(payload.prompt)]
+  if (payload.aspectRatio) {
+    lines.push(`输出比例：${payload.aspectRatio}。`)
+  }
+  if (payload.outputCount > 1) {
+    lines.push(`尽量一次返回 ${payload.outputCount} 张候选图。`)
+  }
+  if (payload.referenceCount > 0) {
+    lines.push(`第 1 张输入图为主图，后续 ${payload.referenceCount} 张为参考图，请保留主体材质、结构与关键细节。`)
+  } else {
+    lines.push('请保留主体材质、结构与关键细节。')
+  }
+  return lines.filter(Boolean).join('\n')
+}
+
+function buildChatCompletionsPayload(payload: {
+  model: string
+  prompt: string
+  aspectRatio: string
+  outputCount: number
+  urls: string[]
+  referenceCount: number
+}): Record<string, unknown> {
+  return {
+    model: payload.model,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: buildImagePromptDirective({
+              prompt: payload.prompt,
+              aspectRatio: payload.aspectRatio,
+              outputCount: payload.outputCount,
+              referenceCount: payload.referenceCount
+            })
+          },
+          ...payload.urls.map((url) => ({
+            type: 'image_url',
+            image_url: { url }
+          }))
+        ]
+      }
+    ],
+    modalities: ['TEXT', 'IMAGE'],
+    stream: false
+  }
+}
+
+function buildGeminiGenerateContentPayload(payload: {
+  prompt: string
+  aspectRatio: string
+  outputCount: number
+  urls: string[]
+  referenceCount: number
+}): Record<string, unknown> {
+  const parts: Array<Record<string, unknown>> = [
+    {
+      text: buildImagePromptDirective({
+        prompt: payload.prompt,
+        aspectRatio: payload.aspectRatio,
+        outputCount: payload.outputCount,
+        referenceCount: payload.referenceCount
+      })
+    }
+  ]
+
+  for (const url of payload.urls) {
+    const parsed = parseDataUrl(url)
+    if (!parsed) continue
+    parts.push({
+      inlineData: {
+        mimeType: parsed.mimeType,
+        data: parsed.data
+      }
+    })
+  }
+
+  return {
+    contents: [
+      {
+        role: 'user',
+        parts
+      }
+    ],
+    generationConfig: {
+      responseModalities: ['TEXT', 'IMAGE']
+    },
+    imageConfig: payload.aspectRatio
+      ? {
+          aspectRatio: payload.aspectRatio
+        }
+      : undefined
+  }
+}
+
+function normalizeInlineImageContent(value: string, mimeType?: string | null): string {
+  const normalized = normalizeText(value)
+  if (!normalized) return ''
+  if (/^data:/i.test(normalized)) return normalized
+  const safeMimeType = normalizeText(mimeType) || 'image/png'
+  return `data:${safeMimeType};base64,${normalized}`
+}
+
+function extractImageUrlsFromText(text: string): string[] {
+  const normalized = normalizeText(text)
+  if (!normalized) return []
+
+  const values = new Set<string>()
+  const markdownMatches = normalized.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/gi)
+  for (const match of markdownMatches) {
+    const value = normalizeText(match[1])
+    if (value) values.add(value)
+  }
+
+  const directMatches = normalized.matchAll(
+    /(https?:\/\/[^\s<>()]+|data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+)/gi
+  )
+  for (const match of directMatches) {
+    const value = normalizeText(match[1]).replace(/[),.;]+$/, '')
+    if (value) values.add(value)
+  }
+
+  return Array.from(values)
+}
+
+function pushResultItem(
+  bucket: Array<Record<string, unknown>>,
+  item: Record<string, unknown> | null | undefined
+): void {
+  if (!item) return
+  const url = normalizeText(item.url)
+  const content = normalizeText(item.content)
+  if (!url && !content) return
+
+  const signature = url ? `url:${url}` : `content:${content.slice(0, 120)}`
+  const exists = bucket.some((existing) => {
+    const existingUrl = normalizeText(existing.url)
+    const existingContent = normalizeText(existing.content)
+    const existingSignature = existingUrl
+      ? `url:${existingUrl}`
+      : `content:${existingContent.slice(0, 120)}`
+    return existingSignature === signature
+  })
+  if (exists) return
+
+  bucket.push({
+    ...item,
+    ...(url ? { url } : {}),
+    ...(content ? { content } : {})
+  })
+}
+
+function collectArrayImageItems(value: unknown): Array<Record<string, unknown>> {
+  const bucket: Array<Record<string, unknown>> = []
+  if (!Array.isArray(value)) return bucket
+
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      for (const url of extractImageUrlsFromText(entry)) {
+        pushResultItem(bucket, { url })
+      }
+      continue
+    }
+
+    const record = asObject(entry)
+    const imageUrlRecord = asObject(record.image_url)
+    const inlineRecord = asObject(record.inlineData ?? record.inline_data)
+    const fileDataRecord = asObject(record.fileData ?? record.file_data)
+    const directUrl = normalizeText(
+      imageUrlRecord.url ??
+        record.url ??
+        record.imageUrl ??
+        fileDataRecord.fileUri ??
+        fileDataRecord.file_uri
+    )
+    if (directUrl) {
+      pushResultItem(bucket, { url: directUrl })
+    }
+
+    const inlineContent = normalizeInlineImageContent(
+      normalizeText(
+        inlineRecord.data ??
+          record.b64_json ??
+          record.base64 ??
+          (typeof record.content === 'string' && /^data:/i.test(record.content) ? record.content : '')
+      ),
+      normalizeText(
+        inlineRecord.mimeType ?? inlineRecord.mime_type ?? record.mimeType ?? record.mime_type
+      )
+    )
+    if (inlineContent) {
+      pushResultItem(bucket, { content: inlineContent })
+    }
+
+    const textValue = normalizeText(record.text ?? record.output_text)
+    for (const url of extractImageUrlsFromText(textValue)) {
+      pushResultItem(bucket, { url })
+    }
+
+    if (Array.isArray(record.content)) {
+      for (const item of collectArrayImageItems(record.content)) {
+        pushResultItem(bucket, item)
+      }
+    }
+  }
+
+  return bucket
+}
+
+function collectEnvelopeResultItems(
+  envelope: Record<string, unknown>,
+  bucket: Array<Record<string, unknown>>
+): void {
+  const legacyResults = Array.isArray(envelope.results) ? envelope.results : []
+  for (const entry of legacyResults) {
+    if (entry && typeof entry === 'object') {
+      pushResultItem(bucket, entry as Record<string, unknown>)
+    }
+  }
+
+  for (const item of collectArrayImageItems(Array.isArray(envelope.data) ? envelope.data : [])) {
+    pushResultItem(bucket, item)
+  }
+  for (const item of collectArrayImageItems(envelope.images)) {
+    pushResultItem(bucket, item)
+  }
+
+  const choices = Array.isArray(envelope.choices) ? envelope.choices : []
+  for (const choice of choices) {
+    const choiceRecord = asObject(choice)
+    const message = asObject(choiceRecord.message)
+    const messageContent = message.content ?? choiceRecord.content
+    if (typeof messageContent === 'string') {
+      for (const url of extractImageUrlsFromText(messageContent)) {
+        pushResultItem(bucket, { url })
+      }
+    }
+    for (const item of collectArrayImageItems(messageContent)) {
+      pushResultItem(bucket, item)
+    }
+    for (const item of collectArrayImageItems(message.images)) {
+      pushResultItem(bucket, item)
+    }
+  }
+
+  const candidates = Array.isArray(envelope.candidates) ? envelope.candidates : []
+  for (const candidate of candidates) {
+    const parts = Array.isArray(asObject(asObject(candidate).content).parts)
+      ? (asObject(asObject(candidate).content).parts as unknown[])
+      : []
+    for (const item of collectArrayImageItems(parts)) {
+      pushResultItem(bucket, item)
+    }
+  }
+
+  const looseText = normalizeText(envelope.text ?? envelope.output_text)
+  for (const url of extractImageUrlsFromText(looseText)) {
+    pushResultItem(bucket, { url })
+  }
 }
 
 function normalizeRunStatus(value: unknown, fallback = 'running'): string {
@@ -386,6 +686,9 @@ function normalizeRunStatus(value: unknown, fallback = 'running'): string {
 }
 
 function extractResultStatus(payload: Record<string, unknown>, fallback = 'running'): string {
+  if (extractResultItems(payload).length > 0) {
+    return 'succeeded'
+  }
   const data =
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)
@@ -398,24 +701,47 @@ function extractFailureReason(payload: Record<string, unknown>): string | null {
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)
       : {}
+  const payloadError =
+    payload.error && typeof payload.error === 'object'
+      ? (payload.error as Record<string, unknown>)
+      : null
+  const details = Array.isArray(payload.details)
+    ? payload.details
+        .map((item) => {
+          if (typeof item === 'string') return item.trim()
+          if (item && typeof item === 'object') {
+            const record = item as Record<string, unknown>
+            return normalizeText(record.message ?? record.msg ?? record.detail)
+          }
+          return ''
+        })
+        .filter(Boolean)
+        .join(' | ')
+    : ''
+
   return (
-    normalizeNullableText(data.failure_reason) ??
     normalizeNullableText(data.error) ??
+    normalizeNullableText(payloadError?.message) ??
+    normalizeNullableText(payloadError?.msg) ??
+    normalizeNullableText(payload.detail) ??
+    normalizeNullableText(data.failure_reason) ??
     normalizeNullableText(payload.msg) ??
     normalizeNullableText(payload.message) ??
+    normalizeNullableText(details) ??
+    normalizeNullableText(
+      typeof payload.rawText === 'string' ? payload.rawText.slice(0, 400) : payload.rawText
+    ) ??
     null
   )
 }
 
 function extractResultItems(payload: Record<string, unknown>): Array<Record<string, unknown>> {
-  const data =
-    payload.data && typeof payload.data === 'object'
-      ? (payload.data as Record<string, unknown>)
-      : {}
-  const results = Array.isArray(data.results) ? data.results : []
-  return results.filter(
-    (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
-  )
+  const bucket: Array<Record<string, unknown>> = []
+  collectEnvelopeResultItems(payload, bucket)
+  if (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)) {
+    collectEnvelopeResultItems(payload.data as Record<string, unknown>, bucket)
+  }
+  return bucket
 }
 
 function resolvePrompt(task: AiStudioTaskRecord, template: AiStudioTemplateRecord | null): string {
@@ -437,6 +763,20 @@ function detectFallbackPrice(model: string): { min: number | null; max: number |
   return { min: null, max: null }
 }
 
+function resolveImageSizeForModel(model: string): string {
+  const normalized = normalizeText(model).toLowerCase()
+  return MODEL_IMAGE_SIZE_MAP[normalized] ?? DEFAULT_IMAGE_SIZE
+}
+
+function parseProviderCode(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
 function toExecutionResult(
   task: AiStudioTaskRecord,
   run: AiStudioRunRecord,
@@ -455,11 +795,6 @@ function toExecutionResult(
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => {
-    setTimeout(resolvePromise, ms)
-  })
-}
 
 function asObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -595,30 +930,42 @@ export class AiStudioService {
       provider: normalizeText(provided.provider) || 'grsai',
       baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl)),
       apiKey: normalizeText(provided.apiKey),
-      defaultImageModel: resolveConfiguredModel(provided.defaultImageModel, DEFAULT_IMAGE_MODEL)
+      defaultImageModel: resolveConfiguredModel(provided.defaultImageModel, DEFAULT_IMAGE_MODEL),
+      endpointPath: normalizeText(provided.endpointPath)
     }
   }
 
   private async requestProvider(
     apiPath: string,
     payload: Record<string, unknown>,
-    options?: { allowStatusCodes?: number[] }
+    options?: {
+      method?: 'POST' | 'OPTIONS' | 'GET' | 'HEAD'
+      allowStatusCodes?: number[]
+      allowProviderCodes?: number[]
+    }
   ): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
     const config = this.getProviderConfig()
     if (!config.apiKey) {
       throw new Error('[AI Studio] 未配置 AI API Key。')
     }
 
-    const response = await fetch(buildProviderUrl(config.baseUrl, apiPath), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/plain, */*',
-        'User-Agent': DEFAULT_USER_AGENT
-      },
-      body: JSON.stringify(payload)
-    })
+    const method = options?.method ?? 'POST'
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${config.apiKey}`,
+      Accept: 'application/json, text/plain, */*',
+      'User-Agent': DEFAULT_USER_AGENT
+    }
+    const init: RequestInit = {
+      method,
+      headers
+    }
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      headers['Content-Type'] = 'application/json'
+      init.body = JSON.stringify(payload)
+    }
+
+    const requestUrl = buildProviderUrl(config.baseUrl, apiPath)
+    const response = await fetch(requestUrl, init)
 
     const statusCode = response.status
     const rawText = await response.text()
@@ -636,13 +983,26 @@ export class AiStudioService {
     }
 
     if (statusCode === 404) {
-      throw new Error('[AI Studio] AI 服务地址无效，请检查 Base URL。')
+      throw new Error(
+        apiPath === GRSAI_RESULT_PATH || apiPath === GRSAI_DRAW_PATH
+          ? `[AI Studio] AI 服务地址无效（${method} ${requestUrl}），请检查 Base URL。`
+          : `[AI Studio] AI 服务地址无效（${method} ${requestUrl}），请检查 Base URL 或 API 端点。`
+      )
     }
 
     const allowStatusCodes = new Set(options?.allowStatusCodes ?? [])
     if (!response.ok && !allowStatusCodes.has(statusCode)) {
       throw new Error(
-        extractFailureReason(parsedPayload) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}）。`
+        extractFailureReason(parsedPayload) ??
+          `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${apiPath}）。`
+      )
+    }
+
+    const providerCode = parseProviderCode(parsedPayload.code)
+    const allowProviderCodes = new Set(options?.allowProviderCodes ?? [])
+    if (providerCode !== null && providerCode !== 0 && !allowProviderCodes.has(providerCode)) {
+      throw new Error(
+        extractFailureReason(parsedPayload) ?? `[AI Studio] AI 服务请求失败（业务码 ${providerCode}）。`
       )
     }
 
@@ -687,20 +1047,49 @@ export class AiStudioService {
     }
 
     const urls = await Promise.all(sourceImagePaths.map((filePath) => filePathToDataUrl(filePath)))
-    const requestPayload = {
-      model,
-      prompt,
-      aspectRatio: normalizeAspectRatio(task.aspectRatio),
-      imageSize: DEFAULT_IMAGE_SIZE,
-      urls,
-      shutProgress: false
-    } satisfies Record<string, unknown>
+    const aspectRatio = normalizeAspectRatio(task.aspectRatio)
+    const endpointPath = config.endpointPath || GRSAI_DRAW_PATH
+    const imageSize = resolveImageSizeForModel(model)
+
+    const requestPayload = isChatCompletionsPath(endpointPath)
+      ? buildChatCompletionsPayload({
+          model,
+          prompt,
+          aspectRatio,
+          outputCount: task.outputCount,
+          urls,
+          referenceCount: Math.max(0, urls.length - 1)
+        })
+      : isGeminiGenerateContentPath(endpointPath)
+        ? buildGeminiGenerateContentPayload({
+            prompt,
+            aspectRatio,
+            outputCount: task.outputCount,
+            urls,
+            referenceCount: Math.max(0, urls.length - 1)
+          })
+        : {
+            model,
+            prompt,
+            aspectRatio,
+            imageSize,
+            urls,
+            webHook: GRSAI_POLL_WEBHOOK_SENTINEL,
+            shutProgress: false
+          }
 
     const requestSnapshot = {
       model,
       prompt,
-      aspectRatio: normalizeAspectRatio(task.aspectRatio),
-      imageSize: DEFAULT_IMAGE_SIZE,
+      aspectRatio,
+      imageSize,
+      endpointPath,
+      protocol: isChatCompletionsPath(endpointPath)
+        ? 'chat-completions'
+        : isGeminiGenerateContentPath(endpointPath)
+          ? 'gemini-generate-content'
+          : 'grsai-compatible',
+      webHook: GRSAI_POLL_WEBHOOK_SENTINEL,
       outputCount: task.outputCount,
       inputCount: urls.length,
       sourceFiles: sourceImagePaths.map((filePath) => basename(filePath))
@@ -716,7 +1105,7 @@ export class AiStudioService {
   ): Promise<void> {
     await this.recordRunAttempt({
       taskId,
-      provider: 'grsai',
+      provider: this.getProviderConfig().provider,
       status: 'failed',
       billedState: 'not_billable',
       requestPayload: requestSnapshot,
@@ -821,35 +1210,108 @@ export class AiStudioService {
   async testConnection(): Promise<AiStudioProviderConnectionResult> {
     const config = this.getProviderConfig()
     const checkedAt = Date.now()
+    const connectionApiPath = config.endpointPath || GRSAI_RESULT_PATH
+    const isCustomEndpoint = Boolean(config.endpointPath)
+    const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(connectionApiPath)
+    const looksLikeChatCompletions = isChatCompletionsPath(connectionApiPath)
+
+    const probePayload = looksLikeChatCompletions
+      ? {
+          model: config.defaultImageModel,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+          stream: false
+        }
+      : looksLikeGeminiGenerateContent
+        ? {
+            contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+            generationConfig: { responseModalities: ['TEXT'] }
+          }
+        : isCustomEndpoint
+          ? {}
+          : { id: CONNECTION_TEST_ID }
+
     const response = await this.requestProvider(
-      GRSAI_RESULT_PATH,
-      { id: CONNECTION_TEST_ID },
-      { allowStatusCodes: [400] }
+      connectionApiPath,
+      probePayload,
+      looksLikeChatCompletions || looksLikeGeminiGenerateContent
+        ? undefined
+        : isCustomEndpoint
+          ? {
+              method: 'POST',
+              allowStatusCodes: [400, 405, 422],
+              allowProviderCodes: [-22]
+            }
+          : { allowStatusCodes: [400], allowProviderCodes: [-22] }
     )
     return {
       success: true,
       provider: config.provider,
       baseUrl: config.baseUrl,
+      model: config.defaultImageModel,
+      endpointPath: connectionApiPath,
       checkedAt,
       statusCode: response.statusCode,
-      message: '连接成功，接口已响应。'
+      message: looksLikeGeminiGenerateContent
+        ? '连接成功，Gemini generateContent 端点已响应。'
+        : looksLikeChatCompletions
+          ? '连接成功，chat/completions 端点已响应。'
+          : config.endpointPath
+            ? '连接成功，模型端点已响应。'
+            : '连接成功，接口已响应。'
     }
   }
 
   async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
+    const config = this.getProviderConfig()
     const context = await this.buildSubmitContext(taskId)
     const priceSnapshot = await this.resolvePriceSnapshot(context.model)
+    const submitApiPath = config.endpointPath || GRSAI_DRAW_PATH
+    const looksLikeChatCompletions = isChatCompletionsPath(submitApiPath)
+    const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(submitApiPath)
 
     try {
-      const response = await this.requestProvider(GRSAI_DRAW_PATH, context.requestPayload)
-      const remoteTaskId = extractRemoteTaskId(response.payload)
+      const response = await this.requestProvider(submitApiPath, context.requestPayload)
+      const directResultItems = extractResultItems(response.payload)
+
+      if (directResultItems.length > 0) {
+        const run = await this.recordRunAttempt({
+          taskId,
+          provider: config.provider,
+          status: 'succeeded',
+          remoteTaskId: extractRemoteTaskId(response.payload, { allowTopLevelId: false }),
+          billedState: 'billable',
+          priceMinSnapshot: priceSnapshot.min,
+          priceMaxSnapshot: priceSnapshot.max,
+          requestPayload: context.requestSnapshot,
+          responsePayload: response.payload,
+          errorMessage: null,
+          startedAt: Date.now(),
+          finishedAt: Date.now()
+        })
+
+        const outputs = await this.downloadOutputs({
+          taskId,
+          runId: run.id,
+          responsePayload: response.payload
+        })
+        const latestRun = this.getRunById(run.id) ?? run
+        return toExecutionResult(this.getTaskOrThrow(taskId), latestRun, outputs)
+      }
+
+      const remoteTaskId = extractRemoteTaskId(response.payload, {
+        allowTopLevelId: !(looksLikeChatCompletions || looksLikeGeminiGenerateContent)
+      })
       if (!remoteTaskId) {
-        throw new Error('[AI Studio] AI 服务返回了空任务 ID。')
+        throw new Error(
+          extractFailureReason(response.payload) ??
+            '[AI Studio] AI 服务既没有返回任务 ID，也没有返回可落盘的图片结果。'
+        )
       }
 
       const run = await this.recordRunAttempt({
         taskId,
-        provider: 'grsai',
+        provider: config.provider,
         status: 'submitted',
         remoteTaskId,
         billedState: 'billable',
@@ -980,43 +1442,17 @@ export class AiStudioService {
   }
 
   async startRun(taskId: string): Promise<AiStudioRunExecutionResult> {
-    const submitted = await this.submitImageRun(taskId)
-    const startedAt = Date.now()
-    let latest = submitted
-
-    while (
-      latest.status === 'submitted' ||
-      latest.status === 'queued' ||
-      latest.status === 'running'
-    ) {
-      if (Date.now() - startedAt >= OUTPUT_POLL_TIMEOUT_MS) {
-        return latest
-      }
-      await delay(OUTPUT_POLL_INTERVAL_MS)
-      try {
-        latest = await this.pollRunResult({ taskId, runId: latest.run.id })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        const run = await this.recordRunAttempt({
-          runId: latest.run.id,
-          taskId,
-          status: latest.run.status,
-          responsePayload: { ...latest.run.responsePayload, pollError: message },
-          errorMessage: message
-        })
-        return toExecutionResult(
-          this.getTaskOrThrow(taskId),
-          run,
-          this.listAssets({ taskId, runId: run.id, kind: 'output' })
-        )
-      }
-    }
-
-    return latest
+    return this.submitImageRun(taskId)
   }
 
   async retryRun(taskId: string): Promise<AiStudioRunExecutionResult> {
-    return this.startRun(taskId)
+    return this.submitImageRun(taskId)
+  }
+
+  getRun(runId: string): AiStudioRunRecord | null {
+    const normalizedRunId = normalizeText(runId)
+    if (!normalizedRunId) return null
+    return this.getRunById(normalizedRunId)
   }
 
   listTemplates(): AiStudioTemplateRecord[] {

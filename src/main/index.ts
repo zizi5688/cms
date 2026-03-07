@@ -4,7 +4,7 @@ import { join, resolve, extname, basename, dirname } from 'path'
 import * as path from 'path'
 import { createReadStream, openAsBlob, existsSync, statSync, appendFileSync } from 'fs'
 import { copyFile, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'fs/promises'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { tmpdir } from 'os'
 import ElectronStore from 'electron-store'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -109,7 +109,32 @@ type NativeDialogSelectResult = {
   detail?: string
 }
 
-type AiProvider = 'grsai'
+type AiProvider = string
+
+type AiModelProfile = {
+  id: string
+  modelName: string
+  endpointPath: string
+}
+
+type AiProviderProfile = {
+  id: string
+  providerName: string
+  baseUrl: string
+  apiKey: string
+  models: AiModelProfile[]
+  defaultModelId: string | null
+}
+
+type ResolvedAiProviderState = {
+  aiProvider: string
+  aiBaseUrl: string
+  aiApiKey: string
+  aiDefaultImageModel: string
+  aiEndpointPath: string
+  aiProviderProfiles: AiProviderProfile[]
+}
+
 type AiStudioImportedFolder = {
   folderPath: string
   productName: string
@@ -583,12 +608,198 @@ const defaultDynamicWatermarkSize = 5
 const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
 type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
-function normalizeAiProvider(_value: unknown): AiProvider {
-  return 'grsai'
+function normalizeAiProvider(value: unknown): AiProvider {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  return normalized || 'grsai'
 }
 
 function normalizeConfigText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeAiEndpointPath(value: unknown): string {
+  const normalized = normalizeConfigText(value)
+  if (!normalized) return ''
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized.replace(/\/+$/, '')
+  }
+  return normalized.startsWith('/') ? normalized : `/${normalized}`
+}
+
+function normalizeAiModelProfiles(value: unknown): AiModelProfile[] {
+  if (!Array.isArray(value)) return []
+  const map = new Map<string, AiModelProfile>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const modelName = normalizeConfigText(record.modelName ?? record.name)
+    if (!modelName) continue
+    const key = modelName.toLowerCase()
+    const existing = map.get(key)
+    map.set(key, {
+      id: existing?.id || normalizeConfigText(record.id) || randomUUID(),
+      modelName: existing?.modelName || modelName,
+      endpointPath: normalizeAiEndpointPath(record.endpointPath) || existing?.endpointPath || ''
+    })
+  }
+  return Array.from(map.values())
+}
+
+function normalizeAiProviderProfiles(value: unknown): AiProviderProfile[] {
+  if (!Array.isArray(value)) return []
+  const map = new Map<string, AiProviderProfile>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const providerName = normalizeAiProvider(record.providerName ?? record.name)
+    const key = providerName.toLowerCase()
+    const existing = map.get(key)
+    const nextModels = normalizeAiModelProfiles([
+      ...(existing?.models ?? []),
+      ...(Array.isArray(record.models) ? record.models : [])
+    ])
+    const requestedDefaultModelId = normalizeConfigText(record.defaultModelId)
+    const defaultModelId =
+      (requestedDefaultModelId && nextModels.some((model) => model.id === requestedDefaultModelId)
+        ? requestedDefaultModelId
+        : existing?.defaultModelId && nextModels.some((model) => model.id === existing.defaultModelId)
+          ? existing.defaultModelId
+          : nextModels[0]?.id) ?? null
+
+    map.set(key, {
+      id: existing?.id || normalizeConfigText(record.id) || randomUUID(),
+      providerName: existing?.providerName || providerName,
+      baseUrl: normalizeConfigText(record.baseUrl) || existing?.baseUrl || '',
+      apiKey: normalizeConfigText(record.apiKey) || existing?.apiKey || '',
+      models: nextModels,
+      defaultModelId
+    })
+  }
+  return Array.from(map.values())
+}
+
+function buildLegacyAiProviderProfiles(selection: {
+  provider: string
+  baseUrl: string
+  apiKey: string
+  modelName: string
+  endpointPath: string
+}): AiProviderProfile[] {
+  const providerName = normalizeAiProvider(selection.provider)
+  const modelName = normalizeConfigText(selection.modelName)
+  const endpointPath = normalizeAiEndpointPath(selection.endpointPath)
+  const models = modelName
+    ? [
+        {
+          id: randomUUID(),
+          modelName,
+          endpointPath
+        }
+      ]
+    : []
+
+  return [
+    {
+      id: randomUUID(),
+      providerName,
+      baseUrl: normalizeConfigText(selection.baseUrl),
+      apiKey: normalizeConfigText(selection.apiKey),
+      models,
+      defaultModelId: models[0]?.id ?? null
+    }
+  ]
+}
+
+function findAiProviderProfile(
+  profiles: AiProviderProfile[],
+  providerName: string
+): AiProviderProfile | null {
+  const normalized = normalizeAiProvider(providerName).toLowerCase()
+  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? null
+}
+
+function findAiModelProfile(
+  providerProfile: AiProviderProfile | null,
+  modelName: string
+): AiModelProfile | null {
+  if (!providerProfile) return null
+  const normalized = normalizeConfigText(modelName).toLowerCase()
+  if (!normalized) return null
+  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+}
+
+function resolveAiProviderState(
+  rawProfiles: unknown,
+  selection: {
+    provider: string
+    baseUrl: string
+    apiKey: string
+    modelName: string
+    endpointPath: string
+  }
+): ResolvedAiProviderState {
+  const legacy = {
+    provider: normalizeAiProvider(selection.provider),
+    baseUrl: normalizeConfigText(selection.baseUrl),
+    apiKey: normalizeConfigText(selection.apiKey),
+    modelName: normalizeConfigText(selection.modelName),
+    endpointPath: normalizeAiEndpointPath(selection.endpointPath)
+  }
+
+  let aiProviderProfiles = normalizeAiProviderProfiles(rawProfiles)
+  if (aiProviderProfiles.length === 0) {
+    aiProviderProfiles = buildLegacyAiProviderProfiles(legacy)
+  }
+
+  let activeProvider =
+    findAiProviderProfile(aiProviderProfiles, legacy.provider) ?? aiProviderProfiles[0] ?? null
+
+  if (!activeProvider) {
+    aiProviderProfiles = buildLegacyAiProviderProfiles({
+      provider: 'grsai',
+      baseUrl: '',
+      apiKey: '',
+      modelName: '',
+      endpointPath: ''
+    })
+    activeProvider = aiProviderProfiles[0] ?? null
+  }
+
+  let activeModel = findAiModelProfile(activeProvider, legacy.modelName)
+  if (!activeModel && activeProvider?.defaultModelId) {
+    activeModel = activeProvider.models.find((model) => model.id === activeProvider.defaultModelId) ?? null
+  }
+  if (!activeModel) {
+    activeModel = activeProvider?.models[0] ?? null
+  }
+
+  return {
+    aiProvider: activeProvider?.providerName ?? legacy.provider,
+    aiBaseUrl: activeProvider?.baseUrl ?? legacy.baseUrl,
+    aiApiKey: activeProvider?.apiKey ?? legacy.apiKey,
+    aiDefaultImageModel: activeModel?.modelName ?? '',
+    aiEndpointPath: activeModel?.endpointPath ?? '',
+    aiProviderProfiles
+  }
+}
+
+function readResolvedAiProviderStateFromStore(): ResolvedAiProviderState {
+  return resolveAiProviderState(configStore.get('aiProviderProfiles'), {
+    provider: normalizeAiProvider(configStore.get('aiProvider')),
+    baseUrl: normalizeConfigText(configStore.get('aiBaseUrl')),
+    apiKey: normalizeConfigText(configStore.get('aiApiKey')),
+    modelName: normalizeConfigText(configStore.get('aiDefaultImageModel')),
+    endpointPath: normalizeAiEndpointPath(configStore.get('aiEndpointPath'))
+  })
+}
+
+function syncResolvedAiProviderStateToStore(state: ResolvedAiProviderState): void {
+  configStore.set('aiProviderProfiles', state.aiProviderProfiles)
+  configStore.set('aiProvider', state.aiProvider)
+  configStore.set('aiBaseUrl', state.aiBaseUrl)
+  configStore.set('aiApiKey', state.aiApiKey)
+  configStore.set('aiDefaultImageModel', state.aiDefaultImageModel)
+  configStore.set('aiEndpointPath', state.aiEndpointPath)
 }
 
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
@@ -635,10 +846,12 @@ function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTr
 
 const configStore = new StoreCtor<{
   feishuConfig: { appId: string; appSecret: string; baseToken: string; tableId: string }
-  aiProvider?: AiProvider
+  aiProvider?: string
   aiBaseUrl?: string
   aiApiKey?: string
   aiDefaultImageModel?: string
+  aiEndpointPath?: string
+  aiProviderProfiles?: AiProviderProfile[]
   realEsrganPath: string
   pythonPath: string
   watermarkScriptPath: string
@@ -1068,13 +1281,16 @@ app.whenReady().then(async () => {
   const noteRaceService = new NoteRaceService()
   const aiStudioService = new AiStudioService(
     () => workspaceService.currentPath,
-    () => ({
-      provider: 'grsai',
-      baseUrl: typeof configStore.get('aiBaseUrl') === 'string' ? configStore.get('aiBaseUrl') : '',
-      apiKey: typeof configStore.get('aiApiKey') === 'string' ? configStore.get('aiApiKey') : '',
-      defaultImageModel:
-        typeof configStore.get('aiDefaultImageModel') === 'string' ? configStore.get('aiDefaultImageModel') : ''
-    })
+    () => {
+      const aiState = readResolvedAiProviderStateFromStore()
+      return {
+        provider: aiState.aiProvider,
+        baseUrl: aiState.aiBaseUrl,
+        apiKey: aiState.aiApiKey,
+        defaultImageModel: aiState.aiDefaultImageModel,
+        endpointPath: aiState.aiEndpointPath
+      }
+    }
   )
   if (sqliteReady) {
     try { scoutService.ensureSchema() } catch (e) { console.error('[Scout] ensureSchema failed:', e) }
@@ -3125,6 +3341,19 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle('shell-openPath', async (_event, filePath: string) => {
+    const normalized = String(filePath ?? '').trim()
+    if (!normalized) return { success: false, error: 'filePath 不能为空。' }
+
+    try {
+      const result = await shell.openPath(normalized)
+      return result ? { success: false, error: result } : { success: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { success: false, error: message }
+    }
+  })
+
   ipcMain.handle('shell-showItemInFolder', async (_event, filePath: string) => {
     const normalized = String(filePath ?? '').trim()
     if (!normalized) return { success: false, error: 'filePath 不能为空。' }
@@ -3206,26 +3435,9 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('get-config', async () => {
-    const storedAiProvider = configStore.get('aiProvider')
-    const aiProvider = normalizeAiProvider(storedAiProvider)
-    if (storedAiProvider !== aiProvider) {
-      configStore.set('aiProvider', aiProvider)
-    }
-    const storedAiBaseUrl = configStore.get('aiBaseUrl')
-    const aiBaseUrl = normalizeConfigText(storedAiBaseUrl)
-    if (storedAiBaseUrl !== aiBaseUrl) {
-      configStore.set('aiBaseUrl', aiBaseUrl)
-    }
-    const storedAiApiKey = configStore.get('aiApiKey')
-    const aiApiKey = normalizeConfigText(storedAiApiKey)
-    if (storedAiApiKey !== aiApiKey) {
-      configStore.set('aiApiKey', aiApiKey)
-    }
-    const storedAiDefaultImageModel = configStore.get('aiDefaultImageModel')
-    const aiDefaultImageModel = normalizeConfigText(storedAiDefaultImageModel)
-    if (storedAiDefaultImageModel !== aiDefaultImageModel) {
-      configStore.set('aiDefaultImageModel', aiDefaultImageModel)
-    }
+    const aiState = readResolvedAiProviderStateFromStore()
+    syncResolvedAiProviderStateToStore(aiState)
+
     const storedBox = configStore.get('watermarkBox')
     const watermarkBox = isValidWatermarkBox(storedBox) ? storedBox : defaultWatermarkBox
     if (!isValidWatermarkBox(storedBox)) {
@@ -3247,7 +3459,8 @@ app.whenReady().then(async () => {
     const storedDefaultInterval = configStore.get('defaultInterval')
     const parsedDefaultInterval =
       typeof storedDefaultInterval === 'number' ? storedDefaultInterval : Number(storedDefaultInterval)
-    const defaultInterval = Number.isFinite(parsedDefaultInterval) ? Math.max(0, Math.floor(parsedDefaultInterval)) : 30
+    const defaultInterval =
+      Number.isFinite(parsedDefaultInterval) ? Math.max(0, Math.floor(parsedDefaultInterval)) : 30
     if (storedDefaultInterval !== defaultInterval) {
       configStore.set('defaultInterval', defaultInterval)
     }
@@ -3296,10 +3509,12 @@ app.whenReady().then(async () => {
     }
 
     return {
-      aiProvider,
-      aiBaseUrl,
-      aiApiKey,
-      aiDefaultImageModel,
+      aiProvider: aiState.aiProvider,
+      aiBaseUrl: aiState.aiBaseUrl,
+      aiApiKey: aiState.aiApiKey,
+      aiDefaultImageModel: aiState.aiDefaultImageModel,
+      aiEndpointPath: aiState.aiEndpointPath,
+      aiProviderProfiles: aiState.aiProviderProfiles,
       importStrategy,
       realEsrganPath: configStore.get('realEsrganPath') ?? '',
       pythonPath: configStore.get('pythonPath') ?? '',
@@ -3322,10 +3537,12 @@ app.whenReady().then(async () => {
       _event,
       patch:
         | {
-            aiProvider?: AiProvider
+            aiProvider?: string
             aiBaseUrl?: string
             aiApiKey?: string
             aiDefaultImageModel?: string
+            aiEndpointPath?: string
+            aiProviderProfiles?: AiProviderProfile[]
             importStrategy?: 'copy' | 'move'
             realEsrganPath?: string
             pythonPath?: string
@@ -3349,96 +3566,190 @@ app.whenReady().then(async () => {
         | null
         | undefined
     ) => {
-    if (patch?.aiProvider) {
-      configStore.set('aiProvider', normalizeAiProvider(patch.aiProvider))
-    }
-    const nextAiBaseUrl = typeof patch?.aiBaseUrl === 'string' ? patch.aiBaseUrl.trim() : undefined
-    if (nextAiBaseUrl !== undefined) {
-      configStore.set('aiBaseUrl', nextAiBaseUrl)
-    }
-    const nextAiApiKey = typeof patch?.aiApiKey === 'string' ? patch.aiApiKey.trim() : undefined
-    if (nextAiApiKey !== undefined) {
-      configStore.set('aiApiKey', nextAiApiKey)
-    }
-    const nextAiDefaultImageModel =
-      typeof patch?.aiDefaultImageModel === 'string' ? patch.aiDefaultImageModel.trim() : undefined
-    if (nextAiDefaultImageModel !== undefined) {
-      configStore.set('aiDefaultImageModel', nextAiDefaultImageModel)
-    }
-    if (patch?.importStrategy === 'copy' || patch?.importStrategy === 'move') {
-      configStore.set('importStrategy', patch.importStrategy)
-    }
-    const nextRealEsrganPath = typeof patch?.realEsrganPath === 'string' ? patch.realEsrganPath.trim() : undefined
-    if (nextRealEsrganPath !== undefined) {
-      configStore.set('realEsrganPath', nextRealEsrganPath)
-    }
-    const nextPythonPath = typeof patch?.pythonPath === 'string' ? patch.pythonPath.trim() : undefined
-    if (nextPythonPath !== undefined) {
-      configStore.set('pythonPath', nextPythonPath)
-    }
-    const nextWatermarkScriptPath =
-      typeof patch?.watermarkScriptPath === 'string' ? patch.watermarkScriptPath.trim() : undefined
-    if (nextWatermarkScriptPath !== undefined) {
-      configStore.set('watermarkScriptPath', nextWatermarkScriptPath)
-    }
-    if (typeof patch?.dynamicWatermarkEnabled === 'boolean') {
-      configStore.set('dynamicWatermarkEnabled', patch.dynamicWatermarkEnabled)
-    }
-    if (typeof patch?.dynamicWatermarkOpacity === 'number' && Number.isFinite(patch.dynamicWatermarkOpacity)) {
-      configStore.set('dynamicWatermarkOpacity', normalizeDynamicWatermarkOpacity(patch.dynamicWatermarkOpacity))
-    }
-    if (typeof patch?.dynamicWatermarkSize === 'number' && Number.isFinite(patch.dynamicWatermarkSize)) {
-      configStore.set('dynamicWatermarkSize', normalizeDynamicWatermarkSize(patch.dynamicWatermarkSize))
-    }
-    if (typeof patch?.dynamicWatermarkTrajectory === 'string') {
-      configStore.set('dynamicWatermarkTrajectory', normalizeDynamicWatermarkTrajectory(patch.dynamicWatermarkTrajectory))
-    }
-    const nextScoutDashboardAutoImportDir =
-      typeof patch?.scoutDashboardAutoImportDir === 'string'
-        ? patch.scoutDashboardAutoImportDir.trim()
-        : undefined
-    if (nextScoutDashboardAutoImportDir !== undefined) {
-      const currentDirRaw = configStore.get('scoutDashboardAutoImportDir')
-      const currentDir = typeof currentDirRaw === 'string' ? currentDirRaw.trim() : ''
-      configStore.set('scoutDashboardAutoImportDir', nextScoutDashboardAutoImportDir)
-      if (!nextScoutDashboardAutoImportDir) {
-        configStore.set('scoutDashboardAutoImportSince', 0)
-      } else if (nextScoutDashboardAutoImportDir !== currentDir) {
-        configStore.set('scoutDashboardAutoImportSince', Date.now())
-      } else {
-        const rawSince = configStore.get('scoutDashboardAutoImportSince')
-        const parsedSince = typeof rawSince === 'number' ? rawSince : Number(rawSince)
-        if (!Number.isFinite(parsedSince) || parsedSince <= 0) {
-          configStore.set('scoutDashboardAutoImportSince', Date.now())
-        }
-      }
-      ensureScoutDashboardAutoImportWatcher()
-    }
-    if (isValidWatermarkBox(patch?.watermarkBox)) {
-      configStore.set('watermarkBox', patch.watermarkBox)
-    }
-    const nextDefaultStartTime = typeof patch?.defaultStartTime === 'string' ? patch.defaultStartTime.trim() : undefined
-    if (nextDefaultStartTime !== undefined && /^([01]\d|2[0-3]):[0-5]\d$/.test(nextDefaultStartTime)) {
-      configStore.set('defaultStartTime', nextDefaultStartTime)
-    }
-    const nextDefaultInterval = typeof patch?.defaultInterval === 'number' ? patch.defaultInterval : undefined
-    if (nextDefaultInterval !== undefined && Number.isFinite(nextDefaultInterval)) {
-      configStore.set('defaultInterval', Math.max(0, Math.floor(nextDefaultInterval)))
-    }
-    if (patch?.queueConfig && typeof patch.queueConfig === 'object') {
-      const qc = patch.queueConfig
-      const merged = {
-        taskIntervalMinMs: typeof qc.taskIntervalMinMs === 'number' && Number.isFinite(qc.taskIntervalMinMs) ? Math.max(0, Math.floor(qc.taskIntervalMinMs)) : 30000,
-        taskIntervalMaxMs: typeof qc.taskIntervalMaxMs === 'number' && Number.isFinite(qc.taskIntervalMaxMs) ? Math.max(0, Math.floor(qc.taskIntervalMaxMs)) : 90000,
-        dailyLimitPerAccount: typeof qc.dailyLimitPerAccount === 'number' && Number.isFinite(qc.dailyLimitPerAccount) ? Math.max(0, Math.floor(qc.dailyLimitPerAccount)) : 20,
-        cooldownAfterNTasks: typeof qc.cooldownAfterNTasks === 'number' && Number.isFinite(qc.cooldownAfterNTasks) ? Math.max(1, Math.floor(qc.cooldownAfterNTasks)) : 5,
-        cooldownDurationMs: typeof qc.cooldownDurationMs === 'number' && Number.isFinite(qc.cooldownDurationMs) ? Math.max(0, Math.floor(qc.cooldownDurationMs)) : 300000
-      }
-      configStore.set('queueConfig', merged)
-    }
-    return { success: true }
-  })
+      const currentAiState = readResolvedAiProviderStateFromStore()
+      let aiProviderProfiles =
+        patch?.aiProviderProfiles !== undefined
+          ? normalizeAiProviderProfiles(patch.aiProviderProfiles)
+          : currentAiState.aiProviderProfiles
+      const desiredAiProvider =
+        typeof patch?.aiProvider === 'string' ? normalizeAiProvider(patch.aiProvider) : currentAiState.aiProvider
+      const desiredAiBaseUrl =
+        typeof patch?.aiBaseUrl === 'string' ? patch.aiBaseUrl.trim() : currentAiState.aiBaseUrl
+      const desiredAiApiKey =
+        typeof patch?.aiApiKey === 'string' ? patch.aiApiKey.trim() : currentAiState.aiApiKey
+      const desiredAiDefaultImageModel =
+        typeof patch?.aiDefaultImageModel === 'string'
+          ? patch.aiDefaultImageModel.trim()
+          : currentAiState.aiDefaultImageModel
+      const desiredAiEndpointPath =
+        typeof patch?.aiEndpointPath === 'string'
+          ? normalizeAiEndpointPath(patch.aiEndpointPath)
+          : currentAiState.aiEndpointPath
 
+      let activeProvider = findAiProviderProfile(aiProviderProfiles, desiredAiProvider)
+      if (!activeProvider) {
+        aiProviderProfiles = normalizeAiProviderProfiles([
+          ...aiProviderProfiles,
+          {
+            id: randomUUID(),
+            providerName: desiredAiProvider,
+            baseUrl: desiredAiBaseUrl,
+            apiKey: desiredAiApiKey,
+            models: [],
+            defaultModelId: null
+          }
+        ])
+        activeProvider = findAiProviderProfile(aiProviderProfiles, desiredAiProvider)
+      }
+
+      if (activeProvider) {
+        const nextModels = activeProvider.models.map((model) => ({ ...model }))
+        let defaultModelId = activeProvider.defaultModelId
+        const existingModel = findAiModelProfile(activeProvider, desiredAiDefaultImageModel)
+
+        if (desiredAiDefaultImageModel) {
+          if (existingModel) {
+            const target = nextModels.find((model) => model.id === existingModel.id)
+            if (target) {
+              target.endpointPath = desiredAiEndpointPath || target.endpointPath
+              defaultModelId = target.id
+            }
+          } else {
+            const createdModel = {
+              id: randomUUID(),
+              modelName: desiredAiDefaultImageModel,
+              endpointPath: desiredAiEndpointPath
+            }
+            nextModels.push(createdModel)
+            defaultModelId = createdModel.id
+          }
+        } else if (defaultModelId && !nextModels.some((model) => model.id === defaultModelId)) {
+          defaultModelId = nextModels[0]?.id ?? null
+        }
+
+        aiProviderProfiles = normalizeAiProviderProfiles(
+          aiProviderProfiles.map((profile) =>
+            profile.id === activeProvider.id
+              ? {
+                  ...profile,
+                  baseUrl: desiredAiBaseUrl,
+                  apiKey: desiredAiApiKey,
+                  models: nextModels,
+                  defaultModelId
+                }
+              : profile
+          )
+        )
+      }
+
+      const resolvedAiState = resolveAiProviderState(aiProviderProfiles, {
+        provider: desiredAiProvider,
+        baseUrl: desiredAiBaseUrl,
+        apiKey: desiredAiApiKey,
+        modelName: desiredAiDefaultImageModel,
+        endpointPath: desiredAiEndpointPath
+      })
+      syncResolvedAiProviderStateToStore(resolvedAiState)
+
+      if (patch?.importStrategy === 'copy' || patch?.importStrategy === 'move') {
+        configStore.set('importStrategy', patch.importStrategy)
+      }
+      const nextRealEsrganPath = typeof patch?.realEsrganPath === 'string' ? patch.realEsrganPath.trim() : undefined
+      if (nextRealEsrganPath !== undefined) {
+        configStore.set('realEsrganPath', nextRealEsrganPath)
+      }
+      const nextPythonPath = typeof patch?.pythonPath === 'string' ? patch.pythonPath.trim() : undefined
+      if (nextPythonPath !== undefined) {
+        configStore.set('pythonPath', nextPythonPath)
+      }
+      const nextWatermarkScriptPath =
+        typeof patch?.watermarkScriptPath === 'string' ? patch.watermarkScriptPath.trim() : undefined
+      if (nextWatermarkScriptPath !== undefined) {
+        configStore.set('watermarkScriptPath', nextWatermarkScriptPath)
+      }
+      if (typeof patch?.dynamicWatermarkEnabled === 'boolean') {
+        configStore.set('dynamicWatermarkEnabled', patch.dynamicWatermarkEnabled)
+      }
+      if (
+        typeof patch?.dynamicWatermarkOpacity === 'number' &&
+        Number.isFinite(patch.dynamicWatermarkOpacity)
+      ) {
+        configStore.set(
+          'dynamicWatermarkOpacity',
+          normalizeDynamicWatermarkOpacity(patch.dynamicWatermarkOpacity)
+        )
+      }
+      if (typeof patch?.dynamicWatermarkSize === 'number' && Number.isFinite(patch.dynamicWatermarkSize)) {
+        configStore.set('dynamicWatermarkSize', normalizeDynamicWatermarkSize(patch.dynamicWatermarkSize))
+      }
+      if (typeof patch?.dynamicWatermarkTrajectory === 'string') {
+        configStore.set(
+          'dynamicWatermarkTrajectory',
+          normalizeDynamicWatermarkTrajectory(patch.dynamicWatermarkTrajectory)
+        )
+      }
+      const nextScoutDashboardAutoImportDir =
+        typeof patch?.scoutDashboardAutoImportDir === 'string'
+          ? patch.scoutDashboardAutoImportDir.trim()
+          : undefined
+      if (nextScoutDashboardAutoImportDir !== undefined) {
+        const currentDirRaw = configStore.get('scoutDashboardAutoImportDir')
+        const currentDir = typeof currentDirRaw === 'string' ? currentDirRaw.trim() : ''
+        configStore.set('scoutDashboardAutoImportDir', nextScoutDashboardAutoImportDir)
+        if (!nextScoutDashboardAutoImportDir) {
+          configStore.set('scoutDashboardAutoImportSince', 0)
+        } else if (nextScoutDashboardAutoImportDir !== currentDir) {
+          configStore.set('scoutDashboardAutoImportSince', Date.now())
+        } else {
+          const rawSince = configStore.get('scoutDashboardAutoImportSince')
+          const parsedSince = typeof rawSince === 'number' ? rawSince : Number(rawSince)
+          if (!Number.isFinite(parsedSince) || parsedSince <= 0) {
+            configStore.set('scoutDashboardAutoImportSince', Date.now())
+          }
+        }
+        ensureScoutDashboardAutoImportWatcher()
+      }
+      if (isValidWatermarkBox(patch?.watermarkBox)) {
+        configStore.set('watermarkBox', patch.watermarkBox)
+      }
+      const nextDefaultStartTime =
+        typeof patch?.defaultStartTime === 'string' ? patch.defaultStartTime.trim() : undefined
+      if (nextDefaultStartTime !== undefined && /^([01]\d|2[0-3]):[0-5]\d$/.test(nextDefaultStartTime)) {
+        configStore.set('defaultStartTime', nextDefaultStartTime)
+      }
+      const nextDefaultInterval = typeof patch?.defaultInterval === 'number' ? patch.defaultInterval : undefined
+      if (nextDefaultInterval !== undefined && Number.isFinite(nextDefaultInterval)) {
+        configStore.set('defaultInterval', Math.max(0, Math.floor(nextDefaultInterval)))
+      }
+      if (patch?.queueConfig && typeof patch.queueConfig === 'object') {
+        const qc = patch.queueConfig
+        const merged = {
+          taskIntervalMinMs:
+            typeof qc.taskIntervalMinMs === 'number' && Number.isFinite(qc.taskIntervalMinMs)
+              ? Math.max(0, Math.floor(qc.taskIntervalMinMs))
+              : 30000,
+          taskIntervalMaxMs:
+            typeof qc.taskIntervalMaxMs === 'number' && Number.isFinite(qc.taskIntervalMaxMs)
+              ? Math.max(0, Math.floor(qc.taskIntervalMaxMs))
+              : 90000,
+          dailyLimitPerAccount:
+            typeof qc.dailyLimitPerAccount === 'number' && Number.isFinite(qc.dailyLimitPerAccount)
+              ? Math.max(0, Math.floor(qc.dailyLimitPerAccount))
+              : 20,
+          cooldownAfterNTasks:
+            typeof qc.cooldownAfterNTasks === 'number' && Number.isFinite(qc.cooldownAfterNTasks)
+              ? Math.max(1, Math.floor(qc.cooldownAfterNTasks))
+              : 5,
+          cooldownDurationMs:
+            typeof qc.cooldownDurationMs === 'number' && Number.isFinite(qc.cooldownDurationMs)
+              ? Math.max(0, Math.floor(qc.cooldownDurationMs))
+              : 300000
+        }
+        configStore.set('queueConfig', merged)
+      }
+      return { success: true }
+    }
+  )
 
   ipcMain.handle(
     'feishu-upload-image',
@@ -4372,6 +4683,12 @@ app.whenReady().then(async () => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : ''
     return aiStudioService.retryRun(taskId)
+  })
+
+  ipcMain.handle('cms.aiStudio.run.get', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const runId = typeof body.runId === 'string' ? body.runId.trim() : ''
+    return aiStudioService.getRun(runId)
   })
 
   ipcMain.handle('cms.aiStudio.task.updateBilledState', async (_event, payload: unknown) => {

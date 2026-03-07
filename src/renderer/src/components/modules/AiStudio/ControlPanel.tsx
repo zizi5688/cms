@@ -174,7 +174,9 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
         aiProvider: aiConfig.aiProvider,
         aiBaseUrl: aiConfig.aiBaseUrl,
         aiApiKey: aiConfig.aiApiKey,
-        aiDefaultImageModel: aiConfig.aiDefaultImageModel
+        aiDefaultImageModel: aiConfig.aiDefaultImageModel,
+        aiEndpointPath: aiConfig.aiEndpointPath,
+        aiProviderProfiles: aiConfig.aiProviderProfiles
       })
       addLog(`[AI Studio] 开始提交生成：${task.productName || task.id}`)
       const result = await window.api.cms.aiStudio.task.startRun({ taskId: task.id })
@@ -185,7 +187,8 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
         addLog(`[AI Studio] ${message}`)
         window.alert(message)
       } else {
-        const message = `已提交到 GRSAI，远端任务 ID：${result.remoteTaskId ?? '待返回'}。可继续在结果区查看后续状态。`
+        const providerLabel = (task.provider || aiConfig.aiProvider || 'AI 服务').trim() || 'AI 服务'
+        const message = `已提交到 ${providerLabel}，远端任务 ID：${result.remoteTaskId ?? '待返回'}。可继续在结果区查看后续状态。`
         addLog(`[AI Studio] ${message}`)
         window.alert(message)
       }

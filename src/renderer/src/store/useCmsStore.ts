@@ -57,15 +57,32 @@ export interface CmsPreferences {
 
 export type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
+export interface AiModelProfile {
+  id: string
+  modelName: string
+  endpointPath: string
+}
+
+export interface AiProviderProfile {
+  id: string
+  providerName: string
+  baseUrl: string
+  apiKey: string
+  models: AiModelProfile[]
+  defaultModelId: string | null
+}
+
 export interface CmsConfig {
   appId: string
   appSecret: string
   baseToken: string
   tableId: string
-  aiProvider: 'grsai'
+  aiProvider: string
   aiBaseUrl: string
   aiApiKey: string
   aiDefaultImageModel: string
+  aiEndpointPath: string
+  aiProviderProfiles: AiProviderProfile[]
   titleField: string
   bodyField: string
   imageField: string
@@ -147,6 +164,8 @@ const initialConfig: CmsConfig = {
   aiBaseUrl: '',
   aiApiKey: '',
   aiDefaultImageModel: '',
+  aiEndpointPath: '',
+  aiProviderProfiles: [],
   titleField: '标题',
   bodyField: '正文',
   imageField: '图片',

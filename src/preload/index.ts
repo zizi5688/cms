@@ -925,6 +925,8 @@ const api = {
           success: boolean
           provider: string
           baseUrl: string
+          model: string
+          endpointPath: string
           checkedAt: number
           statusCode: number | null
           message: string
@@ -1068,6 +1070,10 @@ const api = {
           priceMinSnapshot: number | null
           priceMaxSnapshot: number | null
         }> => ipcRenderer.invoke('cms.aiStudio.task.retryRun', payload)
+      },
+      run: {
+        get: (payload: { runId: string }): Promise<AiStudioRunRecord | null> =>
+          ipcRenderer.invoke('cms.aiStudio.run.get', payload)
       },
       asset: {
         list: (payload?: {
@@ -1280,10 +1286,19 @@ const electronAPI = {
   setWorkspacePath: (path: string): Promise<{ path: string }> => ipcRenderer.invoke('workspace.setPath', path),
   relaunch: (): Promise<{ success: true }> => ipcRenderer.invoke('workspace.relaunch'),
   getConfig: (): Promise<{
-    aiProvider: 'grsai'
+    aiProvider: string
     aiBaseUrl: string
     aiApiKey: string
     aiDefaultImageModel: string
+    aiEndpointPath: string
+    aiProviderProfiles: Array<{
+      id: string
+      providerName: string
+      baseUrl: string
+      apiKey: string
+      models: Array<{ id: string; modelName: string; endpointPath: string }>
+      defaultModelId: string | null
+    }>
     importStrategy: 'copy' | 'move'
     realEsrganPath: string
     pythonPath: string
@@ -1302,10 +1317,19 @@ const electronAPI = {
     defaultInterval: number
   }> => ipcRenderer.invoke('get-config'),
   saveConfig: (patch: {
-    aiProvider?: 'grsai'
+    aiProvider?: string
     aiBaseUrl?: string
     aiApiKey?: string
     aiDefaultImageModel?: string
+    aiEndpointPath?: string
+    aiProviderProfiles?: Array<{
+      id: string
+      providerName: string
+      baseUrl: string
+      apiKey: string
+      models: Array<{ id: string; modelName: string; endpointPath: string }>
+      defaultModelId: string | null
+    }>
     importStrategy?: 'copy' | 'move'
     realEsrganPath?: string
     pythonPath?: string
@@ -1385,6 +1409,8 @@ const electronAPI = {
     ipcRenderer.invoke('delete-file', filePath),
   shellShowItemInFolder: (filePath: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('shell-showItemInFolder', filePath),
+  shellOpenPath: (filePath: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell-openPath', filePath),
   exportFiles: (
     filePaths: string[]
   ): Promise<{ success: true; copied: number; destinationDir: string } | { success: false; error: string } | null> =>
