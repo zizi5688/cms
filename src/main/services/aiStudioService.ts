@@ -803,6 +803,45 @@ function asObject(value: unknown): Record<string, unknown> {
   return {}
 }
 
+
+type AiStudioWorkflowSourceDescriptor = {
+  activeStage: string
+  currentAiMasterAssetId: string | null
+  sourcePrimaryImagePath: string | null
+  sourceReferenceImagePaths: string[]
+  useCurrentAiMasterAsPrimary: boolean
+}
+
+function readWorkflowSourceDescriptor(task: AiStudioTaskRecord): AiStudioWorkflowSourceDescriptor {
+  const metadata = parseJsonObject(task.metadata)
+  const workflow = asObject(metadata.workflow)
+  const activeStage = normalizeText(workflow.activeStage)
+  const useCurrentAiMasterAsPrimary =
+    activeStage === 'child-ready' || activeStage === 'child-generating' || activeStage === 'completed'
+
+  const metadataReferencePaths = normalizeStringArray(workflow.sourceReferenceImagePaths)
+
+  return {
+    activeStage,
+    currentAiMasterAssetId: useCurrentAiMasterAsPrimary
+      ? normalizeNullableText(workflow.currentAiMasterAssetId)
+      : null,
+    sourcePrimaryImagePath: useCurrentAiMasterAsPrimary
+      ? normalizeNullableText(workflow.sourcePrimaryImagePath) ?? task.primaryImagePath
+      : task.primaryImagePath,
+    sourceReferenceImagePaths: useCurrentAiMasterAsPrimary
+      ? metadataReferencePaths.length > 0
+        ? metadataReferencePaths
+        : task.referenceImagePaths
+      : task.referenceImagePaths,
+    useCurrentAiMasterAsPrimary
+  }
+}
+
+function uniqueNormalizedPaths(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => normalizeText(value)).filter(Boolean)))
+}
+
 function mapTemplateRow(row: Record<string, unknown>): AiStudioTemplateRecord {
   return {
     id: normalizeText(row.id),
@@ -1024,7 +1063,24 @@ export class AiStudioService {
     requestSnapshot: Record<string, unknown>
   }> {
     const task = this.getTaskOrThrow(taskId)
-    if (!task.primaryImagePath) {
+    const workflowSource = readWorkflowSourceDescriptor(task)
+    const taskOutputAssets = this.listAssets({ taskId, kind: 'output' })
+
+    let primaryImagePath = workflowSource.sourcePrimaryImagePath
+    if (workflowSource.useCurrentAiMasterAsPrimary) {
+      if (!workflowSource.currentAiMasterAssetId) {
+        throw new Error('[AI Studio] 子图阶段缺少当前 AI 母图，请重新选择。')
+      }
+      const currentAiMasterAsset = taskOutputAssets.find(
+        (asset) => asset.id === workflowSource.currentAiMasterAssetId && normalizeText(asset.filePath)
+      )
+      if (!currentAiMasterAsset) {
+        throw new Error('[AI Studio] 当前 AI 母图不存在或已失效，请重新选择。')
+      }
+      primaryImagePath = currentAiMasterAsset.filePath
+    }
+
+    if (!primaryImagePath) {
       throw new Error('[AI Studio] 请先设置主图后再开始生成。')
     }
 
@@ -1035,13 +1091,10 @@ export class AiStudioService {
       task.model,
       config.defaultImageModel || DEFAULT_IMAGE_MODEL
     )
-    const sourceImagePaths = Array.from(
-      new Set(
-        [task.primaryImagePath, ...task.referenceImagePaths]
-          .map((item) => String(item ?? '').trim())
-          .filter(Boolean)
-      )
-    )
+    const sourceImagePaths = uniqueNormalizedPaths([
+      primaryImagePath,
+      ...workflowSource.sourceReferenceImagePaths
+    ])
     if (sourceImagePaths.length === 0) {
       throw new Error('[AI Studio] 至少需要一张输入图片。')
     }
@@ -1089,6 +1142,8 @@ export class AiStudioService {
         : isGeminiGenerateContentPath(endpointPath)
           ? 'gemini-generate-content'
           : 'grsai-compatible',
+      workflowStage: workflowSource.activeStage || 'master-setup',
+      currentAiMasterAssetId: workflowSource.currentAiMasterAssetId,
       webHook: GRSAI_POLL_WEBHOOK_SENTINEL,
       outputCount: task.outputCount,
       inputCount: urls.length,

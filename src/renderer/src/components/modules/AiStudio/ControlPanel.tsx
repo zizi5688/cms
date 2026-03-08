@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
 
-import { CopyPlus, ImagePlus, Plus, Save, Wand2 } from 'lucide-react'
+import { CopyPlus, Play, Save, Sparkles } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
+import { Textarea } from '@renderer/components/ui/textarea'
 import {
   CUSTOM_GRSAI_MODEL_SENTINEL,
   DEFAULT_GRSAI_IMAGE_MODEL,
@@ -17,73 +17,197 @@ import {
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
-import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
+import type { AiStudioTemplateRecord, UseAiStudioStateResult } from './useAiStudioState'
 
-function basename(filePath: string | null | undefined): string {
-  const normalized = String(filePath ?? '').trim()
-  if (!normalized) return '未设置'
-  const parts = normalized.split(/[\\/]/).filter(Boolean)
-  return parts[parts.length - 1] ?? normalized
+function StatusPill({ label, active = false }: { label: string; active?: boolean }): React.JSX.Element {
+  return (
+    <div
+      className={cn(
+        'rounded-full border px-3 py-1 text-[11px] tracking-[0.18em] uppercase',
+        active
+          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+          : 'border-zinc-800 bg-zinc-950/80 text-zinc-500'
+      )}
+    >
+      {label}
+    </div>
+  )
 }
 
-function PreviewTile({
-  asset,
-  active,
-  badge,
-  onClick,
-  footer
-}: {
-  asset: AiStudioAssetRecord | null
-  active?: boolean
-  badge?: string
-  onClick?: () => void
-  footer?: React.ReactNode
-}): React.JSX.Element {
-  const workspacePath = useCmsStore((store) => store.workspacePath)
-  const src = resolveLocalImage(asset?.previewPath ?? asset?.filePath ?? '', workspacePath)
-  const clickable = typeof onClick === 'function'
-
+function FieldLabel({ title, hint }: { title: string; hint?: string }): React.JSX.Element {
   return (
-    <div className="flex w-full flex-col gap-2 text-left">
-      <div
-        role={clickable ? 'button' : undefined}
-        tabIndex={clickable ? 0 : undefined}
-        onClick={onClick}
-        onKeyDown={(event) => {
-          if (!clickable) return
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            onClick?.()
-          }
-        }}
-        className={cn(
-          'relative aspect-[3/4] overflow-hidden rounded-2xl border bg-zinc-950',
-          clickable &&
-            'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500',
-          active ? 'border-zinc-100 shadow-[0_0_0_1px_rgba(255,255,255,0.18)]' : 'border-zinc-800'
-        )}
-      >
-        {src ? (
-          <img
-            src={src}
-            alt={basename(asset?.filePath)}
-            className="absolute inset-0 h-full w-full object-cover"
-            draggable={false}
-            loading="lazy"
-          />
-        ) : null}
-        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(0,0,0,0.46))]" />
-        {badge ? (
-          <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-black/35 px-2 py-1 text-[10px] text-zinc-100 backdrop-blur">
-            {badge}
-          </div>
-        ) : null}
-        <div className="absolute inset-x-3 bottom-3 rounded-xl border border-white/10 bg-black/35 px-3 py-2 text-xs text-zinc-100 backdrop-blur">
-          {basename(asset?.filePath)}
+    <div className="flex items-end justify-between gap-3">
+      <label className="text-sm font-medium text-zinc-100">{title}</label>
+      {hint ? <span className="text-[11px] text-zinc-500">{hint}</span> : null}
+    </div>
+  )
+}
+
+function SectionBlock({
+  eyebrow,
+  title,
+  description,
+  children
+}: {
+  eyebrow: string
+  title: string
+  description: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <section className="rounded-2xl border border-zinc-800 bg-zinc-950/65 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">{eyebrow}</div>
+          <div className="mt-2 text-base font-medium text-zinc-50">{title}</div>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">{description}</p>
         </div>
       </div>
-      {footer}
+      <div className="mt-4 flex flex-col gap-4">{children}</div>
+    </section>
+  )
+}
+
+function TemplateEditor({
+  stageLabel,
+  templates,
+  selectedTemplate,
+  selectedTemplateId,
+  templateNameDraft,
+  templatePromptDraft,
+  dirty,
+  saving,
+  onSelectTemplate,
+  onCreateDraft,
+  onChangeTemplateName,
+  onChangeTemplatePrompt,
+  onSave,
+  onSaveAs
+}: {
+  stageLabel: string
+  templates: AiStudioTemplateRecord[]
+  selectedTemplate: AiStudioTemplateRecord | null
+  selectedTemplateId: string
+  templateNameDraft: string
+  templatePromptDraft: string
+  dirty: boolean
+  saving: boolean
+  onSelectTemplate: (value: string) => Promise<void>
+  onCreateDraft: () => Promise<void>
+  onChangeTemplateName: (value: string) => void
+  onChangeTemplatePrompt: (value: string) => void
+  onSave: () => Promise<void>
+  onSaveAs: () => Promise<void>
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-900/70 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-zinc-100">{stageLabel}模板</div>
+          <div className="mt-1 text-xs text-zinc-500">
+            不保留系统模板，只使用你自己的模板库。
+          </div>
+        </div>
+        <div
+          className={cn(
+            'rounded-full border px-3 py-1 text-[11px]',
+            dirty
+              ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+              : 'border-zinc-800 bg-zinc-950/80 text-zinc-500'
+          )}
+        >
+          {dirty ? '未保存修改' : '已同步'}
+        </div>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
+        <select
+          value={selectedTemplateId}
+          onChange={(event) => void onSelectTemplate(event.target.value)}
+          className="h-11 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none transition focus:border-zinc-600"
+        >
+          <option value="">选择已保存模板</option>
+          {templates.map((template) => (
+            <option key={template.id} value={template.id}>
+              {template.name}
+            </option>
+          ))}
+        </select>
+        <Button type="button" variant="outline" onClick={() => void onCreateDraft()}>
+          <CopyPlus className="h-4 w-4" />
+          新建草稿
+        </Button>
+      </div>
+
+      <Input
+        value={templateNameDraft}
+        onChange={(event) => onChangeTemplateName(event.target.value)}
+        placeholder={`${stageLabel}模板名称`}
+      />
+
+      <Textarea
+        value={templatePromptDraft}
+        onChange={(event) => onChangeTemplatePrompt(event.target.value)}
+        placeholder={`填写${stageLabel}阶段的模板主提示词`}
+        className="min-h-[140px]"
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="outline" onClick={() => void onSave()} disabled={saving}>
+          <Save className="h-4 w-4" />
+          {saving ? '保存中...' : selectedTemplate ? '保存模板' : '保存为模板'}
+        </Button>
+        <Button type="button" variant="outline" onClick={() => void onSaveAs()} disabled={saving}>
+          <CopyPlus className="h-4 w-4" />
+          另存为新模板
+        </Button>
+      </div>
     </div>
+  )
+}
+
+function PresetButton({
+  active,
+  label,
+  onClick
+}: {
+  active?: boolean
+  label: string
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'inline-flex h-10 items-center justify-center rounded-xl border px-4 text-sm transition',
+        active
+          ? 'border-zinc-100 bg-zinc-100 text-zinc-950'
+          : 'border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700'
+      )}
+    >
+      {label}
+    </button>
+  )
+}
+
+function trimText(value: string): string {
+  return value.trim()
+}
+
+function isTemplateDirty(
+  selectedTemplate: AiStudioTemplateRecord | null,
+  draftName: string,
+  draftPrompt: string
+): boolean {
+  const normalizedName = trimText(draftName)
+  const normalizedPrompt = trimText(draftPrompt)
+  if (!selectedTemplate) {
+    return Boolean(normalizedName || normalizedPrompt)
+  }
+  return (
+    normalizedName !== trimText(selectedTemplate.name) ||
+    normalizedPrompt !== trimText(selectedTemplate.promptText)
   )
 }
 
@@ -91,11 +215,13 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   const task = state.activeTask
   const addLog = useCmsStore((store) => store.addLog)
   const aiConfig = useCmsStore((store) => store.config)
-  const [isStartingRun, setIsStartingRun] = useState(false)
-  const [isSavingTemplate, setIsSavingTemplate] = useState(false)
   const [isCustomModel, setIsCustomModel] = useState(false)
-  const [templateNameDraft, setTemplateNameDraft] = useState('')
-  const [templatePromptDraft, setTemplatePromptDraft] = useState('')
+  const [masterTemplateNameDraft, setMasterTemplateNameDraft] = useState('')
+  const [masterTemplatePromptDraft, setMasterTemplatePromptDraft] = useState('')
+  const [childTemplateNameDraft, setChildTemplateNameDraft] = useState('')
+  const [childTemplatePromptDraft, setChildTemplatePromptDraft] = useState('')
+  const [savingStage, setSavingStage] = useState<'master' | 'child' | null>(null)
+  const [runningStage, setRunningStage] = useState<'master' | 'child' | null>(null)
 
   useEffect(() => {
     const normalized = normalizeGrsaiModelValue(task?.model)
@@ -103,386 +229,381 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
   }, [task?.id, task?.model])
 
   useEffect(() => {
-    setTemplateNameDraft(state.selectedTemplate?.name ?? '')
-    setTemplatePromptDraft(state.selectedTemplate?.promptText ?? '')
-  }, [state.selectedTemplate?.id, state.selectedTemplate?.updatedAt, task?.templateId])
+    setMasterTemplateNameDraft(state.selectedMasterTemplate?.name ?? '')
+    setMasterTemplatePromptDraft(state.selectedMasterTemplate?.promptText ?? '')
+  }, [state.selectedMasterTemplate?.id, state.selectedMasterTemplate?.updatedAt])
 
-  const handleSaveTemplate = async (mode: 'save' | 'saveAs'): Promise<void> => {
-    const trimmedName = templateNameDraft.trim()
-    const trimmedPrompt = templatePromptDraft.trim()
-    if (!trimmedName) {
+  useEffect(() => {
+    setChildTemplateNameDraft(state.selectedChildTemplate?.name ?? '')
+    setChildTemplatePromptDraft(state.selectedChildTemplate?.promptText ?? '')
+  }, [state.selectedChildTemplate?.id, state.selectedChildTemplate?.updatedAt])
+
+  const displayedModel = useMemo(
+    () =>
+      resolveDisplayedGrsaiModel(
+        task?.model,
+        aiConfig.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
+      ),
+    [aiConfig.aiDefaultImageModel, task?.model]
+  )
+
+  const masterTemplateDirty = useMemo(
+    () => isTemplateDirty(state.selectedMasterTemplate, masterTemplateNameDraft, masterTemplatePromptDraft),
+    [childTemplateNameDraft, childTemplatePromptDraft, masterTemplateNameDraft, masterTemplatePromptDraft, state.selectedMasterTemplate]
+  )
+
+  const childTemplateDirty = useMemo(
+    () => isTemplateDirty(state.selectedChildTemplate, childTemplateNameDraft, childTemplatePromptDraft),
+    [childTemplateNameDraft, childTemplatePromptDraft, state.selectedChildTemplate]
+  )
+
+  const hasApiKey = Boolean(aiConfig.aiApiKey.trim())
+  const hasWatermarkRuntime = Boolean(aiConfig.pythonPath.trim() && aiConfig.watermarkScriptPath.trim())
+  const variantText = state.variantLines.join('\n')
+  const variantCount = state.variantLines.filter((line) => line.trim()).length
+  const progressPercent =
+    state.stageProgress.totalPlanned > 0
+      ? Math.min(100, Math.round((state.stageProgress.totalCompleted / state.stageProgress.totalPlanned) * 100))
+      : 0
+
+  const handleSaveStageTemplate = async (
+    stage: 'master' | 'child',
+    mode: 'save' | 'saveAs'
+  ): Promise<void> => {
+    const name = trimText(stage === 'master' ? masterTemplateNameDraft : childTemplateNameDraft)
+    const promptText = trimText(stage === 'master' ? masterTemplatePromptDraft : childTemplatePromptDraft)
+    if (!name) {
       window.alert('请先填写模板名称。')
       return
     }
-    if (!trimmedPrompt) {
-      window.alert('请先填写主提示词。')
+    if (!promptText) {
+      window.alert('请先填写模板主提示词。')
       return
     }
 
     try {
-      setIsSavingTemplate(true)
-      const saved = await state.saveTemplate({
-        templateId: mode === 'save' ? (state.selectedTemplate?.id ?? null) : null,
-        name: trimmedName,
-        promptText: trimmedPrompt
+      setSavingStage(stage)
+      const selectedTemplate = stage === 'master' ? state.selectedMasterTemplate : state.selectedChildTemplate
+      const saved = await state.saveStageTemplate(stage, {
+        templateId: mode === 'save' ? (selectedTemplate?.id ?? null) : null,
+        name,
+        promptText
       })
-      setTemplateNameDraft(saved.name)
-      setTemplatePromptDraft(saved.promptText)
-      addLog(
-        `[AI Studio] 模板已${mode === 'save' && state.selectedTemplate ? '保存' : '创建'}：${saved.name}`
-      )
+      addLog(`[AI Studio] ${stage === 'master' ? '母图' : '子图'}模板已保存：${saved.name}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 模板保存失败：${message}`)
       window.alert(message)
     } finally {
-      setIsSavingTemplate(false)
+      setSavingStage(null)
     }
   }
 
-  const handleCreateNewTemplate = async (): Promise<void> => {
-    await state.setTemplateId('')
-    setTemplateNameDraft('')
-    setTemplatePromptDraft('')
-    addLog('[AI Studio] 已切换到新建模板草稿')
+  const handleCreateDraft = async (stage: 'master' | 'child'): Promise<void> => {
+    if (stage === 'master') {
+      await state.setMasterTemplateId('')
+      setMasterTemplateNameDraft('')
+      setMasterTemplatePromptDraft('')
+    } else {
+      await state.setChildTemplateId('')
+      setChildTemplateNameDraft('')
+      setChildTemplatePromptDraft('')
+    }
+    addLog(`[AI Studio] 已切换到${stage === 'master' ? '母图' : '子图'}新模板草稿`)
   }
 
-  const handleStartRun = async (): Promise<void> => {
-    if (!task || isStartingRun) return
-    if (!aiConfig.aiApiKey.trim()) {
-      const message = '请先在 Settings > AI服务 中填写 API Key。'
-      addLog(`[AI Studio] ${message}`)
-      window.alert(message)
+  const handleStartMaster = async (): Promise<void> => {
+    if (!task || runningStage) return
+    if (masterTemplateDirty) {
+      window.alert('母图模板有未保存修改，请先保存后再开始。')
       return
     }
-    if (!state.selectedTemplate?.promptText.trim()) {
-      const message = '请先保存一份包含主提示词的模板。'
-      addLog(`[AI Studio] ${message}`)
-      window.alert(message)
+    if (!state.selectedMasterTemplate?.promptText.trim()) {
+      window.alert('请先保存并选择母图模板。')
       return
     }
-    if (isTemplateDirty) {
-      const message = '模板主提示词有未保存修改，请先保存或另存为。'
-      addLog(`[AI Studio] ${message}`)
-      window.alert(message)
-      return
-    }
-
-    setIsStartingRun(true)
     try {
-      await window.electronAPI.saveConfig({
-        aiProvider: aiConfig.aiProvider,
-        aiBaseUrl: aiConfig.aiBaseUrl,
-        aiApiKey: aiConfig.aiApiKey,
-        aiDefaultImageModel: aiConfig.aiDefaultImageModel,
-        aiEndpointPath: aiConfig.aiEndpointPath,
-        aiProviderProfiles: aiConfig.aiProviderProfiles
-      })
-      addLog(`[AI Studio] 开始提交生成：${task.productName || task.id}`)
-      const result = await window.api.cms.aiStudio.task.startRun({ taskId: task.id })
-      await state.refresh()
-
-      if (result.completed) {
-        const message = `生成完成：共落盘 ${result.outputs.length} 张，任务 ${result.remoteTaskId ?? '已完成'}`
-        addLog(`[AI Studio] ${message}`)
-        window.alert(message)
-      } else {
-        const providerLabel = (task.provider || aiConfig.aiProvider || 'AI 服务').trim() || 'AI 服务'
-        const message = `已提交到 ${providerLabel}，远端任务 ID：${result.remoteTaskId ?? '待返回'}。可继续在结果区查看后续状态。`
-        addLog(`[AI Studio] ${message}`)
-        window.alert(message)
-      }
+      setRunningStage('master')
+      await state.startMasterWorkflow()
+      addLog('[AI Studio] 母图阶段已开始执行')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 提交失败：${message}`)
+      addLog(`[AI Studio] 母图阶段启动失败：${message}`)
       window.alert(message)
-      await state.refresh()
     } finally {
-      setIsStartingRun(false)
+      setRunningStage(null)
+    }
+  }
+
+  const handleStartChild = async (): Promise<void> => {
+    if (!task || runningStage) return
+    if (childTemplateDirty) {
+      window.alert('子图模板有未保存修改，请先保存后再开始。')
+      return
+    }
+    if (!state.selectedChildTemplate?.promptText.trim()) {
+      window.alert('请先保存并选择子图模板。')
+      return
+    }
+    try {
+      setRunningStage('child')
+      await state.startChildWorkflow()
+      addLog('[AI Studio] 子图阶段已开始执行')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 子图阶段启动失败：${message}`)
+      window.alert(message)
+    } finally {
+      setRunningStage(null)
     }
   }
 
   if (!task) {
     return (
-      <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 p-6 text-sm text-zinc-500">
-        先添加主图，再继续配置参数
+      <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/55 px-6 text-center">
+        <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950 text-zinc-400">
+          <Sparkles className="h-6 w-6" />
+        </div>
+        <div className="mt-4 text-base font-medium text-zinc-100">先放入主图和参考图</div>
+        <div className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">
+          左侧导入素材后，这里会出现母图阶段、子图阶段、模板保存与进度控制。
+        </div>
       </div>
     )
   }
 
-  const primaryAsset =
-    state.activeInputAssets.find((asset) => asset.filePath === state.primaryImagePath) ?? null
-  const referenceAssets = state.activeInputAssets.filter((asset) =>
-    state.referenceImagePaths.includes(asset.filePath)
-  )
-  const templateValue = state.selectedTemplate?.id ?? ''
-  const configuredModel = normalizeGrsaiModelValue(task.model)
-  const inheritedModel = resolveDisplayedGrsaiModel(
-    aiConfig.aiDefaultImageModel,
-    DEFAULT_GRSAI_IMAGE_MODEL
-  )
-  const selectedPresetModel = isKnownGrsaiModel(configuredModel) ? configuredModel : inheritedModel
-  const customModelValue = isCustomModel ? configuredModel : ''
-  const trimmedTemplateName = templateNameDraft.trim()
-  const trimmedTemplatePrompt = templatePromptDraft.trim()
-  const savedTemplateName = state.selectedTemplate?.name.trim() ?? ''
-  const savedTemplatePrompt = state.selectedTemplate?.promptText.trim() ?? ''
-  const isTemplateDirty =
-    trimmedTemplateName !== savedTemplateName || trimmedTemplatePrompt !== savedTemplatePrompt
-  const canSaveTemplate = Boolean(trimmedTemplateName && trimmedTemplatePrompt) && !isSavingTemplate
-  const hasSavedMainPrompt = Boolean(state.selectedTemplate?.promptText.trim())
-
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-        <div className="flex flex-col gap-1 sm:col-span-2 xl:col-span-1 2xl:col-span-2">
-          <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模板</span>
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
-            <select
-              value={templateValue}
-              onChange={(event) => void state.setTemplateId(event.target.value)}
-              className="h-10 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-            >
-              <option value="">未选择模板</option>
-              {state.templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name}
-                </option>
-              ))}
-            </select>
-            <Button type="button" variant="outline" onClick={() => void handleCreateNewTemplate()}>
-              <Plus className="h-4 w-4" />
-              新建模板
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!canSaveTemplate}
-              onClick={() => void handleSaveTemplate('save')}
-            >
-              <Save className="h-4 w-4" />
-              {isSavingTemplate ? '保存中...' : '保存'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!canSaveTemplate}
-              onClick={() => void handleSaveTemplate('saveAs')}
-            >
-              <CopyPlus className="h-4 w-4" />
-              另存为
-            </Button>
-          </div>
-          <div className="text-[11px] text-zinc-500">
-            {state.selectedTemplate
-              ? isTemplateDirty
-                ? '当前模板有未保存修改，生成前请先保存或另存为。'
-                : `当前模板：${state.selectedTemplate.name}`
-              : '当前未选择模板，请先新建模板并保存主提示词。'}
-          </div>
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+      <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill label={hasApiKey ? 'API Key Ready' : 'API Key Missing'} active={hasApiKey} />
+          <StatusPill label={hasWatermarkRuntime ? '去水印 Ready' : '去水印 Missing'} active={hasWatermarkRuntime} />
+          <StatusPill label={`当前阶段 · ${state.stageProgress.currentLabel}`} active />
         </div>
-
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">比例</span>
-          <select
-            value={task.aspectRatio || '3:4'}
-            onChange={(event) => void state.setAspectRatio(event.target.value)}
-            className="h-10 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-          >
-            <option value="3:4">3:4</option>
-            <option value="1:1">1:1</option>
-            <option value="9:16">9:16</option>
-          </select>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">数量</span>
-          <Input
-            type="number"
-            min={1}
-            value={String(task.outputCount || 1)}
-            onChange={(event) => void state.setOutputCount(Number(event.target.value) || 1)}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1 sm:col-span-2 xl:col-span-1 2xl:col-span-2">
-          <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模型</span>
-          <select
-            value={isCustomModel ? CUSTOM_GRSAI_MODEL_SENTINEL : selectedPresetModel}
-            onChange={(event) => {
-              const nextValue = event.target.value
-              if (nextValue === CUSTOM_GRSAI_MODEL_SENTINEL) {
-                setIsCustomModel(true)
-                void state.setModel(isKnownGrsaiModel(configuredModel) ? '' : configuredModel)
-                return
-              }
-              setIsCustomModel(false)
-              void state.setModel(nextValue)
-            }}
-            className="h-10 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
-          >
-            {GRSAI_MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-            <option value={CUSTOM_GRSAI_MODEL_SENTINEL}>自定义模型…</option>
-          </select>
-          {!isCustomModel ? (
-            <div className="text-[11px] text-zinc-500">
-              {configuredModel
-                ? `当前任务固定使用：${selectedPresetModel}`
-                : `未单独指定，当前继承默认模型：${inheritedModel}`}
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
+            <div className="text-xs text-zinc-500">模型 / 构图比例</div>
+            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_120px]">
+              <select
+                value={isCustomModel ? CUSTOM_GRSAI_MODEL_SENTINEL : displayedModel}
+                onChange={(event) => {
+                  const nextValue = event.target.value
+                  if (nextValue === CUSTOM_GRSAI_MODEL_SENTINEL) {
+                    setIsCustomModel(true)
+                    return
+                  }
+                  setIsCustomModel(false)
+                  void state.setModel(nextValue)
+                }}
+                className="h-11 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none transition focus:border-zinc-600"
+              >
+                {GRSAI_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+                <option value={CUSTOM_GRSAI_MODEL_SENTINEL}>自定义模型…</option>
+              </select>
+              <select
+                value={task.aspectRatio || '3:4'}
+                onChange={(event) => void state.setAspectRatio(event.target.value)}
+                className="h-11 rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none transition focus:border-zinc-600"
+              >
+                <option value="3:4">3:4</option>
+                <option value="4:5">4:5</option>
+                <option value="1:1">1:1</option>
+                <option value="9:16">9:16</option>
+                <option value="16:9">16:9</option>
+              </select>
             </div>
-          ) : (
-            <>
+            {isCustomModel ? (
               <Input
-                value={customModelValue}
+                className="mt-3"
+                value={normalizeGrsaiModelValue(task.model)}
+                placeholder="输入自定义模型名称"
                 onChange={(event) => void state.setModel(event.target.value)}
-                placeholder="输入文档里的完整模型名"
-                spellCheck={false}
               />
-              <div className="text-[11px] text-amber-300/80">
-                自定义模式：请粘贴 GRSAI 文档中的完整模型名。
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs text-zinc-500">整体进度</div>
+                <div className="mt-1 text-sm text-zinc-100">
+                  {state.stageProgress.totalCompleted} / {state.stageProgress.totalPlanned || 0}
+                </div>
               </div>
-            </>
-          )}
-        </label>
-      </div>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">模板名称</span>
-        <Input
-          value={templateNameDraft}
-          onChange={(event) => setTemplateNameDraft(event.target.value)}
-          placeholder="例如：电商女装镜前生活感"
-          spellCheck={false}
-        />
-      </label>
-
-      <label className="flex min-h-0 flex-col gap-1">
-        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">主提示词</span>
-        <textarea
-          value={templatePromptDraft}
-          onChange={(event) => setTemplatePromptDraft(event.target.value)}
-          className="min-h-[112px] rounded-2xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-zinc-100 outline-none ring-0 transition focus:border-zinc-700 focus-visible:ring-2 focus-visible:ring-zinc-500"
-          placeholder="描述主体、构图、光线、镜头语言与整体气质，这部分会保存到模板。"
-        />
-      </label>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="mb-2 text-xs text-zinc-500">主图</div>
-          <PreviewTile asset={primaryAsset} badge="Primary" active={Boolean(primaryAsset)} />
-        </div>
-        <div>
-          <div className="mb-2 text-xs text-zinc-500">参考</div>
-          <div className="grid grid-cols-2 gap-2">
-            {referenceAssets.length > 0 ? (
-              referenceAssets
-                .slice(0, 4)
-                .map((asset) => <PreviewTile key={asset.id} asset={asset} badge="Ref" active />)
-            ) : (
-              <div className="col-span-2 flex aspect-[3/4] items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 text-xs text-zinc-500">
-                未设置
+              <div className="text-xs text-zinc-500">
+                当前项 {state.stageProgress.currentIndex} / {state.stageProgress.currentTotal}
               </div>
-            )}
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-900">
+              <div
+                className="h-full rounded-full bg-[linear-gradient(90deg,#fafafa,#a1a1aa)] transition-all"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-zinc-400">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                母图成功 {state.workflowMeta?.masterStage.cleanSuccessCount ?? 0}
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                子图成功 {state.workflowMeta?.childStage.completedCount ?? 0}
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                失败记录 {state.failureRecords.length}
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <label className="flex min-h-0 flex-col gap-1">
-        <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">附加要求</span>
-        <textarea
-          value={task.promptExtra}
-          onChange={(event) => void state.setPromptExtra(event.target.value)}
-          className="min-h-[96px] rounded-2xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-zinc-100 outline-none ring-0 transition focus:border-zinc-700 focus-visible:ring-2 focus-visible:ring-zinc-500"
-          placeholder="补充本次任务的限制、场景、质感，不会写回模板。"
+      <SectionBlock
+        eyebrow="Stage 1"
+        title="母图设置"
+        description="主图 + 可选参考图先生成多张 AI 母图。每张母图都会自动去水印，只有去印成功的结果才能设为当前 AI 母图。"
+      >
+        <TemplateEditor
+          stageLabel="母图"
+          templates={state.templates}
+          selectedTemplate={state.selectedMasterTemplate}
+          selectedTemplateId={state.selectedMasterTemplate?.id ?? ''}
+          templateNameDraft={masterTemplateNameDraft}
+          templatePromptDraft={masterTemplatePromptDraft}
+          dirty={masterTemplateDirty}
+          saving={savingStage === 'master'}
+          onSelectTemplate={state.setMasterTemplateId}
+          onCreateDraft={() => handleCreateDraft('master')}
+          onChangeTemplateName={setMasterTemplateNameDraft}
+          onChangeTemplatePrompt={setMasterTemplatePromptDraft}
+          onSave={() => handleSaveStageTemplate('master', 'save')}
+          onSaveAs={() => handleSaveStageTemplate('master', 'saveAs')}
         />
-      </label>
 
-      <div className="space-y-2">
-        <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">图库</div>
-        <div className="grid max-h-[260px] grid-cols-2 gap-3 overflow-y-auto pr-1 2xl:grid-cols-3">
-          {state.activeInputAssets.map((asset) => {
-            const isPrimary = state.primaryImagePath === asset.filePath
-            const isReference = state.referenceImagePaths.includes(asset.filePath)
-            return (
-              <PreviewTile
-                key={asset.id}
-                asset={asset}
-                active={isPrimary || isReference}
-                onClick={() => void state.assignPrimaryImage(asset.filePath)}
-                footer={
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      className={cn(isPrimary ? 'bg-zinc-50 text-zinc-950 hover:bg-white' : '')}
-                      variant={isPrimary ? 'default' : 'outline'}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        void state.assignPrimaryImage(isPrimary ? null : asset.filePath)
-                      }}
-                    >
-                      主图
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={isReference ? 'default' : 'outline'}
-                      className={cn(isReference ? 'bg-zinc-50 text-zinc-950 hover:bg-white' : '')}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        void state.toggleReferenceImage(asset.filePath)
-                      }}
-                    >
-                      参考
-                    </Button>
-                  </div>
-                }
-              />
-            )
-          })}
-
-          {state.activeInputAssets.length === 0 ? (
-            <div className="col-span-2 flex aspect-[3/4] items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 text-xs text-zinc-500 2xl:col-span-3">
-              <ImagePlus className="mr-2 h-4 w-4" />
-              先在左侧添加主图 / 参考图
-            </div>
-          ) : null}
+        <div className="grid gap-4 xl:grid-cols-[140px_minmax(0,1fr)]">
+          <div className="flex flex-col gap-2">
+            <FieldLabel title="母图数量" />
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={state.masterOutputCount}
+              onChange={(event) => void state.setMasterOutputCount(Number(event.target.value) || 1)}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <FieldLabel title="本次追加说明" hint="可选，本次任务专用" />
+            <Textarea
+              value={state.masterPromptExtra}
+              onChange={(event) => void state.setMasterPromptExtra(event.target.value)}
+              placeholder="例如：先按特殊修改清单处理，再保留原图氛围、质感、空间关系。"
+              className="min-h-[96px]"
+            />
+          </div>
         </div>
-      </div>
 
-      <div className="mt-auto space-y-2">
-        {!aiConfig.aiApiKey.trim() ? (
-          <div className="text-xs text-amber-400">请先在 Settings &gt; AI服务 中填写 API Key。</div>
-        ) : null}
-        {!task.primaryImagePath ? (
-          <div className="text-xs text-zinc-500">主图未设置，暂时无法开始生成。</div>
-        ) : null}
-        {!hasSavedMainPrompt ? (
-          <div className="text-xs text-zinc-500">请先保存一份包含主提示词的模板。</div>
-        ) : null}
-        {isTemplateDirty ? (
-          <div className="text-xs text-amber-400">模板内容有未保存修改，请先保存或另存为。</div>
-        ) : null}
-        <Button
-          type="button"
-          className="h-11 w-full rounded-xl bg-zinc-50 text-zinc-950 hover:bg-white"
-          disabled={
-            !task.primaryImagePath ||
-            !aiConfig.aiApiKey.trim() ||
-            !hasSavedMainPrompt ||
-            isTemplateDirty ||
-            isStartingRun
-          }
-          onClick={() => void handleStartRun()}
-        >
-          <Wand2 className="h-4 w-4" />
-          {isStartingRun ? '生成中...' : '开始生成'}
-        </Button>
-      </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
+          <div>
+            <div className="text-sm font-medium text-zinc-100">开始生成 AI 母图</div>
+            <div className="mt-1 text-xs leading-5 text-zinc-500">
+              默认串行执行 {state.masterOutputCount} 次，并在每次结果落盘后立即自动去水印。
+            </div>
+          </div>
+          <Button type="button" onClick={() => void handleStartMaster()} disabled={runningStage !== null}>
+            <Play className="h-4 w-4" />
+            {runningStage === 'master' ? '母图执行中...' : '开始生成AI母图'}
+          </Button>
+        </div>
+      </SectionBlock>
+
+      <SectionBlock
+        eyebrow="Stage 2"
+        title="子图设置"
+        description="以“当前 AI 母图”作为首张参考图，串行生成子图。某张失败会记录错误并自动跳过，继续跑后面的任务。"
+      >
+        <TemplateEditor
+          stageLabel="子图"
+          templates={state.templates}
+          selectedTemplate={state.selectedChildTemplate}
+          selectedTemplateId={state.selectedChildTemplate?.id ?? ''}
+          templateNameDraft={childTemplateNameDraft}
+          templatePromptDraft={childTemplatePromptDraft}
+          dirty={childTemplateDirty}
+          saving={savingStage === 'child'}
+          onSelectTemplate={state.setChildTemplateId}
+          onCreateDraft={() => handleCreateDraft('child')}
+          onChangeTemplateName={setChildTemplateNameDraft}
+          onChangeTemplatePrompt={setChildTemplatePromptDraft}
+          onSave={() => handleSaveStageTemplate('child', 'save')}
+          onSaveAs={() => handleSaveStageTemplate('child', 'saveAs')}
+        />
+
+        <div className="grid gap-4 xl:grid-cols-[200px_minmax(0,1fr)]">
+          <div className="flex flex-col gap-3">
+            <FieldLabel title="子图数量" />
+            <div className="grid grid-cols-3 gap-2">
+              {[4, 6, 9].map((count) => (
+                <PresetButton
+                  key={count}
+                  label={String(count)}
+                  active={state.childOutputCount === count}
+                  onClick={() => void state.setChildOutputCount(count)}
+                />
+              ))}
+            </div>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={state.childOutputCount}
+              onChange={(event) => void state.setChildOutputCount(Number(event.target.value) || 1)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <FieldLabel title="本次追加说明" hint="可选，本次任务专用" />
+            <Textarea
+              value={state.childPromptExtra}
+              onChange={(event) => void state.setChildPromptExtra(event.target.value)}
+              placeholder="例如：保持匿名感、不露脸、氛围感完全延续母图。"
+              className="min-h-[96px]"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <FieldLabel title="Variant 列表" hint={`${variantCount} / ${state.childOutputCount} 行`} />
+          <Textarea
+            value={variantText}
+            onChange={(event) => void state.setVariantLines(event.target.value.split(/\r?\n/))}
+            placeholder="每行一个变体，例如：\nFull body shot, naturally walking forward.\nMedium shot, 45-degree side profile."
+            className="min-h-[150px] font-mono text-[13px]"
+          />
+          <div className="text-xs text-zinc-500">
+            需要至少填写 {state.childOutputCount} 行。暂不内置任何变体模板，完全由你自定义。
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
+          <div>
+            <div className="text-sm font-medium text-zinc-100">
+              当前 AI 母图：{state.currentAiMasterAsset ? '已选定' : '未选定'}
+            </div>
+            <div className="mt-1 text-xs leading-5 text-zinc-500">
+              子图会按序串行提交；单张失败只记入失败记录，不会打断后续子图。
+            </div>
+          </div>
+          <Button
+            type="button"
+            onClick={() => void handleStartChild()}
+            disabled={!state.currentAiMasterAsset || runningStage !== null}
+          >
+            <Play className="h-4 w-4" />
+            {runningStage === 'child' ? '子图执行中...' : '开始生成子图'}
+          </Button>
+        </div>
+      </SectionBlock>
     </div>
   )
 }

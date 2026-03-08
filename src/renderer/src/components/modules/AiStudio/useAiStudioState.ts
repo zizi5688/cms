@@ -96,6 +96,367 @@ export type AiStudioBatchCostSummary = {
 
 export const MAX_AI_STUDIO_REFERENCE_IMAGES = 4
 
+export type AiStudioWorkflowStage =
+  | 'master-setup'
+  | 'master-generating'
+  | 'master-cleaning'
+  | 'master-selecting'
+  | 'child-ready'
+  | 'child-generating'
+  | 'completed'
+
+export type AiStudioWorkflowFailureRecord = {
+  id: string
+  stageKind: 'master-generate' | 'master-clean' | 'child-generate'
+  sequenceIndex: number
+  message: string
+  assetId?: string
+  runId?: string
+  createdAt: number
+}
+
+export type AiStudioWorkflowMetadata = {
+  workflow: {
+    mode: 'two-stage'
+    activeStage: AiStudioWorkflowStage
+    sourcePrimaryImagePath: string | null
+    sourceReferenceImagePaths: string[]
+    currentAiMasterAssetId: string | null
+    requireCleanMasterBeforeChild: true
+    skipFailedChildRuns: true
+    currentItemKind: 'idle' | 'master-generate' | 'master-clean' | 'child-generate'
+    currentItemIndex: number
+    currentItemTotal: number
+    failures: AiStudioWorkflowFailureRecord[]
+  }
+  masterStage: {
+    templateId: string | null
+    promptExtra: string
+    requestedCount: number
+    completedCount: number
+    cleanSuccessCount: number
+    cleanFailedCount: number
+  }
+  childStage: {
+    templateId: string | null
+    promptExtra: string
+    requestedCount: number
+    variantLines: string[]
+    completedCount: number
+    failedCount: number
+  }
+}
+
+export type AiStudioStageProgress = {
+  stage: AiStudioWorkflowStage
+  currentLabel: string
+  currentIndex: number
+  currentTotal: number
+  totalCompleted: number
+  totalPlanned: number
+  successCount: number
+  failureCount: number
+}
+
+const AI_STUDIO_MASTER_OUTPUT_ROLE = 'master-raw'
+const AI_STUDIO_MASTER_CLEAN_ROLE = 'master-clean'
+const AI_STUDIO_CHILD_OUTPUT_ROLE = 'child-output'
+const AI_STUDIO_SOURCE_PRIMARY_ROLE = 'source-primary'
+const AI_STUDIO_SOURCE_REFERENCE_ROLE = 'source-reference'
+
+function normalizeVariantLines(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean)
+}
+
+function createDefaultWorkflowMetadata(
+  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths'>
+): AiStudioWorkflowMetadata {
+  return {
+    workflow: {
+      mode: 'two-stage',
+      activeStage: 'master-setup',
+      sourcePrimaryImagePath: task.primaryImagePath ?? null,
+      sourceReferenceImagePaths: uniqueStrings(task.referenceImagePaths ?? []),
+      currentAiMasterAssetId: null,
+      requireCleanMasterBeforeChild: true,
+      skipFailedChildRuns: true,
+      currentItemKind: 'idle',
+      currentItemIndex: 0,
+      currentItemTotal: 0,
+      failures: []
+    },
+    masterStage: {
+      templateId: task.templateId ?? null,
+      promptExtra: task.promptExtra ?? '',
+      requestedCount: 3,
+      completedCount: 0,
+      cleanSuccessCount: 0,
+      cleanFailedCount: 0
+    },
+    childStage: {
+      templateId: task.templateId ?? null,
+      promptExtra: '',
+      requestedCount: 4,
+      variantLines: [],
+      completedCount: 0,
+      failedCount: 0
+    }
+  }
+}
+
+function readWorkflowMetadata(
+  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>
+): AiStudioWorkflowMetadata {
+  const metadata =
+    task.metadata && typeof task.metadata === 'object'
+      ? (task.metadata as Record<string, unknown>)
+      : {}
+  const workflowRecord =
+    metadata.workflow && typeof metadata.workflow === 'object'
+      ? (metadata.workflow as Record<string, unknown>)
+      : {}
+  const masterRecord =
+    metadata.masterStage && typeof metadata.masterStage === 'object'
+      ? (metadata.masterStage as Record<string, unknown>)
+      : {}
+  const childRecord =
+    metadata.childStage && typeof metadata.childStage === 'object'
+      ? (metadata.childStage as Record<string, unknown>)
+      : {}
+  const base = createDefaultWorkflowMetadata(task)
+
+  return {
+    workflow: {
+      mode: 'two-stage',
+      activeStage:
+        workflowRecord.activeStage === 'master-generating' ||
+        workflowRecord.activeStage === 'master-cleaning' ||
+        workflowRecord.activeStage === 'master-selecting' ||
+        workflowRecord.activeStage === 'child-ready' ||
+        workflowRecord.activeStage === 'child-generating' ||
+        workflowRecord.activeStage === 'completed'
+          ? (workflowRecord.activeStage as AiStudioWorkflowStage)
+          : base.workflow.activeStage,
+      sourcePrimaryImagePath:
+        typeof workflowRecord.sourcePrimaryImagePath === 'string'
+          ? workflowRecord.sourcePrimaryImagePath
+          : base.workflow.sourcePrimaryImagePath,
+      sourceReferenceImagePaths: Array.isArray(workflowRecord.sourceReferenceImagePaths)
+        ? uniqueStrings(workflowRecord.sourceReferenceImagePaths as string[])
+        : base.workflow.sourceReferenceImagePaths,
+      currentAiMasterAssetId:
+        typeof workflowRecord.currentAiMasterAssetId === 'string'
+          ? workflowRecord.currentAiMasterAssetId
+          : base.workflow.currentAiMasterAssetId,
+      requireCleanMasterBeforeChild: true,
+      skipFailedChildRuns: true,
+      currentItemKind:
+        workflowRecord.currentItemKind === 'master-generate' ||
+        workflowRecord.currentItemKind === 'master-clean' ||
+        workflowRecord.currentItemKind === 'child-generate'
+          ? workflowRecord.currentItemKind
+          : 'idle',
+      currentItemIndex:
+        typeof workflowRecord.currentItemIndex === 'number' && Number.isFinite(workflowRecord.currentItemIndex)
+          ? Math.max(0, Math.floor(workflowRecord.currentItemIndex))
+          : 0,
+      currentItemTotal:
+        typeof workflowRecord.currentItemTotal === 'number' && Number.isFinite(workflowRecord.currentItemTotal)
+          ? Math.max(0, Math.floor(workflowRecord.currentItemTotal))
+          : 0,
+      failures: Array.isArray(workflowRecord.failures)
+        ? (workflowRecord.failures as unknown[])
+            .map((item, index) => {
+              const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+              return {
+                id: typeof record.id === 'string' ? record.id : `failure-${index}`,
+                stageKind:
+                  record.stageKind === 'master-clean' || record.stageKind === 'child-generate'
+                    ? (record.stageKind as AiStudioWorkflowFailureRecord['stageKind'])
+                    : 'master-generate',
+                sequenceIndex:
+                  typeof record.sequenceIndex === 'number' && Number.isFinite(record.sequenceIndex)
+                    ? Math.max(1, Math.floor(record.sequenceIndex))
+                    : index + 1,
+                message: typeof record.message === 'string' ? record.message : '未知错误',
+                assetId: typeof record.assetId === 'string' ? record.assetId : undefined,
+                runId: typeof record.runId === 'string' ? record.runId : undefined,
+                createdAt:
+                  typeof record.createdAt === 'number' && Number.isFinite(record.createdAt)
+                    ? Math.floor(record.createdAt)
+                    : Date.now()
+              } satisfies AiStudioWorkflowFailureRecord
+            })
+        : base.workflow.failures
+    },
+    masterStage: {
+      templateId:
+        typeof masterRecord.templateId === 'string' || masterRecord.templateId === null
+          ? (masterRecord.templateId as string | null)
+          : base.masterStage.templateId,
+      promptExtra:
+        typeof masterRecord.promptExtra === 'string'
+          ? masterRecord.promptExtra
+          : base.masterStage.promptExtra,
+      requestedCount:
+        typeof masterRecord.requestedCount === 'number' && Number.isFinite(masterRecord.requestedCount)
+          ? Math.max(1, Math.floor(masterRecord.requestedCount))
+          : base.masterStage.requestedCount,
+      completedCount:
+        typeof masterRecord.completedCount === 'number' && Number.isFinite(masterRecord.completedCount)
+          ? Math.max(0, Math.floor(masterRecord.completedCount))
+          : base.masterStage.completedCount,
+      cleanSuccessCount:
+        typeof masterRecord.cleanSuccessCount === 'number' && Number.isFinite(masterRecord.cleanSuccessCount)
+          ? Math.max(0, Math.floor(masterRecord.cleanSuccessCount))
+          : base.masterStage.cleanSuccessCount,
+      cleanFailedCount:
+        typeof masterRecord.cleanFailedCount === 'number' && Number.isFinite(masterRecord.cleanFailedCount)
+          ? Math.max(0, Math.floor(masterRecord.cleanFailedCount))
+          : base.masterStage.cleanFailedCount
+    },
+    childStage: {
+      templateId:
+        typeof childRecord.templateId === 'string' || childRecord.templateId === null
+          ? (childRecord.templateId as string | null)
+          : base.childStage.templateId,
+      promptExtra:
+        typeof childRecord.promptExtra === 'string'
+          ? childRecord.promptExtra
+          : base.childStage.promptExtra,
+      requestedCount:
+        typeof childRecord.requestedCount === 'number' && Number.isFinite(childRecord.requestedCount)
+          ? Math.max(1, Math.floor(childRecord.requestedCount))
+          : base.childStage.requestedCount,
+      variantLines: Array.isArray(childRecord.variantLines)
+        ? normalizeVariantLines(childRecord.variantLines)
+        : base.childStage.variantLines,
+      completedCount:
+        typeof childRecord.completedCount === 'number' && Number.isFinite(childRecord.completedCount)
+          ? Math.max(0, Math.floor(childRecord.completedCount))
+          : base.childStage.completedCount,
+      failedCount:
+        typeof childRecord.failedCount === 'number' && Number.isFinite(childRecord.failedCount)
+          ? Math.max(0, Math.floor(childRecord.failedCount))
+          : base.childStage.failedCount
+    }
+  }
+}
+
+function writeWorkflowMetadata(
+  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>,
+  nextWorkflow: AiStudioWorkflowMetadata
+): Record<string, unknown> {
+  const metadata =
+    task.metadata && typeof task.metadata === 'object'
+      ? (task.metadata as Record<string, unknown>)
+      : {}
+  return {
+    ...metadata,
+    workflow: nextWorkflow.workflow,
+    masterStage: nextWorkflow.masterStage,
+    childStage: nextWorkflow.childStage,
+    mode: 'two-stage'
+  }
+}
+
+
+function resetWorkflowMetadataForInputs(
+  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>
+): AiStudioWorkflowMetadata {
+  const nextWorkflow = readWorkflowMetadata(task)
+  return {
+    workflow: {
+      ...nextWorkflow.workflow,
+      activeStage: 'master-setup',
+      sourcePrimaryImagePath: task.primaryImagePath ?? null,
+      sourceReferenceImagePaths: uniqueStrings(task.referenceImagePaths ?? []),
+      currentAiMasterAssetId: null,
+      currentItemKind: 'idle',
+      currentItemIndex: 0,
+      currentItemTotal: 0,
+      failures: []
+    },
+    masterStage: {
+      ...nextWorkflow.masterStage,
+      completedCount: 0,
+      cleanSuccessCount: 0,
+      cleanFailedCount: 0
+    },
+    childStage: {
+      ...nextWorkflow.childStage,
+      completedCount: 0,
+      failedCount: 0
+    }
+  }
+}
+
+function makeWorkflowFailureRecord(
+  stageKind: AiStudioWorkflowFailureRecord['stageKind'],
+  sequenceIndex: number,
+  message: string,
+  extra?: Pick<AiStudioWorkflowFailureRecord, 'assetId' | 'runId'>
+): AiStudioWorkflowFailureRecord {
+  return {
+    id: `${stageKind}-${sequenceIndex}-${Date.now()}`,
+    stageKind,
+    sequenceIndex,
+    message: String(message ?? '').trim() || '未知错误',
+    assetId: extra?.assetId,
+    runId: extra?.runId,
+    createdAt: Date.now()
+  }
+}
+
+function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiStudioStageProgress {
+  const masterRequested = workflowMeta.masterStage.requestedCount
+  const childRequested = workflowMeta.childStage.requestedCount
+  const totalPlanned = masterRequested + masterRequested + childRequested
+  const totalCompleted =
+    workflowMeta.masterStage.completedCount +
+    workflowMeta.masterStage.cleanSuccessCount +
+    workflowMeta.masterStage.cleanFailedCount +
+    workflowMeta.childStage.completedCount +
+    workflowMeta.childStage.failedCount
+
+  let currentLabel = '待开始'
+  if (workflowMeta.workflow.currentItemKind === 'master-generate') {
+    currentLabel = '母图生成中'
+  } else if (workflowMeta.workflow.currentItemKind === 'master-clean') {
+    currentLabel = '母图去水印中'
+  } else if (workflowMeta.workflow.currentItemKind === 'child-generate') {
+    currentLabel = '子图生成中'
+  } else if (workflowMeta.workflow.activeStage === 'master-selecting') {
+    currentLabel = '等待选择当前AI母图'
+  } else if (workflowMeta.workflow.activeStage === 'child-ready') {
+    currentLabel = '等待开始子图生成'
+  } else if (workflowMeta.workflow.activeStage === 'completed') {
+    currentLabel = '已完成'
+  }
+
+  return {
+    stage: workflowMeta.workflow.activeStage,
+    currentLabel,
+    currentIndex: workflowMeta.workflow.currentItemIndex,
+    currentTotal: workflowMeta.workflow.currentItemTotal,
+    totalCompleted,
+    totalPlanned,
+    successCount:
+      workflowMeta.masterStage.cleanSuccessCount + workflowMeta.childStage.completedCount,
+    failureCount: workflowMeta.workflow.failures.length
+  }
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function buildChildPromptExtra(basePromptExtra: string, variantLine: string): string {
+  const parts = [String(basePromptExtra ?? '').trim(), String(variantLine ?? '').trim()].filter(Boolean)
+  return parts.join('\n\n')
+}
+
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
 }
@@ -142,7 +503,7 @@ function buildInputAssetPayload(
       id: `${taskId}:input:primary`,
       taskId,
       kind: 'input',
-      role: 'primary',
+      role: AI_STUDIO_SOURCE_PRIMARY_ROLE,
       filePath: primaryImagePath,
       previewPath: primaryImagePath,
       originPath: primaryImagePath,
@@ -156,7 +517,7 @@ function buildInputAssetPayload(
       id: `${taskId}:input:reference:${index}`,
       taskId,
       kind: 'input',
-      role: 'reference',
+      role: AI_STUDIO_SOURCE_REFERENCE_ROLE,
       filePath,
       previewPath: filePath,
       originPath: filePath,
@@ -316,6 +677,7 @@ export type UseAiStudioStateResult = ReturnType<typeof useAiStudioState>
 
 function useAiStudioState() {
   const defaultModel = useCmsStore((state) => state.config.aiDefaultImageModel)
+  const aiConfig = useCmsStore((state) => state.config)
   const [templates, setTemplates] = useState<AiStudioTemplateRecord[]>([])
   const [tasks, setTasks] = useState<AiStudioTaskRecord[]>([])
   const [assets, setAssets] = useState<AiStudioAssetRecord[]>([])
@@ -592,11 +954,22 @@ function useAiStudioState() {
           priceMinSnapshot: null,
           priceMaxSnapshot: null,
           billedState: 'unbilled',
-          metadata: {
-            ...(baseTask?.metadata ?? {}),
-            importedImageCount: inputImagePaths.length,
-            mode: 'single-task'
-          }
+          metadata: writeWorkflowMetadata(
+            {
+              templateId: baseTask?.templateId ?? null,
+              promptExtra: baseTask?.promptExtra ?? '',
+              primaryImagePath,
+              referenceImagePaths,
+              metadata: { ...(baseTask?.metadata ?? {}), importedImageCount: inputImagePaths.length }
+            },
+            resetWorkflowMetadataForInputs({
+              templateId: baseTask?.templateId ?? null,
+              promptExtra: baseTask?.promptExtra ?? '',
+              primaryImagePath,
+              referenceImagePaths,
+              metadata: { ...(baseTask?.metadata ?? {}), importedImageCount: inputImagePaths.length }
+            })
+          )
         })
       )
 
@@ -645,11 +1018,22 @@ function useAiStudioState() {
         priceMinSnapshot: null,
         priceMaxSnapshot: null,
         billedState: 'unbilled',
-        metadata: {
-          ...(task.metadata ?? {}),
-          importedImageCount: inputImagePaths.length,
-          mode: 'single-task'
-        }
+        metadata: writeWorkflowMetadata(
+          {
+            templateId: task.templateId,
+            promptExtra: task.promptExtra,
+            primaryImagePath: normalizedPrimary,
+            referenceImagePaths: normalizedReferences,
+            metadata: { ...(task.metadata ?? {}), importedImageCount: inputImagePaths.length }
+          },
+          resetWorkflowMetadataForInputs({
+            templateId: task.templateId,
+            promptExtra: task.promptExtra,
+            primaryImagePath: normalizedPrimary,
+            referenceImagePaths: normalizedReferences,
+            metadata: { ...(task.metadata ?? {}), importedImageCount: inputImagePaths.length }
+          })
+        )
       })
 
       const nextAssets =
@@ -812,44 +1196,28 @@ function useAiStudioState() {
     [addReferenceImages, referenceImagePaths, removeReferenceImage]
   )
 
-  const setPromptExtra = useCallback(
-    async (value: string) => {
-      if (!activeTask) return
-      await updateTaskPatch(activeTask.id, { promptExtra: value })
+  const upsertAssetsRemote = useCallback(
+    async (
+      writes: Array<{
+        id?: string
+        taskId: string
+        runId?: string | null
+        kind?: 'input' | 'output'
+        role?: string
+        filePath: string
+        previewPath?: string | null
+        originPath?: string | null
+        selected?: boolean
+        sortOrder?: number
+        metadata?: Record<string, unknown>
+      }>
+    ) => {
+      const saved = await window.api.cms.aiStudio.asset.upsert(writes)
+      const normalized = (saved ?? []).map(coerceAssetRecord)
+      replaceAssets(normalized)
+      return normalized
     },
-    [activeTask, updateTaskPatch]
-  )
-
-  const setOutputCount = useCallback(
-    async (value: number) => {
-      if (!activeTask) return
-      await updateTaskPatch(activeTask.id, { outputCount: Math.max(1, Math.floor(value || 1)) })
-    },
-    [activeTask, updateTaskPatch]
-  )
-
-  const setAspectRatio = useCallback(
-    async (value: string) => {
-      if (!activeTask) return
-      await updateTaskPatch(activeTask.id, { aspectRatio: value || '3:4' })
-    },
-    [activeTask, updateTaskPatch]
-  )
-
-  const setModel = useCallback(
-    async (value: string) => {
-      if (!activeTask) return
-      await updateTaskPatch(activeTask.id, { model: value })
-    },
-    [activeTask, updateTaskPatch]
-  )
-
-  const setTemplateId = useCallback(
-    async (value: string) => {
-      if (!activeTask) return
-      await updateTaskPatch(activeTask.id, { templateId: value || null })
-    },
-    [activeTask, updateTaskPatch]
+    [replaceAssets]
   )
 
   const saveTemplate = useCallback(
@@ -871,10 +1239,885 @@ function useAiStudioState() {
     [activeTask, replaceTemplate, updateTaskPatch]
   )
 
-  const selectedTemplate = useMemo(() => {
+  const loadLatestTaskRecord = useCallback(async (taskId: string) => {
+    const row = await window.api.cms.aiStudio.task.list({ ids: [taskId], limit: 1 }).then((rows) => rows[0])
+    return row ? coerceTaskRecord(row) : null
+  }, [])
+
+  const workflowMeta = useMemo(
+    () =>
+      activeTask
+        ? readWorkflowMetadata({
+            templateId: activeTask.templateId,
+            promptExtra: activeTask.promptExtra,
+            primaryImagePath: activeTask.primaryImagePath,
+            referenceImagePaths: activeTask.referenceImagePaths,
+            metadata: activeTask.metadata
+          })
+        : null,
+    [activeTask]
+  )
+
+  const selectedMasterTemplate = useMemo(() => {
+    if (!workflowMeta?.masterStage.templateId) return null
+    return templateOptions.find((template) => template.id === workflowMeta.masterStage.templateId) ?? null
+  }, [templateOptions, workflowMeta])
+
+  const selectedChildTemplate = useMemo(() => {
+    if (!workflowMeta?.childStage.templateId) return null
+    return templateOptions.find((template) => template.id === workflowMeta.childStage.templateId) ?? null
+  }, [templateOptions, workflowMeta])
+
+  const selectedTemplate = selectedMasterTemplate
+  const masterOutputCount = workflowMeta?.masterStage.requestedCount ?? 3
+  const childOutputCount = workflowMeta?.childStage.requestedCount ?? 4
+  const masterPromptExtra = workflowMeta?.masterStage.promptExtra ?? ''
+  const childPromptExtra = workflowMeta?.childStage.promptExtra ?? ''
+  const variantLines = workflowMeta?.childStage.variantLines ?? []
+  const activeStage = workflowMeta?.workflow.activeStage ?? 'master-setup'
+
+  const masterRawAssets = useMemo(
+    () => activeOutputAssets.filter((asset) => asset.role === AI_STUDIO_MASTER_OUTPUT_ROLE),
+    [activeOutputAssets]
+  )
+  const masterCleanAssets = useMemo(
+    () => activeOutputAssets.filter((asset) => asset.role === AI_STUDIO_MASTER_CLEAN_ROLE),
+    [activeOutputAssets]
+  )
+  const childOutputAssets = useMemo(
+    () => activeOutputAssets.filter((asset) => asset.role === AI_STUDIO_CHILD_OUTPUT_ROLE),
+    [activeOutputAssets]
+  )
+  const currentAiMasterAsset = useMemo(() => {
+    const currentId = workflowMeta?.workflow.currentAiMasterAssetId ?? ''
+    if (!currentId) return null
+    return masterCleanAssets.find((asset) => asset.id === currentId) ?? null
+  }, [masterCleanAssets, workflowMeta])
+  const activeSelectedChildOutputAssets = useMemo(
+    () => childOutputAssets.filter((asset) => asset.selected),
+    [childOutputAssets]
+  )
+  const activeSelectedChildOutputIds = useMemo(
+    () => activeSelectedChildOutputAssets.map((asset) => asset.id),
+    [activeSelectedChildOutputAssets]
+  )
+  const failureRecords = workflowMeta?.workflow.failures ?? []
+  const stageProgress = useMemo(
+    () => (workflowMeta ? buildStageProgress(workflowMeta) : {
+      stage: 'master-setup' as AiStudioWorkflowStage,
+      currentLabel: '待开始',
+      currentIndex: 0,
+      currentTotal: 0,
+      totalCompleted: 0,
+      totalPlanned: 0,
+      successCount: 0,
+      failureCount: 0
+    }),
+    [workflowMeta]
+  )
+
+  const patchWorkflowMetadata = useCallback(
+    async (
+      task: AiStudioTaskView,
+      updater: (draft: AiStudioWorkflowMetadata) => void,
+      extraPatch?: Record<string, unknown>
+    ) => {
+      const nextWorkflow = JSON.parse(JSON.stringify(readWorkflowMetadata(task))) as AiStudioWorkflowMetadata
+      updater(nextWorkflow)
+      return updateTaskPatch(task.id, {
+        ...(extraPatch ?? {}),
+        metadata: writeWorkflowMetadata(task, nextWorkflow)
+      })
+    },
+    [updateTaskPatch]
+  )
+
+  const setMasterTemplateId = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.masterStage.templateId = value || null
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const setChildTemplateId = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.childStage.templateId = value || null
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const setMasterPromptExtra = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.masterStage.promptExtra = value
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const setChildPromptExtra = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.childStage.promptExtra = value
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const setMasterOutputCount = useCallback(
+    async (value: number) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.masterStage.requestedCount = Math.max(1, Math.floor(value || 1))
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const setChildOutputCount = useCallback(
+    async (value: number) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.childStage.requestedCount = Math.max(1, Math.floor(value || 1))
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const setVariantLines = useCallback(
+    async (lines: string[]) => {
+      if (!activeTask) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.childStage.variantLines = normalizeVariantLines(lines)
+      })
+    },
+    [activeTask, patchWorkflowMetadata]
+  )
+
+  const saveStageTemplate = useCallback(
+    async (
+      stage: 'master' | 'child',
+      payload: { templateId?: string | null; name: string; promptText: string }
+    ) => {
+      const saved = coerceTemplateRecord(
+        await window.api.cms.aiStudio.template.upsert({
+          id: String(payload.templateId ?? '').trim() || undefined,
+          provider: 'grsai',
+          name: String(payload.name ?? '').trim(),
+          promptText: String(payload.promptText ?? '').trim()
+        })
+      )
+      replaceTemplate(saved)
+      if (activeTask) {
+        await patchWorkflowMetadata(activeTask, (draft) => {
+          if (stage === 'master') draft.masterStage.templateId = saved.id
+          else draft.childStage.templateId = saved.id
+        })
+      }
+      return saved
+    },
+    [activeTask, patchWorkflowMetadata, replaceTemplate]
+  )
+
+  const setPromptExtra = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await setMasterPromptExtra(value)
+    },
+    [activeTask, setMasterPromptExtra]
+  )
+
+  const setOutputCount = useCallback(
+    async (value: number) => {
+      if (!activeTask) return
+      await setMasterOutputCount(value)
+    },
+    [activeTask, setMasterOutputCount]
+  )
+
+  const setAspectRatio = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await updateTaskPatch(activeTask.id, { aspectRatio: value || '3:4' })
+    },
+    [activeTask, updateTaskPatch]
+  )
+
+  const setModel = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await updateTaskPatch(activeTask.id, { model: value })
+    },
+    [activeTask, updateTaskPatch]
+  )
+
+  const setTemplateId = useCallback(
+    async (value: string) => {
+      if (!activeTask) return
+      await setMasterTemplateId(value)
+    },
+    [activeTask, setMasterTemplateId]
+  )
+
+  const selectedTemplateBase = useMemo(() => {
     if (!activeTask?.templateId) return null
     return templateOptions.find((template) => template.id === activeTask.templateId) ?? null
   }, [activeTask?.templateId, templateOptions])
+
+  const executeRunToTerminal = useCallback(
+    async (taskId: string) => {
+      let result = await window.api.cms.aiStudio.task.startRun({ taskId })
+      let guard = 0
+      while (
+        result.status !== 'succeeded' &&
+        result.status !== 'failed' &&
+        guard < 240
+      ) {
+        await sleepMs(2500)
+        result = await window.api.cms.aiStudio.task.pollRun({ taskId, runId: result.run.id })
+        guard += 1
+      }
+      if (result.status !== 'succeeded' && result.status !== 'failed') {
+        throw new Error('[AI Studio] 任务轮询超时，请稍后重试。')
+      }
+      await refresh()
+      return result
+    },
+    [refresh]
+  )
+
+  const ensureFreshTaskForMasterWorkflow = useCallback(async () => {
+    if (!activeTask) return null
+    const needsReset =
+      activeTask.outputAssets.length > 0 ||
+      Boolean(activeTask.latestRunId) ||
+      Boolean(activeTask.remoteTaskId) ||
+      activeTask.status === 'running' ||
+      activeTask.status === 'completed' ||
+      activeTask.status === 'failed'
+
+    if (!needsReset) return activeTask
+
+    const replacement = await createTaskWithInputs({
+      primaryImagePath: activeTask.primaryImagePath,
+      referenceImagePaths: activeTask.referenceImagePaths,
+      inheritFrom: activeTask
+    })
+    await window.api.cms.aiStudio.task.delete({ taskId: activeTask.id }).catch(() => void 0)
+    removeTaskLocally(activeTask.id)
+    return replacement
+  }, [activeTask, createTaskWithInputs, removeTaskLocally])
+
+  const processMasterCleanup = useCallback(
+    async (task: Pick<AiStudioTaskRecord, 'id'>, rawAsset: AiStudioAssetRecord, sequenceIndex: number) => {
+      const outputs = await window.electronAPI.processWatermark({
+        files: [rawAsset.filePath],
+        pythonPath: aiConfig.pythonPath,
+        scriptPath: aiConfig.watermarkScriptPath,
+        watermarkBox: aiConfig.watermarkBox
+      })
+      const cleanPath = Array.isArray(outputs) ? String(outputs[0] ?? '').trim() : ''
+      if (!cleanPath) {
+        throw new Error('[AI Studio] 去水印未返回输出文件。')
+      }
+
+      const rawMetadata =
+        rawAsset.metadata && typeof rawAsset.metadata === 'object'
+          ? (rawAsset.metadata as Record<string, unknown>)
+          : {}
+
+      await upsertAssetsRemote([
+        {
+          id: rawAsset.id,
+          taskId: task.id,
+          runId: rawAsset.runId,
+          kind: 'output',
+          role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+          filePath: rawAsset.filePath,
+          previewPath: rawAsset.previewPath,
+          originPath: rawAsset.originPath,
+          selected: rawAsset.selected,
+          sortOrder: rawAsset.sortOrder,
+          metadata: {
+            ...rawMetadata,
+            stage: 'master',
+            sequenceIndex,
+            watermarkStatus: 'succeeded'
+          }
+        },
+        {
+          id: `${rawAsset.id}:clean`,
+          taskId: task.id,
+          runId: rawAsset.runId,
+          kind: 'output',
+          role: AI_STUDIO_MASTER_CLEAN_ROLE,
+          filePath: cleanPath,
+          previewPath: cleanPath,
+          originPath: rawAsset.filePath,
+          selected: false,
+          sortOrder: rawAsset.sortOrder,
+          metadata: {
+            stage: 'master',
+            sequenceIndex,
+            sourceAssetId: rawAsset.id,
+            watermarkStatus: 'succeeded'
+          }
+        }
+      ])
+    },
+    [aiConfig.pythonPath, aiConfig.watermarkBox, aiConfig.watermarkScriptPath, upsertAssetsRemote]
+  )
+
+  const startMasterWorkflow = useCallback(async () => {
+    if (!activeTask || !aiConfig.aiApiKey.trim()) {
+      throw new Error('[AI Studio] 请先配置 API Key。')
+    }
+    if (!activeTask.primaryImagePath) {
+      throw new Error('[AI Studio] 请先设置主图。')
+    }
+
+    const preparedTask = await ensureFreshTaskForMasterWorkflow()
+    if (!preparedTask) return null
+
+    const workingTask =
+      preparedTask.id === activeTask.id
+        ? preparedTask
+        : coerceTaskRecord(await window.api.cms.aiStudio.task.list({ ids: [preparedTask.id], limit: 1 }).then((rows) => rows[0]))
+
+    let workflow = readWorkflowMetadata(workingTask)
+    if (!workflow.masterStage.templateId) {
+      throw new Error('[AI Studio] 请先为母图阶段选择模板。')
+    }
+
+    workflow.workflow.activeStage = 'master-generating'
+    workflow.workflow.sourcePrimaryImagePath = workingTask.primaryImagePath ?? null
+    workflow.workflow.sourceReferenceImagePaths = uniqueStrings(workingTask.referenceImagePaths)
+    workflow.workflow.currentAiMasterAssetId = null
+    workflow.workflow.currentItemKind = 'master-generate'
+    workflow.workflow.currentItemIndex = 0
+    workflow.workflow.currentItemTotal = workflow.masterStage.requestedCount
+    workflow.workflow.failures = []
+    workflow.masterStage.completedCount = 0
+    workflow.masterStage.cleanSuccessCount = 0
+    workflow.masterStage.cleanFailedCount = 0
+    workflow.childStage.completedCount = 0
+    workflow.childStage.failedCount = 0
+
+    let task = await updateTaskPatch(workingTask.id, {
+      templateId: workflow.masterStage.templateId,
+      promptExtra: workflow.masterStage.promptExtra,
+      outputCount: 1,
+      status: 'running',
+      remoteTaskId: null,
+      latestRunId: null,
+      metadata: writeWorkflowMetadata(workingTask, workflow)
+    })
+    await refresh()
+
+    for (let index = 1; index <= workflow.masterStage.requestedCount; index += 1) {
+      const latestTask =
+        (taskViews.find((item) => item.id === task.id) as AiStudioTaskView | undefined) ??
+        (await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) =>
+          rows[0] ? (coerceTaskRecord(rows[0]) as AiStudioTaskView) : null
+        ))
+      if (!latestTask) break
+      const loopWorkflow = readWorkflowMetadata(latestTask)
+      loopWorkflow.workflow.activeStage = 'master-generating'
+      loopWorkflow.workflow.currentItemKind = 'master-generate'
+      loopWorkflow.workflow.currentItemIndex = index
+      loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
+      task = await updateTaskPatch(latestTask.id, {
+        templateId: loopWorkflow.masterStage.templateId,
+        promptExtra: loopWorkflow.masterStage.promptExtra,
+        outputCount: 1,
+        status: 'running',
+        metadata: writeWorkflowMetadata(latestTask, loopWorkflow)
+      })
+
+      try {
+        const result = await executeRunToTerminal(latestTask.id)
+        const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+        loopWorkflow.masterStage.completedCount += 1
+
+        if (result.status === 'succeeded' && outputAssets.length > 0) {
+          const relabeled = await upsertAssetsRemote(
+            outputAssets.map((asset, outputIndex) => ({
+              id: asset.id,
+              taskId: latestTask.id,
+              runId: asset.runId,
+              kind: 'output',
+              role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+              filePath: asset.filePath,
+              previewPath: asset.previewPath,
+              originPath: asset.originPath,
+              selected: asset.selected,
+              sortOrder: asset.sortOrder,
+              metadata: {
+                ...(asset.metadata ?? {}),
+                stage: 'master',
+                sequenceIndex: index,
+                outputIndex,
+                watermarkStatus: 'pending'
+              }
+            }))
+          )
+          const rawAsset = relabeled[0]
+          if (rawAsset) {
+            loopWorkflow.workflow.activeStage = 'master-cleaning'
+            loopWorkflow.workflow.currentItemKind = 'master-clean'
+            loopWorkflow.workflow.currentItemIndex = index
+            loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
+            await updateTaskPatch(latestTask.id, {
+              metadata: writeWorkflowMetadata(latestTask, loopWorkflow),
+              status: 'running'
+            })
+            try {
+              await processMasterCleanup(latestTask, rawAsset, index)
+              loopWorkflow.masterStage.cleanSuccessCount += 1
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              loopWorkflow.masterStage.cleanFailedCount += 1
+              loopWorkflow.workflow.failures.push(
+                makeWorkflowFailureRecord('master-clean', index, message, { assetId: rawAsset.id })
+              )
+              await upsertAssetsRemote([
+                {
+                  id: rawAsset.id,
+                  taskId: latestTask.id,
+                  runId: rawAsset.runId,
+                  kind: 'output',
+                  role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                  filePath: rawAsset.filePath,
+                  previewPath: rawAsset.previewPath,
+                  originPath: rawAsset.originPath,
+                  selected: rawAsset.selected,
+                  sortOrder: rawAsset.sortOrder,
+                  metadata: {
+                    ...(rawAsset.metadata ?? {}),
+                    stage: 'master',
+                    sequenceIndex: index,
+                    watermarkStatus: 'failed'
+                  }
+                }
+              ])
+            }
+          }
+        } else {
+          loopWorkflow.workflow.failures.push(
+            makeWorkflowFailureRecord(
+              'master-generate',
+              index,
+              result.run?.errorMessage || '母图生成失败',
+              { runId: result.run?.id }
+            )
+          )
+        }
+      } catch (error) {
+        loopWorkflow.masterStage.completedCount += 1
+        loopWorkflow.workflow.failures.push(
+          makeWorkflowFailureRecord('master-generate', index, error instanceof Error ? error.message : String(error))
+        )
+      }
+
+      task = await updateTaskPatch(latestTask.id, {
+        status: 'running',
+        metadata: writeWorkflowMetadata(latestTask, loopWorkflow)
+      })
+      await refresh()
+    }
+
+    const completedTask = (await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0]))
+    if (!completedTask) return null
+    const completedRecord = coerceTaskRecord(completedTask)
+    const completedWorkflow = readWorkflowMetadata(completedRecord)
+    completedWorkflow.workflow.activeStage = 'master-selecting'
+    completedWorkflow.workflow.currentItemKind = 'idle'
+    completedWorkflow.workflow.currentItemIndex = 0
+    completedWorkflow.workflow.currentItemTotal = completedWorkflow.masterStage.requestedCount
+    await updateTaskPatch(completedRecord.id, {
+      status: completedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
+      metadata: writeWorkflowMetadata(completedRecord, completedWorkflow),
+      promptExtra: completedWorkflow.masterStage.promptExtra,
+      templateId: completedWorkflow.masterStage.templateId,
+      outputCount: 1
+    })
+    await refresh()
+    return true
+  }, [
+    activeTask,
+    aiConfig.aiApiKey,
+    ensureFreshTaskForMasterWorkflow,
+    executeRunToTerminal,
+    processMasterCleanup,
+    refresh,
+    taskViews,
+    updateTaskPatch,
+    upsertAssetsRemote
+  ])
+
+  const retryMasterCleanup = useCallback(
+    async (assetId: string) => {
+      if (!activeTask) return
+      const rawAsset = masterRawAssets.find((asset) => asset.id === assetId)
+      if (!rawAsset) return
+      const latestTask = await loadLatestTaskRecord(activeTask.id)
+      if (!latestTask) return
+
+      const sequenceIndex =
+        typeof rawAsset.metadata?.sequenceIndex === 'number'
+          ? Math.max(1, Math.floor(Number(rawAsset.metadata.sequenceIndex)))
+          : rawAsset.sortOrder + 1
+
+      await processMasterCleanup(latestTask, rawAsset, sequenceIndex)
+
+      const latestWorkflow = readWorkflowMetadata(latestTask)
+      const priorFailed = String(rawAsset.metadata?.watermarkStatus ?? '') === 'failed'
+      if (priorFailed && latestWorkflow.masterStage.cleanFailedCount > 0) {
+        latestWorkflow.masterStage.cleanFailedCount -= 1
+      }
+      latestWorkflow.masterStage.cleanSuccessCount += 1
+      latestWorkflow.workflow.failures = latestWorkflow.workflow.failures.filter(
+        (item) => !(item.stageKind === 'master-clean' && item.assetId === rawAsset.id)
+      )
+      latestWorkflow.workflow.activeStage = 'master-selecting'
+      latestWorkflow.workflow.currentItemKind = 'idle'
+      latestWorkflow.workflow.currentItemIndex = 0
+      latestWorkflow.workflow.currentItemTotal = latestWorkflow.masterStage.requestedCount
+
+      await updateTaskPatch(latestTask.id, {
+        status: latestWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
+        metadata: writeWorkflowMetadata(latestTask, latestWorkflow),
+        promptExtra: latestWorkflow.masterStage.promptExtra,
+        templateId: latestWorkflow.masterStage.templateId,
+        outputCount: 1
+      })
+      await refresh()
+    },
+    [activeTask, loadLatestTaskRecord, masterRawAssets, processMasterCleanup, refresh, updateTaskPatch]
+  )
+
+  const retryMasterGeneration = useCallback(
+    async (sequenceIndex: number) => {
+      if (!activeTask || !aiConfig.aiApiKey.trim()) {
+        throw new Error('[AI Studio] 请先配置 API Key。')
+      }
+
+      const latestTask = await loadLatestTaskRecord(activeTask.id)
+      if (!latestTask) return
+
+      const latestWorkflow = readWorkflowMetadata(latestTask)
+      if (!latestWorkflow.masterStage.templateId) {
+        throw new Error('[AI Studio] 请先为母图阶段选择模板。')
+      }
+
+      latestWorkflow.workflow.failures = latestWorkflow.workflow.failures.filter(
+        (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
+      )
+      latestWorkflow.workflow.activeStage = 'master-generating'
+      latestWorkflow.workflow.currentItemKind = 'master-generate'
+      latestWorkflow.workflow.currentItemIndex = sequenceIndex
+      latestWorkflow.workflow.currentItemTotal = latestWorkflow.masterStage.requestedCount
+
+      await updateTaskPatch(latestTask.id, {
+        templateId: latestWorkflow.masterStage.templateId,
+        promptExtra: latestWorkflow.masterStage.promptExtra,
+        outputCount: 1,
+        status: 'running',
+        metadata: writeWorkflowMetadata(latestTask, latestWorkflow)
+      })
+      await refresh()
+
+      const workingTask = await loadLatestTaskRecord(latestTask.id)
+      if (!workingTask) return
+      const workingWorkflow = readWorkflowMetadata(workingTask)
+
+      try {
+        const result = await executeRunToTerminal(workingTask.id)
+        const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+
+        if (result.status === 'succeeded' && outputAssets.length > 0) {
+          const relabeled = await upsertAssetsRemote(
+            outputAssets.map((asset, outputIndex) => ({
+              id: asset.id,
+              taskId: workingTask.id,
+              runId: asset.runId,
+              kind: 'output',
+              role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+              filePath: asset.filePath,
+              previewPath: asset.previewPath,
+              originPath: asset.originPath,
+              selected: asset.selected,
+              sortOrder: asset.sortOrder,
+              metadata: {
+                ...(asset.metadata ?? {}),
+                stage: 'master',
+                sequenceIndex,
+                outputIndex,
+                watermarkStatus: 'pending'
+              }
+            }))
+          )
+          const rawAsset = relabeled[0]
+          if (rawAsset) {
+            workingWorkflow.workflow.activeStage = 'master-cleaning'
+            workingWorkflow.workflow.currentItemKind = 'master-clean'
+            workingWorkflow.workflow.currentItemIndex = sequenceIndex
+            workingWorkflow.workflow.currentItemTotal = workingWorkflow.masterStage.requestedCount
+            await updateTaskPatch(workingTask.id, {
+              status: 'running',
+              metadata: writeWorkflowMetadata(workingTask, workingWorkflow)
+            })
+
+            try {
+              await processMasterCleanup(workingTask, rawAsset, sequenceIndex)
+              workingWorkflow.masterStage.cleanSuccessCount += 1
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              workingWorkflow.masterStage.cleanFailedCount += 1
+              workingWorkflow.workflow.failures.push(
+                makeWorkflowFailureRecord('master-clean', sequenceIndex, message, { assetId: rawAsset.id })
+              )
+              await upsertAssetsRemote([
+                {
+                  id: rawAsset.id,
+                  taskId: workingTask.id,
+                  runId: rawAsset.runId,
+                  kind: 'output',
+                  role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                  filePath: rawAsset.filePath,
+                  previewPath: rawAsset.previewPath,
+                  originPath: rawAsset.originPath,
+                  selected: rawAsset.selected,
+                  sortOrder: rawAsset.sortOrder,
+                  metadata: {
+                    ...(rawAsset.metadata ?? {}),
+                    stage: 'master',
+                    sequenceIndex,
+                    watermarkStatus: 'failed'
+                  }
+                }
+              ])
+            }
+          }
+        } else {
+          workingWorkflow.workflow.failures = workingWorkflow.workflow.failures.filter(
+            (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
+          )
+          workingWorkflow.workflow.failures.push(
+            makeWorkflowFailureRecord(
+              'master-generate',
+              sequenceIndex,
+              result.run?.errorMessage || '母图生成失败',
+              { runId: result.run?.id }
+            )
+          )
+        }
+      } catch (error) {
+        workingWorkflow.workflow.failures = workingWorkflow.workflow.failures.filter(
+          (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
+        )
+        workingWorkflow.workflow.failures.push(
+          makeWorkflowFailureRecord(
+            'master-generate',
+            sequenceIndex,
+            error instanceof Error ? error.message : String(error)
+          )
+        )
+      }
+
+      workingWorkflow.workflow.activeStage = 'master-selecting'
+      workingWorkflow.workflow.currentItemKind = 'idle'
+      workingWorkflow.workflow.currentItemIndex = 0
+      workingWorkflow.workflow.currentItemTotal = workingWorkflow.masterStage.requestedCount
+
+      await updateTaskPatch(workingTask.id, {
+        status: workingWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
+        metadata: writeWorkflowMetadata(workingTask, workingWorkflow),
+        promptExtra: workingWorkflow.masterStage.promptExtra,
+        templateId: workingWorkflow.masterStage.templateId,
+        outputCount: 1
+      })
+      await refresh()
+    },
+    [
+      activeTask,
+      aiConfig.aiApiKey,
+      executeRunToTerminal,
+      loadLatestTaskRecord,
+      processMasterCleanup,
+      refresh,
+      updateTaskPatch,
+      upsertAssetsRemote
+    ]
+  )
+
+  const setCurrentAiMaster = useCallback(
+    async (assetId: string) => {
+      if (!activeTask) return
+      const target = masterCleanAssets.find((asset) => asset.id === assetId)
+      if (!target) return
+      await patchWorkflowMetadata(activeTask, (draft) => {
+        draft.workflow.currentAiMasterAssetId = target.id
+        draft.workflow.activeStage = 'child-ready'
+        draft.workflow.currentItemKind = 'idle'
+        draft.workflow.currentItemIndex = 0
+        draft.workflow.currentItemTotal = draft.childStage.requestedCount
+      }, { status: 'ready' })
+      await refresh()
+    },
+    [activeTask, masterCleanAssets, patchWorkflowMetadata, refresh]
+  )
+
+  const startChildWorkflow = useCallback(async () => {
+    if (!activeTask || !aiConfig.aiApiKey.trim()) {
+      throw new Error('[AI Studio] 请先配置 API Key。')
+    }
+    const workflow = workflowMeta
+    if (!workflow?.workflow.currentAiMasterAssetId) {
+      throw new Error('[AI Studio] 请先设为当前AI母图。')
+    }
+    if (!workflow.childStage.templateId) {
+      throw new Error('[AI Studio] 请先为子图阶段选择模板。')
+    }
+    if (childOutputAssets.length > 0) {
+      throw new Error('[AI Studio] 当前任务已有子图结果，本版 MVP 暂不支持在同一任务内重复生成子图。')
+    }
+    const variantList = normalizeVariantLines(workflow.childStage.variantLines).slice(0, workflow.childStage.requestedCount)
+    if (variantList.length < workflow.childStage.requestedCount) {
+      throw new Error('[AI Studio] Variant 数量不足，请先补齐对应行数。')
+    }
+
+    let task = await updateTaskPatch(activeTask.id, {
+      templateId: workflow.childStage.templateId,
+      promptExtra: workflow.childStage.promptExtra,
+      outputCount: 1,
+      status: 'running',
+      metadata: writeWorkflowMetadata(activeTask, {
+        ...workflow,
+        workflow: {
+          ...workflow.workflow,
+          activeStage: 'child-generating',
+          currentItemKind: 'child-generate',
+          currentItemIndex: 0,
+          currentItemTotal: workflow.childStage.requestedCount
+        },
+        childStage: {
+          ...workflow.childStage,
+          completedCount: 0,
+          failedCount: 0
+        }
+      })
+    })
+    await refresh()
+
+    for (let index = 0; index < variantList.length; index += 1) {
+      const sequenceIndex = index + 1
+      const variantLine = variantList[index]
+      const latestTaskRecord = await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0])
+      if (!latestTaskRecord) break
+      const latestTask = coerceTaskRecord(latestTaskRecord)
+      const latestWorkflow = readWorkflowMetadata(latestTask)
+      latestWorkflow.workflow.activeStage = 'child-generating'
+      latestWorkflow.workflow.currentItemKind = 'child-generate'
+      latestWorkflow.workflow.currentItemIndex = sequenceIndex
+      latestWorkflow.workflow.currentItemTotal = latestWorkflow.childStage.requestedCount
+      const currentPromptExtra = buildChildPromptExtra(latestWorkflow.childStage.promptExtra, variantLine)
+      task = await updateTaskPatch(latestTask.id, {
+        templateId: latestWorkflow.childStage.templateId,
+        promptExtra: currentPromptExtra,
+        outputCount: 1,
+        status: 'running',
+        metadata: writeWorkflowMetadata(latestTask, latestWorkflow)
+      })
+
+      try {
+        const result = await executeRunToTerminal(latestTask.id)
+        if (result.status === 'succeeded' && Array.isArray(result.outputs) && result.outputs.length > 0) {
+          await upsertAssetsRemote(
+            result.outputs.map((asset) => ({
+              id: asset.id,
+              taskId: latestTask.id,
+              runId: asset.runId,
+              kind: 'output',
+              role: AI_STUDIO_CHILD_OUTPUT_ROLE,
+              filePath: asset.filePath,
+              previewPath: asset.previewPath,
+              originPath: asset.originPath,
+              selected: asset.selected,
+              sortOrder: asset.sortOrder,
+              metadata: {
+                ...(asset.metadata ?? {}),
+                stage: 'child',
+                sequenceIndex,
+                variantText: variantLine,
+                derivedFromAssetId: latestWorkflow.workflow.currentAiMasterAssetId
+              }
+            }))
+          )
+          latestWorkflow.childStage.completedCount += 1
+        } else {
+          latestWorkflow.childStage.failedCount += 1
+          latestWorkflow.workflow.failures.push(
+            makeWorkflowFailureRecord(
+              'child-generate',
+              sequenceIndex,
+              result.run?.errorMessage || '子图生成失败',
+              { runId: result.run?.id }
+            )
+          )
+        }
+      } catch (error) {
+        latestWorkflow.childStage.failedCount += 1
+        latestWorkflow.workflow.failures.push(
+          makeWorkflowFailureRecord('child-generate', sequenceIndex, error instanceof Error ? error.message : String(error))
+        )
+      }
+
+      task = await updateTaskPatch(latestTask.id, {
+        status: 'running',
+        metadata: writeWorkflowMetadata(latestTask, latestWorkflow),
+        promptExtra: latestWorkflow.childStage.promptExtra,
+        templateId: latestWorkflow.childStage.templateId,
+        outputCount: 1
+      })
+      await refresh()
+    }
+
+    const finalTaskRecord = await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0])
+    if (!finalTaskRecord) return null
+    const finalTask = coerceTaskRecord(finalTaskRecord)
+    const finalWorkflow = readWorkflowMetadata(finalTask)
+    finalWorkflow.workflow.activeStage = 'completed'
+    finalWorkflow.workflow.currentItemKind = 'idle'
+    finalWorkflow.workflow.currentItemIndex = 0
+    finalWorkflow.workflow.currentItemTotal = finalWorkflow.childStage.requestedCount
+    await updateTaskPatch(finalTask.id, {
+      status: finalWorkflow.childStage.completedCount > 0 ? 'completed' : 'failed',
+      metadata: writeWorkflowMetadata(finalTask, finalWorkflow),
+      promptExtra: finalWorkflow.childStage.promptExtra,
+      templateId: finalWorkflow.childStage.templateId,
+      outputCount: 1
+    })
+    await refresh()
+    return true
+  }, [
+    activeTask,
+    aiConfig.aiApiKey,
+    childOutputAssets.length,
+    executeRunToTerminal,
+    refresh,
+    updateTaskPatch,
+    upsertAssetsRemote,
+    workflowMeta
+  ])
 
   const exceptionCount = useMemo(
     () => taskViews.filter((task) => task.status === 'failed').length,
@@ -883,15 +2126,23 @@ function useAiStudioState() {
 
   return {
     templates: templateOptions,
-    selectedTemplate,
+    selectedTemplate: selectedTemplateBase ?? selectedTemplate,
+    selectedMasterTemplate,
+    selectedChildTemplate,
     tasks: taskViews,
     visibleTasks,
     activeTask,
     activeTaskId,
     activeInputAssets,
     activeOutputAssets,
+    masterRawAssets,
+    masterCleanAssets,
+    childOutputAssets,
+    currentAiMasterAsset,
     activeSelectedOutputAssets,
     activeSelectedOutputIds,
+    activeSelectedChildOutputAssets,
+    activeSelectedChildOutputIds,
     selectedOutputIdsByTask,
     selectedTaskIds,
     statusFilter,
@@ -901,6 +2152,15 @@ function useAiStudioState() {
     exceptionCount,
     isLoading,
     isImporting,
+    workflowMeta,
+    activeStage,
+    stageProgress,
+    failureRecords,
+    masterOutputCount,
+    childOutputCount,
+    masterPromptExtra,
+    childPromptExtra,
+    variantLines,
     refresh,
     importFolders,
     setStatusFilter,
@@ -917,7 +2177,20 @@ function useAiStudioState() {
     setAspectRatio,
     setModel,
     setTemplateId,
-    saveTemplate
+    saveTemplate,
+    saveStageTemplate,
+    setMasterTemplateId,
+    setChildTemplateId,
+    setMasterPromptExtra,
+    setChildPromptExtra,
+    setMasterOutputCount,
+    setChildOutputCount,
+    setVariantLines,
+    startMasterWorkflow,
+    retryMasterCleanup,
+    retryMasterGeneration,
+    setCurrentAiMaster,
+    startChildWorkflow
   }
 }
 
