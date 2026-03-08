@@ -99,6 +99,8 @@ function ImageLab(): React.JSX.Element {
   const setActiveModule = useCmsStore((s) => s.setActiveModule)
   const setDataWorkshopFolderPath = useCmsStore((s) => s.setDataWorkshopFolderPath)
   const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
+  const materialImport = useCmsStore((s) => s.materialImport)
+  const clearMaterialImport = useCmsStore((s) => s.clearMaterialImport)
   const updateConfig = useCmsStore((s) => s.updateConfig)
   const realEsrganPath = useCmsStore((s) => s.config.realEsrganPath)
   const pythonPath = useCmsStore((s) => s.config.pythonPath)
@@ -281,6 +283,35 @@ function ImageLab(): React.JSX.Element {
     })
     setError(null)
   }
+
+  useEffect(() => {
+    if (materialImport.source !== 'aiStudio' || materialImport.paths.length === 0) return
+
+    let cancelled = false
+
+    void (async () => {
+      try {
+        resetMaterialPageToInitial()
+        setActivePanel('image')
+        await handleAddPaths(materialImport.paths)
+        if (!cancelled) {
+          addLog(`[素材处理] 已接收 AI 工作台回流：${materialImport.paths.length} 张图片`)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!cancelled) {
+          addLog(`[素材处理] 接收 AI 工作台素材失败：${message}`)
+          window.alert(message)
+        }
+      } finally {
+        if (!cancelled) clearMaterialImport()
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [addLog, clearMaterialImport, materialImport])
 
   const handlePickMediaFiles = async (): Promise<void> => {
     if (isProcessing) return

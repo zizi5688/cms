@@ -1,12 +1,12 @@
 # Super CMS 技术架构文档（交接版）
 
-- 文档版本: v1.2
-- 最近更新时间: 2026-02-26
+- 文档版本: v1.3
+- 最近更新时间: 2026-03-06
 - 项目类型: Electron + React + TypeScript 桌面应用
 - UI 技术判定: `electron`（依据 `package.json`、`src/main/index.ts`、`src/preload/index.ts`）
 
 ## 1. 系统上下文
-Super CMS 是一个本地优先的桌面内容管理系统，核心围绕“素材处理 -> 任务生成 -> 队列排期 -> 自动发布 -> 选品分析”。
+Super CMS 是一个本地优先的桌面内容管理系统，核心围绕“AI素材工作台 -> 素材处理 -> 任务生成 -> 队列排期 -> 自动发布 -> 选品分析”。
 
 外部系统依赖:
 - 小红书创作平台: 发布自动化、商品抓取。
@@ -30,7 +30,7 @@ flowchart LR
 前后端边界清晰，采用 Electron 三层结构:
 
 - 渲染层（`src/renderer`）:
-  - 页面与交互编排（素材处理、数据工坊、媒体矩阵、选品、热度看板、设置）。
+  - 页面与交互编排（AI素材工作台、素材处理、数据工坊、媒体矩阵、选品、热度看板、设置）。
   - 热度看板内 `SourcingPanel` 负责 1688 Webview 联动、一键铺货账号确认弹窗与交互收口。
   - 本地状态管理（Zustand `useCmsStore`）。
 - 预加载层（`src/preload` + `src/main/preload`）:
@@ -38,7 +38,7 @@ flowchart LR
   - 小红书自动化脚本与商品同步脚本注入。
 - 主进程层（`src/main`）:
   - IPC 总线与业务服务聚合。
-  - SQLite、队列、发布器、工作区、备份、诊断、选品服务。
+  - SQLite、队列、发布器、工作区、备份、诊断、选品服务，以及 `aiStudioService` 的任务/素材/运行编排。
 
 ## 3. 数据流
 ### 3.1 任务主链路
@@ -62,7 +62,31 @@ sequenceDiagram
   TM-->>UI: cms.task.updated
 ```
 
-### 3.2 热度看板链路
+### 3.2 AI素材工作台链路
+```mermaid
+sequenceDiagram
+  participant UI as "AI Studio"
+  participant IPC as "Main IPC"
+  participant AIS as "aiStudioService"
+  participant DB as "SQLite"
+  participant GRS as "GRSAI"
+  participant IL as "ImageLab"
+
+  UI->>IPC: cms.aiStudio.task.importFolders / update
+  IPC->>AIS: createTask() / upsertAssets()
+  AIS->>DB: ai_studio_* tables
+  UI->>IPC: cms.aiStudio.task.startRun
+  IPC->>AIS: startRun()
+  AIS->>GRS: /v1/draw/nano-banana
+  GRS-->>AIS: remoteTaskId
+  AIS->>GRS: /v1/draw/result (poll)
+  GRS-->>AIS: results[]
+  AIS->>DB: recordRunAttempt() / markSelectedOutputs()
+  UI->>IPC: cms.aiStudio.asset.markSelected
+  UI->>IL: Zustand materialImport handoff
+```
+
+### 3.3 热度看板链路
 ```mermaid
 flowchart LR
   A["导入 Excel/JSON"] --> B["ScoutService 入库"]
@@ -93,6 +117,7 @@ flowchart LR
 | 热度看板 | `cms.scout.dashboard.*`, `IPC_FETCH_XHS_IMAGE`, `IPC_IMAGE_UPDATED`, `IPC_IMAGE_FETCH_FAILED`, `IPC_SEARCH_1688_BY_IMAGE` | 双向 | 趋势查询、封面抓取、失败回传、1688 图搜；铺货动作为 Renderer 侧 Webview 脚本注入执行 |
 | 工作区 | `workspace.getPath/pickPath/setPath/relaunch` | Renderer -> Main | 本地工作区管理 |
 | 设置/飞书 | `get-config/save-config/get-feishu-config/feishu-*` | Renderer -> Main | 配置读写与飞书 API |
+| AI素材工作台 | `cms.aiStudio.template.*`, `cms.aiStudio.task.*`, `cms.aiStudio.asset.*`, `cms.aiStudio.provider.testConnection` | Renderer -> Main | 模板、任务、素材、运行控制、结果勾选、GRSAI 连通性测试 |
 
 契约证据:
 - `src/preload/index.ts` API 暴露定义。
@@ -109,7 +134,17 @@ flowchart LR
 - `accounts` 删除触发器联动删除任务。
 - 增量兼容: `ALTER TABLE tasks ADD locked_at/retry_count`。
 
-### 5.2 选品与看板库表（同库分表）
+### 5.2 AI素材工作台库表（同库分表）
+- `ai_studio_templates`: 模板名、提示词、配置 JSON。
+- `ai_studio_tasks`: 商品任务、主图/参考图、模型、输出数、远端任务 ID、价格快照、计费状态。
+- `ai_studio_assets`: 输入/输出素材、预览路径、来源路径、`selected` 勾选状态。
+- `ai_studio_runs`: 每次提交的 run 记录、run 目录、请求/响应快照、错误信息、计费快照。
+
+关键索引/约束:
+- `idx_ai_studio_tasks_status`, `idx_ai_studio_tasks_updated_at`, `idx_ai_studio_runs_task_id`。
+- 输出文件落盘到 `workspace/ai-studio/tasks/<taskId>/run-XXX/`，为后续 `AI生视频` 复用。
+
+### 5.3 选品与看板库表（同库分表）
 - `scout_keywords`, `scout_products`, `scout_sync_log`。
 - `scout_dashboard_snapshot_rows`, `scout_dashboard_product_map`。
 - `scout_dashboard_watchlist`, `scout_dashboard_cover_cache`。

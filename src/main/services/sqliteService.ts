@@ -77,8 +77,103 @@ export class SqliteService {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
   }
 
+  ensureAiStudioSchema(): void {
+    const db = this.db
+    if (!db) return
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ai_studio_templates (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'grsai',
+        name TEXT NOT NULL,
+        prompt_text TEXT NOT NULL DEFAULT '',
+        config_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_studio_templates_provider_name
+        ON ai_studio_templates (provider, name);
+
+      CREATE TABLE IF NOT EXISTS ai_studio_tasks (
+        id TEXT PRIMARY KEY,
+        template_id TEXT,
+        provider TEXT NOT NULL DEFAULT 'grsai',
+        source_folder_path TEXT,
+        product_name TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft',
+        aspect_ratio TEXT NOT NULL DEFAULT '3:4',
+        output_count INTEGER NOT NULL DEFAULT 1,
+        model TEXT NOT NULL DEFAULT '',
+        prompt_extra TEXT NOT NULL DEFAULT '',
+        primary_image_path TEXT,
+        reference_image_paths_json TEXT NOT NULL DEFAULT '[]',
+        input_image_paths_json TEXT NOT NULL DEFAULT '[]',
+        remote_task_id TEXT,
+        latest_run_id TEXT,
+        price_min_snapshot REAL,
+        price_max_snapshot REAL,
+        billed_state TEXT NOT NULL DEFAULT 'unbilled',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_tasks_status ON ai_studio_tasks (status);
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_tasks_updated_at ON ai_studio_tasks (updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS ai_studio_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_index INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'grsai',
+        status TEXT NOT NULL DEFAULT 'queued',
+        remote_task_id TEXT,
+        billed_state TEXT NOT NULL DEFAULT 'unbilled',
+        price_min_snapshot REAL,
+        price_max_snapshot REAL,
+        run_dir TEXT,
+        request_payload_json TEXT NOT NULL DEFAULT '{}',
+        response_payload_json TEXT NOT NULL DEFAULT '{}',
+        error_message TEXT,
+        started_at INTEGER,
+        finished_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES ai_studio_tasks(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_runs_task_id ON ai_studio_runs (task_id);
+
+      CREATE TABLE IF NOT EXISTS ai_studio_assets (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_id TEXT,
+        kind TEXT NOT NULL DEFAULT 'input',
+        role TEXT NOT NULL DEFAULT 'candidate',
+        file_path TEXT NOT NULL,
+        preview_path TEXT,
+        origin_path TEXT,
+        selected INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES ai_studio_tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES ai_studio_runs(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_assets_task_id ON ai_studio_assets (task_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_assets_selected ON ai_studio_assets (selected);
+    `)
+  }
+
   async init(workspacePath: string): Promise<{
-    migrationResult?: { migrated: boolean; inserted: { accounts: number; tasks: number; products: number }; source: string }
+    migrationResult?: {
+      migrated: boolean
+      inserted: { accounts: number; tasks: number; products: number }
+      source: string
+    }
   }> {
     const normalizedWorkspacePath = String(workspacePath ?? '').trim()
     if (!normalizedWorkspacePath) throw new Error('[SqliteService] workspacePath is required.')
@@ -88,7 +183,11 @@ export class SqliteService {
     await access(resolvedWorkspacePath, constants.W_OK)
 
     const targetPath = join(resolvedWorkspacePath, 'cms.sqlite')
-    if (this.db && this.dbPath === targetPath) return {}
+    if (this.db && this.dbPath === targetPath) {
+      this.ensureQueueColumns()
+      this.ensureAiStudioSchema()
+      return {}
+    }
 
     this.close()
 
@@ -161,7 +260,9 @@ export class SqliteService {
       END;
     `)
 
-    const accountColumns = db.prepare(`PRAGMA table_info(accounts)`).all() as Array<{ name?: unknown }>
+    const accountColumns = db.prepare(`PRAGMA table_info(accounts)`).all() as Array<{
+      name?: unknown
+    }>
     const hasStatusColumn = accountColumns.some((col) => col?.name === 'status')
     if (!hasStatusColumn) {
       db.exec(`ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'offline'`)
@@ -170,8 +271,15 @@ export class SqliteService {
     this.db = db
     this.dbPath = targetPath
     this.ensureQueueColumns()
+    this.ensureAiStudioSchema()
 
-    let migrationResult: { migrated: boolean; inserted: { accounts: number; tasks: number; products: number }; source: string } | undefined
+    let migrationResult:
+      | {
+          migrated: boolean
+          inserted: { accounts: number; tasks: number; products: number }
+          source: string
+        }
+      | undefined
 
     const jsonPath = join(resolvedWorkspacePath, 'db.json')
     const bakPath = join(resolvedWorkspacePath, 'db.json.bak')
@@ -181,7 +289,10 @@ export class SqliteService {
     }
     const bakMergedMark = join(resolvedWorkspacePath, '.dbjson_bak_merged')
     if (existsSync(bakPath) && !existsSync(bakMergedMark)) {
-      const result = await this.migrateFromJSONFile(resolvedWorkspacePath, bakPath, { archive: false, sourceLabel: 'db.json.bak' })
+      const result = await this.migrateFromJSONFile(resolvedWorkspacePath, bakPath, {
+        archive: false,
+        sourceLabel: 'db.json.bak'
+      })
       if (!migrationResult || (result.migrated && !migrationResult.migrated)) {
         migrationResult = { ...result, source: 'db.json.bak' }
       }
@@ -204,14 +315,25 @@ export class SqliteService {
 
     const resolvedWorkspacePath = resolve(String(workspacePath ?? '').trim())
     if (!resolvedWorkspacePath) {
-      return { migrated: false, inserted: { accounts: 0, tasks: 0, products: 0 }, reason: 'missing_workspacePath' }
+      return {
+        migrated: false,
+        inserted: { accounts: 0, tasks: 0, products: 0 },
+        reason: 'missing_workspacePath'
+      }
     }
 
     const jsonPath = join(resolvedWorkspacePath, 'db.json')
     if (!existsSync(jsonPath)) {
-      return { migrated: false, inserted: { accounts: 0, tasks: 0, products: 0 }, reason: 'db_json_not_found' }
+      return {
+        migrated: false,
+        inserted: { accounts: 0, tasks: 0, products: 0 },
+        reason: 'db_json_not_found'
+      }
     }
-    return this.migrateFromJSONFile(resolvedWorkspacePath, jsonPath, { archive: true, sourceLabel: 'db.json' })
+    return this.migrateFromJSONFile(resolvedWorkspacePath, jsonPath, {
+      archive: true,
+      sourceLabel: 'db.json'
+    })
   }
 
   private async migrateFromJSONFile(
@@ -228,12 +350,20 @@ export class SqliteService {
 
     const resolvedWorkspacePath = resolve(String(workspacePath ?? '').trim())
     if (!resolvedWorkspacePath) {
-      return { migrated: false, inserted: { accounts: 0, tasks: 0, products: 0 }, reason: 'missing_workspacePath' }
+      return {
+        migrated: false,
+        inserted: { accounts: 0, tasks: 0, products: 0 },
+        reason: 'missing_workspacePath'
+      }
     }
 
     const resolvedSourcePath = resolve(String(sourcePath ?? '').trim())
     if (!resolvedSourcePath || !existsSync(resolvedSourcePath)) {
-      return { migrated: false, inserted: { accounts: 0, tasks: 0, products: 0 }, reason: 'db_json_not_found' }
+      return {
+        migrated: false,
+        inserted: { accounts: 0, tasks: 0, products: 0 },
+        reason: 'db_json_not_found'
+      }
     }
 
     const raw = await readFile(resolvedSourcePath, 'utf-8')
@@ -272,7 +402,9 @@ export class SqliteService {
         @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
       )`
     )
-    const selectTask = db.prepare(`SELECT id, accountId, scheduledAt, images, videoPath, videoPreviewPath FROM tasks WHERE id = ?`)
+    const selectTask = db.prepare(
+      `SELECT id, accountId, scheduledAt, images, videoPath, videoPreviewPath FROM tasks WHERE id = ?`
+    )
     const patchTask = db.prepare(
       `UPDATE tasks SET
         scheduledAt = COALESCE(@scheduledAt, scheduledAt),
@@ -282,14 +414,16 @@ export class SqliteService {
       WHERE id = @id`
     )
 
-    const normalizeString = (value: unknown): string => (typeof value === 'string' ? value : value != null ? String(value) : '').trim()
+    const normalizeString = (value: unknown): string =>
+      (typeof value === 'string' ? value : value != null ? String(value) : '').trim()
     const normalizeOptionalString = (value: unknown): string | null => {
       const text = normalizeString(value)
       return text ? text : null
     }
     const normalizeTimestampOrNull = (value: unknown): number | null => {
       if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value)
-      const text = typeof value === 'string' ? value.trim() : value != null ? String(value).trim() : ''
+      const text =
+        typeof value === 'string' ? value.trim() : value != null ? String(value).trim() : ''
       if (!text) return null
       const asNum = Number(text)
       if (Number.isFinite(asNum)) return Math.floor(asNum)
@@ -376,7 +510,8 @@ export class SqliteService {
           void raw
           return 'immediate'
         })()
-        const transformPolicy = normalizeString(t.transformPolicy) === 'remix_v1' ? 'remix_v1' : 'none'
+        const transformPolicy =
+          normalizeString(t.transformPolicy) === 'remix_v1' ? 'remix_v1' : 'none'
         const remixSessionId = normalizeOptionalString(t.remixSessionId)
         const remixSourceTaskIds = (() => {
           const ids = normalizeStringArray(t.remixSourceTaskIds)
@@ -389,18 +524,27 @@ export class SqliteService {
           return num != null ? num : Date.now()
         })()
 
-        const rawTime = (t as { scheduledAt?: unknown; scheduleTime?: unknown; startTime?: unknown }).scheduledAt ??
+        const rawTime =
+          (t as { scheduledAt?: unknown; scheduleTime?: unknown; startTime?: unknown })
+            .scheduledAt ??
           (t as { scheduleTime?: unknown }).scheduleTime ??
           (t as { startTime?: unknown }).startTime
         const scheduledAt =
-          typeof rawTime === 'number' && Number.isFinite(rawTime) ? Math.floor(rawTime) : normalizeTimestampOrNull(rawTime)
+          typeof rawTime === 'number' && Number.isFinite(rawTime)
+            ? Math.floor(rawTime)
+            : normalizeTimestampOrNull(rawTime)
         const publishedAt = normalizeOptionalString(t.publishedAt)
         const errorMsg = normalizeString(t.errorMsg)
         const errorMessage = normalizeOptionalString(t.errorMessage)
 
         const resolvedId = legacyId || randomUUID()
         const existing = selectTask.get(resolvedId) as { accountId?: unknown } | undefined
-        if (existing && typeof existing.accountId === 'string' && existing.accountId.trim() && existing.accountId.trim() !== accountId) {
+        if (
+          existing &&
+          typeof existing.accountId === 'string' &&
+          existing.accountId.trim() &&
+          existing.accountId.trim() !== accountId
+        ) {
           const newId = randomUUID()
           const result = insertTask.run({
             id: newId,

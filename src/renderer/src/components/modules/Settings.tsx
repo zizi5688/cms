@@ -2,9 +2,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
 import { Button } from '@renderer/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
-import { useCmsStore } from '@renderer/store/useCmsStore'
+import { CUSTOM_GRSAI_MODEL_SENTINEL, GRSAI_MODEL_OPTIONS } from '@renderer/lib/grsaiModels'
+import {
+  useCmsStore,
+  type AiModelProfile,
+  type AiProviderProfile
+} from '@renderer/store/useCmsStore'
 
 function isNonEmpty(value: string): boolean {
   return value.trim().length > 0
@@ -20,7 +31,12 @@ function clampSizePercent(value: number): number {
   return Math.min(10, Math.max(2, Math.round(value)))
 }
 
-type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+type DynamicWatermarkTrajectory =
+  | 'smoothSine'
+  | 'figureEight'
+  | 'diagonalWrap'
+  | 'largeEllipse'
+  | 'pseudoRandom'
 
 type TrajectoryOption = {
   value: DynamicWatermarkTrajectory
@@ -44,6 +60,68 @@ type AutoImportScanProgress = {
 }
 
 const NOTE_RACE_DATA_RESET_EVENT = 'note-race:data-reset'
+const CUSTOM_AI_PROVIDER_SENTINEL = '__custom_provider__'
+
+function normalizeAiProviderValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeAiEndpointPath(value: unknown): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized) return ''
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized.replace(/\/+$/, '')
+  }
+  return normalized.startsWith('/') ? normalized : `/${normalized}`
+}
+
+function findProviderProfile(
+  profiles: AiProviderProfile[],
+  providerName: string
+): AiProviderProfile | null {
+  const normalized = normalizeAiProviderValue(providerName).toLowerCase()
+  if (!normalized) return profiles[0] ?? null
+  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? profiles[0] ?? null
+}
+
+function findModelProfile(
+  providerProfile: AiProviderProfile | null,
+  modelName: string
+): AiModelProfile | null {
+  if (!providerProfile) return null
+  const normalized = normalizeAiProviderValue(modelName).toLowerCase()
+  if (!normalized) return null
+  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+}
+
+function resolveProviderModel(
+  providerProfile: AiProviderProfile | null,
+  preferredModelName: string
+): AiModelProfile | null {
+  const preferred = findModelProfile(providerProfile, preferredModelName)
+  if (preferred) return preferred
+  if (providerProfile?.defaultModelId) {
+    return providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+  }
+  return providerProfile?.models[0] ?? null
+}
+
+function buildAiConfigPatch(
+  profiles: AiProviderProfile[],
+  providerName: string,
+  preferredModelName = ''
+) {
+  const activeProvider = findProviderProfile(profiles, providerName)
+  const activeModel = resolveProviderModel(activeProvider, preferredModelName)
+  return {
+    aiProviderProfiles: profiles,
+    aiProvider: activeProvider?.providerName || normalizeAiProviderValue(providerName) || 'grsai',
+    aiBaseUrl: activeProvider?.baseUrl ?? '',
+    aiApiKey: activeProvider?.apiKey ?? '',
+    aiDefaultImageModel: activeModel?.modelName ?? '',
+    aiEndpointPath: activeModel?.endpointPath ?? ''
+  }
+}
 
 function formatDateTime(value: number | null): string {
   if (!Number.isFinite(Number(value))) return '--'
@@ -54,11 +132,27 @@ function formatDateTime(value: number | null): string {
 }
 
 const WATERMARK_TRAJECTORY_OPTIONS: TrajectoryOption[] = [
-  { value: 'smoothSine', label: '方案 A · 柔和正弦漂移', description: '横向平移 + 纵向正弦起伏，轨迹柔和。' },
+  {
+    value: 'smoothSine',
+    label: '方案 A · 柔和正弦漂移',
+    description: '横向平移 + 纵向正弦起伏，轨迹柔和。'
+  },
   { value: 'figureEight', label: '方案 B · 8字李萨如', description: '围绕中心画“∞”，闭环平滑。' },
-  { value: 'diagonalWrap', label: '方案 C · 对角线回环', description: '沿对角方向巡航，越界后从对侧穿出。' },
-  { value: 'largeEllipse', label: '方案 D · 大椭圆巡航', description: '贴近边缘大轨道运动，尽量避开核心画面。' },
-  { value: 'pseudoRandom', label: '方案 E · 伪随机漫步', description: '叠加快慢波形成非线性游走（当前默认）。' }
+  {
+    value: 'diagonalWrap',
+    label: '方案 C · 对角线回环',
+    description: '沿对角方向巡航，越界后从对侧穿出。'
+  },
+  {
+    value: 'largeEllipse',
+    label: '方案 D · 大椭圆巡航',
+    description: '贴近边缘大轨道运动，尽量避开核心画面。'
+  },
+  {
+    value: 'pseudoRandom',
+    label: '方案 E · 伪随机漫步',
+    description: '叠加快慢波形成非线性游走（当前默认）。'
+  }
 ]
 
 function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTrajectory {
@@ -86,20 +180,63 @@ function Settings(): React.JSX.Element {
   const updatePreferences = useCmsStore((s) => s.updatePreferences)
 
   const [isTesting, setIsTesting] = useState(false)
+  const [isTestingAiService, setIsTestingAiService] = useState(false)
+  const [isCustomProvider, setIsCustomProvider] = useState(false)
+  const [isCustomDefaultModel, setIsCustomDefaultModel] = useState(false)
+  const [customProviderName, setCustomProviderName] = useState('')
+  const [customModelName, setCustomModelName] = useState('')
+  const [modelEndpointDraft, setModelEndpointDraft] = useState('')
   const [isScanningAutoImport, setIsScanningAutoImport] = useState(false)
   const [isResettingNoteRace, setIsResettingNoteRace] = useState(false)
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false)
   const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false)
-  const [autoImportScanProgress, setAutoImportScanProgress] = useState<AutoImportScanProgress | null>(null)
+  const [autoImportScanProgress, setAutoImportScanProgress] =
+    useState<AutoImportScanProgress | null>(null)
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
   const [workspacePath, setWorkspacePath] = useState('')
-  const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>('uninitialized')
+  const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>(
+    'uninitialized'
+  )
   const [previewTime, setPreviewTime] = useState(0)
   const exePickerRef = useRef<HTMLInputElement | null>(null)
   const pythonPickerRef = useRef<HTMLInputElement | null>(null)
   const scriptPickerRef = useRef<HTMLInputElement | null>(null)
   const skipFirstSaveRef = useRef(true)
   const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
+  const providerProfiles = config.aiProviderProfiles ?? []
+  const activeProviderProfile = useMemo(
+    () => findProviderProfile(providerProfiles, config.aiProvider),
+    [providerProfiles, config.aiProvider]
+  )
+  const activeModelProfile = useMemo(
+    () => resolveProviderModel(activeProviderProfile, config.aiDefaultImageModel),
+    [activeProviderProfile, config.aiDefaultImageModel]
+  )
+  const providerModelOptions = useMemo(() => {
+    const savedOptions = (activeProviderProfile?.models ?? []).map((model) => ({
+      value: model.modelName,
+      label: model.modelName
+    }))
+    if (activeProviderProfile?.providerName.toLowerCase() !== 'grsai') {
+      return savedOptions
+    }
+    const existingValues = new Set(savedOptions.map((option) => option.value.toLowerCase()))
+    const presetOptions = GRSAI_MODEL_OPTIONS.filter(
+      (option) => !existingValues.has(option.value.toLowerCase())
+    ).map((option) => ({ value: option.value, label: option.label }))
+    return [...savedOptions, ...presetOptions]
+  }, [activeProviderProfile])
+
+  useEffect(() => {
+    if (isCustomProvider) return
+    setCustomProviderName('')
+  }, [activeProviderProfile, isCustomProvider])
+
+  useEffect(() => {
+    if (isCustomDefaultModel) return
+    setCustomModelName('')
+    setModelEndpointDraft(activeModelProfile?.endpointPath ?? config.aiEndpointPath)
+  }, [activeModelProfile, config.aiEndpointPath, isCustomDefaultModel])
 
   useEffect(() => {
     const startedAt = performance.now()
@@ -150,7 +287,12 @@ function Settings(): React.JSX.Element {
   }, [config.dynamicWatermarkSize, previewTime, selectedTrajectory])
 
   const isFeishuConfigReady = useMemo(() => {
-    return isNonEmpty(config.appId) && isNonEmpty(config.appSecret) && isNonEmpty(config.baseToken) && isNonEmpty(config.tableId)
+    return (
+      isNonEmpty(config.appId) &&
+      isNonEmpty(config.appSecret) &&
+      isNonEmpty(config.baseToken) &&
+      isNonEmpty(config.tableId)
+    )
   }, [config])
 
   useEffect(() => {
@@ -161,6 +303,17 @@ function Settings(): React.JSX.Element {
         const savedTools = await window.electronAPI.getConfig()
         if (!cancelled && savedTools) {
           updateConfig({
+            aiProvider:
+              typeof savedTools.aiProvider === 'string' && savedTools.aiProvider.trim()
+                ? savedTools.aiProvider.trim()
+                : 'grsai',
+            aiBaseUrl: savedTools.aiBaseUrl ?? '',
+            aiApiKey: savedTools.aiApiKey ?? '',
+            aiDefaultImageModel: savedTools.aiDefaultImageModel ?? '',
+            aiEndpointPath: savedTools.aiEndpointPath ?? '',
+            aiProviderProfiles: Array.isArray(savedTools.aiProviderProfiles)
+              ? savedTools.aiProviderProfiles
+              : [],
             importStrategy: savedTools.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: savedTools.realEsrganPath ?? '',
             pythonPath: savedTools.pythonPath ?? '',
@@ -168,7 +321,9 @@ function Settings(): React.JSX.Element {
             dynamicWatermarkEnabled: savedTools.dynamicWatermarkEnabled === true,
             dynamicWatermarkOpacity: clampOpacity(Number(savedTools.dynamicWatermarkOpacity)),
             dynamicWatermarkSize: clampSizePercent(Number(savedTools.dynamicWatermarkSize)),
-            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(savedTools.dynamicWatermarkTrajectory),
+            dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(
+              savedTools.dynamicWatermarkTrajectory
+            ),
             scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
           })
           updatePreferences({
@@ -277,6 +432,12 @@ function Settings(): React.JSX.Element {
     const handle = window.setTimeout(() => {
       void window.electronAPI
         .saveConfig({
+          aiProvider: config.aiProvider,
+          aiBaseUrl: config.aiBaseUrl,
+          aiApiKey: config.aiApiKey,
+          aiDefaultImageModel: config.aiDefaultImageModel,
+          aiEndpointPath: config.aiEndpointPath,
+          aiProviderProfiles: config.aiProviderProfiles,
           importStrategy: config.importStrategy,
           realEsrganPath: config.realEsrganPath,
           pythonPath: config.pythonPath,
@@ -290,7 +451,7 @@ function Settings(): React.JSX.Element {
           defaultInterval: preferences.defaultInterval
         })
         .catch(() => {
-          addLog('[设置] 保存工具路径失败。')
+          addLog('[设置] 保存本地配置失败。')
         })
     }, 200)
 
@@ -299,6 +460,12 @@ function Settings(): React.JSX.Element {
     }
   }, [
     addLog,
+    config.aiApiKey,
+    config.aiBaseUrl,
+    config.aiDefaultImageModel,
+    config.aiEndpointPath,
+    config.aiProvider,
+    config.aiProviderProfiles,
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
@@ -536,8 +703,11 @@ function Settings(): React.JSX.Element {
 
   const autoImportProgressPercent = useMemo(() => {
     if (!autoImportScanProgress) return 0
-    if (autoImportScanProgress.scannedFiles <= 0) return autoImportScanProgress.phase === 'done' ? 100 : 0
-    const raw = Math.round((autoImportScanProgress.processedFiles / autoImportScanProgress.scannedFiles) * 100)
+    if (autoImportScanProgress.scannedFiles <= 0)
+      return autoImportScanProgress.phase === 'done' ? 100 : 0
+    const raw = Math.round(
+      (autoImportScanProgress.processedFiles / autoImportScanProgress.scannedFiles) * 100
+    )
     return Math.max(0, Math.min(100, raw))
   }, [autoImportScanProgress])
 
@@ -551,7 +721,12 @@ function Settings(): React.JSX.Element {
     setIsTesting(true)
     try {
       addLog('[Feishu] 测试连接中...')
-      await window.electronAPI.testFeishuConnection(config.appId, config.appSecret, config.baseToken, config.tableId)
+      await window.electronAPI.testFeishuConnection(
+        config.appId,
+        config.appSecret,
+        config.baseToken,
+        config.tableId
+      )
       addLog('[Feishu] 连接成功并已保存配置。')
       window.alert('连接成功并已保存配置')
     } catch (error) {
@@ -563,26 +738,234 @@ function Settings(): React.JSX.Element {
     }
   }
 
+  const handleSelectProvider = (providerName: string): void => {
+    const nextPatch = buildAiConfigPatch(providerProfiles, providerName)
+    updateConfig(nextPatch)
+    setIsCustomProvider(false)
+    setIsCustomDefaultModel(false)
+    setCustomProviderName('')
+    setCustomModelName('')
+    setModelEndpointDraft(nextPatch.aiEndpointPath)
+  }
+
+  const handleProviderFieldChange = (field: 'baseUrl' | 'apiKey', value: string): void => {
+    if (!activeProviderProfile) {
+      updateConfig(
+        field === 'baseUrl'
+          ? { aiBaseUrl: value }
+          : { aiApiKey: value }
+      )
+      return
+    }
+    const nextProfiles = providerProfiles.map((profile) =>
+      profile.id === activeProviderProfile.id ? { ...profile, [field]: value } : profile
+    )
+    updateConfig(buildAiConfigPatch(nextProfiles, activeProviderProfile.providerName, config.aiDefaultImageModel))
+  }
+
+  const handleSelectModel = (modelName: string): void => {
+    if (!activeProviderProfile) return
+    const normalizedModelName = normalizeAiProviderValue(modelName)
+    if (!normalizedModelName) return
+    const existingModel = findModelProfile(activeProviderProfile, normalizedModelName)
+    const nextProfiles = providerProfiles.map((profile) => {
+      if (profile.id !== activeProviderProfile.id) return profile
+      if (existingModel) {
+        return { ...profile, defaultModelId: existingModel.id }
+      }
+      const createdModel = {
+        id: crypto.randomUUID(),
+        modelName: normalizedModelName,
+        endpointPath: ''
+      }
+      return {
+        ...profile,
+        models: [...profile.models, createdModel],
+        defaultModelId: createdModel.id
+      }
+    })
+    const nextPatch = buildAiConfigPatch(nextProfiles, activeProviderProfile.providerName, normalizedModelName)
+    updateConfig(nextPatch)
+    setIsCustomDefaultModel(false)
+    setCustomModelName('')
+    setModelEndpointDraft(nextPatch.aiEndpointPath)
+  }
+
+  const handleSaveProvider = (): void => {
+    const providerName = normalizeAiProviderValue(customProviderName)
+    if (!providerName) {
+      const message = '请先填写供应商名称。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const existingProvider = findProviderProfile(providerProfiles, providerName)
+    if (existingProvider && existingProvider.providerName.toLowerCase() === providerName.toLowerCase()) {
+      handleSelectProvider(existingProvider.providerName)
+      return
+    }
+    const nextProfiles = [
+      ...providerProfiles,
+      {
+        id: crypto.randomUUID(),
+        providerName,
+        baseUrl: '',
+        apiKey: '',
+        models: [],
+        defaultModelId: null
+      }
+    ]
+    updateConfig(buildAiConfigPatch(nextProfiles, providerName))
+    setIsCustomProvider(false)
+    setIsCustomDefaultModel(false)
+    setCustomProviderName('')
+    setCustomModelName('')
+    setModelEndpointDraft('')
+    addLog(`[AI服务] 已保存供应商：${providerName}`)
+  }
+
+  const handleSaveModel = (): void => {
+    if (!activeProviderProfile) {
+      const message = '请先保存并选择供应商。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const modelName = normalizeAiProviderValue(
+      isCustomDefaultModel ? customModelName : config.aiDefaultImageModel
+    )
+    if (!modelName) {
+      const message = '请先填写模型名称。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const endpointPath = normalizeAiEndpointPath(modelEndpointDraft)
+    if (!endpointPath) {
+      const message = '请先填写 API 端点。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    const nextProfiles = providerProfiles.map((profile) => {
+      if (profile.id !== activeProviderProfile.id) return profile
+      const existingModel = findModelProfile(profile, modelName)
+      if (existingModel) {
+        return {
+          ...profile,
+          models: profile.models.map((model) =>
+            model.id === existingModel.id ? { ...model, endpointPath } : model
+          ),
+          defaultModelId: existingModel.id
+        }
+      }
+      const createdModel = {
+        id: crypto.randomUUID(),
+        modelName,
+        endpointPath
+      }
+      return {
+        ...profile,
+        models: [...profile.models, createdModel],
+        defaultModelId: createdModel.id
+      }
+    })
+    updateConfig(buildAiConfigPatch(nextProfiles, activeProviderProfile.providerName, modelName))
+    setIsCustomDefaultModel(false)
+    setCustomModelName('')
+    setModelEndpointDraft(endpointPath)
+    addLog(`[AI服务] 已保存模型：${activeProviderProfile.providerName} / ${modelName}`)
+  }
+
+  const testAiServiceConnection = async (): Promise<void> => {
+    if (isTestingAiService) return
+    if (!activeProviderProfile) {
+      const message = '请先保存并选择供应商。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    if (!isNonEmpty(config.aiApiKey)) {
+      const message = '请先填写 AI API Key。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+    if (!isNonEmpty(config.aiDefaultImageModel)) {
+      const message = '请先选择或保存模型。'
+      addLog(`[AI服务] ${message}`)
+      window.alert(message)
+      return
+    }
+
+    setIsTestingAiService(true)
+    try {
+      await window.electronAPI.saveConfig({
+        aiProvider: config.aiProvider,
+        aiBaseUrl: config.aiBaseUrl,
+        aiApiKey: config.aiApiKey,
+        aiDefaultImageModel: config.aiDefaultImageModel,
+        aiEndpointPath: config.aiEndpointPath,
+        aiProviderProfiles: config.aiProviderProfiles
+      })
+      addLog('[AI服务] 测试连接中...')
+      const result = await window.api.cms.aiStudio.provider.testConnection()
+      addLog(
+        `[AI服务] ${result.message}（Provider: ${result.provider} / Model: ${result.model} / Endpoint: ${result.endpointPath}）`
+      )
+      window.alert(
+        `${result.message}
+Provider: ${result.provider}
+Model: ${result.model}
+Endpoint: ${result.endpointPath}
+Base URL: ${result.baseUrl}`
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI服务] 连接失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsTestingAiService(false)
+    }
+  }
+
+  const selectedProvider = isCustomProvider
+    ? CUSTOM_AI_PROVIDER_SENTINEL
+    : activeProviderProfile?.providerName ?? config.aiProvider
+  const selectedDefaultModel = isCustomDefaultModel
+    ? CUSTOM_GRSAI_MODEL_SENTINEL
+    : config.aiDefaultImageModel || providerModelOptions[0]?.value || ''
+
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <Card>
         <CardHeader>
           <CardTitle>设置</CardTitle>
-          <CardDescription>管理飞书连接信息；配置会保存到本地并在下次启动时自动加载。</CardDescription>
+          <CardDescription>
+            管理飞书连接信息；配置会保存到本地并在下次启动时自动加载。
+          </CardDescription>
         </CardHeader>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle>工作区管理</CardTitle>
-          <CardDescription>切换本地工作区后，数据将写入该目录下的 SQLite 数据库；切换后应用会重启。</CardDescription>
+          <CardDescription>
+            切换本地工作区后，数据将写入该目录下的 SQLite 数据库；切换后应用会重启。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">当前工作区路径</div>
-            <Input value={workspacePath || '(未设置，使用默认路径)'} readOnly className={workspacePath ? '' : 'text-zinc-500 italic'} />
+            <Input
+              value={workspacePath || '(未设置，使用默认路径)'}
+              readOnly
+              className={workspacePath ? '' : 'text-zinc-500 italic'}
+            />
             {workspaceStatus !== 'initialized' ? (
-              <div className="text-xs text-amber-400">工作区状态异常：请点击「切换工作区」重新选择一个可写目录。</div>
+              <div className="text-xs text-amber-400">
+                工作区状态异常：请点击「切换工作区」重新选择一个可写目录。
+              </div>
             ) : null}
           </div>
           <div className="flex items-center gap-2">
@@ -594,7 +977,9 @@ function Settings(): React.JSX.Element {
       <Card>
         <CardHeader>
           <CardTitle>笔记赛马数据重置</CardTitle>
-          <CardDescription>当口径频繁调整导致历史数据混入脏数据时，可一键清空赛马监控模块数据后重新导入。</CardDescription>
+          <CardDescription>
+            当口径频繁调整导致历史数据混入脏数据时，可一键清空赛马监控模块数据后重新导入。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center justify-between gap-3">
           <div className="text-xs text-zinc-400">
@@ -614,7 +999,9 @@ function Settings(): React.JSX.Element {
       <Card>
         <CardHeader>
           <CardTitle>热度看板自动导入</CardTitle>
-          <CardDescription>设置爆款表文件夹后，系统会递归监听该目录，并按配置生效时的目录快照识别后续新增/变更模板文件。</CardDescription>
+          <CardDescription>
+            设置爆款表文件夹后，系统会递归监听该目录，并按配置生效时的目录快照识别后续新增/变更模板文件。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
@@ -625,7 +1012,8 @@ function Settings(): React.JSX.Element {
               className={config.scoutDashboardAutoImportDir ? '' : 'text-zinc-500 italic'}
             />
             <div className="text-xs text-zinc-400">
-              支持多层子目录（如按年份/日期分层）和 `.xlsx`/`.xlsm`。若需补导历史文件，可点击“手动扫描导入”。
+              支持多层子目录（如按年份/日期分层）和
+              `.xlsx`/`.xlsm`。若需补导历史文件，可点击“手动扫描导入”。
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -677,8 +1065,8 @@ function Settings(): React.JSX.Element {
                   : autoImportScanProgress.message || '等待扫描任务启动...'}
               </div>
               <div className="mt-1 text-xs text-zinc-500">
-                导入 {autoImportScanProgress.importedFiles}，失败 {autoImportScanProgress.failedFiles}，跳过
-                {' '}
+                导入 {autoImportScanProgress.importedFiles}，失败{' '}
+                {autoImportScanProgress.failedFiles}，跳过{' '}
                 {autoImportScanProgress.skippedBaselineFiles +
                   autoImportScanProgress.skippedProcessedFiles +
                   autoImportScanProgress.skippedRetryFiles}
@@ -692,30 +1080,16 @@ function Settings(): React.JSX.Element {
       <Card>
         <CardHeader>
           <CardTitle>应用更新（Windows）</CardTitle>
-          <CardDescription>基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。</CardDescription>
+          <CardDescription>
+            基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-2 text-xs text-zinc-300 md:grid-cols-2">
-            <div>
-              当前版本：
-              {' '}
-              {appUpdateState?.currentVersion ?? '--'}
-            </div>
-            <div>
-              最新版本：
-              {' '}
-              {appUpdateState?.latestVersion ?? '--'}
-            </div>
-            <div>
-              最近检查：
-              {' '}
-              {formatDateTime(appUpdateState?.checkedAt ?? null)}
-            </div>
-            <div>
-              下载完成：
-              {' '}
-              {formatDateTime(appUpdateState?.downloadedAt ?? null)}
-            </div>
+            <div>当前版本： {appUpdateState?.currentVersion ?? '--'}</div>
+            <div>最新版本： {appUpdateState?.latestVersion ?? '--'}</div>
+            <div>最近检查： {formatDateTime(appUpdateState?.checkedAt ?? null)}</div>
+            <div>下载完成： {formatDateTime(appUpdateState?.downloadedAt ?? null)}</div>
           </div>
 
           <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-sm text-zinc-200">
@@ -744,7 +1118,9 @@ function Settings(): React.JSX.Element {
               onClick={() => void checkAppUpdateNow()}
               disabled={isCheckingAppUpdate || appUpdateState?.phase === 'checking'}
             >
-              {isCheckingAppUpdate || appUpdateState?.phase === 'checking' ? '检查中...' : '检查更新'}
+              {isCheckingAppUpdate || appUpdateState?.phase === 'checking'
+                ? '检查中...'
+                : '检查更新'}
             </Button>
             <Button
               type="button"
@@ -790,7 +1166,9 @@ function Settings(): React.JSX.Element {
               type="button"
               role="switch"
               aria-checked={config.dynamicWatermarkEnabled}
-              onClick={() => updateConfig({ dynamicWatermarkEnabled: !config.dynamicWatermarkEnabled })}
+              onClick={() =>
+                updateConfig({ dynamicWatermarkEnabled: !config.dynamicWatermarkEnabled })
+              }
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
                 config.dynamicWatermarkEnabled ? 'bg-emerald-500' : 'bg-zinc-700'
               }`}
@@ -814,7 +1192,9 @@ function Settings(): React.JSX.Element {
               max={100}
               step={1}
               value={clampOpacity(config.dynamicWatermarkOpacity)}
-              onChange={(e) => updateConfig({ dynamicWatermarkOpacity: clampOpacity(Number(e.target.value)) })}
+              onChange={(e) =>
+                updateConfig({ dynamicWatermarkOpacity: clampOpacity(Number(e.target.value)) })
+              }
               className="w-full accent-zinc-200"
             />
           </div>
@@ -830,7 +1210,9 @@ function Settings(): React.JSX.Element {
               max={10}
               step={1}
               value={clampSizePercent(config.dynamicWatermarkSize)}
-              onChange={(e) => updateConfig({ dynamicWatermarkSize: clampSizePercent(Number(e.target.value)) })}
+              onChange={(e) =>
+                updateConfig({ dynamicWatermarkSize: clampSizePercent(Number(e.target.value)) })
+              }
               className="w-full accent-zinc-200"
             />
           </div>
@@ -853,7 +1235,10 @@ function Settings(): React.JSX.Element {
               ))}
             </select>
             <div className="mt-2 text-xs text-zinc-500">
-              {WATERMARK_TRAJECTORY_OPTIONS.find((option) => option.value === selectedTrajectory)?.description}
+              {
+                WATERMARK_TRAJECTORY_OPTIONS.find((option) => option.value === selectedTrajectory)
+                  ?.description
+              }
             </div>
           </div>
 
@@ -862,7 +1247,10 @@ function Settings(): React.JSX.Element {
             <div className="mx-auto w-full max-w-[360px]">
               <div
                 className="relative overflow-hidden rounded-md border border-zinc-700 bg-black"
-                style={{ width: `${previewMotion.frameWidth}px`, height: `${previewMotion.frameHeight}px` }}
+                style={{
+                  width: `${previewMotion.frameWidth}px`,
+                  height: `${previewMotion.frameHeight}px`
+                }}
               >
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.12),rgba(0,0,0,0)_55%)]" />
                 <div
@@ -878,7 +1266,182 @@ function Settings(): React.JSX.Element {
                 </div>
               </div>
             </div>
-            <div className="mt-2 text-xs text-zinc-500">用于模拟轨迹运动效果，便于实时选择水印方案。</div>
+            <div className="mt-2 text-xs text-zinc-500">
+              用于模拟轨迹运动效果，便于实时选择水印方案。
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI服务</CardTitle>
+          <CardDescription>
+            按供应商维护 Host / Key，并在供应商下保存模型与 API 端点。当前运行链路仍优先兼容 GRSAI 风格接口。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="flex flex-col gap-2">
+            <div className="text-xs text-zinc-400">Provider</div>
+            <select
+              value={selectedProvider}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                if (nextValue === CUSTOM_AI_PROVIDER_SENTINEL) {
+                  setIsCustomProvider(true)
+                  setCustomProviderName('')
+                  return
+                }
+                handleSelectProvider(nextValue)
+              }}
+              className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              {providerProfiles.map((profile) => (
+                <option key={profile.id} value={profile.providerName}>
+                  {profile.providerName}
+                </option>
+              ))}
+              <option value={CUSTOM_AI_PROVIDER_SENTINEL}>自定义供应商…</option>
+            </select>
+            {isCustomProvider ? (
+              <>
+                <div className="flex gap-2">
+                  <Input
+                    value={customProviderName}
+                    onChange={(e) => setCustomProviderName(e.target.value)}
+                    placeholder="例如：allapi / grsai / openrouter"
+                    spellCheck={false}
+                  />
+                  <Button type="button" variant="outline" onClick={handleSaveProvider}>
+                    保存供应商
+                  </Button>
+                </div>
+                <div className="text-[11px] text-amber-300/80">
+                  先保存供应商，再填写该供应商自己的 Host / API Key / 模型列表。
+                </div>
+              </>
+            ) : (
+              <div className="text-[11px] text-zinc-500">
+                当前供应商：{activeProviderProfile?.providerName ?? '未选择'}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="text-xs text-zinc-400">默认模型</div>
+            <select
+              value={selectedDefaultModel}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                if (nextValue === CUSTOM_GRSAI_MODEL_SENTINEL) {
+                  setIsCustomDefaultModel(true)
+                  setCustomModelName('')
+                  setModelEndpointDraft(config.aiEndpointPath)
+                  return
+                }
+                handleSelectModel(nextValue)
+              }}
+              className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+            >
+              {providerModelOptions.length > 0 ? (
+                providerModelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              ) : (
+                <option value="">暂无已保存模型</option>
+              )}
+              <option value={CUSTOM_GRSAI_MODEL_SENTINEL}>自定义模型…</option>
+            </select>
+            {isCustomDefaultModel ? (
+              <>
+                <div className="flex gap-2">
+                  <Input
+                    value={customModelName}
+                    onChange={(e) => setCustomModelName(e.target.value)}
+                    placeholder="输入完整模型名"
+                    spellCheck={false}
+                  />
+                  <Button type="button" variant="outline" onClick={handleSaveModel}>
+                    保存模型
+                  </Button>
+                </div>
+                <Input
+                  value={modelEndpointDraft}
+                  onChange={(e) => setModelEndpointDraft(e.target.value)}
+                  placeholder="/v1/chat/completions"
+                  spellCheck={false}
+                />
+                <div className="text-[11px] text-amber-300/80">
+                  新模型会保存到当前供应商下，并绑定专属 API 端点。
+                </div>
+              </>
+            ) : (
+              <>
+                <Input
+                  value={modelEndpointDraft}
+                  onChange={(e) => setModelEndpointDraft(e.target.value)}
+                  placeholder="/v1/draw/nano-banana 或 /v1/chat/completions"
+                  spellCheck={false}
+                  disabled={!config.aiDefaultImageModel}
+                />
+                <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-500">
+                  <span>
+                    {config.aiDefaultImageModel
+                      ? `当前模型：${config.aiDefaultImageModel}`
+                      : '当前供应商暂无模型，请先保存模型。'}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleSaveModel}
+                    disabled={!config.aiDefaultImageModel}
+                  >
+                    保存模型
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <div className="text-xs text-zinc-400">Host / Base URL</div>
+            <Input
+              value={config.aiBaseUrl}
+              onChange={(e) => handleProviderFieldChange('baseUrl', e.target.value)}
+              placeholder="https://grsaiapi.com"
+              spellCheck={false}
+              disabled={isCustomProvider}
+            />
+            <div className="text-[11px] text-zinc-500">
+              只填 Host，例如 `https://allapi.store`；接口路径请填在模型的 `API 端点` 字段里。
+            </div>
+          </div>
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <div className="text-xs text-zinc-400">API Key</div>
+            <Input
+              type="password"
+              value={config.aiApiKey}
+              onChange={(e) => handleProviderFieldChange('apiKey', e.target.value)}
+              placeholder="grs_********************************"
+              autoComplete="new-password"
+              spellCheck={false}
+              disabled={isCustomProvider}
+            />
+            <div className="text-[11px] text-zinc-500">
+              该 Key 绑定当前供应商；切换供应商时会自动切换到该供应商自己的凭证。
+            </div>
+          </div>
+          <div className="flex items-end md:col-span-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void testAiServiceConnection()}
+              disabled={isTestingAiService}
+            >
+              {isTestingAiService ? '测试中...' : '测试连接'}
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -886,12 +1449,18 @@ function Settings(): React.JSX.Element {
       <Card>
         <CardHeader>
           <CardTitle>飞书配置</CardTitle>
-          <CardDescription>所有飞书 API 调用在主进程执行；此处仅配置参数并通过 IPC 调用。</CardDescription>
+          <CardDescription>
+            所有飞书 API 调用在主进程执行；此处仅配置参数并通过 IPC 调用。
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">应用 ID</div>
-            <Input value={config.appId} onChange={(e) => updateConfig({ appId: e.target.value })} placeholder="cli_xxx" />
+            <Input
+              value={config.appId}
+              onChange={(e) => updateConfig({ appId: e.target.value })}
+              placeholder="cli_xxx"
+            />
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">应用密钥</div>
@@ -904,11 +1473,19 @@ function Settings(): React.JSX.Element {
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">Base Token（app_token）</div>
-            <Input value={config.baseToken} onChange={(e) => updateConfig({ baseToken: e.target.value })} placeholder="bascn..." />
+            <Input
+              value={config.baseToken}
+              onChange={(e) => updateConfig({ baseToken: e.target.value })}
+              placeholder="bascn..."
+            />
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">数据表 ID</div>
-            <Input value={config.tableId} onChange={(e) => updateConfig({ tableId: e.target.value })} placeholder="tbl..." />
+            <Input
+              value={config.tableId}
+              onChange={(e) => updateConfig({ tableId: e.target.value })}
+              placeholder="tbl..."
+            />
           </div>
 
           <div className="flex items-end md:col-span-2">
@@ -919,15 +1496,27 @@ function Settings(): React.JSX.Element {
 
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">标题字段 Key</div>
-            <Input value={config.titleField} onChange={(e) => updateConfig({ titleField: e.target.value })} placeholder="标题" />
+            <Input
+              value={config.titleField}
+              onChange={(e) => updateConfig({ titleField: e.target.value })}
+              placeholder="标题"
+            />
           </div>
           <div className="flex flex-col gap-1">
             <div className="text-xs text-zinc-400">正文字段 Key</div>
-            <Input value={config.bodyField} onChange={(e) => updateConfig({ bodyField: e.target.value })} placeholder="正文" />
+            <Input
+              value={config.bodyField}
+              onChange={(e) => updateConfig({ bodyField: e.target.value })}
+              placeholder="正文"
+            />
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
             <div className="text-xs text-zinc-400">图片字段 Key（可选）</div>
-            <Input value={config.imageField} onChange={(e) => updateConfig({ imageField: e.target.value })} placeholder="图片" />
+            <Input
+              value={config.imageField}
+              onChange={(e) => updateConfig({ imageField: e.target.value })}
+              placeholder="图片"
+            />
           </div>
         </CardContent>
       </Card>
@@ -1017,7 +1606,11 @@ function Settings(): React.JSX.Element {
                 onChange={(e) => updateConfig({ pythonPath: e.target.value })}
                 placeholder="/usr/local/bin/python3.10"
               />
-              <Button type="button" variant="outline" onClick={() => pythonPickerRef.current?.click()}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => pythonPickerRef.current?.click()}
+              >
                 浏览
               </Button>
             </div>
@@ -1031,7 +1624,11 @@ function Settings(): React.JSX.Element {
                 onChange={(e) => updateConfig({ watermarkScriptPath: e.target.value })}
                 placeholder="/Users/z/AI_Tools/watermark_cli.py"
               />
-              <Button type="button" variant="outline" onClick={() => scriptPickerRef.current?.click()}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => scriptPickerRef.current?.click()}
+              >
                 浏览
               </Button>
             </div>

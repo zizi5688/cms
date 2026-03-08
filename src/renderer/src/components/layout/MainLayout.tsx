@@ -3,6 +3,7 @@ import type * as React from 'react'
 
 import { ConsolePanel } from '@renderer/components/layout/ConsolePanel'
 import { Sidebar, type SidebarItemKey } from '@renderer/components/layout/Sidebar'
+import { AiStudio } from '@renderer/modules/AiStudio'
 import { ImageLab } from '@renderer/components/modules/ImageLab'
 import { Settings } from '@renderer/components/modules/Settings'
 import { UploadManager } from '@renderer/components/modules/UploadManager'
@@ -13,10 +14,12 @@ import { NoteRaceBoard } from '@renderer/modules/NoteRaceBoard'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import { cn } from '@renderer/lib/utils'
 
-const MODULE_ORDER: SidebarItemKey[] = ['material', 'workshop', 'upload', 'autopublish', 'raceboard', 'heatboard', 'settings']
+const MODULE_ORDER: SidebarItemKey[] = ['aiStudio', 'material', 'workshop', 'upload', 'autopublish', 'raceboard', 'heatboard', 'settings']
 
 function renderModule(moduleId: SidebarItemKey): React.JSX.Element {
   switch (moduleId) {
+    case 'aiStudio':
+      return <AiStudio />
     case 'workshop':
       return <DataWorkshop />
     case 'upload':

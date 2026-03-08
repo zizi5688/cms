@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 export type TaskStatus = 'idle' | 'uploading' | 'success' | 'error'
 export type ActiveModuleKey =
+  | 'aiStudio'
   | 'workshop'
   | 'upload'
   | 'material'
@@ -17,6 +18,11 @@ export type WorkshopImport = {
   paths?: string[]
   coverPath?: string
   source: 'imagelab' | null
+}
+
+export type MaterialImport = {
+  paths: string[]
+  source: 'aiStudio' | null
 }
 
 export interface Task {
@@ -51,11 +57,32 @@ export interface CmsPreferences {
 
 export type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
+export interface AiModelProfile {
+  id: string
+  modelName: string
+  endpointPath: string
+}
+
+export interface AiProviderProfile {
+  id: string
+  providerName: string
+  baseUrl: string
+  apiKey: string
+  models: AiModelProfile[]
+  defaultModelId: string | null
+}
+
 export interface CmsConfig {
   appId: string
   appSecret: string
   baseToken: string
   tableId: string
+  aiProvider: string
+  aiBaseUrl: string
+  aiApiKey: string
+  aiDefaultImageModel: string
+  aiEndpointPath: string
+  aiProviderProfiles: AiProviderProfile[]
   titleField: string
   bodyField: string
   imageField: string
@@ -82,6 +109,7 @@ export interface CmsState {
   csvContent: string
   dataWorkshopFolderPath: string
   workshopImport: WorkshopImport
+  materialImport: MaterialImport
   uploadFiles: string[]
   workspacePath: string
   activeModule: ActiveModuleKey
@@ -103,6 +131,8 @@ export interface CmsState {
     coverPath?: string | null,
     paths?: string[] | null
   ) => void
+  setMaterialImport: (paths: string[] | null, source?: MaterialImport['source']) => void
+  clearMaterialImport: () => void
   addFiles: (paths: string[]) => void
   addFilesToUpload: (paths: string[]) => void
   setWorkspacePath: (path: string) => void
@@ -130,6 +160,12 @@ const initialConfig: CmsConfig = {
   appSecret: '',
   baseToken: '',
   tableId: '',
+  aiProvider: 'grsai',
+  aiBaseUrl: '',
+  aiApiKey: '',
+  aiDefaultImageModel: '',
+  aiEndpointPath: '',
+  aiProviderProfiles: [],
   titleField: '标题',
   bodyField: '正文',
   imageField: '图片',
@@ -161,6 +197,7 @@ const useCmsStore = create<CmsState>((set) => ({
   csvContent: '',
   dataWorkshopFolderPath: '',
   workshopImport: { type: null, path: null, source: null },
+  materialImport: { paths: [], source: null },
   uploadFiles: [],
   workspacePath: '',
   activeModule: 'material',
@@ -206,6 +243,19 @@ const useCmsStore = create<CmsState>((set) => ({
         }
       }
     }),
+  setMaterialImport: (paths, source = 'aiStudio') =>
+    set(() => {
+      const normalizedPaths = Array.from(
+        new Set(
+          (Array.isArray(paths) ? paths : [])
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        )
+      )
+      if (normalizedPaths.length === 0 || !source) return { materialImport: { paths: [], source: null } }
+      return { materialImport: { paths: normalizedPaths, source } }
+    }),
+  clearMaterialImport: () => set(() => ({ materialImport: { paths: [], source: null } })),
   addFiles: (paths) =>
     set((state) => {
       const normalized = (paths ?? []).map((p) => String(p ?? '').trim()).filter(Boolean)
@@ -302,6 +352,7 @@ const useCmsStore = create<CmsState>((set) => ({
       csvContent: '',
       dataWorkshopFolderPath: '',
       workshopImport: { type: null, path: null, source: null },
+      materialImport: { paths: [], source: null },
       uploadFiles: [],
       selectedKeywordId: null,
       selectedProductId: null,

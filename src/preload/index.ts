@@ -300,6 +300,82 @@ type NoteRaceDetail = {
   }
 }
 
+type AiStudioImportedFolder = {
+  folderPath: string
+  productName: string
+  imageFilePaths: string[]
+}
+
+type AiStudioTemplateRecord = {
+  id: string
+  provider: string
+  name: string
+  promptText: string
+  config: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
+type AiStudioTaskRecord = {
+  id: string
+  templateId: string | null
+  provider: string
+  sourceFolderPath: string | null
+  productName: string
+  status: 'draft' | 'ready' | 'running' | 'completed' | 'failed' | 'archived'
+  aspectRatio: string
+  outputCount: number
+  model: string
+  promptExtra: string
+  primaryImagePath: string | null
+  referenceImagePaths: string[]
+  inputImagePaths: string[]
+  remoteTaskId: string | null
+  latestRunId: string | null
+  priceMinSnapshot: number | null
+  priceMaxSnapshot: number | null
+  billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
+type AiStudioAssetRecord = {
+  id: string
+  taskId: string
+  runId: string | null
+  kind: 'input' | 'output'
+  role: string
+  filePath: string
+  previewPath: string | null
+  originPath: string | null
+  selected: boolean
+  sortOrder: number
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
+type AiStudioRunRecord = {
+  id: string
+  taskId: string
+  runIndex: number
+  provider: string
+  status: string
+  remoteTaskId: string | null
+  billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+  priceMinSnapshot: number | null
+  priceMaxSnapshot: number | null
+  runDir: string | null
+  requestPayload: Record<string, unknown>
+  responsePayload: Record<string, unknown>
+  errorMessage: string | null
+  startedAt: number | null
+  finishedAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
 // 渲染进程自定义 API（后续通过 IPC 扩展）
 const api = {
   cms: {
@@ -843,6 +919,190 @@ const api = {
         }): Promise<string | null> => ipcRenderer.invoke('cms.scout.dashboard.exportExcel', payload)
       }
     },
+    aiStudio: {
+      provider: {
+        testConnection: (): Promise<{
+          success: boolean
+          provider: string
+          baseUrl: string
+          model: string
+          endpointPath: string
+          checkedAt: number
+          statusCode: number | null
+          message: string
+        }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection')
+      },
+      template: {
+        list: (): Promise<AiStudioTemplateRecord[]> => ipcRenderer.invoke('cms.aiStudio.template.list'),
+        upsert: (payload: {
+          id?: string
+          provider?: string
+          name: string
+          promptText?: string
+          config?: Record<string, unknown>
+        }): Promise<AiStudioTemplateRecord> => ipcRenderer.invoke('cms.aiStudio.template.upsert', payload)
+      },
+      task: {
+        importFolders: (payload?: { folderPaths?: string[] }): Promise<AiStudioImportedFolder[]> =>
+          ipcRenderer.invoke('cms.aiStudio.task.importFolders', payload),
+        create: (payload: {
+          id?: string
+          templateId?: string | null
+          provider?: string
+          sourceFolderPath?: string | null
+          productName?: string
+          status?: 'draft' | 'ready' | 'running' | 'completed' | 'failed' | 'archived'
+          aspectRatio?: string
+          outputCount?: number
+          model?: string
+          promptExtra?: string
+          primaryImagePath?: string | null
+          referenceImagePaths?: string[]
+          inputImagePaths?: string[]
+          remoteTaskId?: string | null
+          latestRunId?: string | null
+          priceMinSnapshot?: number | null
+          priceMaxSnapshot?: number | null
+          billedState?: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          metadata?: Record<string, unknown>
+          assets?: Array<{
+            id?: string
+            taskId: string
+            runId?: string | null
+            kind?: 'input' | 'output'
+            role?: string
+            filePath: string
+            previewPath?: string | null
+            originPath?: string | null
+            selected?: boolean
+            sortOrder?: number
+            metadata?: Record<string, unknown>
+          }>
+        }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.create', payload),
+        list: (payload?: {
+          status?: string
+          ids?: string[]
+          limit?: number
+        }): Promise<AiStudioTaskRecord[]> => ipcRenderer.invoke('cms.aiStudio.task.list', payload),
+        update: (payload: {
+          taskId: string
+          patch?: {
+            templateId?: string | null
+            provider?: string
+            sourceFolderPath?: string | null
+            productName?: string
+            status?: 'draft' | 'ready' | 'running' | 'completed' | 'failed' | 'archived'
+            aspectRatio?: string
+            outputCount?: number
+            model?: string
+            promptExtra?: string
+            primaryImagePath?: string | null
+            referenceImagePaths?: string[]
+            inputImagePaths?: string[]
+            remoteTaskId?: string | null
+            latestRunId?: string | null
+            priceMinSnapshot?: number | null
+            priceMaxSnapshot?: number | null
+            billedState?: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+            metadata?: Record<string, unknown>
+          }
+        }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.update', payload),
+        delete: (payload: { taskId: string } | string): Promise<{ success: boolean }> =>
+          ipcRenderer.invoke('cms.aiStudio.task.delete', payload),
+        ensureRunDirectory: (payload: { taskId: string; runIndex?: number }): Promise<{
+          taskId: string
+          runIndex: number
+          dirPath: string
+        }> => ipcRenderer.invoke('cms.aiStudio.task.ensureRunDirectory', payload),
+        recordRunAttempt: (payload: {
+          runId?: string
+          taskId: string
+          provider?: string
+          status?: string
+          remoteTaskId?: string | null
+          billedState?: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot?: number | null
+          priceMaxSnapshot?: number | null
+          requestPayload?: Record<string, unknown>
+          responsePayload?: Record<string, unknown>
+          errorMessage?: string | null
+          startedAt?: number | null
+          finishedAt?: number | null
+        }): Promise<AiStudioRunRecord> => ipcRenderer.invoke('cms.aiStudio.task.recordRunAttempt', payload),
+        updateBilledState: (payload: {
+          taskId: string
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot?: number | null
+          priceMaxSnapshot?: number | null
+          runId?: string | null
+          remoteTaskId?: string | null
+        }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.updateBilledState', payload),
+        startRun: (payload: { taskId: string }): Promise<{
+          task: AiStudioTaskRecord
+          run: AiStudioRunRecord
+          outputs: AiStudioAssetRecord[]
+          completed: boolean
+          status: string
+          remoteTaskId: string | null
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot: number | null
+          priceMaxSnapshot: number | null
+        }> => ipcRenderer.invoke('cms.aiStudio.task.startRun', payload),
+        pollRun: (payload: { taskId: string; runId?: string | null }): Promise<{
+          task: AiStudioTaskRecord
+          run: AiStudioRunRecord
+          outputs: AiStudioAssetRecord[]
+          completed: boolean
+          status: string
+          remoteTaskId: string | null
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot: number | null
+          priceMaxSnapshot: number | null
+        }> => ipcRenderer.invoke('cms.aiStudio.task.pollRun', payload),
+        retryRun: (payload: { taskId: string }): Promise<{
+          task: AiStudioTaskRecord
+          run: AiStudioRunRecord
+          outputs: AiStudioAssetRecord[]
+          completed: boolean
+          status: string
+          remoteTaskId: string | null
+          billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
+          priceMinSnapshot: number | null
+          priceMaxSnapshot: number | null
+        }> => ipcRenderer.invoke('cms.aiStudio.task.retryRun', payload)
+      },
+      run: {
+        get: (payload: { runId: string }): Promise<AiStudioRunRecord | null> =>
+          ipcRenderer.invoke('cms.aiStudio.run.get', payload)
+      },
+      asset: {
+        list: (payload?: {
+          taskId?: string
+          runId?: string
+          kind?: 'input' | 'output'
+          ids?: string[]
+        }): Promise<AiStudioAssetRecord[]> => ipcRenderer.invoke('cms.aiStudio.asset.list', payload),
+        upsert: (payload: Array<{
+          id?: string
+          taskId: string
+          runId?: string | null
+          kind?: 'input' | 'output'
+          role?: string
+          filePath: string
+          previewPath?: string | null
+          originPath?: string | null
+          selected?: boolean
+          sortOrder?: number
+          metadata?: Record<string, unknown>
+        }>): Promise<AiStudioAssetRecord[]> => ipcRenderer.invoke('cms.aiStudio.asset.upsert', payload),
+        markSelected: (payload: {
+          taskId: string
+          assetIds: string[]
+          selected?: boolean
+          clearOthers?: boolean
+        }): Promise<AiStudioAssetRecord[]> => ipcRenderer.invoke('cms.aiStudio.asset.markSelected', payload)
+      }
+    },
     noteRace: {
       importAutoFile: (payload?: { filePath?: string }): Promise<NoteRaceImportResult | null> =>
         ipcRenderer.invoke('cms.noteRace.importAutoFile', payload),
@@ -1026,6 +1286,19 @@ const electronAPI = {
   setWorkspacePath: (path: string): Promise<{ path: string }> => ipcRenderer.invoke('workspace.setPath', path),
   relaunch: (): Promise<{ success: true }> => ipcRenderer.invoke('workspace.relaunch'),
   getConfig: (): Promise<{
+    aiProvider: string
+    aiBaseUrl: string
+    aiApiKey: string
+    aiDefaultImageModel: string
+    aiEndpointPath: string
+    aiProviderProfiles: Array<{
+      id: string
+      providerName: string
+      baseUrl: string
+      apiKey: string
+      models: Array<{ id: string; modelName: string; endpointPath: string }>
+      defaultModelId: string | null
+    }>
     importStrategy: 'copy' | 'move'
     realEsrganPath: string
     pythonPath: string
@@ -1044,6 +1317,19 @@ const electronAPI = {
     defaultInterval: number
   }> => ipcRenderer.invoke('get-config'),
   saveConfig: (patch: {
+    aiProvider?: string
+    aiBaseUrl?: string
+    aiApiKey?: string
+    aiDefaultImageModel?: string
+    aiEndpointPath?: string
+    aiProviderProfiles?: Array<{
+      id: string
+      providerName: string
+      baseUrl: string
+      apiKey: string
+      models: Array<{ id: string; modelName: string; endpointPath: string }>
+      defaultModelId: string | null
+    }>
     importStrategy?: 'copy' | 'move'
     realEsrganPath?: string
     pythonPath?: string
@@ -1123,6 +1409,8 @@ const electronAPI = {
     ipcRenderer.invoke('delete-file', filePath),
   shellShowItemInFolder: (filePath: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('shell-showItemInFolder', filePath),
+  shellOpenPath: (filePath: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell-openPath', filePath),
   exportFiles: (
     filePaths: string[]
   ): Promise<{ success: true; copied: number; destinationDir: string } | { success: false; error: string } | null> =>

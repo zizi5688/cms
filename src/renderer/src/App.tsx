@@ -54,6 +54,15 @@ function App(): React.JSX.Element {
         const saved = await window.electronAPI.getConfig()
         if (!cancelled && saved) {
           const patch: Parameters<typeof updateConfig>[0] = {
+            aiProvider:
+              typeof saved.aiProvider === 'string' && saved.aiProvider.trim()
+                ? saved.aiProvider.trim()
+                : 'grsai',
+            aiBaseUrl: saved.aiBaseUrl ?? '',
+            aiApiKey: saved.aiApiKey ?? '',
+            aiDefaultImageModel: saved.aiDefaultImageModel ?? '',
+            aiEndpointPath: saved.aiEndpointPath ?? '',
+            aiProviderProfiles: Array.isArray(saved.aiProviderProfiles) ? saved.aiProviderProfiles : [],
             importStrategy: saved.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: saved.realEsrganPath ?? '',
             pythonPath: saved.pythonPath ?? '',
