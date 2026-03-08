@@ -86,5 +86,6 @@
   ],
   "electronDownload": {
     "mirror": "https://npmmirror.com/mirrors/electron/"
-  }
+  },
+  "afterPack": "scripts/after-pack-runtime-deps.cjs"
 }

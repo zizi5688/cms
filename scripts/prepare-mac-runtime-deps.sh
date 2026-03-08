@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIST_DIR="${REPO_ROOT}/dist/realesrgan"
+WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
+GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
+COMMON_ROOT="$(cd "${GIT_COMMON_DIR}/.." && pwd)"
+DIST_DIR="${WORKTREE_ROOT}/dist/realesrgan"
 
 if [[ -n "${REALESRGAN_MAC_DIR:-}" ]]; then
   SOURCE_DIR="${REALESRGAN_MAC_DIR}"
 else
   CANDIDATES=(
-    "${REPO_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-20220424-macos"
-    "${REPO_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-macos"
+    "${WORKTREE_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-20220424-macos"
+    "${WORKTREE_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-macos"
+    "${COMMON_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-20220424-macos"
+    "${COMMON_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-macos"
   )
   SOURCE_DIR=""
   for candidate in "${CANDIDATES[@]}"; do
@@ -23,8 +27,9 @@ fi
 if [[ -z "${SOURCE_DIR:-}" ]]; then
   echo "[prepare:mac:deps] Cannot find Real-ESRGAN source dir." >&2
   echo "[prepare:mac:deps] Expected one of:" >&2
-  echo "  - ${REPO_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-20220424-macos" >&2
-  echo "  - ${REPO_ROOT}/AI_Tools/realesrgan-ncnn-vulkan-macos" >&2
+  for candidate in "${CANDIDATES[@]}"; do
+    echo "  - ${candidate}" >&2
+  done
   echo "[prepare:mac:deps] Or set REALESRGAN_MAC_DIR=/absolute/path" >&2
   exit 1
 fi
