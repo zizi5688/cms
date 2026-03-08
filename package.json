@@ -30,8 +30,9 @@
     "build:mac:engine": "bash scripts/build-cms-engine-mac.sh",
     "build:mac:verify-engine": "bash scripts/verify-cms-engine-mac.sh",
     "prepare:mac:deps": "bash scripts/prepare-mac-runtime-deps.sh",
-    "build:mac": "npm run build:mac:engine && npm run build:mac:verify-engine && npm run prepare:mac:deps && npm run build:app && electron-builder --mac --config electron-builder.json",
-    "build:linux": "npm run build:app && electron-builder --linux --config electron-builder.json"
+    "build:mac": "npm run build:mac:engine && npm run build:mac:verify-engine && npm run prepare:mac:deps && npm run build:app && electron-builder --mac --config electron-builder.json && npm run verify:mac:arm64",
+    "build:linux": "npm run build:app && electron-builder --linux --config electron-builder.json",
+    "verify:mac:arm64": "node scripts/verify-mac-package.cjs release arm64"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
