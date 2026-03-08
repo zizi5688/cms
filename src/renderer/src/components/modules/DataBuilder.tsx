@@ -40,6 +40,41 @@ function fileUrlFromPath(filePath: string): string {
   return `safe-file://${encoded}`
 }
 
+function dirNameFromPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  const parts = normalized.split('/')
+  parts.pop()
+  return parts.join('/')
+}
+
+function commonDirFromPaths(paths: string[]): string {
+  const normalizedDirs = paths
+    .map((item) => dirNameFromPath(String(item ?? '').trim()))
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (normalizedDirs.length === 0) return ''
+  if (normalizedDirs.length === 1) return normalizedDirs[0] ?? ''
+
+  const splitDirs = normalizedDirs.map((item) => item.split('/').filter((segment) => segment.length > 0))
+  const first = splitDirs[0] ?? []
+  const prefix: string[] = []
+  for (let index = 0; index < first.length; index += 1) {
+    const segment = first[index]
+    if (!segment) break
+    if (splitDirs.every((parts) => parts[index] === segment)) {
+      prefix.push(segment)
+      continue
+    }
+    break
+  }
+
+  const sample = normalizedDirs[0] ?? ''
+  const hasLeadingSlash = sample.startsWith('/')
+  const common = prefix.join('/')
+  if (!common) return ''
+  return hasLeadingSlash ? `/${common}` : common
+}
+
 function extractOriginalPathFromMediaResult(result: unknown): string {
   const item = Array.isArray(result) ? result[0] : result
   if (!item || typeof item !== 'object') return ''
@@ -161,6 +196,7 @@ function DataBuilder(): React.JSX.Element {
   const [manualCoverEditorTimeSec, setManualCoverEditorTimeSec] = useState(0)
   const manualCoverEditorVideoRef = useRef<HTMLVideoElement | null>(null)
   const lastScannedPathRef = useRef('')
+  const lastAiStudioImportKeyRef = useRef('')
   const videoCoverCacheRef = useRef<Map<string, string>>(new Map())
   const containerRef = useRef<HTMLDivElement>(null)
   const [scrollParent, setScrollParent] = useState<HTMLElement | undefined>(undefined)
@@ -189,7 +225,24 @@ function DataBuilder(): React.JSX.Element {
     return single ? [single] : []
   }, [workshopImport])
 
+  const importedImagePaths = useMemo(() => {
+    if (workshopImport?.type !== 'image' || workshopImport?.source !== 'ai-studio') return []
+    const fromPaths = Array.isArray(workshopImport.paths)
+      ? workshopImport.paths.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : []
+    if (fromPaths.length > 0) return fromPaths
+    const single = String(workshopImport.path ?? '').trim()
+    return single ? [single] : []
+  }, [workshopImport])
+
   const importedVideoPath = useMemo(() => importedVideoPaths[0] ?? '', [importedVideoPaths])
+
+  const importedImageFolderPath = useMemo(() => {
+    const commonFolder = commonDirFromPaths(importedImagePaths)
+    if (commonFolder) return commonFolder
+    const firstImagePath = importedImagePaths[0] ?? ''
+    return firstImagePath ? dirNameFromPath(firstImagePath).trim() : ''
+  }, [importedImagePaths])
 
   const importedCoverPath = useMemo(() => {
     if (workshopImport?.type !== 'video') return ''
@@ -197,6 +250,7 @@ function DataBuilder(): React.JSX.Element {
   }, [workshopImport])
 
   const isVideoMode = importedVideoPaths.length > 0
+  const isAiStudioImageImportMode = importedImagePaths.length > 0
   const isManualCoverEditorOpen = Boolean(manualCoverEditorVideoPath.trim())
   const normalizedManualEditorPath = manualCoverEditorVideoPath.trim()
   const normalizedManualEditorPlayablePath = manualCoverEditorPlayablePath.trim()
@@ -240,6 +294,35 @@ function DataBuilder(): React.JSX.Element {
       el = el.parentElement
     }
   }, [])
+
+  useEffect(() => {
+    if (!isAiStudioImageImportMode || !isWorkshopActive) return
+    const importKey = importedImagePaths.join('\n')
+    if (!importKey || importKey === lastAiStudioImportKeyRef.current) return
+    lastAiStudioImportKeyRef.current = importKey
+    lastScannedPathRef.current = `__ai_studio__${importedImagePaths.length}`
+    setImageFiles(importedImagePaths)
+    setTasks([])
+    setUploadTasks([])
+    setSelectedImageIds(new Set())
+    setQueuedTaskIds(new Set())
+    setDispatchProgress(null)
+    setToastMessage('')
+    if (importedImageFolderPath && dataWorkshopFolderPath.trim() !== importedImageFolderPath) {
+      setDataWorkshopFolderPath(importedImageFolderPath)
+    }
+    addLog(`[Super CMS] 已从 AI素材工作台导入 ${importedImagePaths.length} 张子图。`)
+  }, [
+    addLog,
+    dataWorkshopFolderPath,
+    importedImageFolderPath,
+    importedImagePaths,
+    isAiStudioImageImportMode,
+    isWorkshopActive,
+    setDataWorkshopFolderPath,
+    setTasks,
+    setUploadTasks
+  ])
 
   useEffect(() => {
     if (!isVideoMode) {
@@ -621,7 +704,7 @@ function DataBuilder(): React.JSX.Element {
   }
 
   useEffect(() => {
-    if (isVideoMode) return
+    if (isVideoMode || isAiStudioImageImportMode) return
     const path = dataWorkshopFolderPath.trim()
     if (!path) {
       lastScannedPathRef.current = ''
@@ -639,7 +722,7 @@ function DataBuilder(): React.JSX.Element {
     }, 200)
 
     return () => window.clearTimeout(timer)
-  }, [dataWorkshopFolderPath, handleScan, isScanning, isVideoMode])
+  }, [dataWorkshopFolderPath, handleScan, isAiStudioImageImportMode, isScanning, isVideoMode])
 
   useEffect(() => {
     if (!isWorkshopActive) return
@@ -1051,22 +1134,23 @@ function DataBuilder(): React.JSX.Element {
                     <div className="text-sm text-zinc-100">图片素材</div>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Input
-                        value={dataWorkshopFolderPath}
+                        value={isAiStudioImageImportMode ? importedImageFolderPath || dataWorkshopFolderPath : dataWorkshopFolderPath}
                         onChange={(e) => setDataWorkshopFolderPath(e.target.value)}
                         placeholder="图片文件夹"
                         className="h-10 rounded-2xl bg-zinc-950/80"
+                        readOnly={isAiStudioImageImportMode}
                       />
                       <div className="flex gap-2 sm:shrink-0">
                         <Button
                           onClick={handleBrowse}
-                          disabled={isScanning}
+                          disabled={isScanning || isAiStudioImageImportMode}
                           className="h-10 rounded-2xl px-4"
                         >
                           浏览
                         </Button>
                         <Button
                           onClick={() => void handleScan()}
-                          disabled={isScanning || !dataWorkshopFolderPath.trim()}
+                          disabled={isScanning || isAiStudioImageImportMode || !dataWorkshopFolderPath.trim()}
                           className="h-10 rounded-2xl px-4"
                         >
                           {isScanning ? (

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
 
-import { AlertTriangle, CheckCircle2, FolderOpen, RefreshCcw, Sparkles, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FolderOpen, RefreshCcw, Send, Sparkles, X } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
@@ -359,6 +359,36 @@ function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.El
     }
   }
 
+  const handleSelectAllChildOutputs = async (): Promise<void> => {
+    try {
+      await state.selectAllChildOutputs()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 子图全选失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleClearSelectedChildOutputs = async (): Promise<void> => {
+    try {
+      await state.clearSelectedChildOutputs()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 子图取消全选失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleSendSelectedChildOutputs = async (): Promise<void> => {
+    try {
+      await state.sendSelectedChildOutputsToWorkshop()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 发送到数据工坊失败：${message}`)
+      window.alert(message)
+    }
+  }
+
   if (!task) {
     return (
       <>
@@ -507,32 +537,65 @@ function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.El
           )}
         </SectionShell>
 
-        <SectionShell title="子图结果" badge={`${state.childOutputAssets.length} 张`}>
+        <SectionShell title="子图结果" badge={`${state.activeSelectedChildOutputAssets.length} / ${state.childOutputAssets.length} 已选`}>
           {state.childOutputAssets.length === 0 ? (
             <EmptyState title="还没有子图结果" hint="选择当前 AI 母图并启动子图阶段后，这里会连续展示所有子图。" />
           ) : (
-            <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-              {state.childOutputAssets.map((asset, index) => {
-                const sequenceIndex = readSequenceIndex(asset, index)
-                const variantText = String(asset.metadata?.variantText ?? '').trim()
-                return (
-                  <PreviewCard
-                    key={asset.id}
-                    asset={asset}
-                    title={`子图 #${sequenceIndex}`}
-                    badge={variantText ? '已带变体' : '默认'}
-                    onPreview={(nextAsset) => setPreviewAsset(nextAsset)}
-                    onReveal={(nextAsset) => void revealAsset(nextAsset, '子图')}
-                    footer={
-                      variantText ? (
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-xs leading-5 text-zinc-400">
-                          {variantText}
-                        </div>
-                      ) : undefined
-                    }
-                  />
-                )
-              })}
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 px-4 py-3">
+                <div className="text-sm text-zinc-300">
+                  已选择 <span className="font-medium text-zinc-100">{state.activeSelectedChildOutputAssets.length}</span> / {state.childOutputAssets.length} 张子图
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={() => void handleSelectAllChildOutputs()}>
+                    全选
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => void handleClearSelectedChildOutputs()}>
+                    取消全选
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => void handleSendSelectedChildOutputs()}
+                    disabled={state.activeSelectedChildOutputAssets.length === 0}
+                  >
+                    <Send className="h-4 w-4" />
+                    发送到数据工坊
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+                {state.childOutputAssets.map((asset, index) => {
+                  const sequenceIndex = readSequenceIndex(asset, index)
+                  const variantText = String(asset.metadata?.variantText ?? '').trim()
+                  return (
+                    <PreviewCard
+                      key={asset.id}
+                      asset={asset}
+                      title={`子图 #${sequenceIndex}`}
+                      badge={asset.selected ? '已选中' : variantText ? '已带变体' : '默认'}
+                      active={asset.selected}
+                      onPreview={(nextAsset) => setPreviewAsset(nextAsset)}
+                      onReveal={(nextAsset) => void revealAsset(nextAsset, '子图')}
+                      footer={
+                        <>
+                          {variantText ? (
+                            <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-xs leading-5 text-zinc-400">
+                              {variantText}
+                            </div>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant={asset.selected ? 'default' : 'outline'}
+                            onClick={() => void state.toggleOutputSelection(asset.id)}
+                          >
+                            {asset.selected ? '取消选择' : '选择这张'}
+                          </Button>
+                        </>
+                      }
+                    />
+                  )
+                })}
+              </div>
             </div>
           )}
         </SectionShell>

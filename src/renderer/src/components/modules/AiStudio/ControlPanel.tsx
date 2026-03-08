@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
 
-import { CopyPlus, Play, Save, Sparkles } from 'lucide-react'
+import { CopyPlus, Play, Save, Send, Sparkles } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -265,6 +265,8 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
     state.stageProgress.totalPlanned > 0
       ? Math.min(100, Math.round((state.stageProgress.totalCompleted / state.stageProgress.totalPlanned) * 100))
       : 0
+  const isDev = Boolean(import.meta.env.DEV)
+  const selectedChildCount = state.activeSelectedChildOutputAssets.length
 
   const handleSaveStageTemplate = async (
     stage: 'master' | 'child',
@@ -358,16 +360,72 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
     }
   }
 
+  const handleSeedDemo = async (): Promise<void> => {
+    try {
+      await state.seedDemoTask()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 注入联调假数据失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleSelectAllChildOutputs = async (): Promise<void> => {
+    try {
+      await state.selectAllChildOutputs()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 子图全选失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleClearSelectedChildOutputs = async (): Promise<void> => {
+    try {
+      await state.clearSelectedChildOutputs()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 子图取消全选失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleSendSelectedChildOutputs = async (): Promise<void> => {
+    try {
+      await state.sendSelectedChildOutputsToWorkshop()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 发送到数据工坊失败：${message}`)
+      window.alert(message)
+    }
+  }
+
   if (!task) {
     return (
-      <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/55 px-6 text-center">
-        <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950 text-zinc-400">
-          <Sparkles className="h-6 w-6" />
+      <div className="flex h-full min-h-[420px] flex-col gap-4">
+        <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/55 px-6 text-center">
+          <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950 text-zinc-400">
+            <Sparkles className="h-6 w-6" />
+          </div>
+          <div className="mt-4 text-base font-medium text-zinc-100">先放入主图和参考图</div>
+          <div className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">
+            左侧导入素材后，这里会出现母图阶段、子图阶段、模板保存与进度控制。
+          </div>
         </div>
-        <div className="mt-4 text-base font-medium text-zinc-100">先放入主图和参考图</div>
-        <div className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">
-          左侧导入素材后，这里会出现母图阶段、子图阶段、模板保存与进度控制。
-        </div>
+        {isDev ? (
+          <section className="rounded-2xl border border-dashed border-zinc-700 bg-zinc-950/65 p-4">
+            <div className="text-[11px] uppercase tracking-[0.24em] text-zinc-500">Dev Only</div>
+            <div className="mt-2 text-sm font-medium text-zinc-100">联调工具</div>
+            <div className="mt-2 text-xs leading-5 text-zinc-500">
+              注入一组正式 UI 假数据，用来验证子图多选与发送到数据工坊链路。
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => void handleSeedDemo()}>
+                注入假数据
+              </Button>
+            </div>
+          </section>
+        ) : null}
       </div>
     )
   }
@@ -604,6 +662,42 @@ function ControlPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.E
           </Button>
         </div>
       </SectionBlock>
+
+      {isDev ? (
+        <SectionBlock
+          eyebrow="Dev Only"
+          title="联调工具"
+          description="仅开发环境显示。用于正式 UI 注入假数据、全选子图并验证发送到数据工坊的链路是否畅通。"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-zinc-700 bg-zinc-900/40 p-4">
+            <div>
+              <div className="text-sm font-medium text-zinc-100">当前已选子图 {selectedChildCount} 张</div>
+              <div className="mt-1 text-xs leading-5 text-zinc-500">
+                这里不会改动正式工作流，只是补一个开发态快速验证入口。
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => void handleSeedDemo()}>
+                注入假数据
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void handleSelectAllChildOutputs()}>
+                全选子图
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void handleClearSelectedChildOutputs()}>
+                取消全选
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSendSelectedChildOutputs()}
+                disabled={selectedChildCount === 0}
+              >
+                <Send className="h-4 w-4" />
+                发送到数据工坊
+              </Button>
+            </div>
+          </div>
+        </SectionBlock>
+      ) : null}
     </div>
   )
 }

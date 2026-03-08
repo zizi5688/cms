@@ -529,6 +529,72 @@ function buildInputAssetPayload(
   return writes
 }
 
+type AiStudioDemoImageSpec = {
+  filename: string
+  label: string
+  accent: string
+  backgroundStart: string
+  backgroundEnd: string
+  note?: string
+  width?: number
+  height?: number
+}
+
+async function saveAiStudioDemoImage(spec: AiStudioDemoImageSpec): Promise<string> {
+  const width = spec.width ?? 960
+  const height = spec.height ?? 1280
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('[AI Studio] 联调假图画布初始化失败。')
+
+  const gradient = ctx.createLinearGradient(0, 0, width, height)
+  gradient.addColorStop(0, spec.backgroundStart)
+  gradient.addColorStop(1, spec.backgroundEnd)
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, width, height)
+
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'
+  ctx.fillRect(48, 48, width - 96, height - 96)
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'
+  ctx.lineWidth = 4
+  ctx.strokeRect(48, 48, width - 96, height - 96)
+
+  ctx.fillStyle = spec.accent
+  ctx.fillRect(72, 84, width - 144, 18)
+  ctx.fillRect(72, height - 170, Math.floor(width * 0.42), 14)
+
+  ctx.fillStyle = '#F5F5F5'
+  ctx.font = '700 80px "PingFang SC", "Microsoft YaHei", sans-serif'
+  ctx.fillText(spec.label, 72, 220)
+
+  ctx.fillStyle = 'rgba(245,245,245,0.82)'
+  ctx.font = '500 30px "PingFang SC", "Microsoft YaHei", sans-serif'
+  ctx.fillText('AI 素材工作台 · 联调假数据', 72, 278)
+
+  if (spec.note) {
+    ctx.fillStyle = 'rgba(245,245,245,0.72)'
+    ctx.font = '500 26px "PingFang SC", "Microsoft YaHei", sans-serif'
+    const lines = String(spec.note)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    lines.slice(0, 4).forEach((line, index) => {
+      ctx.fillText(line, 72, 360 + index * 42)
+    })
+  }
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+  const savedPath = await window.api.cms.image.saveBase64({
+    dataUrl,
+    filename: spec.filename
+  })
+  const normalized = String(savedPath ?? '').trim()
+  if (!normalized) throw new Error('[AI Studio] 联调假图保存失败。')
+  return normalized
+}
+
 async function confirmResetGeneratedTask(): Promise<boolean> {
   const message = '更换输入素材会清空当前结果并重置为草稿，是否继续？'
   try {
@@ -678,6 +744,9 @@ export type UseAiStudioStateResult = ReturnType<typeof useAiStudioState>
 function useAiStudioState() {
   const defaultModel = useCmsStore((state) => state.config.aiDefaultImageModel)
   const aiConfig = useCmsStore((state) => state.config)
+  const addLog = useCmsStore((state) => state.addLog)
+  const setWorkshopImport = useCmsStore((state) => state.setWorkshopImport)
+  const setActiveModule = useCmsStore((state) => state.setActiveModule)
   const [templates, setTemplates] = useState<AiStudioTemplateRecord[]>([])
   const [tasks, setTasks] = useState<AiStudioTaskRecord[]>([])
   const [assets, setAssets] = useState<AiStudioAssetRecord[]>([])
@@ -1301,6 +1370,30 @@ function useAiStudioState() {
     () => activeSelectedChildOutputAssets.map((asset) => asset.id),
     [activeSelectedChildOutputAssets]
   )
+  const selectAllChildOutputs = useCallback(async () => {
+    const assetIds = childOutputAssets.map((asset) => asset.id)
+    if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
+    return setOutputSelection(assetIds, true, true)
+  }, [childOutputAssets, setOutputSelection])
+
+  const clearSelectedChildOutputs = useCallback(async () => {
+    const assetIds = childOutputAssets.map((asset) => asset.id)
+    if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
+    return setOutputSelection(assetIds, false, false)
+  }, [childOutputAssets, setOutputSelection])
+
+  const sendSelectedChildOutputsToWorkshop = useCallback(async () => {
+    const paths = uniqueStrings(
+      activeSelectedChildOutputAssets.map((asset) => String(asset.filePath ?? '').trim())
+    )
+    if (paths.length === 0) {
+      throw new Error('请先选择至少一张子图。')
+    }
+    setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
+    setActiveModule('workshop')
+    addLog(`[AI Studio] 已将 ${paths.length} 张子图发送到数据工坊。`)
+    return paths
+  }, [activeSelectedChildOutputAssets, addLog, setActiveModule, setWorkshopImport])
   const failureRecords = workflowMeta?.workflow.failures ?? []
   const stageProgress = useMemo(
     () => (workflowMeta ? buildStageProgress(workflowMeta) : {
@@ -1331,6 +1424,155 @@ function useAiStudioState() {
     },
     [updateTaskPatch]
   )
+
+  const seedDemoTask = useCallback(async () => {
+    const seed = Date.now()
+    const childVariantLines = [
+      '通勤街景版本 · 保持母图氛围延续',
+      '橱窗近景版本 · 强化层次与留白',
+      '楼梯转角版本 · 保持服装主体完整',
+      '室内镜面版本 · 增加一点高级感反射'
+    ]
+
+    const primaryImagePath = await saveAiStudioDemoImage({
+      filename: `ai-studio-demo-primary-${seed}.jpg`,
+      label: '主图',
+      accent: '#F59E0B',
+      backgroundStart: '#23131A',
+      backgroundEnd: '#4A1D34',
+      note: '正式 UI 联调\n作为主图输入'
+    })
+
+    const referenceImagePaths = await Promise.all([
+      saveAiStudioDemoImage({
+        filename: `ai-studio-demo-reference-a-${seed}.jpg`,
+        label: '参考 A',
+        accent: '#22C55E',
+        backgroundStart: '#0F172A',
+        backgroundEnd: '#134E4A',
+        note: '参考构图\n参考材质'
+      }),
+      saveAiStudioDemoImage({
+        filename: `ai-studio-demo-reference-b-${seed}.jpg`,
+        label: '参考 B',
+        accent: '#38BDF8',
+        backgroundStart: '#1F2937',
+        backgroundEnd: '#312E81',
+        note: '参考姿态\n参考氛围'
+      })
+    ])
+
+    const created = await createTaskWithInputs({
+      primaryImagePath,
+      referenceImagePaths
+    })
+
+    const latestTask = await loadLatestTaskRecord(created.id)
+    if (!latestTask) {
+      throw new Error('[AI Studio] 联调任务创建成功，但读取任务详情失败。')
+    }
+
+    const masterCleanPath = await saveAiStudioDemoImage({
+      filename: `ai-studio-demo-master-clean-${seed}.jpg`,
+      label: 'AI母图',
+      accent: '#F97316',
+      backgroundStart: '#111827',
+      backgroundEnd: '#4C1D95',
+      note: '去印完成\n可作为当前 AI 母图'
+    })
+
+    const childOutputPaths = await Promise.all(
+      childVariantLines.map((line, index) =>
+        saveAiStudioDemoImage({
+          filename: `ai-studio-demo-child-${index + 1}-${seed}.jpg`,
+          label: `子图 ${index + 1}`,
+          accent: ['#F59E0B', '#10B981', '#60A5FA', '#F472B6'][index % 4] ?? '#F59E0B',
+          backgroundStart: ['#221B1B', '#0F172A', '#1F2937', '#2D1B69'][index % 4] ?? '#221B1B',
+          backgroundEnd: ['#5B2C2C', '#164E63', '#3B0764', '#7C2D12'][index % 4] ?? '#5B2C2C',
+          note: line
+        })
+      )
+    )
+
+    const masterCleanAssetId = `${latestTask.id}:output:master-clean:1`
+    await upsertAssetsRemote([
+      {
+        id: masterCleanAssetId,
+        taskId: latestTask.id,
+        runId: null,
+        kind: 'output',
+        role: AI_STUDIO_MASTER_CLEAN_ROLE,
+        filePath: masterCleanPath,
+        previewPath: masterCleanPath,
+        originPath: primaryImagePath,
+        selected: false,
+        sortOrder: 100,
+        metadata: {
+          demo: true,
+          stage: 'master',
+          sequenceIndex: 1,
+          watermarkStatus: 'succeeded'
+        }
+      },
+      ...childOutputPaths.map((filePath, index) => ({
+        id: `${latestTask.id}:output:child:${index + 1}`,
+        taskId: latestTask.id,
+        runId: null,
+        kind: 'output' as const,
+        role: AI_STUDIO_CHILD_OUTPUT_ROLE,
+        filePath,
+        previewPath: filePath,
+        originPath: masterCleanPath,
+        selected: true,
+        sortOrder: 200 + index,
+        metadata: {
+          demo: true,
+          stage: 'child',
+          sequenceIndex: index + 1,
+          variantText: childVariantLines[index] ?? ''
+        }
+      }))
+    ])
+
+    const workflow = resetWorkflowMetadataForInputs({
+      templateId: latestTask.templateId,
+      promptExtra: latestTask.promptExtra,
+      primaryImagePath: latestTask.primaryImagePath,
+      referenceImagePaths: latestTask.referenceImagePaths,
+      metadata: latestTask.metadata
+    })
+    workflow.workflow.activeStage = 'completed'
+    workflow.workflow.currentAiMasterAssetId = masterCleanAssetId
+    workflow.workflow.currentItemKind = 'idle'
+    workflow.workflow.currentItemIndex = 0
+    workflow.workflow.currentItemTotal = childVariantLines.length
+    workflow.masterStage.requestedCount = 1
+    workflow.masterStage.completedCount = 1
+    workflow.masterStage.cleanSuccessCount = 1
+    workflow.masterStage.cleanFailedCount = 0
+    workflow.childStage.requestedCount = childVariantLines.length
+    workflow.childStage.variantLines = childVariantLines
+    workflow.childStage.completedCount = childVariantLines.length
+    workflow.childStage.failedCount = 0
+
+    await updateTaskPatch(latestTask.id, {
+      status: 'completed',
+      metadata: writeWorkflowMetadata(latestTask, workflow)
+    })
+
+    await refresh()
+    setSelectedTaskIds([latestTask.id])
+    setActiveTaskId(latestTask.id)
+    addLog(`[AI Studio] 已注入 ${childOutputPaths.length} 张联调子图，可直接发送到数据工坊。`)
+    return latestTask.id
+  }, [
+    addLog,
+    createTaskWithInputs,
+    loadLatestTaskRecord,
+    refresh,
+    updateTaskPatch,
+    upsertAssetsRemote
+  ])
 
   const setMasterTemplateId = useCallback(
     async (value: string) => {
@@ -2168,6 +2410,10 @@ function useAiStudioState() {
     toggleTaskSelection,
     toggleOutputSelection,
     setOutputSelection,
+    selectAllChildOutputs,
+    clearSelectedChildOutputs,
+    sendSelectedChildOutputsToWorkshop,
+    seedDemoTask,
     assignPrimaryImage,
     addReferenceImages,
     removeReferenceImage,
