@@ -17,7 +17,7 @@ export type WorkshopImport = {
   path: string | null
   paths?: string[]
   coverPath?: string
-  source: 'imagelab' | null
+  source: 'imagelab' | 'ai-studio' | null
 }
 
 export type MaterialImport = {
@@ -129,7 +129,8 @@ export interface CmsState {
     type: WorkshopImport['type'],
     path: string | null,
     coverPath?: string | null,
-    paths?: string[] | null
+    paths?: string[] | null,
+    source?: WorkshopImport['source']
   ) => void
   setMaterialImport: (paths: string[] | null, source?: MaterialImport['source']) => void
   clearMaterialImport: () => void
@@ -213,7 +214,7 @@ const useCmsStore = create<CmsState>((set) => ({
   setUploadTasks: (tasks) => set(() => ({ uploadTasks: tasks })),
   setCsvContent: (content) => set(() => ({ csvContent: content })),
   setDataWorkshopFolderPath: (path) => set(() => ({ dataWorkshopFolderPath: path })),
-  setWorkshopImport: (type, path, coverPath, paths) =>
+  setWorkshopImport: (type, path, coverPath, paths, source = 'imagelab') =>
     set(() => {
       const normalizedPath = typeof path === 'string' ? path.trim() : null
       const normalizedCoverPath = typeof coverPath === 'string' ? coverPath.trim() : ''
@@ -225,21 +226,24 @@ const useCmsStore = create<CmsState>((set) => ({
         )
       )
       if (!type) return { workshopImport: { type: null, path: null, source: null } }
-      if (!normalizedPath) return { workshopImport: { type: null, path: null, source: null } }
 
+      const finalPath = normalizedPath || normalizedPaths[0] || null
+      if (!finalPath) return { workshopImport: { type: null, path: null, source: null } }
+
+      const shouldAttachPaths = type === 'video' || normalizedPaths.length > 0
       const finalPaths =
-        type === 'video'
+        shouldAttachPaths
           ? normalizedPaths.length > 0
             ? normalizedPaths
-            : [normalizedPath]
+            : [finalPath]
           : []
       return {
         workshopImport: {
           type,
-          path: normalizedPath,
-          source: 'imagelab',
+          path: finalPath,
+          source: source ?? 'imagelab',
           ...(finalPaths.length > 0 ? { paths: finalPaths } : {}),
-          ...(normalizedCoverPath ? { coverPath: normalizedCoverPath } : {})
+          ...(type === 'video' && normalizedCoverPath ? { coverPath: normalizedCoverPath } : {})
         }
       }
     }),
