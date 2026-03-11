@@ -367,6 +367,14 @@ function HistoryTaskSection({
     [state.primaryImagePath, state.referenceImagePaths]
   )
   const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
+  const generatedAssetCount = generatedAssets.length
+  const pooledGeneratedAssetCount = useMemo(
+    () => generatedAssets.filter((asset) => asset.selected).length,
+    [generatedAssets]
+  )
+  const canBatchAddToPool = generatedAssetCount > 0
+  const allGeneratedAssetsPooled =
+    canBatchAddToPool && pooledGeneratedAssetCount === generatedAssetCount
 
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioWorkflowFailureRecord>()
@@ -439,35 +447,71 @@ function HistoryTaskSection({
     }
   }
 
+  const handleSelectAllGeneratedAssets = async (): Promise<void> => {
+    if (!canBatchAddToPool || allGeneratedAssetsPooled) return
+
+    try {
+      await state.selectAllDispatchOutputsForTask(task.id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 批量加入图池失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const threadHeader = (
+    <div className="flex min-w-0 items-start gap-4">
+      <div className="flex gap-2">
+        {threadAssets.slice(0, 4).map((asset) => (
+          <ThreadThumb key={asset.id} asset={asset} />
+        ))}
+      </div>
+      <div className="min-w-0 flex-1 pt-1">
+        <div className="flex min-w-0 flex-wrap items-start gap-2.5">
+          <div className="min-w-0 flex-1 text-[15px] font-medium leading-7 text-zinc-900">
+            {promptExcerpt}
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleSelectAllGeneratedAssets()}
+            disabled={!canBatchAddToPool || allGeneratedAssetsPooled}
+            title={
+              !canBatchAddToPool
+                ? '该线程暂时还没有生成图片'
+                : allGeneratedAssetsPooled
+                  ? '该线程图片已全部加入图池'
+                  : '将该线程当前已生成图片批量加入图池'
+            }
+            className={cn(
+              'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition',
+              !canBatchAddToPool
+                ? 'cursor-not-allowed border-zinc-200/80 bg-zinc-50 text-zinc-400'
+                : allGeneratedAssetsPooled
+                  ? 'cursor-default border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-zinc-200 bg-white text-zinc-700 shadow-[0_8px_18px_rgba(15,23,42,0.05)] hover:border-zinc-300 hover:bg-zinc-50'
+            )}
+          >
+            {allGeneratedAssetsPooled ? (
+              <Check className="h-3.5 w-3.5" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+            <span>{allGeneratedAssetsPooled ? '已加入图池' : '批量加入图池'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
   if (previewSlots.length === 0 && !currentAiMasterAsset && failureRecords.length === 0) {
     return (
-      <section className="flex min-w-0 flex-col gap-4">
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="flex gap-2">
-            {threadAssets.slice(0, 4).map((asset) => (
-              <ThreadThumb key={asset.id} asset={asset} />
-            ))}
-          </div>
-          <div className="min-w-0 pt-1">
-            <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
-          </div>
-        </div>
-      </section>
+      <section className="flex min-w-0 flex-col gap-4">{threadHeader}</section>
     )
   }
 
   return (
     <section className="flex min-w-0 flex-col gap-4">
-      <div className="flex min-w-0 items-start gap-4">
-        <div className="flex gap-2">
-          {threadAssets.slice(0, 4).map((asset) => (
-            <ThreadThumb key={asset.id} asset={asset} />
-          ))}
-        </div>
-        <div className="min-w-0 pt-1">
-          <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
-        </div>
-      </div>
+      {threadHeader}
 
       {previewSlots.length > 0 ? (
         <div className="py-1">
