@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
@@ -164,6 +164,12 @@ const AI_STUDIO_CHILD_OUTPUT_ROLE = 'child-output'
 const AI_STUDIO_SOURCE_PRIMARY_ROLE = 'source-primary'
 const AI_STUDIO_SOURCE_REFERENCE_ROLE = 'source-reference'
 
+export function selectDispatchOutputAssets(task: Pick<AiStudioTaskView, 'outputAssets'>): AiStudioAssetRecord[] {
+  const childOutputAssets = task.outputAssets.filter((asset) => asset.role === AI_STUDIO_CHILD_OUTPUT_ROLE)
+  if (childOutputAssets.length > 0) return childOutputAssets
+  return task.outputAssets.filter((asset) => asset.role === AI_STUDIO_MASTER_CLEAN_ROLE)
+}
+
 function normalizeVariantLines(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.map((item) => String(item ?? '').trim()).filter(Boolean)
@@ -205,7 +211,7 @@ function createDefaultWorkflowMetadata(
   }
 }
 
-function readWorkflowMetadata(
+export function readWorkflowMetadata(
   task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>
 ): AiStudioWorkflowMetadata {
   const metadata =
@@ -361,6 +367,19 @@ function writeWorkflowMetadata(
   }
 }
 
+function sanitizeDraftMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const next = metadata && typeof metadata === 'object' ? { ...metadata } : {}
+  delete next.latestSubmittedPrompt
+  delete next.latestRequestSnapshot
+  delete next.latestSubmittedAt
+  delete next.latestSubmittedEndpointPath
+  delete next.workflow
+  delete next.masterStage
+  delete next.childStage
+  delete next.mode
+  return next
+}
+
 
 function resetWorkflowMetadataForInputs(
   task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>
@@ -409,7 +428,7 @@ function makeWorkflowFailureRecord(
   }
 }
 
-function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiStudioStageProgress {
+export function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiStudioStageProgress {
   const masterRequested = workflowMeta.masterStage.requestedCount
   const childRequested = workflowMeta.childStage.requestedCount
   const totalPlanned = masterRequested + masterRequested + childRequested
@@ -422,15 +441,15 @@ function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiStudioSta
 
   let currentLabel = '待开始'
   if (workflowMeta.workflow.currentItemKind === 'master-generate') {
-    currentLabel = '母图生成中'
+    currentLabel = '结果生成中'
   } else if (workflowMeta.workflow.currentItemKind === 'master-clean') {
-    currentLabel = '母图去水印中'
+    currentLabel = '去水印处理中'
   } else if (workflowMeta.workflow.currentItemKind === 'child-generate') {
-    currentLabel = '子图生成中'
+    currentLabel = '结果生成中'
   } else if (workflowMeta.workflow.activeStage === 'master-selecting') {
-    currentLabel = '等待选择当前AI母图'
+    currentLabel = '等待处理完成'
   } else if (workflowMeta.workflow.activeStage === 'child-ready') {
-    currentLabel = '等待开始子图生成'
+    currentLabel = '等待开始生成'
   } else if (workflowMeta.workflow.activeStage === 'completed') {
     currentLabel = '已完成'
   }
@@ -446,6 +465,26 @@ function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiStudioSta
       workflowMeta.masterStage.cleanSuccessCount + workflowMeta.childStage.completedCount,
     failureCount: workflowMeta.workflow.failures.length
   }
+}
+
+const AI_STUDIO_TASK_INTERRUPTED_MESSAGE = '[AI Studio] 任务已手动中断。'
+
+function createTaskInterruptedError(): Error {
+  const error = new Error(AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
+  error.name = 'AiStudioTaskInterruptedError'
+  return error
+}
+
+function isTaskInterruptedError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AiStudioTaskInterruptedError' || error.message === AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
+}
+
+function resolveFailureStageKindForWorkflow(
+  kind: AiStudioWorkflowMetadata['workflow']['currentItemKind']
+): AiStudioWorkflowFailureRecord['stageKind'] {
+  if (kind === 'master-clean') return 'master-clean'
+  if (kind === 'child-generate') return 'child-generate'
+  return 'master-generate'
 }
 
 function sleepMs(ms: number): Promise<void> {
@@ -484,7 +523,17 @@ function buildInputAssetPayload(
   taskId: string,
   primaryImagePath: string | null,
   referenceImagePaths: string[]
-) {
+): Array<{
+  id: string
+  taskId: string
+  kind: 'input'
+  role: string
+  filePath: string
+  previewPath: string
+  originPath: string
+  sortOrder: number
+  metadata: Record<string, unknown>
+}> {
   const normalizedReferences = normalizeReferencePaths(referenceImagePaths, primaryImagePath)
   const writes: Array<{
     id: string
@@ -635,6 +684,15 @@ function inferStatusFilter(status: AiStudioTaskRecord['status']): AiStudioTaskSt
   return 'draft'
 }
 
+function isHistoricalTask(task: AiStudioTaskView): boolean {
+  return (
+    task.status !== 'draft' ||
+    task.outputAssets.length > 0 ||
+    Boolean(task.latestRunId) ||
+    Boolean(task.remoteTaskId)
+  )
+}
+
 function normalizeTask(task: AiStudioTaskRecord): AiStudioTaskRecord {
   return {
     ...task,
@@ -758,6 +816,8 @@ function useAiStudioState() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isImporting, setIsImporting] = useState(false)
+  const interruptRequestedTaskIdsRef = useRef<Set<string>>(new Set())
+  const [interruptingTaskIds, setInterruptingTaskIds] = useState<string[]>([])
 
   const refresh = useCallback(async () => {
     setIsLoading(true)
@@ -831,6 +891,13 @@ function useAiStudioState() {
     return taskViews.find((task) => task.id === activeTaskId) ?? taskViews[0] ?? null
   }, [activeTaskId, taskViews])
 
+  const historyTasks = useMemo(() => {
+    return taskViews
+      .filter((task) => isHistoricalTask(task))
+      .slice()
+      .sort((left, right) => left.createdAt - right.createdAt || left.updatedAt - right.updatedAt)
+  }, [taskViews])
+
   const activeInputAssets = activeTask?.inputAssets ?? []
   const activeOutputAssets = activeTask?.outputAssets ?? []
   const selectedOutputIdsByTask = useMemo<Record<string, string[]>>(() => {
@@ -884,17 +951,23 @@ function useAiStudioState() {
     setTemplates((prev) => sortTemplates(mergeById(prev, [coerceTemplateRecord(nextTemplate)])))
   }, [])
 
-  const removeTaskLocally = useCallback((taskId: string) => {
-    setTasks((prev) => prev.filter((task) => task.id !== taskId))
-    setAssets((prev) => prev.filter((asset) => asset.taskId !== taskId))
-    setDraftByTaskId((prev) => {
-      if (!prev[taskId]) return prev
-      const next = { ...prev }
-      delete next[taskId]
-      return next
-    })
-    setSelectedTaskIds((prev) => prev.filter((id) => id !== taskId))
-    setActiveTaskId((prev) => (prev === taskId ? null : prev))
+  const requestTaskInterrupt = useCallback((taskId: string) => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    if (!normalizedTaskId) return
+    interruptRequestedTaskIdsRef.current.add(normalizedTaskId)
+    setInterruptingTaskIds((prev) => uniqueStrings([...prev, normalizedTaskId]))
+  }, [])
+
+  const clearTaskInterrupt = useCallback((taskId: string) => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    if (!normalizedTaskId) return
+    interruptRequestedTaskIdsRef.current.delete(normalizedTaskId)
+    setInterruptingTaskIds((prev) => prev.filter((value) => value !== normalizedTaskId))
+  }, [])
+
+  const isTaskInterruptRequested = useCallback((taskId: string) => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    return normalizedTaskId ? interruptRequestedTaskIdsRef.current.has(normalizedTaskId) : false
   }, [])
 
   const updateTaskPatch = useCallback(
@@ -990,7 +1063,9 @@ function useAiStudioState() {
     async (payload: {
       primaryImagePath: string | null
       referenceImagePaths: string[]
-      inheritFrom?: AiStudioTaskView | null
+      inheritFrom?: AiStudioTaskRecord | AiStudioTaskView | null
+      promptExtraOverride?: string
+      templateIdOverride?: string | null
     }) => {
       const primaryImagePath = String(payload.primaryImagePath ?? '').trim() || null
       const referenceImagePaths = normalizeReferencePaths(
@@ -1001,12 +1076,21 @@ function useAiStudioState() {
         [primaryImagePath, ...referenceImagePaths].filter(Boolean) as string[]
       )
       const baseTask = payload.inheritFrom ?? null
+      const baseWorkflow = baseTask ? readWorkflowMetadata(baseTask) : null
+      const inheritedTemplateId =
+        payload.templateIdOverride !== undefined
+          ? payload.templateIdOverride
+          : (baseWorkflow?.masterStage.templateId ?? baseTask?.templateId ?? null)
+      const inheritedPromptExtra =
+        payload.promptExtraOverride !== undefined
+          ? payload.promptExtraOverride
+          : baseWorkflow?.masterStage.promptExtra ?? baseTask?.promptExtra ?? ''
       const inferredName = basenameWithoutExtension(
         primaryImagePath ?? referenceImagePaths[0] ?? ''
       )
       const created = coerceTaskRecord(
         await window.api.cms.aiStudio.task.create({
-          templateId: baseTask?.templateId ?? null,
+          templateId: inheritedTemplateId,
           provider: 'grsai',
           sourceFolderPath: null,
           productName: inferredName || baseTask?.productName || '未命名任务',
@@ -1014,7 +1098,7 @@ function useAiStudioState() {
           aspectRatio: baseTask?.aspectRatio ?? '3:4',
           outputCount: baseTask?.outputCount ?? 1,
           model: baseTask?.model || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
-          promptExtra: baseTask?.promptExtra ?? '',
+          promptExtra: inheritedPromptExtra,
           primaryImagePath,
           referenceImagePaths,
           inputImagePaths,
@@ -1023,22 +1107,28 @@ function useAiStudioState() {
           priceMinSnapshot: null,
           priceMaxSnapshot: null,
           billedState: 'unbilled',
-          metadata: writeWorkflowMetadata(
-            {
-              templateId: baseTask?.templateId ?? null,
-              promptExtra: baseTask?.promptExtra ?? '',
-              primaryImagePath,
-              referenceImagePaths,
-              metadata: { ...(baseTask?.metadata ?? {}), importedImageCount: inputImagePaths.length }
-            },
-            resetWorkflowMetadataForInputs({
-              templateId: baseTask?.templateId ?? null,
-              promptExtra: baseTask?.promptExtra ?? '',
-              primaryImagePath,
-              referenceImagePaths,
-              metadata: { ...(baseTask?.metadata ?? {}), importedImageCount: inputImagePaths.length }
-            })
-          )
+          metadata: (() => {
+            const nextMetadata = {
+              ...sanitizeDraftMetadata(baseTask?.metadata),
+              importedImageCount: inputImagePaths.length
+            }
+            return writeWorkflowMetadata(
+              {
+                templateId: inheritedTemplateId,
+                promptExtra: inheritedPromptExtra,
+                primaryImagePath,
+                referenceImagePaths,
+                metadata: nextMetadata
+              },
+              resetWorkflowMetadataForInputs({
+                templateId: inheritedTemplateId,
+                promptExtra: inheritedPromptExtra,
+                primaryImagePath,
+                referenceImagePaths,
+                metadata: nextMetadata
+              })
+            )
+          })()
         })
       )
 
@@ -1062,7 +1152,7 @@ function useAiStudioState() {
 
   const syncTaskInputs = useCallback(
     async (
-      task: AiStudioTaskView,
+      task: Pick<AiStudioTaskRecord, 'id' | 'templateId' | 'promptExtra' | 'metadata' | 'productName'>,
       primaryImagePath: string | null,
       referenceImagePaths: string[]
     ) => {
@@ -1087,22 +1177,28 @@ function useAiStudioState() {
         priceMinSnapshot: null,
         priceMaxSnapshot: null,
         billedState: 'unbilled',
-        metadata: writeWorkflowMetadata(
-          {
-            templateId: task.templateId,
-            promptExtra: task.promptExtra,
-            primaryImagePath: normalizedPrimary,
-            referenceImagePaths: normalizedReferences,
-            metadata: { ...(task.metadata ?? {}), importedImageCount: inputImagePaths.length }
-          },
-          resetWorkflowMetadataForInputs({
-            templateId: task.templateId,
-            promptExtra: task.promptExtra,
-            primaryImagePath: normalizedPrimary,
-            referenceImagePaths: normalizedReferences,
-            metadata: { ...(task.metadata ?? {}), importedImageCount: inputImagePaths.length }
-          })
-        )
+        metadata: (() => {
+          const nextMetadata = {
+            ...sanitizeDraftMetadata(task.metadata),
+            importedImageCount: inputImagePaths.length
+          }
+          return writeWorkflowMetadata(
+            {
+              templateId: task.templateId,
+              promptExtra: task.promptExtra,
+              primaryImagePath: normalizedPrimary,
+              referenceImagePaths: normalizedReferences,
+              metadata: nextMetadata
+            },
+            resetWorkflowMetadataForInputs({
+              templateId: task.templateId,
+              promptExtra: task.promptExtra,
+              primaryImagePath: normalizedPrimary,
+              referenceImagePaths: normalizedReferences,
+              metadata: nextMetadata
+            })
+          )
+        })()
       })
 
       const nextAssets =
@@ -1158,8 +1254,6 @@ function useAiStudioState() {
           referenceImagePaths: normalizedReferences,
           inheritFrom: currentTask
         })
-        await window.api.cms.aiStudio.task.delete({ taskId: currentTask.id }).catch(() => void 0)
-        removeTaskLocally(currentTask.id)
         setSelectedTaskIds([replacement.id])
         setActiveTaskId(replacement.id)
         return replacement
@@ -1167,7 +1261,7 @@ function useAiStudioState() {
 
       return syncTaskInputs(currentTask, normalizedPrimary, normalizedReferences)
     },
-    [activeTask, createTaskWithInputs, removeTaskLocally, syncTaskInputs]
+    [activeTask, createTaskWithInputs, syncTaskInputs]
   )
 
   const toggleTaskSelection = useCallback((taskId: string) => {
@@ -1178,12 +1272,14 @@ function useAiStudioState() {
     )
   }, [])
 
-  const setOutputSelection = useCallback(
-    async (assetIds: string[], selected: boolean, clearOthers?: boolean) => {
-      if (!activeTask) return [] as AiStudioAssetRecord[]
+  const setOutputSelectionForTask = useCallback(
+    async (taskId: string, assetIds: string[], selected: boolean, clearOthers?: boolean) => {
+      const normalizedTaskId = String(taskId ?? '').trim()
+      if (!normalizedTaskId) return [] as AiStudioAssetRecord[]
       const normalizedIds = uniqueStrings(assetIds)
+      if (normalizedIds.length === 0) return [] as AiStudioAssetRecord[]
       const nextAssets = await window.api.cms.aiStudio.asset.markSelected({
-        taskId: activeTask.id,
+        taskId: normalizedTaskId,
         assetIds: normalizedIds,
         selected,
         clearOthers
@@ -1192,7 +1288,15 @@ function useAiStudioState() {
       replaceAssets(normalized)
       return normalized
     },
-    [activeTask, replaceAssets]
+    [replaceAssets]
+  )
+
+  const setOutputSelection = useCallback(
+    async (assetIds: string[], selected: boolean, clearOthers?: boolean) => {
+      if (!activeTask) return [] as AiStudioAssetRecord[]
+      return setOutputSelectionForTask(activeTask.id, assetIds, selected, clearOthers)
+    },
+    [activeTask, setOutputSelectionForTask]
   )
 
   const toggleOutputSelection = useCallback(
@@ -1200,9 +1304,28 @@ function useAiStudioState() {
       if (!activeTask) return [] as AiStudioAssetRecord[]
       const target = activeOutputAssets.find((asset) => asset.id === assetId)
       if (!target) return [] as AiStudioAssetRecord[]
-      return setOutputSelection([assetId], !target.selected, false)
+      return setOutputSelectionForTask(activeTask.id, [assetId], !target.selected, false)
     },
-    [activeOutputAssets, activeTask, setOutputSelection]
+    [activeOutputAssets, activeTask, setOutputSelectionForTask]
+  )
+
+  const toggleDispatchOutputSelectionForTask = useCallback(
+    async (taskId: string, assetId: string) => {
+      const targetTask = taskViews.find((task) => task.id === taskId)
+      if (!targetTask) return [] as AiStudioAssetRecord[]
+      const dispatchAssets = selectDispatchOutputAssets(targetTask)
+      const target = dispatchAssets.find((asset) => asset.id === assetId)
+      if (!target) return [] as AiStudioAssetRecord[]
+      return setOutputSelectionForTask(taskId, [assetId], !target.selected, false)
+    },
+    [setOutputSelectionForTask, taskViews]
+  )
+
+  const toggleDispatchOutputPoolForTask = useCallback(
+    async (taskId: string, assetId: string) => {
+      return toggleDispatchOutputSelectionForTask(taskId, assetId)
+    },
+    [toggleDispatchOutputSelectionForTask]
   )
 
   const assignPrimaryImage = useCallback(
@@ -1300,13 +1423,19 @@ function useAiStudioState() {
         })
       )
       replaceTemplate(saved)
-      if (activeTask && activeTask.templateId !== saved.id) {
-        await updateTaskPatch(activeTask.id, { templateId: saved.id })
-      }
       return saved
     },
-    [activeTask, replaceTemplate, updateTaskPatch]
+    [replaceTemplate]
   )
+
+  const deleteTemplate = useCallback(async (templateId: string) => {
+    const normalizedId = String(templateId ?? '').trim()
+    if (!normalizedId) return false
+    const result = await window.api.cms.aiStudio.template.delete({ templateId: normalizedId })
+    if (!result?.success) return false
+    setTemplates((prev) => prev.filter((template) => template.id !== normalizedId))
+    return true
+  }, [])
 
   const loadLatestTaskRecord = useCallback(async (taskId: string) => {
     const row = await window.api.cms.aiStudio.task.list({ ids: [taskId], limit: 1 }).then((rows) => rows[0])
@@ -1362,38 +1491,158 @@ function useAiStudioState() {
     if (!currentId) return null
     return masterCleanAssets.find((asset) => asset.id === currentId) ?? null
   }, [masterCleanAssets, workflowMeta])
-  const activeSelectedChildOutputAssets = useMemo(
-    () => childOutputAssets.filter((asset) => asset.selected),
-    [childOutputAssets]
+  const dispatchOutputAssets = useMemo(
+    () => (childOutputAssets.length > 0 ? childOutputAssets : masterCleanAssets),
+    [childOutputAssets, masterCleanAssets]
   )
-  const activeSelectedChildOutputIds = useMemo(
-    () => activeSelectedChildOutputAssets.map((asset) => asset.id),
-    [activeSelectedChildOutputAssets]
+  const pooledOutputAssets = useMemo(
+    () =>
+      historyTasks.flatMap((task) =>
+        selectDispatchOutputAssets(task).filter((asset) => asset.selected)
+      ),
+    [historyTasks]
   )
-  const selectAllChildOutputs = useCallback(async () => {
-    const assetIds = childOutputAssets.map((asset) => asset.id)
+  const pooledOutputCount = pooledOutputAssets.length
+  const activeSelectedDispatchOutputAssets = useMemo(
+    () => dispatchOutputAssets.filter((asset) => asset.selected),
+    [dispatchOutputAssets]
+  )
+  const activeSelectedDispatchOutputIds = useMemo(
+    () => activeSelectedDispatchOutputAssets.map((asset) => asset.id),
+    [activeSelectedDispatchOutputAssets]
+  )
+  const selectAllDispatchOutputsForTask = useCallback(async (taskId: string) => {
+    const targetTask = taskViews.find((task) => task.id === taskId)
+    if (!targetTask) return [] as AiStudioAssetRecord[]
+    const assetIds = selectDispatchOutputAssets(targetTask).map((asset) => asset.id)
     if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
-    return setOutputSelection(assetIds, true, true)
-  }, [childOutputAssets, setOutputSelection])
+    return setOutputSelectionForTask(taskId, assetIds, true, true)
+  }, [setOutputSelectionForTask, taskViews])
 
-  const clearSelectedChildOutputs = useCallback(async () => {
-    const assetIds = childOutputAssets.map((asset) => asset.id)
+  const clearSelectedDispatchOutputsForTask = useCallback(async (taskId: string) => {
+    const targetTask = taskViews.find((task) => task.id === taskId)
+    if (!targetTask) return [] as AiStudioAssetRecord[]
+    const assetIds = selectDispatchOutputAssets(targetTask).map((asset) => asset.id)
     if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
-    return setOutputSelection(assetIds, false, false)
-  }, [childOutputAssets, setOutputSelection])
+    return setOutputSelectionForTask(taskId, assetIds, false, false)
+  }, [setOutputSelectionForTask, taskViews])
 
-  const sendSelectedChildOutputsToWorkshop = useCallback(async () => {
+  const selectAllDispatchOutputs = useCallback(async () => {
+    if (!activeTask) return [] as AiStudioAssetRecord[]
+    return selectAllDispatchOutputsForTask(activeTask.id)
+  }, [activeTask, selectAllDispatchOutputsForTask])
+
+  const clearSelectedDispatchOutputs = useCallback(async () => {
+    if (!activeTask) return [] as AiStudioAssetRecord[]
+    return clearSelectedDispatchOutputsForTask(activeTask.id)
+  }, [activeTask, clearSelectedDispatchOutputsForTask])
+
+  const prepareNextDraftTask = useCallback(async () => {
+    if (
+      activeTask &&
+      activeTask.status === 'draft' &&
+      activeTask.outputAssets.length === 0 &&
+      !activeTask.latestRunId &&
+      !activeTask.remoteTaskId
+    ) {
+      return activeTask
+    }
+
+    return createTaskWithInputs({
+      primaryImagePath: null,
+      referenceImagePaths: [],
+      inheritFrom: activeTask,
+      promptExtraOverride: '',
+      templateIdOverride: null
+    })
+  }, [activeTask, createTaskWithInputs])
+
+  const useDispatchOutputAsReference = useCallback(
+    async (filePath: string) => {
+      const normalizedPath = String(filePath ?? '').trim()
+      if (!normalizedPath) return false
+
+      let draftTask =
+        activeTask &&
+        activeTask.status === 'draft' &&
+        activeTask.outputAssets.length === 0 &&
+        !activeTask.latestRunId &&
+        !activeTask.remoteTaskId
+          ? activeTask
+          : await prepareNextDraftTask()
+
+      if (!draftTask) return false
+      if (draftTask.primaryImagePath === normalizedPath || draftTask.referenceImagePaths.includes(normalizedPath)) {
+        return false
+      }
+
+      const nextPrimaryImagePath = draftTask.primaryImagePath ?? normalizedPath
+      const nextReferenceImagePaths = draftTask.primaryImagePath
+        ? [...draftTask.referenceImagePaths, normalizedPath]
+        : draftTask.referenceImagePaths
+      const nextInputCount = uniqueStrings(
+        [nextPrimaryImagePath, ...nextReferenceImagePaths].filter(Boolean) as string[]
+      ).length
+
+      if (nextInputCount > MAX_AI_STUDIO_REFERENCE_IMAGES) {
+        throw new Error(`最多支持 ${MAX_AI_STUDIO_REFERENCE_IMAGES} 张参考图。`)
+      }
+
+      await syncTaskInputs(
+        draftTask,
+        nextPrimaryImagePath,
+        nextReferenceImagePaths
+      )
+      return true
+    },
+    [activeTask, prepareNextDraftTask, syncTaskInputs]
+  )
+
+  const sendSelectedDispatchOutputsToWorkshop = useCallback(async (taskId?: string) => {
+    const targetTaskId = String(taskId ?? activeTask?.id ?? '').trim()
+    const targetTask = taskViews.find((task) => task.id === targetTaskId) ?? null
+    const targetDispatchOutputAssets = targetTask ? selectDispatchOutputAssets(targetTask) : []
     const paths = uniqueStrings(
-      activeSelectedChildOutputAssets.map((asset) => String(asset.filePath ?? '').trim())
+      targetDispatchOutputAssets
+        .filter((asset) => asset.selected)
+        .map((asset) => String(asset.filePath ?? '').trim())
     )
     if (paths.length === 0) {
-      throw new Error('请先选择至少一张子图。')
+      throw new Error('请先选择至少一张结果图。')
     }
+    await prepareNextDraftTask()
     setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
     setActiveModule('workshop')
-    addLog(`[AI Studio] 已将 ${paths.length} 张子图发送到数据工坊。`)
+    addLog(`[AI Studio] 已将 ${paths.length} 张结果图发送到数据工坊。`)
     return paths
-  }, [activeSelectedChildOutputAssets, addLog, setActiveModule, setWorkshopImport])
+  }, [activeTask, addLog, prepareNextDraftTask, setActiveModule, setWorkshopImport, taskViews])
+
+  const sendPooledOutputsToWorkshop = useCallback(async () => {
+    const paths = uniqueStrings(pooledOutputAssets.map((asset) => String(asset.filePath ?? '').trim()))
+    if (paths.length === 0) {
+      throw new Error('请先添加至少一张图片到图片池。')
+    }
+
+    await prepareNextDraftTask()
+    setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
+    setActiveModule('workshop')
+    addLog(`[AI Studio] 已将图池中的 ${paths.length} 张结果图发送到数据工坊。`)
+
+    const groupedAssetIds = new Map<string, string[]>()
+    pooledOutputAssets.forEach((asset) => {
+      const group = groupedAssetIds.get(asset.taskId) ?? []
+      group.push(asset.id)
+      groupedAssetIds.set(asset.taskId, group)
+    })
+
+    await Promise.all(
+      Array.from(groupedAssetIds.entries()).map(([taskId, assetIds]) =>
+        setOutputSelectionForTask(taskId, assetIds, false, false)
+      )
+    )
+
+    return paths
+  }, [addLog, pooledOutputAssets, prepareNextDraftTask, setActiveModule, setOutputSelectionForTask, setWorkshopImport])
   const failureRecords = workflowMeta?.workflow.failures ?? []
   const stageProgress = useMemo(
     () => (workflowMeta ? buildStageProgress(workflowMeta) : {
@@ -1415,14 +1664,18 @@ function useAiStudioState() {
       updater: (draft: AiStudioWorkflowMetadata) => void,
       extraPatch?: Record<string, unknown>
     ) => {
-      const nextWorkflow = JSON.parse(JSON.stringify(readWorkflowMetadata(task))) as AiStudioWorkflowMetadata
+      const latestTask = await loadLatestTaskRecord(task.id)
+      const baseTask = latestTask ?? task
+      const nextWorkflow = JSON.parse(
+        JSON.stringify(readWorkflowMetadata(baseTask))
+      ) as AiStudioWorkflowMetadata
       updater(nextWorkflow)
-      return updateTaskPatch(task.id, {
+      return updateTaskPatch(baseTask.id, {
         ...(extraPatch ?? {}),
-        metadata: writeWorkflowMetadata(task, nextWorkflow)
+        metadata: writeWorkflowMetadata(baseTask, nextWorkflow)
       })
     },
-    [updateTaskPatch]
+    [loadLatestTaskRecord, updateTaskPatch]
   )
 
   const seedDemoTask = useCallback(async () => {
@@ -1672,9 +1925,16 @@ function useAiStudioState() {
   const setPromptExtra = useCallback(
     async (value: string) => {
       if (!activeTask) return
-      await setMasterPromptExtra(value)
+      await patchWorkflowMetadata(
+        activeTask,
+        (draft) => {
+          draft.masterStage.promptExtra = value
+          draft.childStage.promptExtra = value
+        },
+        { promptExtra: value }
+      )
     },
-    [activeTask, setMasterPromptExtra]
+    [activeTask, patchWorkflowMetadata]
   )
 
   const setOutputCount = useCallback(
@@ -1716,6 +1976,10 @@ function useAiStudioState() {
 
   const executeRunToTerminal = useCallback(
     async (taskId: string) => {
+      if (isTaskInterruptRequested(taskId)) {
+        throw createTaskInterruptedError()
+      }
+
       let result = await window.api.cms.aiStudio.task.startRun({ taskId })
       let guard = 0
       while (
@@ -1723,9 +1987,18 @@ function useAiStudioState() {
         result.status !== 'failed' &&
         guard < 240
       ) {
+        if (isTaskInterruptRequested(taskId)) {
+          throw createTaskInterruptedError()
+        }
         await sleepMs(2500)
+        if (isTaskInterruptRequested(taskId)) {
+          throw createTaskInterruptedError()
+        }
         result = await window.api.cms.aiStudio.task.pollRun({ taskId, runId: result.run.id })
         guard += 1
+      }
+      if (isTaskInterruptRequested(taskId)) {
+        throw createTaskInterruptedError()
       }
       if (result.status !== 'succeeded' && result.status !== 'failed') {
         throw new Error('[AI Studio] 任务轮询超时，请稍后重试。')
@@ -1733,30 +2006,8 @@ function useAiStudioState() {
       await refresh()
       return result
     },
-    [refresh]
+    [isTaskInterruptRequested, refresh]
   )
-
-  const ensureFreshTaskForMasterWorkflow = useCallback(async () => {
-    if (!activeTask) return null
-    const needsReset =
-      activeTask.outputAssets.length > 0 ||
-      Boolean(activeTask.latestRunId) ||
-      Boolean(activeTask.remoteTaskId) ||
-      activeTask.status === 'running' ||
-      activeTask.status === 'completed' ||
-      activeTask.status === 'failed'
-
-    if (!needsReset) return activeTask
-
-    const replacement = await createTaskWithInputs({
-      primaryImagePath: activeTask.primaryImagePath,
-      referenceImagePaths: activeTask.referenceImagePaths,
-      inheritFrom: activeTask
-    })
-    await window.api.cms.aiStudio.task.delete({ taskId: activeTask.id }).catch(() => void 0)
-    removeTaskLocally(activeTask.id)
-    return replacement
-  }, [activeTask, createTaskWithInputs, removeTaskLocally])
 
   const processMasterCleanup = useCallback(
     async (task: Pick<AiStudioTaskRecord, 'id'>, rawAsset: AiStudioAssetRecord, sequenceIndex: number) => {
@@ -1818,44 +2069,102 @@ function useAiStudioState() {
     [aiConfig.pythonPath, aiConfig.watermarkBox, aiConfig.watermarkScriptPath, upsertAssetsRemote]
   )
 
-  const startMasterWorkflow = useCallback(async () => {
-    if (!activeTask || !aiConfig.aiApiKey.trim()) {
+  const startMasterWorkflow = useCallback(async (payload?: {
+    taskId?: string | null
+    promptText?: string
+    model?: string
+    requestedCount?: number
+    templateId?: string | null
+  }) => {
+    const sourceTaskView =
+      (payload?.taskId ? taskViews.find((item) => item.id === payload.taskId) ?? null : null) ??
+      activeTask
+    const sourceTask =
+      sourceTaskView ??
+      (payload?.taskId ? await loadLatestTaskRecord(payload.taskId) : null)
+
+    if (!sourceTask || !aiConfig.aiApiKey.trim()) {
       throw new Error('[AI Studio] 请先配置 API Key。')
     }
-    if (!activeTask.primaryImagePath) {
-      throw new Error('[AI Studio] 请先设置主图。')
+    if (!sourceTask.primaryImagePath) {
+      throw new Error('[AI Studio] 请先添加参考图。')
     }
 
-    const preparedTask = await ensureFreshTaskForMasterWorkflow()
+    const sourceWorkflow = readWorkflowMetadata(sourceTask)
+    const effectivePromptText =
+      payload?.promptText !== undefined
+        ? String(payload.promptText ?? '').trim()
+        : String(sourceWorkflow.masterStage.promptExtra ?? sourceTask.promptExtra ?? '').trim()
+    const effectiveTemplateId =
+      payload?.templateId !== undefined
+        ? String(payload.templateId ?? '').trim() || null
+        : (sourceWorkflow.masterStage.templateId ?? sourceTask.templateId ?? null)
+    const effectiveRequestedCount = Math.max(
+      1,
+      Math.floor(
+        Number(payload?.requestedCount ?? sourceWorkflow.masterStage.requestedCount ?? 1) || 1
+      )
+    )
+    const effectiveModel =
+      String(payload?.model ?? sourceTask.model ?? defaultModel ?? DEFAULT_GRSAI_IMAGE_MODEL).trim() ||
+      DEFAULT_GRSAI_IMAGE_MODEL
+
+    const sourceOutputCount = 'outputAssets' in sourceTask ? sourceTask.outputAssets.length : 0
+    const needsReset =
+      sourceOutputCount > 0 ||
+      Boolean(sourceTask.latestRunId) ||
+      Boolean(sourceTask.remoteTaskId) ||
+      sourceTask.status === 'running' ||
+      sourceTask.status === 'completed' ||
+      sourceTask.status === 'failed'
+
+    const preparedTask = needsReset
+      ? await createTaskWithInputs({
+          primaryImagePath: sourceTask.primaryImagePath,
+          referenceImagePaths: sourceTask.referenceImagePaths,
+          inheritFrom: sourceTask,
+          promptExtraOverride: effectivePromptText,
+          templateIdOverride: effectiveTemplateId
+        })
+      : sourceTask
     if (!preparedTask) return null
 
     const workingTask =
-      preparedTask.id === activeTask.id
+      (await loadLatestTaskRecord(preparedTask.id)) ??
+      (preparedTask.id === sourceTask.id
         ? preparedTask
-        : coerceTaskRecord(await window.api.cms.aiStudio.task.list({ ids: [preparedTask.id], limit: 1 }).then((rows) => rows[0]))
+        : coerceTaskRecord(
+            await window.api.cms.aiStudio.task
+              .list({ ids: [preparedTask.id], limit: 1 })
+              .then((rows) => rows[0])
+          ))
 
-    let workflow = readWorkflowMetadata(workingTask)
-    if (!workflow.masterStage.templateId) {
-      throw new Error('[AI Studio] 请先为母图阶段选择模板。')
-    }
+    clearTaskInterrupt(workingTask.id)
 
+    const workflow = readWorkflowMetadata(workingTask)
     workflow.workflow.activeStage = 'master-generating'
     workflow.workflow.sourcePrimaryImagePath = workingTask.primaryImagePath ?? null
     workflow.workflow.sourceReferenceImagePaths = uniqueStrings(workingTask.referenceImagePaths)
     workflow.workflow.currentAiMasterAssetId = null
     workflow.workflow.currentItemKind = 'master-generate'
     workflow.workflow.currentItemIndex = 0
-    workflow.workflow.currentItemTotal = workflow.masterStage.requestedCount
+    workflow.workflow.currentItemTotal = effectiveRequestedCount
     workflow.workflow.failures = []
+    workflow.masterStage.templateId = effectiveTemplateId
+    workflow.masterStage.promptExtra = effectivePromptText
+    workflow.masterStage.requestedCount = effectiveRequestedCount
     workflow.masterStage.completedCount = 0
     workflow.masterStage.cleanSuccessCount = 0
     workflow.masterStage.cleanFailedCount = 0
+    workflow.childStage.templateId = effectiveTemplateId
+    workflow.childStage.promptExtra = effectivePromptText
     workflow.childStage.completedCount = 0
     workflow.childStage.failedCount = 0
 
     let task = await updateTaskPatch(workingTask.id, {
-      templateId: workflow.masterStage.templateId,
-      promptExtra: workflow.masterStage.promptExtra,
+      templateId: effectiveTemplateId,
+      promptExtra: effectivePromptText,
+      model: effectiveModel,
       outputCount: 1,
       status: 'running',
       remoteTaskId: null,
@@ -1864,12 +2173,10 @@ function useAiStudioState() {
     })
     await refresh()
 
+    let wasInterrupted = false
+
     for (let index = 1; index <= workflow.masterStage.requestedCount; index += 1) {
-      const latestTask =
-        (taskViews.find((item) => item.id === task.id) as AiStudioTaskView | undefined) ??
-        (await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) =>
-          rows[0] ? (coerceTaskRecord(rows[0]) as AiStudioTaskView) : null
-        ))
+      const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
       if (!latestTask) break
       const loopWorkflow = readWorkflowMetadata(latestTask)
       loopWorkflow.workflow.activeStage = 'master-generating'
@@ -1957,12 +2264,36 @@ function useAiStudioState() {
             makeWorkflowFailureRecord(
               'master-generate',
               index,
-              result.run?.errorMessage || '母图生成失败',
+              result.run?.errorMessage || '结果生成失败',
               { runId: result.run?.id }
             )
           )
         }
       } catch (error) {
+        if (isTaskInterruptedError(error)) {
+          wasInterrupted = true
+          loopWorkflow.workflow.failures.push(
+            makeWorkflowFailureRecord(
+              resolveFailureStageKindForWorkflow(loopWorkflow.workflow.currentItemKind),
+              Math.max(1, index),
+              AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+            )
+          )
+          loopWorkflow.workflow.activeStage = 'master-selecting'
+          loopWorkflow.workflow.currentItemKind = 'idle'
+          loopWorkflow.workflow.currentItemIndex = 0
+          loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
+          task = await updateTaskPatch(latestTask.id, {
+            status: loopWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
+            metadata: writeWorkflowMetadata(latestTask, loopWorkflow),
+            promptExtra: loopWorkflow.masterStage.promptExtra,
+            templateId: loopWorkflow.masterStage.templateId,
+            outputCount: 1
+          })
+          await refresh()
+          break
+        }
+
         loopWorkflow.masterStage.completedCount += 1
         loopWorkflow.workflow.failures.push(
           makeWorkflowFailureRecord('master-generate', index, error instanceof Error ? error.message : String(error))
@@ -1976,6 +2307,8 @@ function useAiStudioState() {
       await refresh()
     }
 
+    clearTaskInterrupt(task.id)
+
     const completedTask = (await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0]))
     if (!completedTask) return null
     const completedRecord = coerceTaskRecord(completedTask)
@@ -1984,20 +2317,34 @@ function useAiStudioState() {
     completedWorkflow.workflow.currentItemKind = 'idle'
     completedWorkflow.workflow.currentItemIndex = 0
     completedWorkflow.workflow.currentItemTotal = completedWorkflow.masterStage.requestedCount
-    await updateTaskPatch(completedRecord.id, {
-      status: completedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
+    const finalStatus = completedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
+    const finalizedTask = await updateTaskPatch(completedRecord.id, {
+      status: finalStatus,
       metadata: writeWorkflowMetadata(completedRecord, completedWorkflow),
       promptExtra: completedWorkflow.masterStage.promptExtra,
       templateId: completedWorkflow.masterStage.templateId,
       outputCount: 1
     })
     await refresh()
+
+    if (finalStatus === 'ready' || wasInterrupted) {
+      await createTaskWithInputs({
+        primaryImagePath: null,
+        referenceImagePaths: [],
+        inheritFrom: finalizedTask,
+        promptExtraOverride: '',
+        templateIdOverride: null
+      })
+    }
+
     return true
   }, [
     activeTask,
     aiConfig.aiApiKey,
-    ensureFreshTaskForMasterWorkflow,
+    createTaskWithInputs,
+    defaultModel,
     executeRunToTerminal,
+    loadLatestTaskRecord,
     processMasterCleanup,
     refresh,
     taskViews,
@@ -2056,10 +2403,6 @@ function useAiStudioState() {
       if (!latestTask) return
 
       const latestWorkflow = readWorkflowMetadata(latestTask)
-      if (!latestWorkflow.masterStage.templateId) {
-        throw new Error('[AI Studio] 请先为母图阶段选择模板。')
-      }
-
       latestWorkflow.workflow.failures = latestWorkflow.workflow.failures.filter(
         (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
       )
@@ -2157,7 +2500,7 @@ function useAiStudioState() {
             makeWorkflowFailureRecord(
               'master-generate',
               sequenceIndex,
-              result.run?.errorMessage || '母图生成失败',
+              result.run?.errorMessage || '结果生成失败',
               { runId: result.run?.id }
             )
           )
@@ -2200,6 +2543,13 @@ function useAiStudioState() {
       upsertAssetsRemote
     ]
   )
+
+  const interruptActiveTask = useCallback(async () => {
+    if (!activeTask || activeTask.status !== 'running') return false
+    requestTaskInterrupt(activeTask.id)
+    addLog('[AI Studio] 已请求中断当前任务。')
+    return true
+  }, [activeTask, addLog, requestTaskInterrupt])
 
   const setCurrentAiMaster = useCallback(
     async (assetId: string) => {
@@ -2373,6 +2723,7 @@ function useAiStudioState() {
     selectedChildTemplate,
     tasks: taskViews,
     visibleTasks,
+    historyTasks,
     activeTask,
     activeTaskId,
     activeInputAssets,
@@ -2383,8 +2734,13 @@ function useAiStudioState() {
     currentAiMasterAsset,
     activeSelectedOutputAssets,
     activeSelectedOutputIds,
-    activeSelectedChildOutputAssets,
-    activeSelectedChildOutputIds,
+    activeSelectedChildOutputAssets: activeSelectedDispatchOutputAssets,
+    activeSelectedChildOutputIds: activeSelectedDispatchOutputIds,
+    dispatchOutputAssets,
+    pooledOutputAssets,
+    pooledOutputCount,
+    activeSelectedDispatchOutputAssets,
+    activeSelectedDispatchOutputIds,
     selectedOutputIdsByTask,
     selectedTaskIds,
     statusFilter,
@@ -2394,6 +2750,7 @@ function useAiStudioState() {
     exceptionCount,
     isLoading,
     isImporting,
+    interruptingTaskIds,
     workflowMeta,
     activeStage,
     stageProgress,
@@ -2409,10 +2766,21 @@ function useAiStudioState() {
     setActiveTaskId,
     toggleTaskSelection,
     toggleOutputSelection,
+    toggleDispatchOutputSelectionForTask,
+    toggleDispatchOutputPoolForTask,
     setOutputSelection,
-    selectAllChildOutputs,
-    clearSelectedChildOutputs,
-    sendSelectedChildOutputsToWorkshop,
+    selectAllChildOutputs: selectAllDispatchOutputs,
+    clearSelectedChildOutputs: clearSelectedDispatchOutputs,
+    sendSelectedChildOutputsToWorkshop: sendSelectedDispatchOutputsToWorkshop,
+    selectAllDispatchOutputs,
+    clearSelectedDispatchOutputs,
+    selectAllDispatchOutputsForTask,
+    clearSelectedDispatchOutputsForTask,
+    sendSelectedDispatchOutputsToWorkshop,
+    sendPooledOutputsToWorkshop,
+    prepareNextDraftTask,
+    useDispatchOutputAsReference,
+    interruptActiveTask,
     seedDemoTask,
     assignPrimaryImage,
     addReferenceImages,
@@ -2424,6 +2792,7 @@ function useAiStudioState() {
     setModel,
     setTemplateId,
     saveTemplate,
+    deleteTemplate,
     saveStageTemplate,
     setMasterTemplateId,
     setChildTemplateId,

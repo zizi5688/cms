@@ -940,7 +940,9 @@ const api = {
           name: string
           promptText?: string
           config?: Record<string, unknown>
-        }): Promise<AiStudioTemplateRecord> => ipcRenderer.invoke('cms.aiStudio.template.upsert', payload)
+        }): Promise<AiStudioTemplateRecord> => ipcRenderer.invoke('cms.aiStudio.template.upsert', payload),
+        delete: (payload: { templateId: string }): Promise<{ success: boolean }> =>
+          ipcRenderer.invoke('cms.aiStudio.template.delete', payload)
       },
       task: {
         importFolders: (payload?: { folderPaths?: string[] }): Promise<AiStudioImportedFolder[]> =>

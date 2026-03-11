@@ -311,7 +311,7 @@ function DataBuilder(): React.JSX.Element {
     if (importedImageFolderPath && dataWorkshopFolderPath.trim() !== importedImageFolderPath) {
       setDataWorkshopFolderPath(importedImageFolderPath)
     }
-    addLog(`[Super CMS] 已从 AI素材工作台导入 ${importedImagePaths.length} 张子图。`)
+    addLog(`[Super CMS] 已从 AI素材工作台导入 ${importedImagePaths.length} 张结果图。`)
   }, [
     addLog,
     dataWorkshopFolderPath,

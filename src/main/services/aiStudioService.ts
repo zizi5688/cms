@@ -419,7 +419,9 @@ function buildImagePromptDirective(payload: {
     lines.push(`尽量一次返回 ${payload.outputCount} 张候选图。`)
   }
   if (payload.referenceCount > 0) {
-    lines.push(`第 1 张输入图为主图，后续 ${payload.referenceCount} 张为参考图，请保留主体材质、结构与关键细节。`)
+    lines.push(
+      `第 1 张输入图为主图，后续 ${payload.referenceCount} 张为参考图，请保留主体材质、结构与关键细节。`
+    )
   } else {
     lines.push('请保留主体材质、结构与关键细节。')
   }
@@ -521,7 +523,9 @@ function extractImageUrlsFromText(text: string): string[] {
   if (!normalized) return []
 
   const values = new Set<string>()
-  const markdownMatches = normalized.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/gi)
+  const markdownMatches = normalized.matchAll(
+    /!\[[^\]]*\]\((https?:\/\/[^)\s]+|data:image\/[^)\s]+)\)/gi
+  )
   for (const match of markdownMatches) {
     const value = normalizeText(match[1])
     if (value) values.add(value)
@@ -597,7 +601,9 @@ function collectArrayImageItems(value: unknown): Array<Record<string, unknown>> 
         inlineRecord.data ??
           record.b64_json ??
           record.base64 ??
-          (typeof record.content === 'string' && /^data:/i.test(record.content) ? record.content : '')
+          (typeof record.content === 'string' && /^data:/i.test(record.content)
+            ? record.content
+            : '')
       ),
       normalizeText(
         inlineRecord.mimeType ?? inlineRecord.mime_type ?? record.mimeType ?? record.mime_type
@@ -745,12 +751,22 @@ function extractResultItems(payload: Record<string, unknown>): Array<Record<stri
 }
 
 function resolvePrompt(task: AiStudioTaskRecord, template: AiStudioTemplateRecord | null): string {
-  const segments = [normalizeText(template?.promptText), normalizeText(task.promptExtra)].filter(
-    Boolean
-  )
-  if (segments.length > 0) return segments.join('\n\n')
+  const taskPrompt = normalizeText(task.promptExtra)
+  if (taskPrompt) return taskPrompt
+
+  const templatePrompt = normalizeText(template?.promptText)
+  if (templatePrompt) return templatePrompt
+
   const productName = normalizeText(task.productName) || '当前商品'
   return `为商品「${productName}」生成一张电商静物图，保留主体材质与结构，适合后续筛图。`
+}
+
+function mergeTaskMetadata(
+  current: Record<string, unknown> | null | undefined,
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  const base = current && typeof current === 'object' ? current : {}
+  return { ...base, ...patch }
 }
 
 function detectFallbackPrice(model: string): { min: number | null; max: number | null } {
@@ -795,14 +811,12 @@ function toExecutionResult(
   }
 }
 
-
 function asObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>
   }
   return {}
 }
-
 
 type AiStudioWorkflowSourceDescriptor = {
   activeStage: string
@@ -817,7 +831,9 @@ function readWorkflowSourceDescriptor(task: AiStudioTaskRecord): AiStudioWorkflo
   const workflow = asObject(metadata.workflow)
   const activeStage = normalizeText(workflow.activeStage)
   const useCurrentAiMasterAsPrimary =
-    activeStage === 'child-ready' || activeStage === 'child-generating' || activeStage === 'completed'
+    activeStage === 'child-ready' ||
+    activeStage === 'child-generating' ||
+    activeStage === 'completed'
 
   const metadataReferencePaths = normalizeStringArray(workflow.sourceReferenceImagePaths)
 
@@ -827,7 +843,7 @@ function readWorkflowSourceDescriptor(task: AiStudioTaskRecord): AiStudioWorkflo
       ? normalizeNullableText(workflow.currentAiMasterAssetId)
       : null,
     sourcePrimaryImagePath: useCurrentAiMasterAsPrimary
-      ? normalizeNullableText(workflow.sourcePrimaryImagePath) ?? task.primaryImagePath
+      ? (normalizeNullableText(workflow.sourcePrimaryImagePath) ?? task.primaryImagePath)
       : task.primaryImagePath,
     sourceReferenceImagePaths: useCurrentAiMasterAsPrimary
       ? metadataReferencePaths.length > 0
@@ -963,6 +979,19 @@ export class AiStudioService {
     return row ? mapTemplateRow(row) : null
   }
 
+  private getTemplateByProviderAndName(
+    provider: string,
+    name: string
+  ): AiStudioTemplateRecord | null {
+    const normalizedProvider = normalizeText(provider)
+    const normalizedName = normalizeText(name)
+    if (!normalizedProvider || !normalizedName) return null
+    const row = this.db
+      .prepare(`SELECT * FROM ai_studio_templates WHERE provider = ? AND name = ? LIMIT 1`)
+      .get(normalizedProvider, normalizedName)
+    return row ? mapTemplateRow(row) : null
+  }
+
   private getProviderConfig(): AiStudioProviderConfig {
     const provided = asObject(this.resolveProviderConfig())
     return {
@@ -1041,7 +1070,8 @@ export class AiStudioService {
     const allowProviderCodes = new Set(options?.allowProviderCodes ?? [])
     if (providerCode !== null && providerCode !== 0 && !allowProviderCodes.has(providerCode)) {
       throw new Error(
-        extractFailureReason(parsedPayload) ?? `[AI Studio] AI 服务请求失败（业务码 ${providerCode}）。`
+        extractFailureReason(parsedPayload) ??
+          `[AI Studio] AI 服务请求失败（业务码 ${providerCode}）。`
       )
     }
 
@@ -1072,7 +1102,8 @@ export class AiStudioService {
         throw new Error('[AI Studio] 子图阶段缺少当前 AI 母图，请重新选择。')
       }
       const currentAiMasterAsset = taskOutputAssets.find(
-        (asset) => asset.id === workflowSource.currentAiMasterAssetId && normalizeText(asset.filePath)
+        (asset) =>
+          asset.id === workflowSource.currentAiMasterAssetId && normalizeText(asset.filePath)
       )
       if (!currentAiMasterAsset) {
         throw new Error('[AI Studio] 当前 AI 母图不存在或已失效，请重新选择。')
@@ -1317,6 +1348,23 @@ export class AiStudioService {
     }
   }
 
+  private persistLatestSubmittedPrompt(
+    taskId: string,
+    requestSnapshot: Record<string, unknown>
+  ): AiStudioTaskRecord {
+    const task = this.getTaskOrThrow(taskId)
+    const prompt = normalizeText(requestSnapshot.prompt)
+    const endpointPath = normalizeText(requestSnapshot.endpointPath)
+    return this.updateTask(taskId, {
+      metadata: mergeTaskMetadata(task.metadata, {
+        latestSubmittedPrompt: prompt,
+        latestRequestSnapshot: requestSnapshot,
+        latestSubmittedAt: Date.now(),
+        latestSubmittedEndpointPath: endpointPath || null
+      })
+    })
+  }
+
   async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
     const config = this.getProviderConfig()
     const context = await this.buildSubmitContext(taskId)
@@ -1327,6 +1375,7 @@ export class AiStudioService {
 
     try {
       const response = await this.requestProvider(submitApiPath, context.requestPayload)
+      this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       const directResultItems = extractResultItems(response.payload)
 
       if (directResultItems.length > 0) {
@@ -1385,6 +1434,7 @@ export class AiStudioService {
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
       throw error
     }
@@ -1517,6 +1567,16 @@ export class AiStudioService {
     return rows.map(mapTemplateRow)
   }
 
+  deleteTemplate(templateId: string): { success: boolean } {
+    const normalizedId = normalizeText(templateId)
+    if (!normalizedId) return { success: false }
+    const changes = Number(
+      (this.db.prepare(`DELETE FROM ai_studio_templates WHERE id = ?`).run(normalizedId) as { changes?: unknown })
+        ?.changes ?? 0
+    )
+    return { success: Number.isFinite(changes) && changes > 0 }
+  }
+
   upsertTemplate(input: {
     id?: string
     provider?: string
@@ -1524,27 +1584,40 @@ export class AiStudioService {
     promptText?: string
     config?: Record<string, unknown>
   }): AiStudioTemplateRecord {
-    const id = normalizeText(input.id) || randomUUID()
     const provider = normalizeText(input.provider) || 'grsai'
     const name = normalizeText(input.name)
     if (!name) throw new Error('[AI Studio] 模板名称不能为空。')
+    const existing = this.getTemplateByProviderAndName(provider, name)
+    const normalizedId = normalizeText(input.id)
+    const id = normalizedId || existing?.id || randomUUID()
     const promptText = normalizeText(input.promptText)
     const now = Date.now()
-    this.db
-      .prepare(
-        `
-          INSERT INTO ai_studio_templates (
-            id, provider, name, prompt_text, config_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            provider = excluded.provider,
-            name = excluded.name,
-            prompt_text = excluded.prompt_text,
-            config_json = excluded.config_json,
-            updated_at = excluded.updated_at;
-        `
-      )
-      .run(id, provider, name, promptText, toJson(input.config ?? {}), now, now)
+
+    try {
+      this.db
+        .prepare(
+          `
+            INSERT INTO ai_studio_templates (
+              id, provider, name, prompt_text, config_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              provider = excluded.provider,
+              name = excluded.name,
+              prompt_text = excluded.prompt_text,
+              config_json = excluded.config_json,
+              updated_at = excluded.updated_at;
+          `
+        )
+        .run(id, provider, name, promptText, toJson(input.config ?? {}), now, now)
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /ai_studio_templates\.provider,\s*ai_studio_templates\.name/i.test(error.message)
+      ) {
+        throw new Error('[AI Studio] 已存在同名提示词模板，请直接选择它或换一个名字。')
+      }
+      throw error
+    }
 
     return mapTemplateRow(
       this.db.prepare(`SELECT * FROM ai_studio_templates WHERE id = ? LIMIT 1`).get(id) ?? {}
@@ -1688,7 +1761,10 @@ export class AiStudioService {
         patch.billedState !== undefined
           ? normalizeBilledState(patch.billedState)
           : existing.billedState,
-      metadata: patch.metadata !== undefined ? parseJsonObject(patch.metadata) : existing.metadata,
+      metadata:
+        patch.metadata !== undefined
+          ? mergeTaskMetadata(existing.metadata, parseJsonObject(patch.metadata))
+          : existing.metadata,
       updatedAt: Date.now()
     }
 

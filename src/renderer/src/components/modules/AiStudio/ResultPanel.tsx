@@ -1,18 +1,35 @@
 import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
+import { createPortal } from 'react-dom'
 
-import { AlertTriangle, CheckCircle2, FolderOpen, RefreshCcw, Send, Sparkles, X } from 'lucide-react'
+import { Check, ImagePlus, Plus, Sparkles, X } from 'lucide-react'
 
-import { Button } from '@renderer/components/ui/button'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
-import type {
-  AiStudioAssetRecord,
-  AiStudioWorkflowFailureRecord,
-  UseAiStudioStateResult
+import {
+  buildStageProgress,
+  readWorkflowMetadata,
+  selectDispatchOutputAssets,
+  type AiStudioAssetRecord,
+  type AiStudioTaskView,
+  type AiStudioWorkflowFailureRecord,
+  type UseAiStudioStateResult
 } from './useAiStudioState'
+
+const MASTER_CLEAN_ROLE = 'master-clean'
+const MAX_PREVIEW_SLOTS = 4
+
+type PreviewTileStatus = 'ready' | 'loading' | 'failed' | 'idle'
+
+type PreviewSlot = {
+  index: number
+  asset: AiStudioAssetRecord | null
+  failure: AiStudioWorkflowFailureRecord | null
+  status: PreviewTileStatus
+  statusText: string
+}
 
 function basename(filePath: string | null | undefined): string {
   const normalized = String(filePath ?? '').trim()
@@ -21,52 +38,30 @@ function basename(filePath: string | null | undefined): string {
   return parts[parts.length - 1] ?? normalized
 }
 
-function readSequenceIndex(asset: AiStudioAssetRecord, fallbackIndex: number): number {
-  const value = Number(asset.metadata?.sequenceIndex)
-  if (Number.isFinite(value) && value > 0) return Math.floor(value)
-  return fallbackIndex + 1
+function buildExcerpt(promptDraft: string): string {
+  const normalized = String(promptDraft ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+  if (!normalized) return '等待输入提示词'
+  return normalized.length > 160 ? `${normalized.slice(0, 160)}…` : normalized
 }
 
-function failureStageLabel(record: AiStudioWorkflowFailureRecord): string {
-  if (record.stageKind === 'master-generate') return '母图生成'
-  if (record.stageKind === 'master-clean') return '母图去水印'
-  return '子图生成'
-}
+function getAssetSequenceIndex(asset: AiStudioAssetRecord, fallbackIndex: number): number {
+  const metadata =
+    asset.metadata && typeof asset.metadata === 'object'
+      ? (asset.metadata as Record<string, unknown>)
+      : {}
+  const rawIndex = metadata.sequenceIndex
+  const numericIndex =
+    typeof rawIndex === 'number' && Number.isFinite(rawIndex)
+      ? rawIndex
+      : Number.parseInt(String(rawIndex ?? ''), 10)
 
-function SectionShell({
-  title,
-  badge,
-  children
-}: {
-  title: string
-  badge?: string
-  children: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <section className="rounded-2xl border border-zinc-800 bg-zinc-950/65 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-base font-medium text-zinc-50">{title}</div>
-        {badge ? (
-          <div className="rounded-full border border-zinc-800 bg-zinc-950/80 px-3 py-1 text-xs text-zinc-500">
-            {badge}
-          </div>
-        ) : null}
-      </div>
-      <div className="mt-4">{children}</div>
-    </section>
-  )
-}
+  if (Number.isFinite(numericIndex) && numericIndex > 0) {
+    return Math.max(1, Math.floor(numericIndex))
+  }
 
-function EmptyState({ title, hint }: { title: string; hint: string }): React.JSX.Element {
-  return (
-    <div className="flex min-h-[160px] flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/40 px-6 text-center">
-      <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-950 text-zinc-500">
-        <Sparkles className="h-5 w-5" />
-      </div>
-      <div className="mt-4 text-sm font-medium text-zinc-100">{title}</div>
-      <div className="mt-2 max-w-sm text-xs leading-6 text-zinc-500">{hint}</div>
-    </div>
-  )
+  return Math.max(1, asset.sortOrder + 1, fallbackIndex)
 }
 
 function ImageLightbox({
@@ -92,9 +87,9 @@ function ImageLightbox({
     }
   }, [onOpenChange, open])
 
-  if (!open || !asset || !src) return null
+  if (!open || !asset || !src || typeof document === 'undefined') return null
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/88 p-6">
       <button
         type="button"
@@ -102,532 +97,426 @@ function ImageLightbox({
         onClick={() => onOpenChange(false)}
         className="absolute inset-0"
       />
-      <button
-        type="button"
-        onClick={() => onOpenChange(false)}
-        className="absolute right-5 top-5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/45 text-zinc-100 backdrop-blur transition hover:bg-black/70"
-        aria-label="关闭图片预览"
-      >
-        <X className="h-5 w-5" />
-      </button>
       <div className="relative z-10 flex max-h-full max-w-[94vw] items-center justify-center">
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          className="absolute -right-3 -top-3 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/45 text-zinc-100 backdrop-blur transition hover:bg-black/70"
+          aria-label="关闭图片预览"
+        >
+          <X className="h-5 w-5" />
+        </button>
         <img
           src={src}
           alt={basename(asset.filePath)}
-          className="max-h-[92vh] max-w-[94vw] rounded-3xl object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
+          className="max-h-[46vh] max-w-[47vw] rounded-3xl object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
           draggable={false}
         />
       </div>
+    </div>,
+    document.body
+  )
+}
+
+function ThreadThumb({ asset }: { asset: AiStudioAssetRecord }): React.JSX.Element {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
+
+  return (
+    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
+      {src ? (
+        <img
+          src={src}
+          alt={basename(asset.filePath)}
+          className="h-full w-full object-cover"
+          draggable={false}
+          loading="lazy"
+        />
+      ) : (
+        <div className="flex h-full items-center justify-center text-zinc-400">
+          <Sparkles className="h-4 w-4" />
+        </div>
+      )}
     </div>
   )
 }
 
-type PreviewCardProps = {
-  asset?: AiStudioAssetRecord | null
-  title: string
-  badge?: string
+function PreviewActionButton({
+  icon,
+  label,
+  active,
+  onClick
+}: {
+  icon: React.ReactNode
+  label: string
   active?: boolean
-  tone?: 'default' | 'error'
-  placeholderTitle?: string
-  placeholderHint?: string
-  footer?: React.ReactNode
-  onPreview?: (asset: AiStudioAssetRecord) => void
-  onReveal?: (asset: AiStudioAssetRecord) => void
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      className={cn(
+        'group/action inline-flex h-8 items-center overflow-hidden rounded-full border shadow-[0_8px_20px_rgba(15,23,42,0.12)] transition-all duration-200',
+        active
+          ? 'border-zinc-950 bg-zinc-950 text-white hover:bg-zinc-800'
+          : 'border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-zinc-50'
+      )}
+    >
+      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center">{icon}</span>
+      <span className="max-w-0 overflow-hidden whitespace-nowrap pr-0 text-[11px] font-medium opacity-0 transition-all duration-200 group-hover/action:max-w-[112px] group-hover/action:pr-2.5 group-hover/action:opacity-100">
+        {label}
+      </span>
+    </button>
+  )
 }
 
-function PreviewCard({
+function PreviewStageTile({
   asset,
-  title,
-  badge,
-  active,
-  tone = 'default',
-  placeholderTitle,
-  placeholderHint,
-  footer,
-  onPreview,
-  onReveal
-}: PreviewCardProps): React.JSX.Element {
+  status,
+  statusText,
+  onOpen,
+  onTogglePool,
+  pooled,
+  onUseAsReference,
+  referenceApplied,
+  style
+}: {
+  asset?: AiStudioAssetRecord | null
+  status: PreviewTileStatus
+  statusText?: string
+  onOpen?: () => void
+  onTogglePool?: () => void
+  pooled?: boolean
+  onUseAsReference?: () => void
+  referenceApplied?: boolean
+  style?: React.CSSProperties
+}): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
-  const toneClass =
-    tone === 'error'
-      ? 'border-amber-500/25 bg-amber-500/5'
-      : active
-        ? 'border-zinc-100 shadow-[0_0_0_1px_rgba(255,255,255,0.14)]'
-        : 'border-zinc-800 bg-zinc-950'
-  const clickable = Boolean(src && asset && onPreview)
+  const showReferenceAction = Boolean(asset && onUseAsReference)
+  const showPoolAction = Boolean(asset && onTogglePool)
 
   return (
-    <div className={cn('overflow-hidden rounded-2xl border', toneClass)}>
+    <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
       <div
-        role={clickable ? 'button' : undefined}
-        tabIndex={clickable ? 0 : undefined}
-        onClick={() => {
-          if (asset && onPreview) onPreview(asset)
-        }}
-        onKeyDown={(event) => {
-          if (!clickable || !asset || !onPreview) return
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            onPreview(asset)
-          }
-        }}
         className={cn(
-          'relative aspect-[3/4] overflow-hidden',
-          clickable && 'cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500'
+          'relative overflow-hidden rounded-[28px] bg-white shadow-[0_18px_50px_rgba(15,23,42,0.08)] transition',
+          status === 'loading' && 'shadow-[0_22px_60px_rgba(15,23,42,0.12)]',
+          status === 'failed' && 'shadow-[0_18px_42px_rgba(244,63,94,0.08)]'
         )}
       >
-        {src ? (
-          <img
-            src={src}
-            alt={basename(asset?.filePath)}
-            className="absolute inset-0 h-full w-full object-cover"
-            draggable={false}
-            loading="lazy"
-          />
-        ) : null}
-        <div
-          className={cn(
-            'absolute inset-0',
-            src
-              ? 'bg-[linear-gradient(180deg,rgba(0,0,0,0.06),rgba(0,0,0,0.72))]'
-              : tone === 'error'
-                ? 'bg-[radial-gradient(circle_at_top,rgba(251,191,36,0.18),rgba(24,24,27,0.96))]'
-                : 'bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),rgba(24,24,27,0.96))]'
-          )}
-        />
-        <div className="absolute left-3 top-3 flex flex-wrap gap-2">
-          <div className="rounded-full border border-white/10 bg-black/40 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-zinc-100 backdrop-blur">
-            {title}
+        {status === 'loading' ? (
+          <div className="pointer-events-none absolute inset-0 rounded-[28px] p-[1px] animate-[spin_2.6s_linear_infinite]" style={{ background: 'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))' }}>
+            <div className="h-full w-full rounded-[27px] bg-zinc-100/95" />
           </div>
-          {badge ? (
-            <div className="rounded-full border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-zinc-200 backdrop-blur">
-              {badge}
-            </div>
-          ) : null}
-        </div>
-        {src && asset && onReveal ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-3 top-3 z-10 h-8 w-8 rounded-full border border-white/10 bg-black/40 text-zinc-100 backdrop-blur hover:bg-black/65"
-            aria-label="打开所在文件夹"
-            onClick={(event) => {
-              event.stopPropagation()
-              void onReveal(asset)
-            }}
-          >
-            <FolderOpen className="h-4 w-4" />
-          </Button>
         ) : null}
-        {!src ? (
-          <div className="absolute inset-x-6 bottom-6 rounded-2xl border border-white/10 bg-black/35 px-4 py-4 text-center backdrop-blur">
-            <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-black/30 text-zinc-100">
-              {tone === 'error' ? (
-                <AlertTriangle className="h-5 w-5 text-amber-300" />
-              ) : (
-                <Sparkles className="h-5 w-5" />
-              )}
+
+        {src && onOpen ? (
+          <button type="button" onClick={onOpen} className="block w-full text-left">
+            <div className="aspect-[3/4] overflow-hidden bg-zinc-100">
+              <img
+                src={src}
+                alt={basename(asset?.filePath)}
+                className="h-full w-full object-cover transition duration-300 hover:scale-[1.01]"
+                draggable={false}
+                loading="lazy"
+              />
             </div>
-            <div className="mt-3 text-sm font-medium text-zinc-100">
-              {placeholderTitle ?? '当前序位暂无图像'}
+          </button>
+        ) : status === 'failed' ? (
+          <div className="relative aspect-[3/4] bg-[linear-gradient(180deg,rgba(250,250,250,1),rgba(244,244,245,1))]">
+            <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
+            <div className="flex h-full items-center justify-center px-5 text-center text-sm font-medium leading-6 text-zinc-500">
+              {statusText || '生成失败'}
             </div>
-            {placeholderHint ? (
-              <div className="mt-2 text-xs leading-5 text-zinc-400">{placeholderHint}</div>
+          </div>
+        ) : (
+          <div className="aspect-[3/4] bg-[linear-gradient(180deg,rgba(244,244,245,0.96),rgba(228,228,231,0.9))]" />
+        )}
+
+        {showPoolAction || showReferenceAction ? (
+          <div
+            className={cn(
+              'absolute right-3 top-3 z-10 flex items-center gap-1.5 transition duration-200',
+              pooled || referenceApplied
+                ? 'pointer-events-auto opacity-100'
+                : 'pointer-events-none opacity-0 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100'
+            )}
+          >
+            {showPoolAction ? (
+              <PreviewActionButton
+                icon={pooled ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                label={pooled ? '移出图池' : '添加到图池'}
+                active={pooled}
+                onClick={onTogglePool!}
+              />
+            ) : null}
+            {showReferenceAction ? (
+              <PreviewActionButton
+                icon={referenceApplied ? <Check className="h-3.5 w-3.5" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                label={referenceApplied ? '已作参考图' : '用作参考图'}
+                active={referenceApplied}
+                onClick={onUseAsReference!}
+              />
             ) : null}
           </div>
         ) : null}
       </div>
-      {footer ? <div className="flex flex-col gap-2 p-3">{footer}</div> : null}
+
+      {status !== 'failed' && statusText ? (
+        <div className="px-1 text-[13px] font-medium leading-6 text-zinc-500">{statusText}</div>
+      ) : null}
     </div>
   )
 }
 
-type MasterCandidateView = {
-  sequenceIndex: number
-  raw: AiStudioAssetRecord | null
-  clean: AiStudioAssetRecord | null
-  generateFailure: AiStudioWorkflowFailureRecord | null
-  cleanFailure: AiStudioWorkflowFailureRecord | null
-  status: 'ready' | 'generate-failed' | 'clean-failed' | 'pending'
+function HistoryTaskSection({
+  task,
+  state,
+  onOpenAsset
+}: {
+  task: AiStudioTaskView
+  state: UseAiStudioStateResult
+  onOpenAsset: (asset: AiStudioAssetRecord) => void
+}): React.JSX.Element {
+  const addLog = useCmsStore((store) => store.addLog)
+  const primaryAsset = task.inputAssets.find((asset) => asset.filePath === task.primaryImagePath) ?? null
+  const referenceAssets = task.inputAssets.filter((asset) =>
+    task.referenceImagePaths.includes(asset.filePath)
+  )
+  const threadAssets = useMemo(() => {
+    const next: AiStudioAssetRecord[] = []
+    if (primaryAsset) next.push(primaryAsset)
+    const existing = new Set(next.map((asset) => asset.filePath))
+    referenceAssets.forEach((asset) => {
+      if (!existing.has(asset.filePath)) next.push(asset)
+    })
+    return next
+  }, [primaryAsset, referenceAssets])
+
+  const workflowMeta = useMemo(
+    () =>
+      readWorkflowMetadata({
+        templateId: task.templateId,
+        promptExtra: task.promptExtra,
+        primaryImagePath: task.primaryImagePath,
+        referenceImagePaths: task.referenceImagePaths,
+        metadata: task.metadata
+      }),
+    [task]
+  )
+  const stageProgress = useMemo(() => buildStageProgress(workflowMeta), [workflowMeta])
+  const generatedAssets = useMemo(
+    () =>
+      [...selectDispatchOutputAssets(task)].sort(
+        (left, right) =>
+          getAssetSequenceIndex(left, left.sortOrder + 1) -
+            getAssetSequenceIndex(right, right.sortOrder + 1) || left.sortOrder - right.sortOrder
+      ),
+    [task]
+  )
+  const masterCleanAssets = useMemo(
+    () => task.outputAssets.filter((asset) => asset.role === MASTER_CLEAN_ROLE),
+    [task.outputAssets]
+  )
+  const currentAiMasterAsset = useMemo(() => {
+    const currentId = workflowMeta.workflow.currentAiMasterAssetId ?? ''
+    if (!currentId) return null
+    return masterCleanAssets.find((asset) => asset.id === currentId) ?? null
+  }, [masterCleanAssets, workflowMeta.workflow.currentAiMasterAssetId])
+  const latestSubmittedPrompt =
+    task.metadata && typeof task.metadata === 'object'
+      ? String((task.metadata as Record<string, unknown>).latestSubmittedPrompt ?? '')
+      : ''
+  const promptExcerpt = buildExcerpt(latestSubmittedPrompt || workflowMeta.masterStage.promptExtra || task.promptExtra)
+  const isRunning = task.status === 'running'
+  const failureRecords = workflowMeta.workflow.failures ?? []
+  const currentReferencePaths = useMemo(
+    () =>
+      new Set(
+        [state.primaryImagePath, ...state.referenceImagePaths]
+          .map((filePath) => String(filePath ?? '').trim())
+          .filter(Boolean)
+      ),
+    [state.primaryImagePath, state.referenceImagePaths]
+  )
+
+  const previewSlots = useMemo(() => {
+    const failureByIndex = new Map<number, AiStudioWorkflowFailureRecord>()
+    failureRecords.forEach((record) => {
+      if (!failureByIndex.has(record.sequenceIndex)) {
+        failureByIndex.set(record.sequenceIndex, record)
+      }
+    })
+
+    const assetByIndex = new Map<number, AiStudioAssetRecord>()
+    generatedAssets.forEach((asset, index) => {
+      const sequenceIndex = getAssetSequenceIndex(asset, index + 1)
+      if (!assetByIndex.has(sequenceIndex)) {
+        assetByIndex.set(sequenceIndex, asset)
+      }
+    })
+
+    const expectedOutputCount =
+      generatedAssets[0]?.role === 'child-output'
+        ? workflowMeta.childStage.requestedCount
+        : workflowMeta.masterStage.requestedCount
+    const maxFailureIndex = failureRecords.reduce(
+      (max, record) => Math.max(max, record.sequenceIndex),
+      0
+    )
+    const previewTargetCount = Math.min(
+      isRunning
+        ? Math.max(
+            workflowMeta.workflow.currentItemTotal || 0,
+            expectedOutputCount || 0,
+            generatedAssets.length,
+            maxFailureIndex,
+            1
+          )
+        : Math.max(generatedAssets.length, expectedOutputCount || 0, maxFailureIndex, 1),
+      MAX_PREVIEW_SLOTS
+    )
+
+    if (previewTargetCount <= 0 && !currentAiMasterAsset) return [] as PreviewSlot[]
+
+    return Array.from({ length: previewTargetCount }, (_, slotIndex) => {
+      const index = slotIndex + 1
+      const asset = assetByIndex.get(index) ?? null
+      const failure = failureByIndex.get(index) ?? null
+      const isLoadingSlot = isRunning && !asset && !failure
+
+      return {
+        index,
+        asset,
+        failure,
+        status: asset ? 'ready' : failure ? 'failed' : isLoadingSlot ? 'loading' : 'idle',
+        statusText: failure ? failure.message : isLoadingSlot ? stageProgress.currentLabel : ''
+      } satisfies PreviewSlot
+    })
+  }, [currentAiMasterAsset, failureRecords, generatedAssets, isRunning, stageProgress.currentLabel, workflowMeta])
+
+  const previewGapPx = 20
+  const previewTileWidth = `clamp(120px, calc((100% - ${(Math.max(previewSlots.length - 1, 0) * previewGapPx)}px) / ${Math.max(previewSlots.length, 1)}), 248px)`
+
+  const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
+    try {
+      await state.useDispatchOutputAsReference(asset.filePath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 添加参考图失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  if (previewSlots.length === 0 && !currentAiMasterAsset && failureRecords.length === 0) {
+    return (
+      <section className="flex min-w-0 flex-col gap-4">
+        <div className="flex min-w-0 items-start gap-4">
+          <div className="flex gap-2">
+            {threadAssets.slice(0, 4).map((asset) => (
+              <ThreadThumb key={asset.id} asset={asset} />
+            ))}
+          </div>
+          <div className="min-w-0 pt-1">
+            <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="flex min-w-0 flex-col gap-4">
+      <div className="flex min-w-0 items-start gap-4">
+        <div className="flex gap-2">
+          {threadAssets.slice(0, 4).map((asset) => (
+            <ThreadThumb key={asset.id} asset={asset} />
+          ))}
+        </div>
+        <div className="min-w-0 pt-1">
+          <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
+        </div>
+      </div>
+
+      {previewSlots.length > 0 ? (
+        <div className="py-1">
+          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
+            {previewSlots.map((slot) => (
+              <PreviewStageTile
+                key={`${task.id}-preview-slot-${slot.index}`}
+                asset={slot.asset}
+                status={slot.status}
+                statusText={slot.statusText}
+                pooled={slot.asset?.selected}
+                style={{ width: previewTileWidth }}
+                onOpen={slot.asset ? () => onOpenAsset(slot.asset as AiStudioAssetRecord) : undefined}
+                onTogglePool={
+                  slot.asset
+                    ? () => void state.toggleDispatchOutputPoolForTask(task.id, slot.asset?.id ?? '')
+                    : undefined
+                }
+                onUseAsReference={
+                  slot.asset ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord) : undefined
+                }
+                referenceApplied={slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false}
+              />
+            ))}
+          </div>
+        </div>
+      ) : currentAiMasterAsset ? (
+        <div className="py-1">
+          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
+            <PreviewStageTile
+              asset={currentAiMasterAsset}
+              status="ready"
+              style={{ width: 'min(248px, 100%)' }}
+              onOpen={() => onOpenAsset(currentAiMasterAsset)}
+            />
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
 }
 
 function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
-  const addLog = useCmsStore((store) => store.addLog)
-  const [retryingKey, setRetryingKey] = useState<string | null>(null)
-  const [previewAsset, setPreviewAsset] = useState<AiStudioAssetRecord | null>(null)
-  const task = state.activeTask
+  const [lightboxAsset, setLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
 
-  const masterCandidates = useMemo<MasterCandidateView[]>(() => {
-    const rawBySequence = new Map<number, AiStudioAssetRecord>()
-    for (const [index, asset] of state.masterRawAssets.entries()) {
-      rawBySequence.set(readSequenceIndex(asset, index), asset)
-    }
-
-    const cleanBySequence = new Map<number, AiStudioAssetRecord>()
-    for (const [index, asset] of state.masterCleanAssets.entries()) {
-      cleanBySequence.set(readSequenceIndex(asset, index), asset)
-    }
-
-    const generateFailureBySequence = new Map<number, AiStudioWorkflowFailureRecord>()
-    const cleanFailureBySequence = new Map<number, AiStudioWorkflowFailureRecord>()
-    for (const record of state.failureRecords) {
-      if (record.stageKind === 'master-generate') {
-        generateFailureBySequence.set(record.sequenceIndex, record)
-      }
-      if (record.stageKind === 'master-clean') {
-        cleanFailureBySequence.set(record.sequenceIndex, record)
-      }
-    }
-
-    const allSequenceIndexes = [
-      state.workflowMeta?.masterStage.requestedCount ?? state.masterOutputCount,
-      ...Array.from(rawBySequence.keys()),
-      ...Array.from(cleanBySequence.keys()),
-      ...Array.from(generateFailureBySequence.keys()),
-      ...Array.from(cleanFailureBySequence.keys())
-    ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0)
-
-    const total = Math.max(0, ...allSequenceIndexes)
-    return Array.from({ length: total }, (_, index) => {
-      const sequenceIndex = index + 1
-      const raw = rawBySequence.get(sequenceIndex) ?? null
-      const clean = cleanBySequence.get(sequenceIndex) ?? null
-      const generateFailure = generateFailureBySequence.get(sequenceIndex) ?? null
-      const cleanFailure = cleanFailureBySequence.get(sequenceIndex) ?? null
-      const watermarkStatus = String(raw?.metadata?.watermarkStatus ?? '')
-
-      let status: MasterCandidateView['status'] = 'pending'
-      if (clean) status = 'ready'
-      else if (generateFailure) status = 'generate-failed'
-      else if (cleanFailure || watermarkStatus === 'failed') status = 'clean-failed'
-
-      return {
-        sequenceIndex,
-        raw,
-        clean,
-        generateFailure,
-        cleanFailure,
-        status
-      }
-    })
-  }, [
-    state.failureRecords,
-    state.masterCleanAssets,
-    state.masterOutputCount,
-    state.masterRawAssets,
-    state.workflowMeta?.masterStage.requestedCount
-  ])
-
-
-  const revealAsset = async (asset: AiStudioAssetRecord | null, label: string): Promise<void> => {
-    if (!asset) return
-    const result = await window.electronAPI.shellShowItemInFolder(asset.filePath)
-    if (result?.success === false) {
-      const message = result.error || `${label}定位失败。`
-      addLog(`[AI Studio] ${message}`)
-      window.alert(message)
-    }
-  }
-
-  const handleRetryCleanup = async (assetId: string): Promise<void> => {
-    try {
-      setRetryingKey(`clean:${assetId}`)
-      await state.retryMasterCleanup(assetId)
-      addLog('[AI Studio] 已重新执行母图去水印')
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 重新去水印失败：${message}`)
-      window.alert(message)
-    } finally {
-      setRetryingKey(null)
-    }
-  }
-
-  const handleRetryGeneration = async (sequenceIndex: number): Promise<void> => {
-    try {
-      setRetryingKey(`generate:${sequenceIndex}`)
-      await state.retryMasterGeneration(sequenceIndex)
-      addLog(`[AI Studio] 已重新执行母图 #${sequenceIndex} 生成`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 母图重试失败：${message}`)
-      window.alert(message)
-    } finally {
-      setRetryingKey(null)
-    }
-  }
-
-  const handleSelectAllChildOutputs = async (): Promise<void> => {
-    try {
-      await state.selectAllChildOutputs()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 子图全选失败：${message}`)
-      window.alert(message)
-    }
-  }
-
-  const handleClearSelectedChildOutputs = async (): Promise<void> => {
-    try {
-      await state.clearSelectedChildOutputs()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 子图取消全选失败：${message}`)
-      window.alert(message)
-    }
-  }
-
-  const handleSendSelectedChildOutputs = async (): Promise<void> => {
-    try {
-      await state.sendSelectedChildOutputsToWorkshop()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 发送到数据工坊失败：${message}`)
-      window.alert(message)
-    }
-  }
-
-  if (!task) {
+  if (state.historyTasks.length === 0) {
     return (
-      <>
-        <EmptyState title="结果区待命中" hint="先在左侧输入主图与参考图，然后开始母图生成。" />
-        <ImageLightbox asset={previewAsset} open={Boolean(previewAsset)} onOpenChange={() => setPreviewAsset(null)} />
-      </>
+      <ImageLightbox
+        asset={lightboxAsset}
+        open={Boolean(lightboxAsset)}
+        onOpenChange={(next) => {
+          if (!next) setLightboxAsset(null)
+        }}
+      />
     )
   }
 
   return (
     <>
-      <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
-        <SectionShell title="母图候选" badge={`${masterCandidates.length} 个序位`}>
-          {masterCandidates.length === 0 ? (
-            <EmptyState title="还没有 AI 母图" hint="完成母图阶段后，这里会展示所有母图候选以及失败卡片。" />
-          ) : (
-            <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-              {masterCandidates.map((candidate) => {
-                const isCurrent = Boolean(
-                  candidate.clean && state.currentAiMasterAsset?.id === candidate.clean.id
-                )
-                const previewAsset = candidate.clean ?? candidate.raw ?? null
-                const cleanError = candidate.cleanFailure?.message?.trim() || null
-                const generateError = candidate.generateFailure?.message?.trim() || null
-
-                if (candidate.status === 'generate-failed') {
-                  return (
-                    <PreviewCard
-                      key={`master-failed-${candidate.sequenceIndex}`}
-                      title={`母图 #${candidate.sequenceIndex}`}
-                      badge="生成失败"
-                      tone="error"
-                      placeholderTitle="该次母图生成失败"
-                      placeholderHint="这次调用没有产出图片，但你可以直接在这里重试。"
-                      footer={
-                        <>
-                          <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-3 py-3 text-xs leading-6 text-zinc-300">
-                            {generateError || '未拿到更详细的失败原因'}
-                          </div>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => void handleRetryGeneration(candidate.sequenceIndex)}
-                            disabled={retryingKey === `generate:${candidate.sequenceIndex}`}
-                          >
-                            <RefreshCcw
-                              className={cn(
-                                'h-4 w-4',
-                                retryingKey === `generate:${candidate.sequenceIndex}` && 'animate-spin'
-                              )}
-                            />
-                            {retryingKey === `generate:${candidate.sequenceIndex}` ? '重试中...' : '重试生成'}
-                          </Button>
-                        </>
-                      }
-                    />
-                  )
-                }
-
-                return (
-                  <PreviewCard
-                    key={candidate.clean?.id ?? candidate.raw?.id ?? `master-slot-${candidate.sequenceIndex}`}
-                    asset={previewAsset}
-                    title={`母图 #${candidate.sequenceIndex}`}
-                    badge={
-                      candidate.status === 'ready'
-                        ? '去印成功'
-                        : candidate.status === 'clean-failed'
-                          ? '去印失败'
-                          : '待去印'
-                    }
-                    active={isCurrent}
-                    tone={candidate.status === 'clean-failed' ? 'error' : 'default'}
-                    placeholderTitle="当前序位暂无图像"
-                    placeholderHint="这个母图序位还没有拿到输出。"
-                    onPreview={(asset) => setPreviewAsset(asset)}
-                    onReveal={(asset) => void revealAsset(asset, 'AI母图')}
-                    footer={
-                      candidate.status === 'ready' && candidate.clean ? (
-                        <Button
-                          type="button"
-                          onClick={() => void state.setCurrentAiMaster(candidate.clean?.id ?? '')}
-                          disabled={isCurrent}
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          {isCurrent ? '当前使用中' : '设为当前AI母图'}
-                        </Button>
-                      ) : candidate.status === 'clean-failed' ? (
-                        <>
-                          {cleanError ? (
-                            <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-3 py-3 text-xs leading-6 text-zinc-300">
-                              {cleanError}
-                            </div>
-                          ) : null}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => candidate.raw && void handleRetryCleanup(candidate.raw.id)}
-                            disabled={
-                              !candidate.raw || retryingKey === `clean:${candidate.raw.id}` || candidate.status !== 'clean-failed'
-                            }
-                          >
-                            <RefreshCcw
-                              className={cn(
-                                'h-4 w-4',
-                                candidate.raw && retryingKey === `clean:${candidate.raw.id}` && 'animate-spin'
-                              )}
-                            />
-                            {candidate.raw && retryingKey === `clean:${candidate.raw.id}` ? '重试中...' : '重试去水印'}
-                          </Button>
-                        </>
-                      ) : undefined
-                    }
-                  />
-                )
-              })}
-            </div>
-          )}
-        </SectionShell>
-
-        <SectionShell title="当前AI母图" badge={state.currentAiMasterAsset ? '已选定' : '未选定'}>
-          {state.currentAiMasterAsset ? (
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
-              <PreviewCard
-                asset={state.currentAiMasterAsset}
-                title="当前AI母图"
-                badge="子图首参考"
-                active
-                onPreview={(asset) => setPreviewAsset(asset)}
-                onReveal={(asset) => void revealAsset(asset, '当前AI母图')}
-              />
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
-                <div className="text-sm font-medium text-zinc-100">后续子图会如何调用</div>
-                <div className="mt-3 space-y-3 text-sm leading-7 text-zinc-400">
-                  <p>子图阶段会把这张去印后的当前 AI 母图放在第一参考位。</p>
-                  <p>原始参考图会继续作为补充参考图拼接到后面的输入位。</p>
-                  <p>如果某一张子图失败，失败会记入下方列表，但队列会继续往后跑。</p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <EmptyState
-              title="还没选择当前 AI 母图"
-              hint="从上方“母图候选”里挑一张去印成功的结果，点击“设为当前AI母图”。"
-            />
-          )}
-        </SectionShell>
-
-        <SectionShell title="子图结果" badge={`${state.activeSelectedChildOutputAssets.length} / ${state.childOutputAssets.length} 已选`}>
-          {state.childOutputAssets.length === 0 ? (
-            <EmptyState title="还没有子图结果" hint="选择当前 AI 母图并启动子图阶段后，这里会连续展示所有子图。" />
-          ) : (
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 px-4 py-3">
-                <div className="text-sm text-zinc-300">
-                  已选择 <span className="font-medium text-zinc-100">{state.activeSelectedChildOutputAssets.length}</span> / {state.childOutputAssets.length} 张子图
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" onClick={() => void handleSelectAllChildOutputs()}>
-                    全选
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => void handleClearSelectedChildOutputs()}>
-                    取消全选
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={() => void handleSendSelectedChildOutputs()}
-                    disabled={state.activeSelectedChildOutputAssets.length === 0}
-                  >
-                    <Send className="h-4 w-4" />
-                    发送到数据工坊
-                  </Button>
-                </div>
-              </div>
-              <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-                {state.childOutputAssets.map((asset, index) => {
-                  const sequenceIndex = readSequenceIndex(asset, index)
-                  const variantText = String(asset.metadata?.variantText ?? '').trim()
-                  return (
-                    <PreviewCard
-                      key={asset.id}
-                      asset={asset}
-                      title={`子图 #${sequenceIndex}`}
-                      badge={asset.selected ? '已选中' : variantText ? '已带变体' : '默认'}
-                      active={asset.selected}
-                      onPreview={(nextAsset) => setPreviewAsset(nextAsset)}
-                      onReveal={(nextAsset) => void revealAsset(nextAsset, '子图')}
-                      footer={
-                        <>
-                          {variantText ? (
-                            <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-xs leading-5 text-zinc-400">
-                              {variantText}
-                            </div>
-                          ) : null}
-                          <Button
-                            type="button"
-                            variant={asset.selected ? 'default' : 'outline'}
-                            onClick={() => void state.toggleOutputSelection(asset.id)}
-                          >
-                            {asset.selected ? '取消选择' : '选择这张'}
-                          </Button>
-                        </>
-                      }
-                    />
-                  )
-                })}
-              </div>
-            </div>
-          )}
-        </SectionShell>
-
-        <SectionShell title="失败记录" badge={`${state.failureRecords.length} 条`}>
-          {state.failureRecords.length === 0 ? (
-            <EmptyState title="当前没有失败记录" hint="一旦母图生成、去水印或子图生成失败，这里会保留详细错误。" />
-          ) : (
-            <div className="flex flex-col gap-3">
-              {state.failureRecords.map((record) => (
-                <div
-                  key={record.id}
-                  className="rounded-2xl border border-amber-500/15 bg-amber-500/5 p-4"
-                >
-                  <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-100">
-                    <AlertTriangle className="h-4 w-4 text-amber-300" />
-                    <span>{failureStageLabel(record)}</span>
-                    <span className="text-zinc-500"># {record.sequenceIndex}</span>
-                  </div>
-                  <div className="mt-2 text-sm leading-6 text-zinc-400">{record.message}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </SectionShell>
+      <div className="flex h-full min-h-0 flex-col gap-5 pb-4">
+        {state.historyTasks.map((task) => (
+          <HistoryTaskSection
+            key={task.id}
+            task={task}
+            state={state}
+            onOpenAsset={(asset) => setLightboxAsset(asset)}
+          />
+        ))}
       </div>
 
       <ImageLightbox
-        asset={previewAsset}
-        open={Boolean(previewAsset)}
+        asset={lightboxAsset}
+        open={Boolean(lightboxAsset)}
         onOpenChange={(next) => {
-          if (!next) setPreviewAsset(null)
+          if (!next) setLightboxAsset(null)
         }}
       />
     </>

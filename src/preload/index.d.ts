@@ -829,6 +829,7 @@ declare global {
             promptText?: string
             config?: Record<string, unknown>
           }) => Promise<AiStudioTemplateRecord>
+          delete: (payload: { templateId: string }) => Promise<{ success: boolean }>
         }
         task: {
           importFolders: (payload?: { folderPaths?: string[] }) => Promise<AiStudioImportedFolder[]>

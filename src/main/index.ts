@@ -4540,6 +4540,12 @@ app.whenReady().then(async () => {
     })
   })
 
+  ipcMain.handle('cms.aiStudio.template.delete', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const templateId = typeof body.templateId === 'string' ? body.templateId : ''
+    return aiStudioService.deleteTemplate(templateId)
+  })
+
   ipcMain.handle('cms.aiStudio.provider.testConnection', async () => aiStudioService.testConnection())
 
   ipcMain.handle('cms.aiStudio.task.importFolders', async (event, payload?: unknown) => {
