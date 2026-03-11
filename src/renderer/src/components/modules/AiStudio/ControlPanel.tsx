@@ -11,13 +11,25 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
-const MODEL_OPTIONS = [{ value: DEFAULT_GRSAI_IMAGE_MODEL, label: 'Nano Banana' }]
+const MODEL_DISPLAY_NAME_OVERRIDES: Record<string, string> = {
+  'gemini-3.1-flash-image-preview': 'Nano banana2'
+}
 
 function basename(filePath: string | null | undefined): string {
   const normalized = String(filePath ?? '').trim()
   if (!normalized) return '未命名文件'
   const parts = normalized.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? normalized
+}
+
+function formatModelDisplayLabel(modelName: string, providerName: string): string {
+  const normalizedModelName = String(modelName ?? '').trim()
+  const normalizedProviderName = String(providerName ?? '').trim()
+  const modelLabel =
+    MODEL_DISPLAY_NAME_OVERRIDES[normalizedModelName] ?? normalizedModelName ?? '未配置模型'
+
+  if (!normalizedProviderName) return modelLabel || '未配置模型'
+  return `${modelLabel || '未配置模型'} - ${normalizedProviderName}`
 }
 
 function PoolPreviewThumb({
@@ -66,8 +78,17 @@ function ControlPanel({
   promptDraft: string
 }): React.JSX.Element {
   const addLog = useCmsStore((store) => store.addLog)
+  const configuredProvider = useCmsStore((store) => store.config.aiProvider)
+  const configuredDefaultModel = useCmsStore((store) => store.config.aiDefaultImageModel)
   const task = state.activeTask
-  const currentModel = String(task?.model ?? '').trim() || DEFAULT_GRSAI_IMAGE_MODEL
+  const currentModel =
+    String(configuredDefaultModel ?? '').trim() ||
+    String(task?.model ?? '').trim() ||
+    DEFAULT_GRSAI_IMAGE_MODEL
+  const currentModelDisplayLabel = formatModelDisplayLabel(
+    currentModel,
+    String(configuredProvider ?? '').trim() || String(task?.provider ?? '').trim()
+  )
   const requestedCount = Math.max(1, state.masterOutputCount || 1)
   const isRunning = task?.status === 'running'
   const isInterrupting = task ? state.interruptingTaskIds.includes(task.id) : false
@@ -129,11 +150,7 @@ function ControlPanel({
             className="h-9 rounded-full border border-zinc-200 bg-zinc-50 px-3 text-[13px] text-zinc-900 outline-none transition focus:border-sky-400"
             disabled={!task}
           >
-            {MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
+            <option value={currentModel}>{currentModelDisplayLabel}</option>
           </select>
         </label>
 
