@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useCmsStore } from '@renderer/store/useCmsStore'
+
+import { prepareWorkflowForMasterRun } from './workflowRunHelpers'
+import { runWithConcurrencyLimit } from './parallelRunHelpers'
+import type { PreviewSlotRuntimeState } from './previewSlotHelpers'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 
 export type AiStudioImportedFolder = {
@@ -163,6 +167,7 @@ const AI_STUDIO_MASTER_CLEAN_ROLE = 'master-clean'
 const AI_STUDIO_CHILD_OUTPUT_ROLE = 'child-output'
 const AI_STUDIO_SOURCE_PRIMARY_ROLE = 'source-primary'
 const AI_STUDIO_SOURCE_REFERENCE_ROLE = 'source-reference'
+const AI_STUDIO_MASTER_CLEAN_CONCURRENCY = 2
 
 export function selectDispatchOutputAssets(task: Pick<AiStudioTaskView, 'outputAssets'>): AiStudioAssetRecord[] {
   const childOutputAssets = task.outputAssets.filter((asset) => asset.role === AI_STUDIO_CHILD_OUTPUT_ROLE)
@@ -477,14 +482,6 @@ function createTaskInterruptedError(): Error {
 
 function isTaskInterruptedError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AiStudioTaskInterruptedError' || error.message === AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
-}
-
-function resolveFailureStageKindForWorkflow(
-  kind: AiStudioWorkflowMetadata['workflow']['currentItemKind']
-): AiStudioWorkflowFailureRecord['stageKind'] {
-  if (kind === 'master-clean') return 'master-clean'
-  if (kind === 'child-generate') return 'child-generate'
-  return 'master-generate'
 }
 
 function sleepMs(ms: number): Promise<void> {
@@ -818,6 +815,60 @@ function useAiStudioState() {
   const [isImporting, setIsImporting] = useState(false)
   const interruptRequestedTaskIdsRef = useRef<Set<string>>(new Set())
   const [interruptingTaskIds, setInterruptingTaskIds] = useState<string[]>([])
+  const [previewSlotRuntimeByTaskId, setPreviewSlotRuntimeByTaskId] = useState<
+    Record<string, Record<number, PreviewSlotRuntimeState>>
+  >({})
+
+  const replacePreviewSlotRuntimeStates = useCallback((taskId: string, nextStates: Record<number, PreviewSlotRuntimeState>) => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    if (!normalizedTaskId) return
+    setPreviewSlotRuntimeByTaskId((prev) => ({
+      ...prev,
+      [normalizedTaskId]: nextStates
+    }))
+  }, [])
+
+  const patchPreviewSlotRuntimeState = useCallback((
+    taskId: string,
+    sequenceIndex: number,
+    nextState: PreviewSlotRuntimeState | null
+  ) => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    const normalizedIndex = Math.max(1, Math.floor(Number(sequenceIndex) || 0))
+    if (!normalizedTaskId || normalizedIndex <= 0) return
+
+    setPreviewSlotRuntimeByTaskId((prev) => {
+      const current = { ...(prev[normalizedTaskId] ?? {}) }
+      if (nextState) {
+        current[normalizedIndex] = nextState
+      } else {
+        delete current[normalizedIndex]
+      }
+
+      if (Object.keys(current).length <= 0) {
+        if (!prev[normalizedTaskId]) return prev
+        const next = { ...prev }
+        delete next[normalizedTaskId]
+        return next
+      }
+
+      return {
+        ...prev,
+        [normalizedTaskId]: current
+      }
+    })
+  }, [])
+
+  const clearPreviewSlotRuntimeStates = useCallback((taskId: string) => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    if (!normalizedTaskId) return
+    setPreviewSlotRuntimeByTaskId((prev) => {
+      if (!prev[normalizedTaskId]) return prev
+      const next = { ...prev }
+      delete next[normalizedTaskId]
+      return next
+    })
+  }, [])
 
   const refresh = useCallback(async () => {
     setIsLoading(true)
@@ -1562,7 +1613,7 @@ function useAiStudioState() {
       const normalizedPath = String(filePath ?? '').trim()
       if (!normalizedPath) return false
 
-      let draftTask =
+      const draftTask =
         activeTask &&
         activeTask.status === 'draft' &&
         activeTask.outputAssets.length === 0 &&
@@ -2011,17 +2062,6 @@ function useAiStudioState() {
 
   const processMasterCleanup = useCallback(
     async (task: Pick<AiStudioTaskRecord, 'id'>, rawAsset: AiStudioAssetRecord, sequenceIndex: number) => {
-      const outputs = await window.electronAPI.processWatermark({
-        files: [rawAsset.filePath],
-        pythonPath: aiConfig.pythonPath,
-        scriptPath: aiConfig.watermarkScriptPath,
-        watermarkBox: aiConfig.watermarkBox
-      })
-      const cleanPath = Array.isArray(outputs) ? String(outputs[0] ?? '').trim() : ''
-      if (!cleanPath) {
-        throw new Error('[AI Studio] 去水印未返回输出文件。')
-      }
-
       const rawMetadata =
         rawAsset.metadata && typeof rawAsset.metadata === 'object'
           ? (rawAsset.metadata as Record<string, unknown>)
@@ -2043,7 +2083,8 @@ function useAiStudioState() {
             ...rawMetadata,
             stage: 'master',
             sequenceIndex,
-            watermarkStatus: 'succeeded'
+            watermarkStatus: 'skipped',
+            localCleanupSkipped: true
           }
         },
         {
@@ -2052,8 +2093,8 @@ function useAiStudioState() {
           runId: rawAsset.runId,
           kind: 'output',
           role: AI_STUDIO_MASTER_CLEAN_ROLE,
-          filePath: cleanPath,
-          previewPath: cleanPath,
+          filePath: rawAsset.filePath,
+          previewPath: rawAsset.previewPath ?? rawAsset.filePath,
           originPath: rawAsset.filePath,
           selected: false,
           sortOrder: rawAsset.sortOrder,
@@ -2061,12 +2102,13 @@ function useAiStudioState() {
             stage: 'master',
             sequenceIndex,
             sourceAssetId: rawAsset.id,
-            watermarkStatus: 'succeeded'
+            watermarkStatus: 'skipped',
+            localCleanupSkipped: true
           }
         }
       ])
     },
-    [aiConfig.pythonPath, aiConfig.watermarkBox, aiConfig.watermarkScriptPath, upsertAssetsRemote]
+    [upsertAssetsRemote]
   )
 
   const startMasterWorkflow = useCallback(async (payload?: {
@@ -2141,25 +2183,13 @@ function useAiStudioState() {
 
     clearTaskInterrupt(workingTask.id)
 
-    const workflow = readWorkflowMetadata(workingTask)
-    workflow.workflow.activeStage = 'master-generating'
-    workflow.workflow.sourcePrimaryImagePath = workingTask.primaryImagePath ?? null
-    workflow.workflow.sourceReferenceImagePaths = uniqueStrings(workingTask.referenceImagePaths)
-    workflow.workflow.currentAiMasterAssetId = null
-    workflow.workflow.currentItemKind = 'master-generate'
-    workflow.workflow.currentItemIndex = 0
-    workflow.workflow.currentItemTotal = effectiveRequestedCount
-    workflow.workflow.failures = []
-    workflow.masterStage.templateId = effectiveTemplateId
-    workflow.masterStage.promptExtra = effectivePromptText
-    workflow.masterStage.requestedCount = effectiveRequestedCount
-    workflow.masterStage.completedCount = 0
-    workflow.masterStage.cleanSuccessCount = 0
-    workflow.masterStage.cleanFailedCount = 0
-    workflow.childStage.templateId = effectiveTemplateId
-    workflow.childStage.promptExtra = effectivePromptText
-    workflow.childStage.completedCount = 0
-    workflow.childStage.failedCount = 0
+    const workflow = prepareWorkflowForMasterRun(readWorkflowMetadata(workingTask), {
+      promptText: effectivePromptText,
+      templateId: effectiveTemplateId,
+      requestedCount: effectiveRequestedCount,
+      primaryImagePath: workingTask.primaryImagePath ?? null,
+      referenceImagePaths: workingTask.referenceImagePaths
+    })
 
     let task = await updateTaskPatch(workingTask.id, {
       templateId: effectiveTemplateId,
@@ -2173,180 +2203,308 @@ function useAiStudioState() {
     })
     await refresh()
 
-    let wasInterrupted = false
-
-    for (let index = 1; index <= workflow.masterStage.requestedCount; index += 1) {
-      const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
-      if (!latestTask) break
-      const loopWorkflow = readWorkflowMetadata(latestTask)
-      loopWorkflow.workflow.activeStage = 'master-generating'
-      loopWorkflow.workflow.currentItemKind = 'master-generate'
-      loopWorkflow.workflow.currentItemIndex = index
-      loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
-      task = await updateTaskPatch(latestTask.id, {
-        templateId: loopWorkflow.masterStage.templateId,
-        promptExtra: loopWorkflow.masterStage.promptExtra,
-        outputCount: 1,
-        status: 'running',
-        metadata: writeWorkflowMetadata(latestTask, loopWorkflow)
-      })
-
-      try {
-        const result = await executeRunToTerminal(latestTask.id)
-        const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
-        loopWorkflow.masterStage.completedCount += 1
-
-        if (result.status === 'succeeded' && outputAssets.length > 0) {
-          const relabeled = await upsertAssetsRemote(
-            outputAssets.map((asset, outputIndex) => ({
-              id: asset.id,
-              taskId: latestTask.id,
-              runId: asset.runId,
-              kind: 'output',
-              role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-              filePath: asset.filePath,
-              previewPath: asset.previewPath,
-              originPath: asset.originPath,
-              selected: asset.selected,
-              sortOrder: asset.sortOrder,
-              metadata: {
-                ...(asset.metadata ?? {}),
-                stage: 'master',
-                sequenceIndex: index,
-                outputIndex,
-                watermarkStatus: 'pending'
-              }
-            }))
-          )
-          const rawAsset = relabeled[0]
-          if (rawAsset) {
-            loopWorkflow.workflow.activeStage = 'master-cleaning'
-            loopWorkflow.workflow.currentItemKind = 'master-clean'
-            loopWorkflow.workflow.currentItemIndex = index
-            loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
-            await updateTaskPatch(latestTask.id, {
-              metadata: writeWorkflowMetadata(latestTask, loopWorkflow),
-              status: 'running'
-            })
-            try {
-              await processMasterCleanup(latestTask, rawAsset, index)
-              loopWorkflow.masterStage.cleanSuccessCount += 1
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error)
-              loopWorkflow.masterStage.cleanFailedCount += 1
-              loopWorkflow.workflow.failures.push(
-                makeWorkflowFailureRecord('master-clean', index, message, { assetId: rawAsset.id })
-              )
-              await upsertAssetsRemote([
-                {
-                  id: rawAsset.id,
-                  taskId: latestTask.id,
-                  runId: rawAsset.runId,
-                  kind: 'output',
-                  role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-                  filePath: rawAsset.filePath,
-                  previewPath: rawAsset.previewPath,
-                  originPath: rawAsset.originPath,
-                  selected: rawAsset.selected,
-                  sortOrder: rawAsset.sortOrder,
-                  metadata: {
-                    ...(rawAsset.metadata ?? {}),
-                    stage: 'master',
-                    sequenceIndex: index,
-                    watermarkStatus: 'failed'
-                  }
-                }
-              ])
-            }
-          }
-        } else {
-          loopWorkflow.workflow.failures.push(
-            makeWorkflowFailureRecord(
-              'master-generate',
-              index,
-              result.run?.errorMessage || '结果生成失败',
-              { runId: result.run?.id }
-            )
-          )
-        }
-      } catch (error) {
-        if (isTaskInterruptedError(error)) {
-          wasInterrupted = true
-          loopWorkflow.workflow.failures.push(
-            makeWorkflowFailureRecord(
-              resolveFailureStageKindForWorkflow(loopWorkflow.workflow.currentItemKind),
-              Math.max(1, index),
-              AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-            )
-          )
-          loopWorkflow.workflow.activeStage = 'master-selecting'
-          loopWorkflow.workflow.currentItemKind = 'idle'
-          loopWorkflow.workflow.currentItemIndex = 0
-          loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
-          task = await updateTaskPatch(latestTask.id, {
-            status: loopWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
-            metadata: writeWorkflowMetadata(latestTask, loopWorkflow),
-            promptExtra: loopWorkflow.masterStage.promptExtra,
-            templateId: loopWorkflow.masterStage.templateId,
-            outputCount: 1
-          })
-          await refresh()
-          break
-        }
-
-        loopWorkflow.masterStage.completedCount += 1
-        loopWorkflow.workflow.failures.push(
-          makeWorkflowFailureRecord('master-generate', index, error instanceof Error ? error.message : String(error))
-        )
-      }
-
-      task = await updateTaskPatch(latestTask.id, {
-        status: 'running',
-        metadata: writeWorkflowMetadata(latestTask, loopWorkflow)
-      })
-      await refresh()
-    }
-
-    clearTaskInterrupt(task.id)
-
-    const completedTask = (await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0]))
-    if (!completedTask) return null
-    const completedRecord = coerceTaskRecord(completedTask)
-    const completedWorkflow = readWorkflowMetadata(completedRecord)
-    completedWorkflow.workflow.activeStage = 'master-selecting'
-    completedWorkflow.workflow.currentItemKind = 'idle'
-    completedWorkflow.workflow.currentItemIndex = 0
-    completedWorkflow.workflow.currentItemTotal = completedWorkflow.masterStage.requestedCount
-    const finalStatus = completedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
-    const finalizedTask = await updateTaskPatch(completedRecord.id, {
-      status: finalStatus,
-      metadata: writeWorkflowMetadata(completedRecord, completedWorkflow),
-      promptExtra: completedWorkflow.masterStage.promptExtra,
-      templateId: completedWorkflow.masterStage.templateId,
-      outputCount: 1
-    })
-    await refresh()
-
-    if (finalStatus === 'ready' || wasInterrupted) {
+    const shouldResetComposer = sourceTask.id === activeTask?.id
+    let preparedNextDraftAtStart = false
+    if (shouldResetComposer) {
       await createTaskWithInputs({
         primaryImagePath: null,
         referenceImagePaths: [],
-        inheritFrom: finalizedTask,
+        inheritFrom: task,
         promptExtraOverride: '',
         templateIdOverride: null
       })
+      preparedNextDraftAtStart = true
     }
 
-    return true
+    const sequenceIndexes = Array.from(
+      { length: workflow.masterStage.requestedCount },
+      (_, slotIndex) => slotIndex + 1
+    )
+    replacePreviewSlotRuntimeStates(
+      task.id,
+      Object.fromEntries(
+        sequenceIndexes.map((sequenceIndex) => [
+          sequenceIndex,
+          {
+            status: 'queued',
+            message: '排队中'
+          } satisfies PreviewSlotRuntimeState
+        ])
+      )
+    )
+
+    let wasInterrupted = false
+
+    try {
+      const slotResults = await runWithConcurrencyLimit(
+        sequenceIndexes,
+        Math.min(AI_STUDIO_MASTER_CLEAN_CONCURRENCY, Math.max(sequenceIndexes.length, 1)),
+        async (sequenceIndex) => {
+          if (isTaskInterruptRequested(task.id)) {
+            wasInterrupted = true
+            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+              status: 'failed',
+              message: AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+            })
+            return {
+              sequenceIndex,
+              generated: false,
+              cleaned: false,
+              cleanFailed: false,
+              failure: makeWorkflowFailureRecord(
+                'master-generate',
+                sequenceIndex,
+                AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+              )
+            }
+          }
+
+          patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+            status: 'generating',
+            message: '结果生成中'
+          })
+
+          try {
+            const result = await executeRunToTerminal(task.id)
+            const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+
+            if (result.status === 'succeeded' && outputAssets.length > 0) {
+              const relabeled = await upsertAssetsRemote(
+                outputAssets.slice(0, 1).map((asset) => ({
+                  id: asset.id,
+                  taskId: task.id,
+                  runId: asset.runId,
+                  kind: 'output',
+                  role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                  filePath: asset.filePath,
+                  previewPath: asset.previewPath,
+                  originPath: asset.originPath,
+                  selected: asset.selected,
+                  sortOrder: sequenceIndex - 1,
+                  metadata: {
+                    ...(asset.metadata ?? {}),
+                    stage: 'master',
+                    sequenceIndex,
+                    outputIndex: 0,
+                    watermarkStatus: 'pending'
+                  }
+                }))
+              )
+              const rawAsset = relabeled[0]
+              if (!rawAsset) {
+                const message = '结果生成失败'
+                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                  status: 'failed',
+                  message
+                })
+                return {
+                  sequenceIndex,
+                  generated: false,
+                  cleaned: false,
+                  cleanFailed: false,
+                  failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
+                    runId: result.run?.id
+                  })
+                }
+              }
+
+              patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                status: 'cleaning',
+                message: '去水印处理中'
+              })
+
+              try {
+                await processMasterCleanup({ id: task.id }, rawAsset, sequenceIndex)
+                patchPreviewSlotRuntimeState(task.id, sequenceIndex, null)
+                return {
+                  sequenceIndex,
+                  generated: true,
+                  cleaned: true,
+                  cleanFailed: false,
+                  failure: null
+                }
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                await upsertAssetsRemote([
+                  {
+                    id: rawAsset.id,
+                    taskId: task.id,
+                    runId: rawAsset.runId,
+                    kind: 'output',
+                    role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                    filePath: rawAsset.filePath,
+                    previewPath: rawAsset.previewPath,
+                    originPath: rawAsset.originPath,
+                    selected: rawAsset.selected,
+                    sortOrder: rawAsset.sortOrder,
+                    metadata: {
+                      ...(rawAsset.metadata ?? {}),
+                      stage: 'master',
+                      sequenceIndex,
+                      watermarkStatus: 'failed'
+                    }
+                  }
+                ])
+                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                  status: 'failed',
+                  message
+                })
+                return {
+                  sequenceIndex,
+                  generated: true,
+                  cleaned: false,
+                  cleanFailed: true,
+                  failure: makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
+                    assetId: rawAsset.id
+                  })
+                }
+              }
+            }
+
+            const message = result.run?.errorMessage || '结果生成失败'
+            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+              status: 'failed',
+              message
+            })
+            return {
+              sequenceIndex,
+              generated: false,
+              cleaned: false,
+              cleanFailed: false,
+              failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
+                runId: result.run?.id
+              })
+            }
+          } catch (error) {
+            const interrupted = isTaskInterruptedError(error)
+            if (interrupted) {
+              wasInterrupted = true
+            }
+            const message = interrupted
+              ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+              : (error instanceof Error ? error.message : String(error))
+            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+              status: 'failed',
+              message
+            })
+            return {
+              sequenceIndex,
+              generated: false,
+              cleaned: false,
+              cleanFailed: false,
+              failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message)
+            }
+          }
+        }
+      )
+
+      const finalizedTaskRecord = (await loadLatestTaskRecord(task.id)) ?? task
+      const finalizedWorkflow = readWorkflowMetadata(finalizedTaskRecord)
+      finalizedWorkflow.workflow.activeStage = 'master-selecting'
+      finalizedWorkflow.workflow.currentItemKind = 'idle'
+      finalizedWorkflow.workflow.currentItemIndex = 0
+      finalizedWorkflow.workflow.currentItemTotal = finalizedWorkflow.masterStage.requestedCount
+      finalizedWorkflow.masterStage.completedCount = slotResults.filter((item) => item.generated).length
+      finalizedWorkflow.masterStage.cleanSuccessCount = slotResults.filter((item) => item.cleaned).length
+      finalizedWorkflow.masterStage.cleanFailedCount = slotResults.filter((item) => item.cleanFailed).length
+      finalizedWorkflow.workflow.failures = slotResults
+        .map((item) => item.failure)
+        .filter(Boolean) as AiStudioWorkflowFailureRecord[]
+
+      const finalStatus = finalizedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
+      task = await updateTaskPatch(finalizedTaskRecord.id, {
+        status: finalStatus,
+        metadata: writeWorkflowMetadata(finalizedTaskRecord, finalizedWorkflow),
+        promptExtra: finalizedWorkflow.masterStage.promptExtra,
+        templateId: finalizedWorkflow.masterStage.templateId,
+        outputCount: 1
+      })
+      await refresh()
+
+      if ((finalStatus === 'ready' || wasInterrupted) && !preparedNextDraftAtStart) {
+        await createTaskWithInputs({
+          primaryImagePath: null,
+          referenceImagePaths: [],
+          inheritFrom: task,
+          promptExtraOverride: '',
+          templateIdOverride: null
+        })
+      }
+
+      return true
+    } catch (error) {
+      wasInterrupted = isTaskInterruptedError(error)
+      const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
+      const latestWorkflow = readWorkflowMetadata(latestTask)
+      const failureMessage = wasInterrupted
+        ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+        : (error instanceof Error ? error.message : String(error))
+
+      replacePreviewSlotRuntimeStates(
+        latestTask.id,
+        Object.fromEntries(
+          Array.from({ length: latestWorkflow.masterStage.requestedCount }, (_, slotIndex) => [
+            slotIndex + 1,
+            {
+              status: 'failed',
+              message: failureMessage
+            } satisfies PreviewSlotRuntimeState
+          ])
+        )
+      )
+
+      latestWorkflow.workflow.activeStage = 'master-selecting'
+      latestWorkflow.workflow.currentItemKind = 'idle'
+      latestWorkflow.workflow.currentItemIndex = 0
+      latestWorkflow.workflow.currentItemTotal = latestWorkflow.masterStage.requestedCount
+      latestWorkflow.masterStage.completedCount = 0
+      latestWorkflow.masterStage.cleanSuccessCount = 0
+      latestWorkflow.masterStage.cleanFailedCount = 0
+      latestWorkflow.workflow.failures = Array.from(
+        { length: latestWorkflow.masterStage.requestedCount },
+        (_, slotIndex) =>
+          makeWorkflowFailureRecord('master-generate', slotIndex + 1, failureMessage)
+      )
+
+      const finalStatus = latestWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
+      task = await updateTaskPatch(latestTask.id, {
+        status: finalStatus,
+        metadata: writeWorkflowMetadata(latestTask, latestWorkflow),
+        promptExtra: latestWorkflow.masterStage.promptExtra,
+        templateId: latestWorkflow.masterStage.templateId,
+        outputCount: 1
+      })
+      await refresh()
+
+      if ((finalStatus === 'ready' || wasInterrupted) && !preparedNextDraftAtStart) {
+        await createTaskWithInputs({
+          primaryImagePath: null,
+          referenceImagePaths: [],
+          inheritFrom: task,
+          promptExtraOverride: '',
+          templateIdOverride: null
+        })
+      }
+
+      return true
+    } finally {
+      clearTaskInterrupt(task.id)
+      clearPreviewSlotRuntimeStates(task.id)
+    }
   }, [
     activeTask,
     aiConfig.aiApiKey,
+    clearPreviewSlotRuntimeStates,
+    clearTaskInterrupt,
     createTaskWithInputs,
     defaultModel,
     executeRunToTerminal,
+    isTaskInterruptRequested,
     loadLatestTaskRecord,
+    patchPreviewSlotRuntimeState,
     processMasterCleanup,
     refresh,
+    replacePreviewSlotRuntimeStates,
     taskViews,
     updateTaskPatch,
     upsertAssetsRemote
@@ -2754,6 +2912,7 @@ function useAiStudioState() {
     workflowMeta,
     activeStage,
     stageProgress,
+    previewSlotRuntimeByTaskId,
     failureRecords,
     masterOutputCount,
     childOutputCount,

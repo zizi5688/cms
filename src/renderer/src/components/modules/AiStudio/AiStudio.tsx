@@ -11,7 +11,9 @@ import { TaskQueue } from './TaskQueue'
 import { useAiStudioState } from './useAiStudioState'
 
 function readPromptSeed(state: ReturnType<typeof useAiStudioState>): string {
-  return String(state.activeTask?.promptExtra ?? state.masterPromptExtra ?? state.childPromptExtra ?? '').trim()
+  return String(
+    state.activeTask?.promptExtra ?? state.masterPromptExtra ?? state.childPromptExtra ?? ''
+  ).trim()
 }
 
 function AiStudioCanvas({
@@ -28,8 +30,11 @@ function AiStudioCanvas({
   }, [initialPromptDraft, state.activeTaskId])
 
   return (
-    <Card className="flex h-full min-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-[34px] border border-zinc-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,244,245,0.96))] text-zinc-950 shadow-[0_30px_100px_rgba(15,23,42,0.08)] backdrop-blur">
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6">
+    <Card className="flex h-full min-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-[34px] border border-zinc-200/80 bg-white text-zinc-950 shadow-[0_30px_100px_rgba(15,23,42,0.08)] backdrop-blur">
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+      >
         <ResultPanel state={state} />
       </div>
 
