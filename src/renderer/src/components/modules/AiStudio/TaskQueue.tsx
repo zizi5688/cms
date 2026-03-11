@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
@@ -16,6 +16,7 @@ import {
   type AiStudioAssetRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
+import { shouldDelayPreviewSwitch } from './hoverIntentHelpers'
 
 type ElectronPathFile = File & { path?: string }
 
@@ -120,7 +121,6 @@ function ImageLightbox({
   )
 }
 
-
 type PromptTemplateOption = UseAiStudioStateResult['templates'][number]
 
 function buildTemplatePreview(promptText: string): string {
@@ -176,8 +176,16 @@ function PromptTemplateModal({
   if (!open || typeof document === 'undefined') return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-y-auto bg-black/35 p-4 backdrop-blur-sm [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-      <button type="button" className="absolute inset-0" aria-label="关闭模板弹窗" onClick={onClose} />
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center overflow-y-auto bg-black/35 p-4 backdrop-blur-sm [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+    >
+      <button
+        type="button"
+        className="absolute inset-0"
+        aria-label="关闭模板弹窗"
+        onClick={onClose}
+      />
       <div className="relative z-10 my-auto flex max-h-[calc(100vh-2rem)] w-full max-w-[560px] flex-col rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_30px_100px_rgba(15,23,42,0.18)]">
         <div className="flex items-center justify-between gap-3">
           <div className="text-base font-semibold text-zinc-950">{title}</div>
@@ -191,7 +199,10 @@ function PromptTemplateModal({
           </button>
         </div>
 
-        <div className="mt-5 flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div
+          className="mt-5 flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
           <label className="flex flex-col gap-2">
             <span className="text-sm font-medium text-zinc-700">模板名字</span>
             <Input
@@ -208,7 +219,8 @@ function PromptTemplateModal({
               value={promptText}
               onChange={(event) => onPromptTextChange(event.target.value)}
               placeholder="输入这个模板对应的提示词内容..."
-              className="min-h-[180px] resize-none rounded-[18px] border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-7 text-zinc-950 placeholder:text-zinc-400 focus-visible:ring-zinc-300 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+              className="min-h-[180px] resize-none rounded-[18px] border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-7 text-zinc-950 placeholder:text-zinc-400 focus-visible:ring-zinc-300 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             />
           </label>
         </div>
@@ -253,6 +265,93 @@ function QuickInsertPopover({
   const [hoveredPreview, setHoveredPreview] = useState<
     { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null
   >(null)
+  const submenuRef = useRef<HTMLDivElement | null>(null)
+  const switchTimerRef = useRef<number | null>(null)
+  const pendingPreviewRef = useRef<
+    { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null
+  >(null)
+  const pointerRef = useRef<{
+    previous: { x: number; y: number } | null
+    current: { x: number; y: number } | null
+  }>({ previous: null, current: null })
+  const isSubmenuActiveRef = useRef(false)
+
+  const clearSwitchTimer = (): void => {
+    if (switchTimerRef.current !== null) {
+      window.clearTimeout(switchTimerRef.current)
+      switchTimerRef.current = null
+    }
+  }
+
+  const isSamePreview = (
+    left: { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null,
+    right: { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null
+  ): boolean => {
+    if (!left || !right) return left === right
+    if (left.type !== right.type) return false
+    if (left.type === 'create' || right.type === 'create') return true
+    return left.template.id === right.template.id
+  }
+
+  const commitPreview = (
+    next: { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null
+  ): void => {
+    clearSwitchTimer()
+    pendingPreviewRef.current = null
+    setHoveredPreview(next)
+  }
+
+  const resetPreview = (): void => {
+    clearSwitchTimer()
+    pendingPreviewRef.current = null
+    isSubmenuActiveRef.current = false
+    setHoveredPreview(null)
+  }
+
+  const trackPointer = (clientX: number, clientY: number): void => {
+    const nextPoint = { x: clientX, y: clientY }
+    pointerRef.current = {
+      previous: pointerRef.current.current,
+      current: nextPoint
+    }
+  }
+
+  const queuePreviewSwitch = (
+    next: { type: 'create' } | { type: 'template'; template: PromptTemplateOption },
+    event: React.MouseEvent<HTMLButtonElement>
+  ): void => {
+    trackPointer(event.clientX, event.clientY)
+
+    if (isSubmenuActiveRef.current || isSamePreview(hoveredPreview, next)) return
+
+    const submenuRect = hoveredPreview
+      ? (submenuRef.current?.getBoundingClientRect() ?? null)
+      : null
+    const shouldDelay =
+      hoveredPreview !== null &&
+      shouldDelayPreviewSwitch({
+        previousPoint: pointerRef.current.previous,
+        currentPoint: pointerRef.current.current,
+        submenuRect
+      })
+
+    clearSwitchTimer()
+    if (shouldDelay) {
+      pendingPreviewRef.current = next
+      switchTimerRef.current = window.setTimeout(() => {
+        commitPreview(next)
+      }, 160)
+      return
+    }
+
+    commitPreview(next)
+  }
+
+  useEffect(() => {
+    return () => {
+      clearSwitchTimer()
+    }
+  }, [])
 
   return (
     <div className="group/quick relative shrink-0 self-start pr-2 -mr-2">
@@ -265,7 +364,8 @@ function QuickInsertPopover({
 
       <div
         className="pointer-events-none absolute bottom-full left-0 z-[120] pb-2 opacity-0 transition duration-150 group-hover/quick:pointer-events-auto group-hover/quick:opacity-100 group-focus-within/quick:pointer-events-auto group-focus-within/quick:opacity-100"
-        onMouseLeave={() => setHoveredPreview(null)}
+        onMouseMove={(event) => trackPointer(event.clientX, event.clientY)}
+        onMouseLeave={resetPreview}
       >
         <div className="relative w-[252px] rounded-[20px] border border-zinc-200 bg-white p-1.5 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
           <div
@@ -277,8 +377,8 @@ function QuickInsertPopover({
                 <button
                   type="button"
                   onClick={onCreate}
-                  onMouseEnter={() => setHoveredPreview({ type: 'create' })}
-                  onFocus={() => setHoveredPreview({ type: 'create' })}
+                  onMouseEnter={(event) => queuePreviewSwitch({ type: 'create' }, event)}
+                  onFocus={() => commitPreview({ type: 'create' })}
                   className="flex h-8 w-full items-center justify-center rounded-[11px] border border-dashed border-zinc-300 bg-zinc-50/85 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-400 hover:bg-white"
                   title="新增模板"
                 >
@@ -291,8 +391,10 @@ function QuickInsertPopover({
                   <button
                     type="button"
                     onClick={() => onInsert(template)}
-                    onMouseEnter={() => setHoveredPreview({ type: 'template', template })}
-                    onFocus={() => setHoveredPreview({ type: 'template', template })}
+                    onMouseEnter={(event) =>
+                      queuePreviewSwitch({ type: 'template', template }, event)
+                    }
+                    onFocus={() => commitPreview({ type: 'template', template })}
                     className="flex h-8 w-full items-center justify-center rounded-[11px] border border-zinc-200 bg-zinc-50/70 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-300 hover:bg-white"
                     title={template.name}
                   >
@@ -304,48 +406,60 @@ function QuickInsertPopover({
           </div>
 
           {hoveredPreview ? (
-            <div className="absolute left-full top-0 z-[140] pl-2" onMouseEnter={() => setHoveredPreview((prev) => prev)}>
+            <div
+              ref={submenuRef}
+              className="absolute left-full top-0 z-[140] pl-2"
+              onMouseEnter={() => {
+                isSubmenuActiveRef.current = true
+                clearSwitchTimer()
+              }}
+              onMouseLeave={() => {
+                isSubmenuActiveRef.current = false
+              }}
+            >
               <div className="absolute inset-y-0 left-0 w-2" />
               <div className="w-[248px] rounded-[20px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-              {hoveredPreview.type === 'create' ? (
-                <div className="text-[12px] leading-5 text-zinc-600">
-                  录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
-                      <span className="block truncate">{hoveredPreview.template.name}</span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <button
-                        type="button"
-                        className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onEdit(hoveredPreview.template)
-                        }}
-                      >
-                        修改
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onDelete(hoveredPreview.template)
-                        }}
-                      >
-                        删除
-                      </button>
-                    </div>
+                {hoveredPreview.type === 'create' ? (
+                  <div className="text-[12px] leading-5 text-zinc-600">
+                    录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
                   </div>
-                  <div className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-                       style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                    {buildTemplatePreview(hoveredPreview.template.promptText)}
-                  </div>
-                </>
-              )}
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
+                        <span className="block truncate">{hoveredPreview.template.name}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onEdit(hoveredPreview.template)
+                          }}
+                        >
+                          修改
+                        </button>
+                        <button
+                          type="button"
+                          className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onDelete(hoveredPreview.template)
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <div
+                      className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                    >
+                      {buildTemplatePreview(hoveredPreview.template.promptText)}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           ) : null}
@@ -895,8 +1009,12 @@ function TaskQueue({
               value={promptDraft}
               onChange={(event) => onPromptChange(event.target.value)}
               placeholder="输入本次提示词..."
-              style={{ minHeight: `${promptComposerMinHeight}px` }}
-              className="h-full max-h-none w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-7 text-zinc-900 shadow-none placeholder:text-zinc-400 focus-visible:ring-0"
+              style={{
+                minHeight: `${promptComposerMinHeight}px`,
+                scrollbarWidth: 'none',
+                msOverflowStyle: 'none'
+              }}
+              className="h-full max-h-none w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-7 text-zinc-900 shadow-none placeholder:text-zinc-400 focus-visible:ring-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
             />
           </div>
         </div>

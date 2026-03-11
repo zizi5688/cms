@@ -17,11 +17,11 @@ import {
   type AiStudioWorkflowFailureRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
+import { computePreviewTargetCount } from './workflowRunHelpers'
+import { resolvePreviewSlotState, type PreviewTileStatus } from './previewSlotHelpers'
+import { formatResolutionBadgeLabel } from './resolutionLabelHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
-const MAX_PREVIEW_SLOTS = 4
-
-type PreviewTileStatus = 'ready' | 'loading' | 'failed' | 'idle'
 
 type PreviewSlot = {
   index: number
@@ -123,7 +123,7 @@ function ThreadThumb({ asset }: { asset: AiStudioAssetRecord }): React.JSX.Eleme
   const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
 
   return (
-    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
+    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl bg-transparent">
       {src ? (
         <img
           src={src}
@@ -199,44 +199,66 @@ function PreviewStageTile({
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
   const showReferenceAction = Boolean(asset && onUseAsReference)
   const showPoolAction = Boolean(asset && onTogglePool)
+  const [loadedResolution, setLoadedResolution] = useState<{ width: number; height: number } | null>(null)
+  const resolutionBadgeLabel = loadedResolution
+    ? formatResolutionBadgeLabel(loadedResolution.width, loadedResolution.height)
+    : ''
 
   return (
     <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
       <div
         className={cn(
-          'relative overflow-hidden rounded-[28px] bg-white shadow-[0_18px_50px_rgba(15,23,42,0.08)] transition',
-          status === 'loading' && 'shadow-[0_22px_60px_rgba(15,23,42,0.12)]',
-          status === 'failed' && 'shadow-[0_18px_42px_rgba(244,63,94,0.08)]'
+          'relative overflow-hidden rounded-[28px] bg-transparent shadow-none transition',
+          status === 'failed' && 'shadow-[0_12px_32px_rgba(244,63,94,0.06)]'
         )}
       >
-        {status === 'loading' ? (
-          <div className="pointer-events-none absolute inset-0 rounded-[28px] p-[1px] animate-[spin_2.6s_linear_infinite]" style={{ background: 'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))' }}>
-            <div className="h-full w-full rounded-[27px] bg-zinc-100/95" />
-          </div>
-        ) : null}
 
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="block w-full text-left">
-            <div className="aspect-[3/4] overflow-hidden bg-zinc-100">
+            <div className="aspect-[3/4] overflow-hidden rounded-[28px] bg-transparent">
               <img
                 src={src}
                 alt={basename(asset?.filePath)}
                 className="h-full w-full object-cover transition duration-300 hover:scale-[1.01]"
                 draggable={false}
                 loading="lazy"
+                onLoad={(event) => {
+                  const target = event.currentTarget
+                  const width = Number(target.naturalWidth)
+                  const height = Number(target.naturalHeight)
+                  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                    setLoadedResolution(null)
+                    return
+                  }
+                  setLoadedResolution((prev) =>
+                    prev && prev.width === width && prev.height === height ? prev : { width, height }
+                  )
+                }}
               />
             </div>
           </button>
         ) : status === 'failed' ? (
-          <div className="relative aspect-[3/4] bg-[linear-gradient(180deg,rgba(250,250,250,1),rgba(244,244,245,1))]">
-            <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
+          <div className="relative aspect-[3/4] rounded-[28px] border border-rose-200/90 bg-transparent">
             <div className="flex h-full items-center justify-center px-5 text-center text-sm font-medium leading-6 text-zinc-500">
               {statusText || '生成失败'}
             </div>
           </div>
         ) : (
-          <div className="aspect-[3/4] bg-[linear-gradient(180deg,rgba(244,244,245,0.96),rgba(228,228,231,0.9))]" />
+          <div className="aspect-[3/4] rounded-[28px] border border-zinc-200/35 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.9),rgba(244,244,245,0.28))]" />
         )}
+
+        {status === 'loading' ? (
+          <div className="pointer-events-none absolute right-3 top-3 z-10 flex h-8 items-center gap-2 rounded-full border border-white/70 bg-white/88 px-2.5 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-900/70" />
+            <span className="text-[11px] font-medium tracking-[0.08em] text-zinc-500">处理中</span>
+          </div>
+        ) : null}
+
+        {status !== 'failed' && resolutionBadgeLabel ? (
+          <div className="pointer-events-none absolute bottom-2.5 left-2.5 z-10 rounded-full border border-white/18 bg-black/24 px-2 py-0.5 text-[10px] font-medium tracking-[0.02em] text-white/92 shadow-[0_4px_12px_rgba(15,23,42,0.08)] backdrop-blur-sm">
+            {resolutionBadgeLabel}
+          </div>
+        ) : null}
 
         {showPoolAction || showReferenceAction ? (
           <div
@@ -344,6 +366,7 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
+  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
 
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioWorkflowFailureRecord>()
@@ -369,18 +392,13 @@ function HistoryTaskSection({
       (max, record) => Math.max(max, record.sequenceIndex),
       0
     )
-    const previewTargetCount = Math.min(
-      isRunning
-        ? Math.max(
-            workflowMeta.workflow.currentItemTotal || 0,
-            expectedOutputCount || 0,
-            generatedAssets.length,
-            maxFailureIndex,
-            1
-          )
-        : Math.max(generatedAssets.length, expectedOutputCount || 0, maxFailureIndex, 1),
-      MAX_PREVIEW_SLOTS
-    )
+    const previewTargetCount = computePreviewTargetCount({
+      isRunning,
+      currentItemTotal: workflowMeta.workflow.currentItemTotal || 0,
+      expectedOutputCount: expectedOutputCount || 0,
+      generatedCount: generatedAssets.length,
+      maxFailureIndex
+    })
 
     if (previewTargetCount <= 0 && !currentAiMasterAsset) return [] as PreviewSlot[]
 
@@ -388,17 +406,25 @@ function HistoryTaskSection({
       const index = slotIndex + 1
       const asset = assetByIndex.get(index) ?? null
       const failure = failureByIndex.get(index) ?? null
-      const isLoadingSlot = isRunning && !asset && !failure
+      const resolvedState = resolvePreviewSlotState({
+        index,
+        asset,
+        failureMessage: failure?.message ?? null,
+        isRunning,
+        currentLabel: stageProgress.currentLabel,
+        currentItemIndex: workflowMeta.workflow.currentItemIndex,
+        runtimeState: previewRuntimeStates[index] ?? null
+      })
 
       return {
         index,
         asset,
         failure,
-        status: asset ? 'ready' : failure ? 'failed' : isLoadingSlot ? 'loading' : 'idle',
-        statusText: failure ? failure.message : isLoadingSlot ? stageProgress.currentLabel : ''
+        status: resolvedState.status,
+        statusText: resolvedState.statusText
       } satisfies PreviewSlot
     })
-  }, [currentAiMasterAsset, failureRecords, generatedAssets, isRunning, stageProgress.currentLabel, workflowMeta])
+  }, [currentAiMasterAsset, failureRecords, generatedAssets, isRunning, previewRuntimeStates, stageProgress.currentLabel, workflowMeta])
 
   const previewGapPx = 20
   const previewTileWidth = `clamp(120px, calc((100% - ${(Math.max(previewSlots.length - 1, 0) * previewGapPx)}px) / ${Math.max(previewSlots.length, 1)}), 248px)`
@@ -445,7 +471,7 @@ function HistoryTaskSection({
 
       {previewSlots.length > 0 ? (
         <div className="py-1">
-          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
+          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             {previewSlots.map((slot) => (
               <PreviewStageTile
                 key={`${task.id}-preview-slot-${slot.index}`}
@@ -470,7 +496,7 @@ function HistoryTaskSection({
         </div>
       ) : currentAiMasterAsset ? (
         <div className="py-1">
-          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
+          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             <PreviewStageTile
               asset={currentAiMasterAsset}
               status="ready"

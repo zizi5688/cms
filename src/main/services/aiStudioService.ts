@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { basename, extname, join, resolve } from 'path'
 
+import { buildGeminiGenerationConfig, resolveImageSizeForModel } from './aiStudioRequestPayloadHelpers'
 import { SqliteService } from './sqliteService'
 
 export type AiStudioTemplateRecord = {
@@ -272,10 +273,7 @@ const GRSAI_RESULT_PATH = '/v1/draw/result'
 const GRSAI_POLL_WEBHOOK_SENTINEL = '-1'
 const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
 const LEGACY_DEFAULT_IMAGE_MODEL = 'image-default'
-const DEFAULT_IMAGE_SIZE = '1K'
-const MODEL_IMAGE_SIZE_MAP: Record<string, string> = {
-  'nano-banana-pro-4k-vip': '4K'
-}
+const DEFAULT_ADD_WATERMARK = false
 const CONNECTION_TEST_ID = '__codex_connection_test__'
 const HTTP_IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
 const DEFAULT_USER_AGENT =
@@ -415,9 +413,6 @@ function buildImagePromptDirective(payload: {
   if (payload.aspectRatio) {
     lines.push(`输出比例：${payload.aspectRatio}。`)
   }
-  if (payload.outputCount > 1) {
-    lines.push(`尽量一次返回 ${payload.outputCount} 张候选图。`)
-  }
   if (payload.referenceCount > 0) {
     lines.push(
       `第 1 张输入图为主图，后续 ${payload.referenceCount} 张为参考图，请保留主体材质、结构与关键细节。`
@@ -466,6 +461,7 @@ function buildChatCompletionsPayload(payload: {
 function buildGeminiGenerateContentPayload(payload: {
   prompt: string
   aspectRatio: string
+  imageSize: string
   outputCount: number
   urls: string[]
   referenceCount: number
@@ -499,14 +495,10 @@ function buildGeminiGenerateContentPayload(payload: {
         parts
       }
     ],
-    generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE']
-    },
-    imageConfig: payload.aspectRatio
-      ? {
-          aspectRatio: payload.aspectRatio
-        }
-      : undefined
+    generationConfig: buildGeminiGenerationConfig({
+      aspectRatio: payload.aspectRatio,
+      imageSize: payload.imageSize
+    })
   }
 }
 
@@ -777,11 +769,6 @@ function detectFallbackPrice(model: string): { min: number | null; max: number |
   if (normalized.includes('fast')) return GRSAI_PRICE_FALLBACKS['nano-banana-fast']
   if (normalized.includes('nano-banana')) return GRSAI_PRICE_FALLBACKS['nano-banana']
   return { min: null, max: null }
-}
-
-function resolveImageSizeForModel(model: string): string {
-  const normalized = normalizeText(model).toLowerCase()
-  return MODEL_IMAGE_SIZE_MAP[normalized] ?? DEFAULT_IMAGE_SIZE
 }
 
 function parseProviderCode(value: unknown): number | null {
@@ -1148,6 +1135,7 @@ export class AiStudioService {
         ? buildGeminiGenerateContentPayload({
             prompt,
             aspectRatio,
+            imageSize,
             outputCount: task.outputCount,
             urls,
             referenceCount: Math.max(0, urls.length - 1)
@@ -1158,9 +1146,16 @@ export class AiStudioService {
             aspectRatio,
             imageSize,
             urls,
+            addWatermark: DEFAULT_ADD_WATERMARK,
             webHook: GRSAI_POLL_WEBHOOK_SENTINEL,
             shutProgress: false
           }
+
+    const protocol = isChatCompletionsPath(endpointPath)
+      ? 'chat-completions'
+      : isGeminiGenerateContentPath(endpointPath)
+        ? 'gemini-generate-content'
+        : 'grsai-compatible'
 
     const requestSnapshot = {
       model,
@@ -1168,14 +1163,11 @@ export class AiStudioService {
       aspectRatio,
       imageSize,
       endpointPath,
-      protocol: isChatCompletionsPath(endpointPath)
-        ? 'chat-completions'
-        : isGeminiGenerateContentPath(endpointPath)
-          ? 'gemini-generate-content'
-          : 'grsai-compatible',
+      protocol,
       workflowStage: workflowSource.activeStage || 'master-setup',
       currentAiMasterAssetId: workflowSource.currentAiMasterAssetId,
       webHook: GRSAI_POLL_WEBHOOK_SENTINEL,
+      ...(protocol === 'grsai-compatible' ? { addWatermark: DEFAULT_ADD_WATERMARK } : {}),
       outputCount: task.outputCount,
       inputCount: urls.length,
       sourceFiles: sourceImagePaths.map((filePath) => basename(filePath))
