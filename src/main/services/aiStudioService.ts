@@ -1,6 +1,10 @@
+import { app } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { basename, extname, join, resolve } from 'path'
+
+import ffmpeg from 'fluent-ffmpeg'
+import ffprobeStaticImport from 'ffprobe-static'
 
 import { SqliteService } from './sqliteService'
 
@@ -190,6 +194,111 @@ type DbConnection = {
   transaction: <T extends (...args: unknown[]) => unknown>(fn: T) => T
 }
 
+function resolveStaticModule<T>(value: T): T {
+  const maybe = value as unknown as { default?: T }
+  return (
+    maybe && typeof maybe === 'object' && 'default' in maybe && maybe.default
+      ? maybe.default
+      : value
+  ) as T
+}
+
+function normalizePackagedBinaryPath(binaryPath: string): string {
+  const normalized = String(binaryPath ?? '').trim()
+  if (!normalized) return ''
+  if (!app.isPackaged) return normalized
+  return normalized.includes('app.asar')
+    ? normalized.replace('app.asar', 'app.asar.unpacked')
+    : normalized
+}
+
+function resolveFfprobePath(): string {
+  const ffprobeStatic = resolveStaticModule(
+    ffprobeStaticImport as unknown as { path?: string } | null
+  )
+  const raw = ffprobeStatic && typeof ffprobeStatic.path === 'string' ? ffprobeStatic.path : ''
+  const resolved = normalizePackagedBinaryPath(raw)
+  if (!resolved) throw new Error('[AI Studio] ffprobe-static path not found for current platform.')
+  return resolved
+}
+
+let didConfigureVideoProbe = false
+
+function ensureVideoProbeConfigured(): void {
+  if (didConfigureVideoProbe) return
+  ffmpeg.setFfprobePath(resolveFfprobePath())
+  didConfigureVideoProbe = true
+}
+
+function normalizeVideoResolutionRequest(value: unknown): '720p' | '1080p' {
+  const normalized = normalizeText(value).toLowerCase()
+  return normalized === '1080p' ? '1080p' : '720p'
+}
+
+function toAllApiVideoSize(value: unknown): '720P' | '1080P' {
+  return normalizeVideoResolutionRequest(value) === '1080p' ? '1080P' : '720P'
+}
+
+function buildVideoResolutionLabel(width: number, height: number): string {
+  const shortEdge = Math.min(Math.abs(Math.floor(width)), Math.abs(Math.floor(height)))
+  if (!Number.isFinite(shortEdge) || shortEdge <= 0) return ''
+  if (shortEdge >= 2160) return '4K'
+  if (shortEdge >= 1440) return '2K'
+  if (shortEdge >= 1080) return '1080p'
+  if (shortEdge >= 720) return '720p'
+  return `${shortEdge}p`
+}
+
+function parseVideoSizeText(
+  value: unknown
+): { width: number; height: number; sizeText: string; resolutionLabel: string } | null {
+  const normalized = normalizeText(value)
+  if (!normalized) return null
+  const matched = normalized.match(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/i)
+  if (!matched) return null
+  const width = Number.parseInt(matched[1] ?? '', 10)
+  const height = Number.parseInt(matched[2] ?? '', 10)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
+  return {
+    width,
+    height,
+    sizeText: `${width}x${height}`,
+    resolutionLabel: buildVideoResolutionLabel(width, height)
+  }
+}
+
+async function probeVideoOutputResolution(
+  filePath: string
+): Promise<{ width: number; height: number; sizeText: string; resolutionLabel: string } | null> {
+  const normalizedPath = normalizeText(filePath)
+  if (!normalizedPath) return null
+  ensureVideoProbeConfigured()
+  return await new Promise((resolve) => {
+    ffmpeg.ffprobe(normalizedPath, (error, metadata) => {
+      if (error || !metadata) {
+        resolve(null)
+        return
+      }
+      const streams = Array.isArray(metadata.streams)
+        ? (metadata.streams as Array<{ codec_type?: unknown; width?: unknown; height?: unknown }>)
+        : []
+      const videoStream = streams.find((stream) => stream.codec_type === 'video')
+      const width = Number(videoStream?.width ?? 0)
+      const height = Number(videoStream?.height ?? 0)
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        resolve(null)
+        return
+      }
+      resolve({
+        width,
+        height,
+        sizeText: `${width}x${height}`,
+        resolutionLabel: buildVideoResolutionLabel(width, height)
+      })
+    })
+  })
+}
+
 function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -244,9 +353,7 @@ function normalizeProviderProfiles(value: unknown): AiStudioProviderProfile[] {
     if (Array.isArray(record.models)) {
       record.models.forEach((modelItem, modelIndex) => {
         const modelRecord =
-          modelItem && typeof modelItem === 'object'
-            ? (modelItem as Record<string, unknown>)
-            : {}
+          modelItem && typeof modelItem === 'object' ? (modelItem as Record<string, unknown>) : {}
         const modelName = normalizeText(modelRecord.modelName ?? modelRecord.name)
         if (!modelName) return
         models.push({
@@ -267,7 +374,7 @@ function normalizeProviderProfiles(value: unknown): AiStudioProviderProfile[] {
       defaultModelId:
         requestedDefaultModelId && models.some((model) => model.id === requestedDefaultModelId)
           ? requestedDefaultModelId
-          : models[0]?.id ?? null
+          : (models[0]?.id ?? null)
     })
   })
 
@@ -290,7 +397,9 @@ function findProviderModelProfile(
   if (!providerProfile) return null
   const normalized = normalizeText(modelName).toLowerCase()
   if (!normalized) return null
-  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+  return (
+    providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+  )
 }
 
 function resolveProviderModelProfile(
@@ -300,7 +409,9 @@ function resolveProviderModelProfile(
   const preferred = findProviderModelProfile(providerProfile, preferredModelName)
   if (preferred) return preferred
   if (providerProfile?.defaultModelId) {
-    return providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+    return (
+      providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+    )
   }
   return providerProfile?.models[0] ?? null
 }
@@ -384,7 +495,10 @@ const GRSAI_PRICE_FALLBACKS: Record<string, { min: number; max: number }> = {
   'image-default': { min: 0.022, max: 0.044 }
 }
 
-function normalizeVideoCreateAspectRatio(model: string, aspectRatio: string): '16:9' | '9:16' | null {
+function normalizeVideoCreateAspectRatio(
+  model: string,
+  aspectRatio: string
+): '16:9' | '9:16' | null {
   const normalizedModel = normalizeText(model).toLowerCase()
   const normalizedAspectRatio = normalizeText(aspectRatio)
   if (normalizedAspectRatio !== '16:9' && normalizedAspectRatio !== '9:16') return null
@@ -411,7 +525,10 @@ function normalizeVideoCreateInputPaths(model: string, inputPaths: string[]): st
 
 function isVideoCreatePath(apiPath: string): boolean {
   const normalized = normalizeText(apiPath).toLowerCase()
-  return /(?:^|\/)v1\/video\/create(?:$|\?)/.test(normalized) || /(?:^|\/)video\/create(?:$|\?)/.test(normalized)
+  return (
+    /(?:^|\/)v1\/video\/create(?:$|\?)/.test(normalized) ||
+    /(?:^|\/)video\/create(?:$|\?)/.test(normalized)
+  )
 }
 
 function sanitizeBaseUrl(baseUrl: string): string {
@@ -504,12 +621,17 @@ function summarizeVideoDebugValue(value: unknown, keyHint = ''): unknown {
     if (/^data:image\//i.test(normalized) || /^data:video\//i.test(normalized)) {
       return {
         kind: /^data:image\//i.test(normalized) ? 'image-data-url' : 'video-data-url',
-        prefix: normalized.slice(0, Math.min(normalized.indexOf(','), 48)).trim() || normalized.slice(0, 48),
+        prefix:
+          normalized.slice(0, Math.min(normalized.indexOf(','), 48)).trim() ||
+          normalized.slice(0, 48),
         length: normalized.length,
         sha1: createHash('sha1').update(normalized).digest('hex').slice(0, 12)
       }
     }
-    if (normalized.length > 1200 && !['prompt', 'effectivePrompt', 'negative_prompt', 'message', 'rawText'].includes(keyHint)) {
+    if (
+      normalized.length > 1200 &&
+      !['prompt', 'effectivePrompt', 'negative_prompt', 'message', 'rawText'].includes(keyHint)
+    ) {
       return {
         kind: 'long-text',
         length: normalized.length,
@@ -1047,9 +1169,7 @@ function extractFailureReason(payload: Record<string, unknown>): string | null {
       ? (payload.detail as Record<string, unknown>)
       : null
   const dataDetail =
-    data.detail && typeof data.detail === 'object'
-      ? (data.detail as Record<string, unknown>)
-      : null
+    data.detail && typeof data.detail === 'object' ? (data.detail as Record<string, unknown>) : null
   const details = Array.isArray(payload.details)
     ? payload.details
         .map((item) => {
@@ -1356,7 +1476,10 @@ export class AiStudioService {
     return join(this.getWorkspacePath(), 'debug', AI_STUDIO_VIDEO_DEBUG_FILE_NAME)
   }
 
-  private async appendVideoDebugLog(stage: string, payload: Record<string, unknown>): Promise<void> {
+  private async appendVideoDebugLog(
+    stage: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
     const logPath = this.getVideoDebugLogPath()
     const entry = {
       marker: AI_STUDIO_VIDEO_DEBUG_MARKER,
@@ -1368,8 +1491,12 @@ export class AiStudioService {
 
     try {
       await mkdir(join(this.getWorkspacePath(), 'debug'), { recursive: true })
-      await appendFile(logPath, `${JSON.stringify(entry)}
-`, 'utf8')
+      await appendFile(
+        logPath,
+        `${JSON.stringify(entry)}
+`,
+        'utf8'
+      )
     } catch (error) {
       console.warn('[AI Studio][VideoDebug] 写入失败：', error)
     }
@@ -1439,7 +1566,10 @@ export class AiStudioService {
       provider: providerProfile.providerName,
       baseUrl: sanitizeBaseUrl(providerProfile.baseUrl),
       apiKey: normalizeText(providerProfile.apiKey),
-      defaultImageModel: resolveConfiguredModel(modelProfile?.modelName ?? task.model, fallback.defaultImageModel),
+      defaultImageModel: resolveConfiguredModel(
+        modelProfile?.modelName ?? task.model,
+        fallback.defaultImageModel
+      ),
       endpointPath: normalizeText(modelProfile?.endpointPath) || fallback.endpointPath,
       providerProfiles: provided.providerProfiles
     }
@@ -1717,15 +1847,20 @@ export class AiStudioService {
     const shouldTranslatePrompt = containsCjkText(prompt)
     const disableAudio = isVeo3VideoModel(model)
     const effectivePrompt = buildVideoWhiteNoisePrompt(prompt)
+    const requestedResolution = normalizeVideoResolutionRequest(videoMeta.resolution)
+    const requestedSize = toAllApiVideoSize(requestedResolution)
+    const shouldEnableUpsample = requestedResolution === '1080p'
     const requestPayload: Record<string, unknown> = {
       model,
       prompt: effectivePrompt,
       images,
       duration: videoMeta.duration,
+      size: requestedSize,
+      resolution: requestedResolution,
       watermark: false,
       enhance_prompt: false,
       translate: shouldTranslatePrompt,
-      enable_upsample: true
+      enable_upsample: shouldEnableUpsample
     }
     if (aspectRatio) {
       requestPayload.aspect_ratio = aspectRatio
@@ -1743,10 +1878,12 @@ export class AiStudioService {
       protocol: 'allapi-video-unified',
       mode: videoMeta.mode,
       aspectRatio: videoMeta.aspectRatio,
-      size: videoMeta.resolution,
+      resolution: requestedResolution,
+      size: requestedSize,
       duration: videoMeta.duration,
       translate: shouldTranslatePrompt,
       enhancePrompt: false,
+      enableUpsample: shouldEnableUpsample,
       disableAudio,
       outputCount: videoMeta.outputCount,
       inputCount: inputPaths.length,
@@ -1879,6 +2016,8 @@ export class AiStudioService {
     runDir: string
     index: number
     item: Record<string, unknown>
+    requestedResolution?: string | null
+    responseSize?: string | null
   }): Promise<AiStudioAssetWriteInput | null> {
     const remoteUrl = normalizeText(payload.item.url)
     const inlineContent = normalizeText(payload.item.content)
@@ -1914,6 +2053,12 @@ export class AiStudioService {
     const filePath = join(payload.runDir, fileName)
     await writeFile(filePath, buffer)
 
+    const requestedResolution = normalizeVideoResolutionRequest(payload.requestedResolution)
+    const requestedSize = toAllApiVideoSize(requestedResolution)
+    const parsedResponseSize = parseVideoSizeText(payload.responseSize)
+    const probedResolution = await probeVideoOutputResolution(filePath)
+    const effectiveResolution = probedResolution ?? parsedResponseSize
+
     return {
       id: `ai-video-output-${createHash('sha1').update(`${payload.runId}:${payload.index}`).digest('hex')}`,
       taskId: payload.taskId,
@@ -1928,7 +2073,14 @@ export class AiStudioService {
       metadata: {
         remoteUrl: remoteUrl || null,
         remoteContent: inlineContent ? '[inline-content]' : null,
-        contentType
+        contentType,
+        requestedResolution,
+        requestedSize,
+        responseSize: payload.responseSize ?? null,
+        videoWidth: effectiveResolution?.width ?? null,
+        videoHeight: effectiveResolution?.height ?? null,
+        videoSizeText: effectiveResolution?.sizeText ?? payload.responseSize ?? null,
+        resolutionLabel: effectiveResolution?.resolutionLabel || requestedResolution
       }
     }
   }
@@ -2311,6 +2463,9 @@ export class AiStudioService {
       return this.listAssets({ taskId, runId, kind: 'output' })
     }
 
+    const task = this.getTaskOrThrow(taskId)
+    const videoMeta = readVideoMetadata(task)
+    const responseSize = normalizeNullableText(responsePayload.size)
     const runDir =
       normalizeText(run.runDir) || (await this.ensureTaskRunDirectory(taskId, run.runIndex)).dirPath
     const assetsToWrite: AiStudioAssetWriteInput[] = []
@@ -2323,7 +2478,9 @@ export class AiStudioService {
           runId,
           runDir,
           index,
-          item: results[index]
+          item: results[index],
+          requestedResolution: videoMeta.resolution,
+          responseSize
         })
         if (persisted) assetsToWrite.push(persisted)
       } catch (error) {
@@ -2394,17 +2551,21 @@ export class AiStudioService {
       requestSnapshot
     })
 
-    const response = await this.requestProvider(queryPath, { id: existingRun.remoteTaskId }, {
-      method: 'GET',
-      providerConfig,
-      debugContext: {
-        flow: 'video-poll',
-        taskId,
-        runId: existingRun.id,
-        remoteTaskId: existingRun.remoteTaskId,
-        queryPath
+    const response = await this.requestProvider(
+      queryPath,
+      { id: existingRun.remoteTaskId },
+      {
+        method: 'GET',
+        providerConfig,
+        debugContext: {
+          flow: 'video-poll',
+          taskId,
+          runId: existingRun.id,
+          remoteTaskId: existingRun.remoteTaskId,
+          queryPath
+        }
       }
-    })
+    )
     const status = extractVideoResultStatus(response.payload, existingRun.status)
     const errorMessage = status === 'failed' ? extractFailureReason(response.payload) : null
 

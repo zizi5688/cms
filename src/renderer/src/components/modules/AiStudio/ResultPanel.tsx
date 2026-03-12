@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
@@ -68,6 +68,63 @@ function getAssetSequenceIndex(asset: AiStudioAssetRecord, fallbackIndex: number
   }
 
   return Math.max(1, asset.sortOrder + 1, fallbackIndex)
+}
+
+function normalizeOverlayText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function buildResolutionLabelFromDimensions(width: number, height: number): string {
+  const shortEdge = Math.min(Math.abs(Math.floor(width)), Math.abs(Math.floor(height)))
+  if (!Number.isFinite(shortEdge) || shortEdge <= 0) return ''
+  if (shortEdge >= 2160) return '4K'
+  if (shortEdge >= 1440) return '2K'
+  if (shortEdge >= 1080) return '1080p'
+  if (shortEdge >= 720) return '720p'
+  return `${shortEdge}p`
+}
+
+function readVideoAssetResolutionLabel(
+  asset: AiStudioAssetRecord | null | undefined,
+  fallbackResolution?: string | null
+): string {
+  if (!asset || !asset.metadata || typeof asset.metadata !== 'object') {
+    return normalizeOverlayText(fallbackResolution)
+  }
+
+  const metadata = asset.metadata as Record<string, unknown>
+  const explicitLabel = normalizeOverlayText(metadata.resolutionLabel)
+  if (explicitLabel) return explicitLabel
+
+  const width = Number(metadata.videoWidth ?? 0)
+  const height = Number(metadata.videoHeight ?? 0)
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    const label = buildResolutionLabelFromDimensions(width, height)
+    if (label) return label
+  }
+
+  const sizeText = normalizeOverlayText(metadata.videoSizeText ?? metadata.responseSize)
+  if (sizeText) {
+    const matched = sizeText.match(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/i)
+    if (matched) {
+      const parsedWidth = Number.parseInt(matched[1] ?? '', 10)
+      const parsedHeight = Number.parseInt(matched[2] ?? '', 10)
+      if (
+        Number.isFinite(parsedWidth) &&
+        Number.isFinite(parsedHeight) &&
+        parsedWidth > 0 &&
+        parsedHeight > 0
+      ) {
+        const label = buildResolutionLabelFromDimensions(parsedWidth, parsedHeight)
+        if (label) return label
+      }
+    }
+  }
+
+  const requestedResolution = normalizeOverlayText(metadata.requestedResolution)
+  if (requestedResolution) return requestedResolution
+
+  return normalizeOverlayText(fallbackResolution)
 }
 
 async function captureVideoPoster(filePath: string): Promise<string> {
@@ -605,6 +662,7 @@ function VideoPreviewTile({
   status,
   statusText,
   detailText,
+  resolutionLabel,
   onOpen,
   onTogglePool,
   pooled,
@@ -616,6 +674,7 @@ function VideoPreviewTile({
   status: PreviewTileStatus
   statusText?: string
   detailText?: string
+  resolutionLabel?: string
   onOpen?: () => void
   onTogglePool?: () => void
   pooled?: boolean
@@ -734,6 +793,12 @@ function VideoPreviewTile({
                 onClick={onUseAsReference!}
               />
             ) : null}
+          </div>
+        ) : null}
+
+        {asset && resolutionLabel ? (
+          <div className="pointer-events-none absolute bottom-3 left-3 z-10 inline-flex h-6 items-center rounded-full bg-black/72 px-2.5 text-[10px] font-medium tracking-[0.04em] text-white shadow-[0_8px_18px_rgba(0,0,0,0.24)] backdrop-blur-sm">
+            {resolutionLabel}
           </div>
         ) : null}
       </div>
@@ -864,6 +929,9 @@ function VideoHistoryTaskSection({
               status={slot.status}
               statusText={slot.statusText}
               detailText={slot.detailText}
+              resolutionLabel={
+                slot.asset ? readVideoAssetResolutionLabel(slot.asset, videoMeta.resolution) : ''
+              }
               pooled={slot.asset?.selected}
               style={{ width: 'clamp(148px, 24vw, 220px)' }}
               onOpen={slot.asset ? () => onOpenAsset(slot.asset as AiStudioAssetRecord) : undefined}
@@ -889,6 +957,22 @@ function VideoHistoryTaskSection({
 function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
   const [lightboxAsset, setLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
   const isVideoStudio = state.studioCapability === 'video'
+  const historyTailRef = useRef<HTMLDivElement | null>(null)
+  const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
+  const latestRunningHistoryKey =
+    latestHistoryTask && latestHistoryTask.status === 'running' ? `${latestHistoryTask.id}:running` : ''
+  const previousLatestRunningHistoryKeyRef = useRef('')
+
+  useLayoutEffect(() => {
+    if (!isVideoStudio) return
+    if (!latestRunningHistoryKey) {
+      previousLatestRunningHistoryKeyRef.current = ''
+      return
+    }
+    if (previousLatestRunningHistoryKeyRef.current === latestRunningHistoryKey) return
+    previousLatestRunningHistoryKeyRef.current = latestRunningHistoryKey
+    historyTailRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+  }, [isVideoStudio, latestRunningHistoryKey])
 
   if (state.historyTasks.length === 0) {
     return isVideoStudio ? (
@@ -930,6 +1014,7 @@ function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.El
             />
           )
         )}
+        <div ref={historyTailRef} aria-hidden="true" className="h-px w-full shrink-0" />
       </div>
 
       {isVideoStudio ? (
