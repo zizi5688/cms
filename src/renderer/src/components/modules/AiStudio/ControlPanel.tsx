@@ -482,7 +482,7 @@ function VideoModelConfigurator({
 
   return (
     <>
-      <label className="relative flex min-w-[240px] flex-[1.6] flex-col gap-1.5">
+      <label className="relative flex min-w-[198px] flex-[1.25] flex-col gap-1">
         <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模型</span>
         <button
           type="button"
@@ -493,13 +493,13 @@ function VideoModelConfigurator({
             }
             openConfigurator()
           }}
-          className="inline-flex h-9 w-full items-center justify-between rounded-full border border-zinc-200 bg-white px-3 text-left shadow-[0_8px_24px_rgba(15,23,42,0.06)] transition hover:border-zinc-300"
+          className="inline-flex h-8 w-full items-center justify-between rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-left text-[12px] transition hover:border-zinc-300 focus-visible:border-sky-400 focus-visible:outline-none"
         >
           <span className="flex min-w-0 items-center gap-2 pr-3">
             {currentModelName ? (
               <span
                 className={cn(
-                  'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[10px] font-semibold',
+                  'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
                   triggerVisual.badgeClassName
                 )}
               >
@@ -510,7 +510,7 @@ function VideoModelConfigurator({
                 )}
               </span>
             ) : null}
-            <span className="min-w-0 truncate text-[13px] font-medium text-zinc-900">
+            <span className="min-w-0 truncate text-[12px] font-medium text-zinc-900">
               {triggerLabel}
             </span>
           </span>
@@ -738,7 +738,7 @@ function VideoModelConfigurator({
                                     >
                                       <span
                                         className={cn(
-                                          'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[10px] font-semibold',
+                                          'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
                                           modelVisual.badgeClassName
                                         )}
                                       >
@@ -952,18 +952,18 @@ function ControlPanel({
   }
 
   const actionButtonClass =
-    'relative h-10 shrink-0 rounded-full border border-zinc-950 bg-white px-4 text-[13px] font-medium text-zinc-950 shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400'
+    'relative inline-flex h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-zinc-950 bg-white px-3 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400'
   const fieldClass =
-    'h-9 rounded-full border border-zinc-200 bg-zinc-50 px-3 text-[13px] text-zinc-900 outline-none transition focus:border-sky-400'
+    'h-8 rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-[12px] text-zinc-900 outline-none transition focus:border-sky-400'
 
   return (
-    <div className="relative z-30 flex min-w-0 flex-wrap items-end gap-3 overflow-visible pb-1">
-      <div className="flex min-w-0 flex-1 flex-wrap items-end gap-3">
+    <div className="relative z-30 flex min-w-0 items-end gap-2 overflow-x-auto overflow-y-visible pb-0.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
         {isVideoStudio ? (
           <>
             <VideoModelConfigurator state={state} />
 
-            <label className="flex w-[116px] min-w-[116px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模式</span>
               <select
                 value={currentVideoMeta.mode}
@@ -978,7 +978,7 @@ function ControlPanel({
               </select>
             </label>
 
-            <label className="flex w-[118px] min-w-[118px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">比例</span>
               <select
                 value={currentVideoMeta.aspectRatio}
@@ -993,7 +993,7 @@ function ControlPanel({
               </select>
             </label>
 
-            <label className="flex w-[96px] min-w-[96px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[88px] min-w-[88px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">清晰度</span>
               <select
                 value={currentVideoMeta.resolution}
@@ -1008,7 +1008,7 @@ function ControlPanel({
               </select>
             </label>
 
-            <label className="flex w-[84px] min-w-[84px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">时长</span>
               <select
                 value={String(currentVideoMeta.duration)}
@@ -1023,7 +1023,7 @@ function ControlPanel({
               </select>
             </label>
 
-            <label className="flex w-[92px] min-w-[92px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[80px] min-w-[80px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">条数</span>
               <input
                 type="number"
@@ -1051,7 +1051,7 @@ function ControlPanel({
           </>
         ) : (
           <>
-            <label className="flex w-[120px] min-w-[120px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[112px] min-w-[112px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模型</span>
               <select
                 value={currentImageModel}
@@ -1067,7 +1067,7 @@ function ControlPanel({
               </select>
             </label>
 
-            <label className="flex w-[84px] min-w-[84px] shrink-0 flex-col gap-1.5">
+            <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
               <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">
                 输出张数
               </span>
@@ -1093,12 +1093,12 @@ function ControlPanel({
         )}
       </div>
 
-      <div className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 xl:w-auto xl:flex-nowrap">
+      <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
         <div className="group/pool relative z-[120] shrink-0">
           {state.pooledOutputCount > 0 ? (
             <div className="pointer-events-none absolute bottom-full right-0 z-[140] mb-1 translate-y-1 opacity-0 transition duration-150 group-hover/pool:pointer-events-auto group-hover/pool:translate-y-0 group-hover/pool:opacity-100 group-focus-within/pool:pointer-events-auto group-focus-within/pool:translate-y-0 group-focus-within/pool:opacity-100">
-              <div className="rounded-[22px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-                <div className="flex w-[282px] gap-2 overflow-x-auto pb-1">
+              <div className="rounded-[20px] border border-zinc-200 bg-white p-2.5 shadow-[0_18px_40px_rgba(15,23,42,0.16)]">
+                <div className="flex w-[248px] gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                   {state.pooledOutputAssets.map((asset) => (
                     <PoolPreviewThumb
                       key={asset.id}
@@ -1121,8 +1121,8 @@ function ControlPanel({
             onClick={() => void handleSendPool()}
             disabled={state.pooledOutputCount <= 0}
           >
-            <Send className="h-4 w-4" />
-            发送图池
+            <Send className="h-3.5 w-3.5" />
+            <span className="max-[1320px]:hidden">发送图池</span>
             {state.pooledOutputCount > 0 ? (
               <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
                 {state.pooledOutputCount}
@@ -1143,8 +1143,8 @@ function ControlPanel({
           }}
           disabled={isInterrupting}
         >
-          <ArrowUp className="h-4 w-4" />
-          {actionLabel}
+          <ArrowUp className="h-3.5 w-3.5" />
+          <span className="max-[1320px]:hidden">{actionLabel}</span>
         </Button>
       </div>
     </div>

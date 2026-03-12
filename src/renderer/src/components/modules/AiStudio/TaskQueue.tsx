@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
-import { ArrowRightLeft, History, ImagePlus, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, History, ImagePlus, Sparkles, Trash2, Upload, X } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -269,9 +269,10 @@ function QuickInsertPopover({
     <div className="group/quick relative shrink-0 self-start pr-2 -mr-2">
       <button
         type="button"
-        className="inline-flex h-8 items-center rounded-full border border-zinc-200 bg-zinc-100/90 px-3 text-[12px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
+        className="inline-flex h-7 items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-100/90 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
       >
-        快捷插入
+        <Sparkles className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 truncate max-[1180px]:hidden">快捷插入</span>
       </button>
 
       <div
@@ -507,7 +508,7 @@ function HoverPanel({
                         event.stopPropagation()
                         onRemove(asset)
                       }}
-                      className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/80 bg-white/96 text-zinc-700 opacity-0 shadow-sm transition hover:bg-white hover:text-zinc-950 group-hover/thumb-item:opacity-100"
+                      className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 opacity-0 shadow-sm transition hover:border-zinc-300 hover:text-zinc-950 group-hover/thumb-item:opacity-100"
                       aria-label="删除该参考图"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -685,7 +686,7 @@ function VideoInputCard({
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
 
   return (
-    <div className="group relative flex w-[88px] shrink-0 flex-col items-center gap-2">
+    <div className="group relative flex w-[78px] shrink-0 flex-col items-center gap-1.5">
       <button
         type="button"
         onClick={() => {
@@ -697,7 +698,7 @@ function VideoInputCard({
         }}
         disabled={disabled}
         className={cn(
-          'relative h-[112px] w-[88px] overflow-hidden rounded-[24px] border bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,244,245,0.92))] shadow-[0_10px_28px_rgba(15,23,42,0.08)] transition',
+          'relative h-[104px] w-[78px] overflow-hidden rounded-[22px] border bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,244,245,0.92))] shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition',
           asset
             ? 'border-zinc-200 hover:-translate-y-0.5 hover:border-zinc-300'
             : 'border-dashed border-zinc-300 text-zinc-400 hover:border-zinc-400 hover:text-zinc-700',
@@ -713,33 +714,43 @@ function VideoInputCard({
             loading="lazy"
           />
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-zinc-400">
-            <ImagePlus className="h-5 w-5" />
-            <span className="text-[11px] font-medium">上传图片</span>
+          <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 text-zinc-400">
+            <ImagePlus className="h-4 w-4" />
+            <span className="text-[10px] font-medium">上传图片</span>
           </div>
         )}
 
-        <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(15,23,42,0.72))] px-2 py-2 text-center text-[11px] font-medium text-white">
+        <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(15,23,42,0.72))] px-1.5 py-1.5 text-center text-[10px] font-medium text-white">
           {title}
         </div>
       </button>
 
       {asset ? (
-        <div className="flex items-center gap-1">
+        <div className="pointer-events-none absolute right-1.5 top-1.5 z-20 flex items-center gap-1 opacity-0 transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
           <button
             type="button"
-            onClick={onUpload}
+            onClick={(event) => {
+              event.stopPropagation()
+              onUpload()
+            }}
             disabled={disabled}
-            className="inline-flex h-7 items-center rounded-full border border-zinc-200 bg-white px-2.5 text-[11px] font-medium text-zinc-600 transition hover:border-zinc-300 hover:text-zinc-900"
+            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:border-zinc-300 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-70"
+            aria-label={`替换${title}`}
+            title="替换"
           >
-            替换
+            <Upload className="h-3 w-3" />
           </button>
           <button
             type="button"
-            onClick={onRemove}
-            className="inline-flex h-7 items-center rounded-full border border-zinc-200 bg-white px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-rose-200 hover:text-rose-500"
+            onClick={(event) => {
+              event.stopPropagation()
+              onRemove()
+            }}
+            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-sm transition hover:border-rose-200 hover:bg-white hover:text-rose-500"
+            aria-label={`删除${title}`}
+            title="删除"
           >
-            删除
+            <Trash2 className="h-3 w-3" />
           </button>
         </div>
       ) : null}
@@ -792,11 +803,11 @@ function TaskQueue({
   const canAddMore = inputAssets.length < MAX_AI_STUDIO_REFERENCE_IMAGES
   const promptComposerMinHeight = isVideoStudio
     ? videoMeta.mode === 'first-last-frame'
-      ? 170
-      : 154
+      ? 148
+      : 132
     : inputAssets.length > 0
-      ? 154
-      : 144
+      ? 136
+      : 124
 
   const handleOpenTemplateModal = (): void => {
     setEditingTemplateId(null)
@@ -1024,8 +1035,8 @@ function TaskQueue({
           isDragActive && 'rounded-[26px] bg-sky-50/40 ring-1 ring-sky-200/80'
         )}
       >
-        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 py-0">
-          <div className="flex flex-col items-start gap-2 pt-0.5">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 py-0">
+          <div className="flex flex-col items-start gap-1.5 pt-0.5">
             {isVideoStudio ? (
               <>
                 {videoMeta.mode === 'subject-reference' ? (
@@ -1100,8 +1111,8 @@ function TaskQueue({
                   ? '描述镜头运动、节奏、主体动作和氛围，例如：主体轻微转身，镜头缓慢推近，背景光影流动。'
                   : '输入本次提示词...'
               }
-              style={{ minHeight: `${promptComposerMinHeight}px` }}
-              className="h-full max-h-none w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-7 text-zinc-900 shadow-none placeholder:text-zinc-400 focus-visible:ring-0"
+              className="h-full max-h-none w-full resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-6 text-zinc-900 shadow-none placeholder:text-zinc-400 focus-visible:ring-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+              style={{ minHeight: `${promptComposerMinHeight}px`, scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             />
           </div>
         </div>

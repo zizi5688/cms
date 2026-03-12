@@ -22,6 +22,9 @@ import {
 
 const MASTER_CLEAN_ROLE = 'master-clean'
 const MAX_PREVIEW_SLOTS = 4
+const VIDEO_POSTER_CAPTURE_TIME_SEC = 0.05
+const videoPosterCache = new Map<string, string>()
+const videoPosterInflight = new Map<string, Promise<string>>()
 
 type PreviewTileStatus = 'ready' | 'loading' | 'failed' | 'idle'
 
@@ -65,6 +68,33 @@ function getAssetSequenceIndex(asset: AiStudioAssetRecord, fallbackIndex: number
   }
 
   return Math.max(1, asset.sortOrder + 1, fallbackIndex)
+}
+
+async function captureVideoPoster(filePath: string): Promise<string> {
+  const normalizedPath = String(filePath ?? '').trim()
+  if (!normalizedPath) throw new Error('视频路径为空')
+
+  const cacheKey = `${normalizedPath}@${VIDEO_POSTER_CAPTURE_TIME_SEC}`
+  const cached = videoPosterCache.get(cacheKey)
+  if (cached) return cached
+
+  const inflight = videoPosterInflight.get(cacheKey)
+  if (inflight) return inflight
+
+  const request = window.electronAPI
+    .captureVideoFrame(normalizedPath, VIDEO_POSTER_CAPTURE_TIME_SEC)
+    .then((savedPath) => {
+      const normalizedSavedPath = String(savedPath ?? '').trim()
+      if (!normalizedSavedPath) throw new Error('封面保存失败')
+      videoPosterCache.set(cacheKey, normalizedSavedPath)
+      return normalizedSavedPath
+    })
+    .finally(() => {
+      videoPosterInflight.delete(cacheKey)
+    })
+
+  videoPosterInflight.set(cacheKey, request)
+  return request
 }
 
 function ImageLightbox({
@@ -526,7 +556,7 @@ function VideoLightbox({
   onOpenChange: (next: boolean) => void
 }): React.JSX.Element | null {
   const workspacePath = useCmsStore((store) => store.workspacePath)
-  const src = asset ? resolveLocalImage(asset.filePath, workspacePath) : ''
+  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
 
   useEffect(() => {
     if (!open) return
@@ -594,9 +624,38 @@ function VideoPreviewTile({
   style?: React.CSSProperties
 }): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
-  const src = asset ? resolveLocalImage(asset.filePath, workspacePath) : ''
+  const sourcePath = String(asset?.filePath ?? '').trim()
+  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+  const [posterState, setPosterState] = useState<{ sourcePath: string; posterPath: string }>({
+    sourcePath: '',
+    posterPath: ''
+  })
   const showPoolAction = Boolean(asset && onTogglePool)
   const showReferenceAction = Boolean(asset && onUseAsReference)
+
+  useEffect(() => {
+    if (!sourcePath) return
+
+    let cancelled = false
+    void captureVideoPoster(sourcePath)
+      .then((savedPath) => {
+        if (cancelled) return
+        setPosterState({ sourcePath, posterPath: savedPath })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setPosterState({ sourcePath, posterPath: '' })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [sourcePath])
+
+  const posterSrc =
+    posterState.sourcePath === sourcePath && posterState.posterPath
+      ? resolveLocalImage(posterState.posterPath, workspacePath)
+      : ''
 
   return (
     <div className="flex shrink-0 flex-col gap-2" style={style}>
@@ -606,6 +665,7 @@ function VideoPreviewTile({
             <div className="relative aspect-[9/16] overflow-hidden bg-black">
               <video
                 src={src}
+                poster={posterSrc || undefined}
                 className="h-full w-full object-cover"
                 muted
                 playsInline
@@ -783,14 +843,14 @@ function VideoHistoryTaskSection({
           ))}
         </div>
         <div className="min-w-0 pt-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
-            <div className="inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 text-[11px] font-medium text-zinc-500">
+          <div className="text-[15px] font-medium leading-7 text-zinc-900">
+            <span>{promptExcerpt}</span>
+            <span className="ml-2 inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 align-middle text-[11px] font-medium text-zinc-500 whitespace-nowrap">
               {videoMeta.mode === 'first-last-frame' ? '首尾帧' : '主体参考'}
-            </div>
-            <div className="inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 text-[11px] font-medium text-zinc-500">
+            </span>
+            <span className="ml-2 inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 align-middle text-[11px] font-medium text-zinc-500 whitespace-nowrap">
               {videoMeta.aspectRatio} · {videoMeta.resolution} · {videoMeta.duration}s
-            </div>
+            </span>
           </div>
         </div>
       </div>
