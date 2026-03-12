@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type * as React from 'react'
 
 import { ImageIcon, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
+import { cn } from '@renderer/lib/utils'
 
 import { ControlPanel } from './ControlPanel'
 import { ResultPanel } from './ResultPanel'
@@ -11,7 +12,9 @@ import { TaskQueue } from './TaskQueue'
 import { useAiStudioState } from './useAiStudioState'
 
 function readPromptSeed(state: ReturnType<typeof useAiStudioState>): string {
-  return String(state.activeTask?.promptExtra ?? state.masterPromptExtra ?? state.childPromptExtra ?? '').trim()
+  return String(
+    state.activeTask?.promptExtra ?? state.masterPromptExtra ?? state.childPromptExtra ?? ''
+  ).trim()
 }
 
 function AiStudioCanvas({
@@ -22,10 +25,6 @@ function AiStudioCanvas({
   initialPromptDraft: string
 }): React.JSX.Element {
   const [promptDraft, setPromptDraft] = useState(initialPromptDraft)
-
-  useEffect(() => {
-    setPromptDraft(initialPromptDraft)
-  }, [initialPromptDraft, state.activeTaskId])
 
   return (
     <Card className="flex h-full min-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-[34px] border border-zinc-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,244,245,0.96))] text-zinc-950 shadow-[0_30px_100px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -38,15 +37,26 @@ function AiStudioCanvas({
           <div className="mb-3 inline-flex items-center rounded-[20px] border border-zinc-200 bg-zinc-100/90 p-1 shadow-sm">
             <button
               type="button"
-              className="inline-flex h-9 items-center gap-2 rounded-[16px] bg-zinc-950 px-4 text-sm font-medium text-white"
+              onClick={() => state.setStudioCapability('image')}
+              className={cn(
+                'inline-flex h-9 items-center gap-2 rounded-[16px] px-4 text-sm font-medium transition',
+                state.studioCapability === 'image'
+                  ? 'bg-zinc-950 text-white'
+                  : 'text-zinc-500 hover:text-zinc-900'
+              )}
             >
               <ImageIcon className="h-4 w-4" />
               图片
             </button>
             <button
               type="button"
-              disabled
-              className="inline-flex h-9 items-center gap-2 rounded-[16px] px-4 text-sm font-medium text-zinc-400"
+              onClick={() => state.setStudioCapability('video')}
+              className={cn(
+                'inline-flex h-9 items-center gap-2 rounded-[16px] px-4 text-sm font-medium transition',
+                state.studioCapability === 'video'
+                  ? 'bg-zinc-950 text-white'
+                  : 'text-zinc-500 hover:text-zinc-900'
+              )}
             >
               <Video className="h-4 w-4" />
               视频
@@ -69,7 +79,7 @@ function AiStudio(): React.JSX.Element {
   const state = useAiStudioState()
   return (
     <AiStudioCanvas
-      key={state.activeTaskId ?? 'empty'}
+      key={`${state.studioCapability}:${state.activeTask?.id ?? 'empty'}`}
       state={state}
       initialPromptDraft={readPromptSeed(state)}
     />

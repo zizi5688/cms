@@ -921,7 +921,13 @@ const api = {
     },
     aiStudio: {
       provider: {
-        testConnection: (): Promise<{
+        testConnection: (payload?: {
+          provider?: string
+          baseUrl?: string
+          apiKey?: string
+          defaultImageModel?: string
+          endpointPath?: string
+        }): Promise<{
           success: boolean
           provider: string
           baseUrl: string
@@ -930,7 +936,7 @@ const api = {
           checkedAt: number
           statusCode: number | null
           message: string
-        }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection')
+        }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection', payload)
       },
       template: {
         list: (): Promise<AiStudioTemplateRecord[]> => ipcRenderer.invoke('cms.aiStudio.template.list'),

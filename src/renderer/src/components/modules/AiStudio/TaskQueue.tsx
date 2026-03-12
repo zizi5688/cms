@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
-import { History, ImagePlus, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, History, ImagePlus, Trash2, Upload, X } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -120,7 +120,6 @@ function ImageLightbox({
   )
 }
 
-
 type PromptTemplateOption = UseAiStudioStateResult['templates'][number]
 
 function buildTemplatePreview(promptText: string): string {
@@ -176,8 +175,16 @@ function PromptTemplateModal({
   if (!open || typeof document === 'undefined') return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-center justify-center overflow-y-auto bg-black/35 p-4 backdrop-blur-sm [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-      <button type="button" className="absolute inset-0" aria-label="关闭模板弹窗" onClick={onClose} />
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center overflow-y-auto bg-black/35 p-4 backdrop-blur-sm [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+    >
+      <button
+        type="button"
+        className="absolute inset-0"
+        aria-label="关闭模板弹窗"
+        onClick={onClose}
+      />
       <div className="relative z-10 my-auto flex max-h-[calc(100vh-2rem)] w-full max-w-[560px] flex-col rounded-[28px] border border-zinc-200 bg-white p-5 shadow-[0_30px_100px_rgba(15,23,42,0.18)]">
         <div className="flex items-center justify-between gap-3">
           <div className="text-base font-semibold text-zinc-950">{title}</div>
@@ -191,7 +198,10 @@ function PromptTemplateModal({
           </button>
         </div>
 
-        <div className="mt-5 flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div
+          className="mt-5 flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
           <label className="flex flex-col gap-2">
             <span className="text-sm font-medium text-zinc-700">模板名字</span>
             <Input
@@ -208,7 +218,8 @@ function PromptTemplateModal({
               value={promptText}
               onChange={(event) => onPromptTextChange(event.target.value)}
               placeholder="输入这个模板对应的提示词内容..."
-              className="min-h-[180px] resize-none rounded-[18px] border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-7 text-zinc-950 placeholder:text-zinc-400 focus-visible:ring-zinc-300 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+              className="min-h-[180px] resize-none rounded-[18px] border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-7 text-zinc-950 placeholder:text-zinc-400 focus-visible:ring-zinc-300 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             />
           </label>
         </div>
@@ -304,48 +315,53 @@ function QuickInsertPopover({
           </div>
 
           {hoveredPreview ? (
-            <div className="absolute left-full top-0 z-[140] pl-2" onMouseEnter={() => setHoveredPreview((prev) => prev)}>
+            <div
+              className="absolute left-full top-0 z-[140] pl-2"
+              onMouseEnter={() => setHoveredPreview((prev) => prev)}
+            >
               <div className="absolute inset-y-0 left-0 w-2" />
               <div className="w-[248px] rounded-[20px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-              {hoveredPreview.type === 'create' ? (
-                <div className="text-[12px] leading-5 text-zinc-600">
-                  录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
-                      <span className="block truncate">{hoveredPreview.template.name}</span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <button
-                        type="button"
-                        className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onEdit(hoveredPreview.template)
-                        }}
-                      >
-                        修改
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onDelete(hoveredPreview.template)
-                        }}
-                      >
-                        删除
-                      </button>
-                    </div>
+                {hoveredPreview.type === 'create' ? (
+                  <div className="text-[12px] leading-5 text-zinc-600">
+                    录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
                   </div>
-                  <div className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-                       style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                    {buildTemplatePreview(hoveredPreview.template.promptText)}
-                  </div>
-                </>
-              )}
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
+                        <span className="block truncate">{hoveredPreview.template.name}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onEdit(hoveredPreview.template)
+                          }}
+                        >
+                          修改
+                        </button>
+                        <button
+                          type="button"
+                          className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onDelete(hoveredPreview.template)
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <div
+                      className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                    >
+                      {buildTemplatePreview(hoveredPreview.template.promptText)}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           ) : null}
@@ -650,6 +666,87 @@ function ReferenceStackCard({
   )
 }
 
+function VideoInputCard({
+  title,
+  asset,
+  disabled,
+  onUpload,
+  onPreview,
+  onRemove
+}: {
+  title: string
+  asset: AiStudioAssetRecord | null
+  disabled?: boolean
+  onUpload: () => void
+  onPreview: (asset: AiStudioAssetRecord) => void
+  onRemove: () => void
+}): React.JSX.Element {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+
+  return (
+    <div className="group relative flex w-[88px] shrink-0 flex-col items-center gap-2">
+      <button
+        type="button"
+        onClick={() => {
+          if (asset) {
+            onPreview(asset)
+            return
+          }
+          onUpload()
+        }}
+        disabled={disabled}
+        className={cn(
+          'relative h-[112px] w-[88px] overflow-hidden rounded-[24px] border bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,244,245,0.92))] shadow-[0_10px_28px_rgba(15,23,42,0.08)] transition',
+          asset
+            ? 'border-zinc-200 hover:-translate-y-0.5 hover:border-zinc-300'
+            : 'border-dashed border-zinc-300 text-zinc-400 hover:border-zinc-400 hover:text-zinc-700',
+          disabled && 'cursor-wait opacity-70'
+        )}
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={title}
+            className="h-full w-full object-cover"
+            draggable={false}
+            loading="lazy"
+          />
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-zinc-400">
+            <ImagePlus className="h-5 w-5" />
+            <span className="text-[11px] font-medium">上传图片</span>
+          </div>
+        )}
+
+        <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(15,23,42,0.72))] px-2 py-2 text-center text-[11px] font-medium text-white">
+          {title}
+        </div>
+      </button>
+
+      {asset ? (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onUpload}
+            disabled={disabled}
+            className="inline-flex h-7 items-center rounded-full border border-zinc-200 bg-white px-2.5 text-[11px] font-medium text-zinc-600 transition hover:border-zinc-300 hover:text-zinc-900"
+          >
+            替换
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="inline-flex h-7 items-center rounded-full border border-zinc-200 bg-white px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-rose-200 hover:text-rose-500"
+          >
+            删除
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function TaskQueue({
   state,
   promptDraft,
@@ -669,6 +766,8 @@ function TaskQueue({
   const [templateDraftPromptText, setTemplateDraftPromptText] = useState('')
   const [isSavingTemplateModal, setIsSavingTemplateModal] = useState(false)
 
+  const isVideoStudio = state.studioCapability === 'video'
+  const videoMeta = state.videoMeta
   const primaryAsset =
     state.activeInputAssets.find((asset) => asset.filePath === state.primaryImagePath) ?? null
   const referenceAssets = state.activeInputAssets.filter((asset) =>
@@ -683,8 +782,21 @@ function TaskQueue({
     })
     return next
   }, [primaryAsset, referenceAssets])
+  const subjectAsset =
+    state.activeInputAssets.find((asset) => asset.filePath === videoMeta.subjectReferencePath) ??
+    null
+  const firstFrameAsset =
+    state.activeInputAssets.find((asset) => asset.filePath === videoMeta.firstFramePath) ?? null
+  const lastFrameAsset =
+    state.activeInputAssets.find((asset) => asset.filePath === videoMeta.lastFramePath) ?? null
   const canAddMore = inputAssets.length < MAX_AI_STUDIO_REFERENCE_IMAGES
-  const promptComposerMinHeight = inputAssets.length > 0 ? 154 : 144
+  const promptComposerMinHeight = isVideoStudio
+    ? videoMeta.mode === 'first-last-frame'
+      ? 170
+      : 154
+    : inputAssets.length > 0
+      ? 154
+      : 144
 
   const handleOpenTemplateModal = (): void => {
     setEditingTemplateId(null)
@@ -750,6 +862,18 @@ function TaskQueue({
     addLog(`[AI Studio] 已插入提示词模板：${template.name}`)
   }
 
+  const pickLocalImages = async (multiSelections = true): Promise<string[]> => {
+    const result = await window.electronAPI.openMediaFiles({
+      multiSelections,
+      accept: 'image'
+    })
+    if (!result) return []
+    const items = Array.isArray(result) ? result : [result]
+    return items
+      .map((item) => String(item?.originalPath ?? '').trim())
+      .filter((filePath) => isSupportedImagePath(filePath))
+  }
+
   const addInputImages = async (filePaths: string[]): Promise<void> => {
     const normalized = uniqueStrings(filePaths.filter((filePath) => isSupportedImagePath(filePath)))
     if (normalized.length === 0) {
@@ -799,21 +923,41 @@ function TaskQueue({
     if (isPickingImages || !canAddMore) return
     try {
       setIsPickingImages(true)
-      const result = await window.electronAPI.openMediaFiles({
-        multiSelections: true,
-        accept: 'image'
-      })
-      if (!result) return
-      const items = Array.isArray(result) ? result : [result]
-      const filePaths = items
-        .map((item) => String(item?.originalPath ?? '').trim())
-        .filter((filePath) => isSupportedImagePath(filePath))
+      const filePaths = await pickLocalImages(true)
       if (filePaths.length === 0) return
       await addInputImages(filePaths)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 选择参考图失败：${message}`)
       window.alert(`选择参考图失败：${message}`)
+    } finally {
+      setIsPickingImages(false)
+    }
+  }
+
+  const pickVideoInput = async (slot: 'subject' | 'first' | 'last'): Promise<void> => {
+    if (isPickingImages) return
+    try {
+      setIsPickingImages(true)
+      const filePaths = await pickLocalImages(false)
+      const nextPath = filePaths[0] ?? ''
+      if (!nextPath) return
+      if (slot === 'subject') {
+        await state.setVideoSubjectReference(nextPath)
+        addLog('[AI Studio] 已设置主体参考图')
+        return
+      }
+      if (slot === 'first') {
+        await state.setVideoFirstFrame(nextPath)
+        addLog('[AI Studio] 已设置首帧')
+        return
+      }
+      await state.setVideoLastFrame(nextPath)
+      addLog('[AI Studio] 已设置尾帧')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 选择视频参考图失败：${message}`)
+      window.alert(`选择视频参考图失败：${message}`)
     } finally {
       setIsPickingImages(false)
     }
@@ -839,7 +983,26 @@ function TaskQueue({
       return
     }
 
-    await addInputImages(filePaths)
+    if (!isVideoStudio) {
+      await addInputImages(filePaths)
+      return
+    }
+
+    if (videoMeta.mode === 'subject-reference') {
+      await state.setVideoSubjectReference(filePaths[0] ?? null)
+      return
+    }
+
+    const [firstFramePath, lastFramePath] = filePaths
+    if (firstFramePath) {
+      await state.setVideoFirstFrame(firstFramePath)
+    }
+    if (lastFramePath) {
+      await state.setVideoLastFrame(lastFramePath)
+    }
+    if (filePaths.length > 2) {
+      window.alert('首尾帧模式最多接收 2 张图，已忽略其余图片。')
+    }
   }
 
   return (
@@ -863,17 +1026,55 @@ function TaskQueue({
       >
         <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 py-0">
           <div className="flex flex-col items-start gap-2 pt-0.5">
-            {inputAssets.length > 0 ? (
+            {isVideoStudio ? (
               <>
-                <ReferenceStackCard
-                  assets={inputAssets}
-                  canAddMore={canAddMore}
-                  disabled={isPickingImages}
-                  onUpload={() => void pickInputImages()}
-                  onPreview={(asset) => setPreviewAsset(asset)}
-                  onRemoveFront={(asset) => void handleRemoveAsset(asset)}
-                />
+                {videoMeta.mode === 'subject-reference' ? (
+                  <VideoInputCard
+                    title="主体参考"
+                    asset={subjectAsset}
+                    disabled={isPickingImages}
+                    onUpload={() => void pickVideoInput('subject')}
+                    onPreview={(asset) => setPreviewAsset(asset)}
+                    onRemove={() => void state.setVideoSubjectReference(null)}
+                  />
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <VideoInputCard
+                      title="首帧"
+                      asset={firstFrameAsset}
+                      disabled={isPickingImages}
+                      onUpload={() => void pickVideoInput('first')}
+                      onPreview={(asset) => setPreviewAsset(asset)}
+                      onRemove={() => void state.setVideoFirstFrame(null)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void state.swapVideoFrames()}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 transition hover:border-zinc-300 hover:text-zinc-900"
+                      aria-label="互换首尾帧"
+                    >
+                      <ArrowRightLeft className="h-4 w-4" />
+                    </button>
+                    <VideoInputCard
+                      title="尾帧"
+                      asset={lastFrameAsset}
+                      disabled={isPickingImages}
+                      onUpload={() => void pickVideoInput('last')}
+                      onPreview={(asset) => setPreviewAsset(asset)}
+                      onRemove={() => void state.setVideoLastFrame(null)}
+                    />
+                  </div>
+                )}
               </>
+            ) : inputAssets.length > 0 ? (
+              <ReferenceStackCard
+                assets={inputAssets}
+                canAddMore={canAddMore}
+                disabled={isPickingImages}
+                onUpload={() => void pickInputImages()}
+                onPreview={(asset) => setPreviewAsset(asset)}
+                onRemoveFront={(asset) => void handleRemoveAsset(asset)}
+              />
             ) : (
               <EmptyReferenceCard
                 onUpload={() => void pickInputImages()}
@@ -894,7 +1095,11 @@ function TaskQueue({
             <Textarea
               value={promptDraft}
               onChange={(event) => onPromptChange(event.target.value)}
-              placeholder="输入本次提示词..."
+              placeholder={
+                isVideoStudio
+                  ? '描述镜头运动、节奏、主体动作和氛围，例如：主体轻微转身，镜头缓慢推近，背景光影流动。'
+                  : '输入本次提示词...'
+              }
               style={{ minHeight: `${promptComposerMinHeight}px` }}
               className="h-full max-h-none w-full resize-none border-0 bg-transparent px-0 py-0 text-[15px] leading-7 text-zinc-900 shadow-none placeholder:text-zinc-400 focus-visible:ring-0"
             />

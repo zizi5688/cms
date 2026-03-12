@@ -809,7 +809,13 @@ declare global {
       }
       aiStudio: {
         provider: {
-          testConnection: () => Promise<{
+          testConnection: (payload?: {
+            provider?: string
+            baseUrl?: string
+            apiKey?: string
+            defaultImageModel?: string
+            endpointPath?: string
+          }) => Promise<{
             success: boolean
             provider: string
             baseUrl: string

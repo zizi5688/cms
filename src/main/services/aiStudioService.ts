@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { basename, extname, join, resolve } from 'path'
 
 import { SqliteService } from './sqliteService'
@@ -163,6 +163,22 @@ type AiStudioProviderConfig = {
   apiKey: string
   defaultImageModel: string
   endpointPath: string
+  providerProfiles?: unknown
+}
+
+type AiStudioProviderModelProfile = {
+  id: string
+  modelName: string
+  endpointPath: string
+}
+
+type AiStudioProviderProfile = {
+  id: string
+  providerName: string
+  baseUrl: string
+  apiKey: string
+  models: AiStudioProviderModelProfile[]
+  defaultModelId: string | null
 }
 
 type DbConnection = {
@@ -213,6 +229,80 @@ function parseJsonStringArray(value: unknown): string[] {
   } catch {
     return []
   }
+}
+
+function normalizeProviderProfiles(value: unknown): AiStudioProviderProfile[] {
+  if (!Array.isArray(value)) return []
+
+  const profiles: AiStudioProviderProfile[] = []
+  value.forEach((item, index) => {
+    const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+    const providerName = normalizeText(record.providerName ?? record.name)
+    if (!providerName) return
+
+    const models: AiStudioProviderModelProfile[] = []
+    if (Array.isArray(record.models)) {
+      record.models.forEach((modelItem, modelIndex) => {
+        const modelRecord =
+          modelItem && typeof modelItem === 'object'
+            ? (modelItem as Record<string, unknown>)
+            : {}
+        const modelName = normalizeText(modelRecord.modelName ?? modelRecord.name)
+        if (!modelName) return
+        models.push({
+          id: normalizeText(modelRecord.id) || `${providerName}:${modelIndex}`,
+          modelName,
+          endpointPath: normalizeText(modelRecord.endpointPath)
+        })
+      })
+    }
+
+    const requestedDefaultModelId = normalizeNullableText(record.defaultModelId)
+    profiles.push({
+      id: normalizeText(record.id) || `${providerName}:${index}`,
+      providerName,
+      baseUrl: normalizeText(record.baseUrl),
+      apiKey: normalizeText(record.apiKey),
+      models,
+      defaultModelId:
+        requestedDefaultModelId && models.some((model) => model.id === requestedDefaultModelId)
+          ? requestedDefaultModelId
+          : models[0]?.id ?? null
+    })
+  })
+
+  return profiles
+}
+
+function findProviderProfile(
+  profiles: AiStudioProviderProfile[],
+  providerName: string
+): AiStudioProviderProfile | null {
+  const normalized = normalizeText(providerName).toLowerCase()
+  if (!normalized) return null
+  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? null
+}
+
+function findProviderModelProfile(
+  providerProfile: AiStudioProviderProfile | null,
+  modelName: string
+): AiStudioProviderModelProfile | null {
+  if (!providerProfile) return null
+  const normalized = normalizeText(modelName).toLowerCase()
+  if (!normalized) return null
+  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+}
+
+function resolveProviderModelProfile(
+  providerProfile: AiStudioProviderProfile | null,
+  preferredModelName: string
+): AiStudioProviderModelProfile | null {
+  const preferred = findProviderModelProfile(providerProfile, preferredModelName)
+  if (preferred) return preferred
+  if (providerProfile?.defaultModelId) {
+    return providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+  }
+  return providerProfile?.models[0] ?? null
 }
 
 function toJson(value: unknown): string {
@@ -269,6 +359,8 @@ function normalizeBilledState(value: unknown): AiStudioBilledState {
 const GRSAI_DEFAULT_BASE_URL = 'https://grsaiapi.com'
 const GRSAI_DRAW_PATH = '/v1/draw/nano-banana'
 const GRSAI_RESULT_PATH = '/v1/draw/result'
+const AI_VIDEO_CREATE_PATH = '/v1/video/create'
+const AI_VIDEO_QUERY_PATH = '/v1/video/query'
 const GRSAI_POLL_WEBHOOK_SENTINEL = '-1'
 const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
 const LEGACY_DEFAULT_IMAGE_MODEL = 'image-default'
@@ -277,7 +369,10 @@ const MODEL_IMAGE_SIZE_MAP: Record<string, string> = {
   'nano-banana-pro-4k-vip': '4K'
 }
 const CONNECTION_TEST_ID = '__codex_connection_test__'
+const AI_STUDIO_VIDEO_DEBUG_MARKER = 'temp-video-debug-2026-03-12'
+const AI_STUDIO_VIDEO_DEBUG_FILE_NAME = 'ai-studio-video-debug.jsonl'
 const HTTP_IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+const HTTP_VIDEO_ACCEPT = 'video/mp4,video/webm,video/*,*/*;q=0.8'
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
@@ -287,6 +382,36 @@ const GRSAI_PRICE_FALLBACKS: Record<string, { min: number; max: number }> = {
   'nano-banana-pro': { min: 0.08, max: 0.16 },
   'gemini-2.5-flash-image-preview': { min: 0.022, max: 0.044 },
   'image-default': { min: 0.022, max: 0.044 }
+}
+
+function normalizeVideoCreateAspectRatio(model: string, aspectRatio: string): '16:9' | '9:16' | null {
+  const normalizedModel = normalizeText(model).toLowerCase()
+  const normalizedAspectRatio = normalizeText(aspectRatio)
+  if (normalizedAspectRatio !== '16:9' && normalizedAspectRatio !== '9:16') return null
+  return normalizedModel.startsWith('veo3') ? normalizedAspectRatio : null
+}
+
+function normalizeVideoCreateInputPaths(model: string, inputPaths: string[]): string[] {
+  const normalizedModel = normalizeText(model).toLowerCase()
+
+  if (normalizedModel.includes('veo3-pro-frames') && inputPaths.length > 1) {
+    throw new Error('[AI Studio] 当前模型仅支持上传 1 张首帧图片。')
+  }
+
+  if (normalizedModel.includes('frames') && inputPaths.length > 2) {
+    throw new Error('[AI Studio] 当前首尾帧模型最多支持 2 张图片。')
+  }
+
+  if (normalizedModel.includes('components') && inputPaths.length > 3) {
+    throw new Error('[AI Studio] 当前参考图模型最多支持 3 张图片。')
+  }
+
+  return inputPaths
+}
+
+function isVideoCreatePath(apiPath: string): boolean {
+  const normalized = normalizeText(apiPath).toLowerCase()
+  return /(?:^|\/)v1\/video\/create(?:$|\?)/.test(normalized) || /(?:^|\/)video\/create(?:$|\?)/.test(normalized)
 }
 
 function sanitizeBaseUrl(baseUrl: string): string {
@@ -322,11 +447,28 @@ function normalizeAspectRatio(value: unknown): string {
     normalized === '1:1' ||
     normalized === '3:4' ||
     normalized === '9:16' ||
+    normalized === '16:9' ||
     normalized === 'auto'
   ) {
     return normalized
   }
   return '3:4'
+}
+
+function containsCjkText(value: string): boolean {
+  return /[\u3400-\u9fff\uf900-\ufaff]/.test(normalizeText(value))
+}
+
+function isVeo3VideoModel(model: string): boolean {
+  const normalized = normalizeText(model).toLowerCase()
+  return normalized.startsWith('veo3') || normalized.startsWith('veo-3')
+}
+
+function buildVideoWhiteNoisePrompt(prompt: string): string {
+  const normalized = normalizeText(prompt)
+  const suffix = '系统尾注：背景音使用白噪音。'
+  if (!normalized) return suffix
+  return /白噪音/.test(normalized) ? normalized : `${normalized} ${suffix}`
 }
 
 function inferImageExtensionFromUrlOrType(source: string, contentType?: string | null): string {
@@ -348,6 +490,66 @@ function inferImageExtensionFromUrlOrType(source: string, contentType?: string |
     return parsed === 'jpeg' ? 'jpg' : parsed
   }
   return 'jpg'
+}
+
+function summarizeVideoDebugValue(value: unknown, keyHint = ''): unknown {
+  if (value === null || value === undefined) return value
+
+  if (typeof value === 'string') {
+    const normalized = String(value)
+    const lowerKey = keyHint.toLowerCase()
+    if (lowerKey.includes('apikey') || lowerKey.includes('authorization')) {
+      return '[redacted]'
+    }
+    if (/^data:image\//i.test(normalized) || /^data:video\//i.test(normalized)) {
+      return {
+        kind: /^data:image\//i.test(normalized) ? 'image-data-url' : 'video-data-url',
+        prefix: normalized.slice(0, Math.min(normalized.indexOf(','), 48)).trim() || normalized.slice(0, 48),
+        length: normalized.length,
+        sha1: createHash('sha1').update(normalized).digest('hex').slice(0, 12)
+      }
+    }
+    if (normalized.length > 1200 && !['prompt', 'effectivePrompt', 'negative_prompt', 'message', 'rawText'].includes(keyHint)) {
+      return {
+        kind: 'long-text',
+        length: normalized.length,
+        sha1: createHash('sha1').update(normalized).digest('hex').slice(0, 12),
+        preview: normalized.slice(0, 240)
+      }
+    }
+    return normalized
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => summarizeVideoDebugValue(item, keyHint))
+  }
+
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return Object.fromEntries(
+      Object.entries(record).map(([key, item]) => [key, summarizeVideoDebugValue(item, key)])
+    )
+  }
+
+  return String(value)
+}
+
+function inferVideoExtensionFromUrlOrType(source: string, contentType?: string | null): string {
+  const type = normalizeText(contentType).toLowerCase()
+  if (type.includes('webm')) return 'webm'
+  if (type.includes('quicktime')) return 'mov'
+  if (type.includes('mp4') || type.includes('video')) return 'mp4'
+
+  const ext = extname(source).toLowerCase().replace('.', '')
+  if (['mp4', 'mov', 'webm', 'm4v'].includes(ext)) return ext
+  const match = source.match(/\.([a-z0-9]{2,5})(?:$|[?#])/i)
+  const parsed = String(match?.[1] ?? '').toLowerCase()
+  if (['mp4', 'mov', 'webm', 'm4v'].includes(parsed)) return parsed
+  return 'mp4'
 }
 
 function inferMimeType(filePath: string): string {
@@ -381,8 +583,10 @@ function extractRemoteTaskId(
     normalizeNullableText(data.id) ??
     normalizeNullableText(data.taskId) ??
     normalizeNullableText(data.task_id) ??
+    normalizeNullableText(data.request_id) ??
     normalizeNullableText(payload.taskId) ??
     normalizeNullableText(payload.task_id) ??
+    normalizeNullableText(payload.request_id) ??
     (options?.allowTopLevelId === false ? null : normalizeNullableText(payload.id)) ??
     null
   )
@@ -680,6 +884,133 @@ function collectEnvelopeResultItems(
   }
 }
 
+function looksLikeVideoUrl(value: string): boolean {
+  const normalized = normalizeText(value)
+  if (!normalized) return false
+  if (/^data:video\//i.test(normalized)) return true
+  if (/\.(mp4|mov|webm|m4v)(?:$|[?#])/i.test(normalized)) return true
+  return /^https?:\/\//i.test(normalized) && /video|download/i.test(normalized)
+}
+
+function pushVideoResultItem(
+  bucket: Array<Record<string, unknown>>,
+  item: Record<string, unknown> | null | undefined
+): void {
+  if (!item) return
+  const url = normalizeText(item.url)
+  const content = normalizeText(item.content)
+  const mimeType = normalizeText(item.mimeType ?? item.contentType ?? item.type)
+  const hintedVideo = mimeType.includes('video') || normalizeText(item.kind).includes('video')
+  if (!url && !content) return
+  if (url && !looksLikeVideoUrl(url) && !hintedVideo) return
+  if (content && !/^data:video\//i.test(content) && !hintedVideo) return
+
+  const signature = url ? `video-url:${url}` : `video-content:${content.slice(0, 120)}`
+  if (
+    bucket.some((existing) => {
+      const existingUrl = normalizeText(existing.url)
+      const existingContent = normalizeText(existing.content)
+      const existingSignature = existingUrl
+        ? `video-url:${existingUrl}`
+        : `video-content:${existingContent.slice(0, 120)}`
+      return existingSignature === signature
+    })
+  ) {
+    return
+  }
+
+  bucket.push({
+    ...item,
+    ...(url ? { url } : {}),
+    ...(content ? { content } : {})
+  })
+}
+
+function collectVideoResultItemsFromValue(
+  value: unknown,
+  bucket: Array<Record<string, unknown>>,
+  hint = ''
+): void {
+  if (!value) return
+
+  if (typeof value === 'string') {
+    const normalized = normalizeText(value)
+    if (looksLikeVideoUrl(normalized)) {
+      pushVideoResultItem(bucket, { url: normalized, kind: hint || 'video' })
+    }
+    return
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectVideoResultItemsFromValue(entry, bucket, hint))
+    return
+  }
+
+  if (typeof value !== 'object') return
+  const record = asObject(value)
+  const mimeType = normalizeText(
+    record.mimeType ?? record.mime_type ?? record.contentType ?? record.content_type ?? record.type
+  )
+  const directKeys = [
+    'video_url',
+    'url',
+    'download_url',
+    'file_url',
+    'output_url',
+    'result_url',
+    'play_url'
+  ]
+  directKeys.forEach((key) => {
+    const candidate = normalizeText(record[key])
+    if (candidate) {
+      pushVideoResultItem(bucket, { url: candidate, mimeType, kind: key })
+    }
+  })
+
+  if (typeof record.content === 'string') {
+    const normalizedContent = normalizeText(record.content)
+    if (/^data:video\//i.test(normalizedContent)) {
+      pushVideoResultItem(bucket, {
+        content: normalizedContent,
+        mimeType,
+        kind: hint || 'video-content'
+      })
+    }
+  }
+
+  ;[
+    'data',
+    'detail',
+    'result',
+    'results',
+    'outputs',
+    'videos',
+    'assets',
+    'generations',
+    'content',
+    'response'
+  ].forEach((key) => {
+    if (record[key] !== undefined) {
+      collectVideoResultItemsFromValue(record[key], bucket, key)
+    }
+  })
+}
+
+function extractVideoResultItems(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const bucket: Array<Record<string, unknown>> = []
+  collectVideoResultItemsFromValue(payload, bucket, 'payload')
+  return bucket
+}
+
+function extractVideoResultStatus(payload: Record<string, unknown>, fallback = 'running'): string {
+  if (extractVideoResultItems(payload).length > 0) {
+    return 'succeeded'
+  }
+  const data = asObject(payload.data)
+  const detail = asObject(payload.detail)
+  return normalizeRunStatus(detail.status ?? data.status ?? payload.status, fallback)
+}
+
 function normalizeRunStatus(value: unknown, fallback = 'running'): string {
   const normalized = normalizeText(value).toLowerCase()
   if (!normalized) return fallback
@@ -711,6 +1042,14 @@ function extractFailureReason(payload: Record<string, unknown>): string | null {
     payload.error && typeof payload.error === 'object'
       ? (payload.error as Record<string, unknown>)
       : null
+  const payloadDetail =
+    payload.detail && typeof payload.detail === 'object'
+      ? (payload.detail as Record<string, unknown>)
+      : null
+  const dataDetail =
+    data.detail && typeof data.detail === 'object'
+      ? (data.detail as Record<string, unknown>)
+      : null
   const details = Array.isArray(payload.details)
     ? payload.details
         .map((item) => {
@@ -727,10 +1066,19 @@ function extractFailureReason(payload: Record<string, unknown>): string | null {
 
   return (
     normalizeNullableText(data.error) ??
+    normalizeNullableText(data.failure_reason) ??
+    normalizeNullableText(data.reason) ??
+    normalizeNullableText(data.message) ??
+    normalizeNullableText(data.msg) ??
     normalizeNullableText(payloadError?.message) ??
     normalizeNullableText(payloadError?.msg) ??
+    normalizeNullableText(payloadDetail?.message) ??
+    normalizeNullableText(payloadDetail?.msg) ??
+    normalizeNullableText(payloadDetail?.error) ??
+    normalizeNullableText(dataDetail?.message) ??
+    normalizeNullableText(dataDetail?.msg) ??
+    normalizeNullableText(dataDetail?.error) ??
     normalizeNullableText(payload.detail) ??
-    normalizeNullableText(data.failure_reason) ??
     normalizeNullableText(payload.msg) ??
     normalizeNullableText(payload.message) ??
     normalizeNullableText(details) ??
@@ -816,6 +1164,51 @@ function asObject(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>
   }
   return {}
+}
+
+type AiStudioVideoMetadataRecord = {
+  profileId: string
+  model: string
+  adapterKind: 'allapi-unified'
+  submitPath: string
+  queryPath: string
+  mode: 'subject-reference' | 'first-last-frame'
+  subjectReferencePath: string | null
+  firstFramePath: string | null
+  lastFramePath: string | null
+  aspectRatio: string
+  resolution: string
+  duration: number
+  outputCount: number
+}
+
+function readTaskCapability(task: Pick<AiStudioTaskRecord, 'metadata'>): 'image' | 'video' {
+  const metadata = parseJsonObject(task.metadata)
+  return metadata.capability === 'video' ? 'video' : 'image'
+}
+
+function readVideoMetadata(
+  task: Pick<AiStudioTaskRecord, 'metadata'>
+): AiStudioVideoMetadataRecord {
+  const metadata = parseJsonObject(task.metadata)
+  const video = asObject(metadata.video)
+  return {
+    profileId: normalizeText(video.profileId) || 'veo31-components',
+    model: normalizeText(video.model) || 'veo3.1-components',
+    adapterKind: 'allapi-unified',
+    submitPath: normalizeText(video.submitPath) || AI_VIDEO_CREATE_PATH,
+    queryPath: normalizeText(video.queryPath) || AI_VIDEO_QUERY_PATH,
+    mode: video.mode === 'first-last-frame' ? 'first-last-frame' : 'subject-reference',
+    subjectReferencePath: normalizeNullableText(video.subjectReferencePath),
+    firstFramePath: normalizeNullableText(video.firstFramePath),
+    lastFramePath: normalizeNullableText(video.lastFramePath),
+    aspectRatio: ['9:16', '16:9', '1:1'].includes(normalizeText(video.aspectRatio))
+      ? normalizeText(video.aspectRatio)
+      : '9:16',
+    resolution: normalizeText(video.resolution) || '720p',
+    duration: normalizePositiveInteger(video.duration, 5),
+    outputCount: normalizePositiveInteger(video.outputCount, 1)
+  }
 }
 
 type AiStudioWorkflowSourceDescriptor = {
@@ -959,6 +1352,29 @@ export class AiStudioService {
     return workspacePath
   }
 
+  private getVideoDebugLogPath(): string {
+    return join(this.getWorkspacePath(), 'debug', AI_STUDIO_VIDEO_DEBUG_FILE_NAME)
+  }
+
+  private async appendVideoDebugLog(stage: string, payload: Record<string, unknown>): Promise<void> {
+    const logPath = this.getVideoDebugLogPath()
+    const entry = {
+      marker: AI_STUDIO_VIDEO_DEBUG_MARKER,
+      stage,
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+      payload: summarizeVideoDebugValue(payload)
+    }
+
+    try {
+      await mkdir(join(this.getWorkspacePath(), 'debug'), { recursive: true })
+      await appendFile(logPath, `${JSON.stringify(entry)}
+`, 'utf8')
+    } catch (error) {
+      console.warn('[AI Studio][VideoDebug] 写入失败：', error)
+    }
+  }
+
   private getTaskOrThrow(taskId: string): AiStudioTaskRecord {
     const row = this.db.prepare(`SELECT * FROM ai_studio_tasks WHERE id = ? LIMIT 1`).get(taskId)
     if (!row) throw new Error(`[AI Studio] 任务不存在：${taskId}`)
@@ -992,14 +1408,40 @@ export class AiStudioService {
     return row ? mapTemplateRow(row) : null
   }
 
-  private getProviderConfig(): AiStudioProviderConfig {
+  private getProviderConfig(task?: AiStudioTaskRecord): AiStudioProviderConfig {
     const provided = asObject(this.resolveProviderConfig())
-    return {
+    const fallback: AiStudioProviderConfig = {
       provider: normalizeText(provided.provider) || 'grsai',
       baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl)),
       apiKey: normalizeText(provided.apiKey),
       defaultImageModel: resolveConfiguredModel(provided.defaultImageModel, DEFAULT_IMAGE_MODEL),
-      endpointPath: normalizeText(provided.endpointPath)
+      endpointPath: normalizeText(provided.endpointPath),
+      providerProfiles: provided.providerProfiles
+    }
+
+    if (!task || readTaskCapability(task) !== 'video') {
+      return fallback
+    }
+
+    const providerProfiles = normalizeProviderProfiles(provided.providerProfiles)
+    const taskProviderName = normalizeText(task.provider)
+    const providerProfile = findProviderProfile(providerProfiles, taskProviderName)
+    if (!providerProfile) {
+      return {
+        ...fallback,
+        provider: taskProviderName || fallback.provider,
+        defaultImageModel: resolveConfiguredModel(task.model, fallback.defaultImageModel)
+      }
+    }
+
+    const modelProfile = resolveProviderModelProfile(providerProfile, task.model)
+    return {
+      provider: providerProfile.providerName,
+      baseUrl: sanitizeBaseUrl(providerProfile.baseUrl),
+      apiKey: normalizeText(providerProfile.apiKey),
+      defaultImageModel: resolveConfiguredModel(modelProfile?.modelName ?? task.model, fallback.defaultImageModel),
+      endpointPath: normalizeText(modelProfile?.endpointPath) || fallback.endpointPath,
+      providerProfiles: provided.providerProfiles
     }
   }
 
@@ -1010,9 +1452,11 @@ export class AiStudioService {
       method?: 'POST' | 'OPTIONS' | 'GET' | 'HEAD'
       allowStatusCodes?: number[]
       allowProviderCodes?: number[]
+      providerConfig?: AiStudioProviderConfig
+      debugContext?: Record<string, unknown>
     }
   ): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
-    const config = this.getProviderConfig()
+    const config = options?.providerConfig ?? this.getProviderConfig()
     if (!config.apiKey) {
       throw new Error('[AI Studio] 未配置 AI API Key。')
     }
@@ -1027,13 +1471,60 @@ export class AiStudioService {
       method,
       headers
     }
-    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+
+    let requestUrl = buildProviderUrl(config.baseUrl, apiPath)
+    if (method === 'GET') {
+      const searchUrl = new URL(requestUrl)
+      Object.entries(payload).forEach(([key, value]) => {
+        if (value === null || value === undefined) return
+        if (Array.isArray(value)) {
+          value.forEach((item) => {
+            if (item === null || item === undefined) return
+            searchUrl.searchParams.append(key, String(item))
+          })
+          return
+        }
+        searchUrl.searchParams.set(key, String(value))
+      })
+      requestUrl = searchUrl.toString()
+    } else if (method !== 'HEAD' && method !== 'OPTIONS') {
       headers['Content-Type'] = 'application/json'
       init.body = JSON.stringify(payload)
     }
 
-    const requestUrl = buildProviderUrl(config.baseUrl, apiPath)
-    const response = await fetch(requestUrl, init)
+    const debugContext = options?.debugContext ?? null
+    if (debugContext) {
+      await this.appendVideoDebugLog('video.provider.request', {
+        ...debugContext,
+        method,
+        apiPath,
+        requestUrl,
+        providerConfig: {
+          provider: config.provider,
+          baseUrl: config.baseUrl,
+          endpointPath: config.endpointPath,
+          defaultImageModel: config.defaultImageModel,
+          apiKeyPresent: Boolean(config.apiKey)
+        },
+        payload
+      })
+    }
+
+    let response: Response
+    try {
+      response = await fetch(requestUrl, init)
+    } catch (error) {
+      if (debugContext) {
+        await this.appendVideoDebugLog('video.provider.fetch_error', {
+          ...debugContext,
+          method,
+          apiPath,
+          requestUrl,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+      throw error
+    }
 
     const statusCode = response.status
     const rawText = await response.text()
@@ -1044,6 +1535,17 @@ export class AiStudioService {
       } catch {
         parsedPayload = { rawText }
       }
+    }
+
+    if (debugContext) {
+      await this.appendVideoDebugLog('video.provider.response', {
+        ...debugContext,
+        method,
+        apiPath,
+        requestUrl,
+        statusCode,
+        responsePayload: parsedPayload
+      })
     }
 
     if (statusCode === 401 || statusCode === 403) {
@@ -1184,6 +1686,84 @@ export class AiStudioService {
     return { task, template, model, prompt, requestPayload, requestSnapshot }
   }
 
+  private async buildVideoSubmitContext(taskId: string): Promise<{
+    task: AiStudioTaskRecord
+    model: string
+    prompt: string
+    requestPayload: Record<string, unknown>
+    requestSnapshot: Record<string, unknown>
+    submitPath: string
+    queryPath: string
+  }> {
+    const task = this.getTaskOrThrow(taskId)
+    const videoMeta = readVideoMetadata(task)
+    const prompt = normalizeText(task.promptExtra)
+    const model = normalizeText(videoMeta.model)
+    const inputPaths = normalizeVideoCreateInputPaths(
+      model,
+      videoMeta.mode === 'first-last-frame'
+        ? uniqueNormalizedPaths([videoMeta.firstFramePath, videoMeta.lastFramePath])
+        : uniqueNormalizedPaths([videoMeta.subjectReferencePath])
+    )
+
+    if (inputPaths.length === 0) {
+      throw new Error('[AI Studio] 视频模式至少需要一张输入图片。')
+    }
+
+    const images = await Promise.all(inputPaths.map((filePath) => filePathToDataUrl(filePath)))
+    const submitPath = normalizeText(videoMeta.submitPath) || AI_VIDEO_CREATE_PATH
+    const queryPath = normalizeText(videoMeta.queryPath) || AI_VIDEO_QUERY_PATH
+    const aspectRatio = normalizeVideoCreateAspectRatio(model, videoMeta.aspectRatio)
+    const shouldTranslatePrompt = containsCjkText(prompt)
+    const disableAudio = isVeo3VideoModel(model)
+    const effectivePrompt = buildVideoWhiteNoisePrompt(prompt)
+    const requestPayload: Record<string, unknown> = {
+      model,
+      prompt: effectivePrompt,
+      images,
+      duration: videoMeta.duration,
+      watermark: false,
+      enhance_prompt: false,
+      translate: shouldTranslatePrompt,
+      enable_upsample: true
+    }
+    if (aspectRatio) {
+      requestPayload.aspect_ratio = aspectRatio
+    }
+    if (disableAudio) {
+      requestPayload.generate_audio = false
+    }
+
+    const requestSnapshot = {
+      model: videoMeta.model,
+      prompt,
+      effectivePrompt,
+      endpointPath: submitPath,
+      queryPath,
+      protocol: 'allapi-video-unified',
+      mode: videoMeta.mode,
+      aspectRatio: videoMeta.aspectRatio,
+      size: videoMeta.resolution,
+      duration: videoMeta.duration,
+      translate: shouldTranslatePrompt,
+      enhancePrompt: false,
+      disableAudio,
+      outputCount: videoMeta.outputCount,
+      inputCount: inputPaths.length,
+      sourceFiles: inputPaths.map((filePath) => basename(filePath))
+    } satisfies Record<string, unknown>
+
+    return {
+      task,
+      model: videoMeta.model,
+      prompt,
+      requestPayload,
+      requestSnapshot,
+      submitPath,
+      queryPath
+    }
+  }
+
   private async persistFailedSubmit(
     taskId: string,
     requestSnapshot: Record<string, unknown>,
@@ -1293,13 +1873,90 @@ export class AiStudioService {
     }
   }
 
-  async testConnection(): Promise<AiStudioProviderConnectionResult> {
-    const config = this.getProviderConfig()
+  private async persistVideoOutputItem(payload: {
+    taskId: string
+    runId: string
+    runDir: string
+    index: number
+    item: Record<string, unknown>
+  }): Promise<AiStudioAssetWriteInput | null> {
+    const remoteUrl = normalizeText(payload.item.url)
+    const inlineContent = normalizeText(payload.item.content)
+
+    let buffer: Buffer | null = null
+    let contentType: string | null = null
+    let sourceLabel = remoteUrl || inlineContent
+
+    if (/^https?:\/\//i.test(remoteUrl)) {
+      const response = await fetch(remoteUrl, {
+        headers: {
+          Accept: HTTP_VIDEO_ACCEPT,
+          'User-Agent': DEFAULT_USER_AGENT
+        }
+      })
+      if (!response.ok) {
+        throw new Error(`[AI Studio] 下载视频结果失败（HTTP ${response.status}）。`)
+      }
+      contentType = normalizeNullableText(response.headers.get('content-type'))
+      buffer = Buffer.from(await response.arrayBuffer())
+    } else {
+      const decoded = this.decodeBase64Content(remoteUrl || inlineContent)
+      if (!decoded) return null
+      buffer = decoded.buffer
+      contentType = decoded.contentType
+      sourceLabel = remoteUrl || `video-inline-${payload.index + 1}`
+    }
+
+    if (!buffer || buffer.length <= 0) return null
+
+    const ext = inferVideoExtensionFromUrlOrType(sourceLabel, contentType)
+    const fileName = `output-${String(payload.index + 1).padStart(3, '0')}.${ext}`
+    const filePath = join(payload.runDir, fileName)
+    await writeFile(filePath, buffer)
+
+    return {
+      id: `ai-video-output-${createHash('sha1').update(`${payload.runId}:${payload.index}`).digest('hex')}`,
+      taskId: payload.taskId,
+      runId: payload.runId,
+      kind: 'output',
+      role: 'video-output',
+      filePath,
+      previewPath: null,
+      originPath: remoteUrl || null,
+      selected: false,
+      sortOrder: payload.index,
+      metadata: {
+        remoteUrl: remoteUrl || null,
+        remoteContent: inlineContent ? '[inline-content]' : null,
+        contentType
+      }
+    }
+  }
+
+  async testConnection(
+    selection?: Partial<AiStudioProviderConfig> | null
+  ): Promise<AiStudioProviderConnectionResult> {
+    const selected = selection && typeof selection === 'object' ? selection : null
+    const fallback = this.getProviderConfig()
+    const config: AiStudioProviderConfig = selected
+      ? {
+          provider: normalizeText(selected.provider) || fallback.provider,
+          baseUrl: sanitizeBaseUrl(normalizeText(selected.baseUrl) || fallback.baseUrl),
+          apiKey: normalizeText(selected.apiKey) || fallback.apiKey,
+          defaultImageModel: resolveConfiguredModel(
+            selected.defaultImageModel,
+            fallback.defaultImageModel
+          ),
+          endpointPath: normalizeText(selected.endpointPath) || fallback.endpointPath,
+          providerProfiles: selected.providerProfiles ?? fallback.providerProfiles
+        }
+      : fallback
     const checkedAt = Date.now()
     const connectionApiPath = config.endpointPath || GRSAI_RESULT_PATH
     const isCustomEndpoint = Boolean(config.endpointPath)
     const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(connectionApiPath)
     const looksLikeChatCompletions = isChatCompletionsPath(connectionApiPath)
+    const looksLikeVideoCreateEndpoint = isCustomEndpoint && isVideoCreatePath(connectionApiPath)
 
     const probePayload = looksLikeChatCompletions
       ? {
@@ -1313,22 +1970,33 @@ export class AiStudioService {
             contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
             generationConfig: { responseModalities: ['TEXT'] }
           }
-        : isCustomEndpoint
-          ? {}
-          : { id: CONNECTION_TEST_ID }
+        : looksLikeVideoCreateEndpoint
+          ? {
+              model: config.defaultImageModel || 'veo3.1-fast',
+              prompt: 'ping',
+              enhance_prompt: true,
+              enable_upsample: true,
+              aspect_ratio: '16:9'
+            }
+          : isCustomEndpoint
+            ? {}
+            : { id: CONNECTION_TEST_ID }
 
     const response = await this.requestProvider(
       connectionApiPath,
       probePayload,
       looksLikeChatCompletions || looksLikeGeminiGenerateContent
-        ? undefined
-        : isCustomEndpoint
-          ? {
-              method: 'POST',
-              allowStatusCodes: [400, 405, 422],
-              allowProviderCodes: [-22]
-            }
-          : { allowStatusCodes: [400], allowProviderCodes: [-22] }
+        ? { providerConfig: config }
+        : looksLikeVideoCreateEndpoint
+          ? { method: 'POST', providerConfig: config }
+          : isCustomEndpoint
+            ? {
+                method: 'POST',
+                allowStatusCodes: [400, 405, 422],
+                allowProviderCodes: [-22],
+                providerConfig: config
+              }
+            : { allowStatusCodes: [400], allowProviderCodes: [-22], providerConfig: config }
     )
     return {
       success: true,
@@ -1440,6 +2108,129 @@ export class AiStudioService {
     }
   }
 
+  async submitVideoRun(taskId: string): Promise<AiStudioRunExecutionResult> {
+    const task = this.getTaskOrThrow(taskId)
+    const config = this.getProviderConfig(task)
+    const context = await this.buildVideoSubmitContext(taskId)
+    const priceSnapshot = await this.resolvePriceSnapshot(context.model)
+    const videoMeta = readVideoMetadata(task)
+
+    await this.appendVideoDebugLog('video.submit.context', {
+      taskId,
+      provider: task.provider,
+      providerConfig: {
+        provider: config.provider,
+        baseUrl: config.baseUrl,
+        endpointPath: config.endpointPath,
+        defaultImageModel: config.defaultImageModel,
+        apiKeyPresent: Boolean(config.apiKey)
+      },
+      submitPath: context.submitPath,
+      queryPath: context.queryPath,
+      requestSnapshot: context.requestSnapshot,
+      requestPayload: context.requestPayload,
+      videoMeta: {
+        model: videoMeta.model,
+        mode: videoMeta.mode,
+        aspectRatio: videoMeta.aspectRatio,
+        duration: videoMeta.duration,
+        resolution: videoMeta.resolution,
+        subjectReferencePath: videoMeta.subjectReferencePath,
+        firstFramePath: videoMeta.firstFramePath,
+        lastFramePath: videoMeta.lastFramePath
+      }
+    })
+
+    try {
+      const response = await this.requestProvider(context.submitPath, context.requestPayload, {
+        providerConfig: config,
+        debugContext: {
+          flow: 'video-submit',
+          taskId,
+          model: context.model,
+          submitPath: context.submitPath,
+          queryPath: context.queryPath
+        }
+      })
+      this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
+      const directResultItems = extractVideoResultItems(response.payload)
+
+      if (directResultItems.length > 0) {
+        const run = await this.recordRunAttempt({
+          taskId,
+          provider: config.provider,
+          status: 'succeeded',
+          remoteTaskId: extractRemoteTaskId(response.payload, { allowTopLevelId: false }),
+          billedState: 'billable',
+          priceMinSnapshot: priceSnapshot.min,
+          priceMaxSnapshot: priceSnapshot.max,
+          requestPayload: context.requestSnapshot,
+          responsePayload: response.payload,
+          errorMessage: null,
+          startedAt: Date.now(),
+          finishedAt: Date.now()
+        })
+
+        const outputs = await this.downloadVideoOutputs({
+          taskId,
+          runId: run.id,
+          responsePayload: response.payload
+        })
+        const latestRun = this.getRunById(run.id) ?? run
+        return toExecutionResult(this.getTaskOrThrow(taskId), latestRun, outputs)
+      }
+
+      const remoteTaskId = extractRemoteTaskId(response.payload)
+      await this.appendVideoDebugLog('video.submit.accepted', {
+        taskId,
+        model: context.model,
+        submitPath: context.submitPath,
+        queryPath: context.queryPath,
+        remoteTaskId,
+        directResultCount: directResultItems.length,
+        responsePayload: response.payload
+      })
+      if (!remoteTaskId) {
+        throw new Error(
+          extractFailureReason(response.payload) ?? '[AI Studio] AI 服务未返回视频任务 ID。'
+        )
+      }
+
+      const run = await this.recordRunAttempt({
+        taskId,
+        provider: config.provider,
+        status: 'submitted',
+        remoteTaskId,
+        billedState: 'billable',
+        priceMinSnapshot: priceSnapshot.min,
+        priceMaxSnapshot: priceSnapshot.max,
+        requestPayload: context.requestSnapshot,
+        responsePayload: response.payload,
+        errorMessage: null,
+        startedAt: Date.now()
+      })
+
+      return toExecutionResult(
+        this.getTaskOrThrow(taskId),
+        run,
+        this.listAssets({ taskId, runId: run.id, kind: 'output' })
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await this.appendVideoDebugLog('video.submit.error', {
+        taskId,
+        model: context.model,
+        submitPath: context.submitPath,
+        queryPath: context.queryPath,
+        error: message,
+        requestSnapshot: context.requestSnapshot
+      })
+      this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
+      await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
+      throw error
+    }
+  }
+
   async downloadOutputs(payload: {
     taskId: string
     runId: string
@@ -1500,7 +2291,172 @@ export class AiStudioService {
     return persisted
   }
 
+  async downloadVideoOutputs(payload: {
+    taskId: string
+    runId: string
+    responsePayload?: Record<string, unknown>
+  }): Promise<AiStudioAssetRecord[]> {
+    const taskId = normalizeText(payload.taskId)
+    const runId = normalizeText(payload.runId)
+    if (!taskId || !runId) throw new Error('[AI Studio] taskId / runId 不能为空。')
+
+    const run = this.getRunById(runId)
+    if (!run || run.taskId !== taskId) {
+      throw new Error('[AI Studio] 运行记录不存在。')
+    }
+
+    const responsePayload = asObject(payload.responsePayload)
+    const results = extractVideoResultItems(responsePayload)
+    if (results.length === 0) {
+      return this.listAssets({ taskId, runId, kind: 'output' })
+    }
+
+    const runDir =
+      normalizeText(run.runDir) || (await this.ensureTaskRunDirectory(taskId, run.runIndex)).dirPath
+    const assetsToWrite: AiStudioAssetWriteInput[] = []
+    const failures: string[] = []
+
+    for (let index = 0; index < results.length; index += 1) {
+      try {
+        const persisted = await this.persistVideoOutputItem({
+          taskId,
+          runId,
+          runDir,
+          index,
+          item: results[index]
+        })
+        if (persisted) assetsToWrite.push(persisted)
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error))
+      }
+    }
+
+    const persisted =
+      assetsToWrite.length > 0
+        ? this.upsertAssets(assetsToWrite)
+        : this.listAssets({ taskId, runId, kind: 'output' })
+
+    if (failures.length > 0) {
+      await this.recordRunAttempt({
+        runId,
+        taskId,
+        responsePayload: {
+          ...run.responsePayload,
+          downloadFailures: failures,
+          resultCount: results.length
+        },
+        errorMessage: failures[0]
+      })
+    }
+
+    return persisted
+  }
+
+  async pollVideoRunResult(payload: {
+    taskId: string
+    runId?: string | null
+  }): Promise<AiStudioRunExecutionResult> {
+    const taskId = normalizeText(payload.taskId)
+    if (!taskId) throw new Error('[AI Studio] taskId 不能为空。')
+
+    const task = this.getTaskOrThrow(taskId)
+    const runId = normalizeText(payload.runId) || normalizeText(task.latestRunId)
+    if (!runId) throw new Error('[AI Studio] 当前任务没有可轮询的运行记录。')
+
+    const existingRun = this.getRunById(runId)
+    if (!existingRun || existingRun.taskId !== taskId) {
+      throw new Error('[AI Studio] 运行记录不存在。')
+    }
+
+    if (!existingRun.remoteTaskId) {
+      throw new Error('[AI Studio] 当前运行缺少远端任务 ID。')
+    }
+
+    const requestSnapshot = asObject(existingRun.requestPayload)
+    const queryPath =
+      normalizeText(requestSnapshot.queryPath) ||
+      readVideoMetadata(task).queryPath ||
+      AI_VIDEO_QUERY_PATH
+    const providerConfig = this.getProviderConfig(task)
+
+    await this.appendVideoDebugLog('video.poll.context', {
+      taskId,
+      runId: existingRun.id,
+      remoteTaskId: existingRun.remoteTaskId,
+      queryPath,
+      providerConfig: {
+        provider: providerConfig.provider,
+        baseUrl: providerConfig.baseUrl,
+        endpointPath: providerConfig.endpointPath,
+        defaultImageModel: providerConfig.defaultImageModel,
+        apiKeyPresent: Boolean(providerConfig.apiKey)
+      },
+      requestSnapshot
+    })
+
+    const response = await this.requestProvider(queryPath, { id: existingRun.remoteTaskId }, {
+      method: 'GET',
+      providerConfig,
+      debugContext: {
+        flow: 'video-poll',
+        taskId,
+        runId: existingRun.id,
+        remoteTaskId: existingRun.remoteTaskId,
+        queryPath
+      }
+    })
+    const status = extractVideoResultStatus(response.payload, existingRun.status)
+    const errorMessage = status === 'failed' ? extractFailureReason(response.payload) : null
+
+    await this.appendVideoDebugLog('video.poll.parsed', {
+      taskId,
+      runId: existingRun.id,
+      remoteTaskId: existingRun.remoteTaskId,
+      queryPath,
+      status,
+      errorMessage,
+      responsePayload: response.payload
+    })
+
+    const run = await this.recordRunAttempt({
+      runId: existingRun.id,
+      taskId,
+      status,
+      remoteTaskId: existingRun.remoteTaskId,
+      billedState: existingRun.billedState,
+      priceMinSnapshot: existingRun.priceMinSnapshot,
+      priceMaxSnapshot: existingRun.priceMaxSnapshot,
+      requestPayload: existingRun.requestPayload,
+      responsePayload: response.payload,
+      errorMessage,
+      finishedAt: status === 'succeeded' || status === 'failed' ? Date.now() : null
+    })
+
+    const outputs =
+      status === 'succeeded'
+        ? await this.downloadVideoOutputs({
+            taskId,
+            runId: run.id,
+            responsePayload: response.payload
+          })
+        : this.listAssets({ taskId, runId: run.id, kind: 'output' })
+
+    return toExecutionResult(this.getTaskOrThrow(taskId), run, outputs)
+  }
+
   async pollRunResult(payload: {
+    taskId: string
+    runId?: string | null
+  }): Promise<AiStudioRunExecutionResult> {
+    const taskId = normalizeText(payload.taskId)
+    if (!taskId) throw new Error('[AI Studio] taskId 不能为空。')
+    const task = this.getTaskOrThrow(taskId)
+    return readTaskCapability(task) === 'video'
+      ? this.pollVideoRunResult(payload)
+      : this.pollImageRunResult(payload)
+  }
+
+  async pollImageRunResult(payload: {
     taskId: string
     runId?: string | null
   }): Promise<AiStudioRunExecutionResult> {
@@ -1547,11 +2503,17 @@ export class AiStudioService {
   }
 
   async startRun(taskId: string): Promise<AiStudioRunExecutionResult> {
-    return this.submitImageRun(taskId)
+    const task = this.getTaskOrThrow(taskId)
+    return readTaskCapability(task) === 'video'
+      ? this.submitVideoRun(taskId)
+      : this.submitImageRun(taskId)
   }
 
   async retryRun(taskId: string): Promise<AiStudioRunExecutionResult> {
-    return this.submitImageRun(taskId)
+    const task = this.getTaskOrThrow(taskId)
+    return readTaskCapability(task) === 'video'
+      ? this.submitVideoRun(taskId)
+      : this.submitImageRun(taskId)
   }
 
   getRun(runId: string): AiStudioRunRecord | null {
@@ -1571,8 +2533,11 @@ export class AiStudioService {
     const normalizedId = normalizeText(templateId)
     if (!normalizedId) return { success: false }
     const changes = Number(
-      (this.db.prepare(`DELETE FROM ai_studio_templates WHERE id = ?`).run(normalizedId) as { changes?: unknown })
-        ?.changes ?? 0
+      (
+        this.db.prepare(`DELETE FROM ai_studio_templates WHERE id = ?`).run(normalizedId) as {
+          changes?: unknown
+        }
+      )?.changes ?? 0
     )
     return { success: Number.isFinite(changes) && changes > 0 }
   }
