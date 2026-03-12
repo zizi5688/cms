@@ -879,10 +879,12 @@ function VideoModelConfigurator({
 
 function ControlPanel({
   state,
-  promptDraft
+  promptDraft,
+  onPromptClear
 }: {
   state: UseAiStudioStateResult
   promptDraft: string
+  onPromptClear: () => void
 }): React.JSX.Element {
   const addLog = useCmsStore((store) => store.addLog)
   const task = state.activeTask
@@ -916,7 +918,8 @@ function ControlPanel({
       if (isVideoStudio) {
         await state.startVideoWorkflow({
           taskId: task?.id ?? null,
-          promptText
+          promptText,
+          onStarted: onPromptClear
         })
         addLog('[AI Studio] 已启动视频生成任务')
         return
@@ -931,7 +934,8 @@ function ControlPanel({
         promptText,
         model: currentImageModel,
         requestedCount: normalizedRequestedCount,
-        templateId: null
+        templateId: null,
+        onStarted: onPromptClear
       })
       addLog('[AI Studio] 已启动生成任务')
     } catch (error) {

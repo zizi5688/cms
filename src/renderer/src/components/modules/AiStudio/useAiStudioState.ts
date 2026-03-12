@@ -2960,7 +2960,7 @@ const useAiStudioState = () => {
   )
 
   const startVideoWorkflow = useCallback(
-    async (payload?: { taskId?: string | null; promptText?: string }) => {
+    async (payload?: { taskId?: string | null; promptText?: string; onStarted?: () => void }) => {
       const sourceTaskView =
         (payload?.taskId ? (taskViews.find((item) => item.id === payload.taskId) ?? null) : null) ??
         (activeTask && readTaskCapability(activeTask) === 'video' ? activeTask : null)
@@ -3058,6 +3058,17 @@ const useAiStudioState = () => {
         metadata: writeVideoMetadata(workingTask, initialVideoMeta)
       })
       await refresh()
+      payload?.onStarted?.()
+
+      await createVideoTask({
+        inheritFrom: task,
+        promptExtraOverride: '',
+        videoMetaOverride: {
+          subjectReferencePath: null,
+          firstFramePath: null,
+          lastFramePath: null
+        }
+      })
 
       let wasInterrupted = false
 
@@ -3186,6 +3197,7 @@ const useAiStudioState = () => {
       model?: string
       requestedCount?: number
       templateId?: string | null
+      onStarted?: () => void
     }) => {
       const sourceTaskView =
         (payload?.taskId ? (taskViews.find((item) => item.id === payload.taskId) ?? null) : null) ??
@@ -3283,6 +3295,7 @@ const useAiStudioState = () => {
         metadata: writeWorkflowMetadata(workingTask, workflow)
       })
       await refresh()
+      payload?.onStarted?.()
 
       let wasInterrupted = false
 

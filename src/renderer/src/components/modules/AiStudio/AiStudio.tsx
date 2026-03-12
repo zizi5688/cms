@@ -66,7 +66,11 @@ function AiStudioCanvas({
           <div className="relative overflow-visible rounded-[28px] border border-zinc-200/90 bg-white/92 px-3.5 pt-2.5 pb-3 shadow-[0_18px_44px_rgba(15,23,42,0.06)] backdrop-blur">
             <TaskQueue state={state} promptDraft={promptDraft} onPromptChange={setPromptDraft} />
             <div className="relative z-30 mt-2.5 border-t border-zinc-200/80 pt-2.5">
-              <ControlPanel state={state} promptDraft={promptDraft} />
+              <ControlPanel
+                state={state}
+                promptDraft={promptDraft}
+                onPromptClear={() => setPromptDraft('')}
+              />
             </div>
           </div>
         </div>
