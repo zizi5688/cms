@@ -1,18 +1,51 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
+import { createPortal } from 'react-dom'
 
-import { ArrowUp, Send, Trash2 } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, Clapperboard, FlaskConical, Plus, Send, Trash2, X } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
+import geminiLogo from '@renderer/assets/ai-model-logos/gemini.svg'
+import {
+  findAiModelProfile,
+  findAiProviderProfile,
+  normalizeAiEndpointPath,
+  normalizeAiProviderValue
+} from '@renderer/lib/aiProviderProfiles'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { cn } from '@renderer/lib/utils'
-import { useCmsStore } from '@renderer/store/useCmsStore'
+import { useCmsStore, type AiProviderProfile } from '@renderer/store/useCmsStore'
 
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
-const MODEL_DISPLAY_NAME_OVERRIDES: Record<string, string> = {
-  'gemini-3.1-flash-image-preview': 'Nano banana2'
+const IMAGE_MODEL_OPTIONS = [{ value: DEFAULT_GRSAI_IMAGE_MODEL, label: 'Nano Banana' }]
+const VIDEO_MODE_OPTIONS = [
+  { value: 'subject-reference', label: '主体参考' },
+  { value: 'first-last-frame', label: '首尾帧' }
+] as const
+const VIDEO_ASPECT_RATIO_OPTIONS = [
+  { value: '9:16', label: '竖版 9:16' },
+  { value: '16:9', label: '横版 16:9' },
+  { value: '1:1', label: '方图 1:1' }
+] as const
+const VIDEO_RESOLUTION_OPTIONS = [
+  { value: '720p', label: '720p' },
+  { value: '1080p', label: '1080p' }
+] as const
+const VIDEO_DURATION_OPTIONS = [
+  { value: 5, label: '5 秒' },
+  { value: 8, label: '8 秒' }
+] as const
+
+const CONTROL_FIELD_LABEL_CLASS = 'text-[11px] font-medium tracking-[0.04em] text-zinc-500'
+
+type ProviderConnectionPayload = {
+  provider: string
+  baseUrl: string
+  apiKey: string
+  defaultImageModel: string
+  endpointPath: string
 }
 
 function basename(filePath: string | null | undefined): string {
@@ -22,14 +55,9 @@ function basename(filePath: string | null | undefined): string {
   return parts[parts.length - 1] ?? normalized
 }
 
-function formatModelDisplayLabel(modelName: string, providerName: string): string {
-  const normalizedModelName = String(modelName ?? '').trim()
-  const normalizedProviderName = String(providerName ?? '').trim()
-  const modelLabel =
-    MODEL_DISPLAY_NAME_OVERRIDES[normalizedModelName] ?? normalizedModelName ?? '未配置模型'
-
-  if (!normalizedProviderName) return modelLabel || '未配置模型'
-  return `${modelLabel || '未配置模型'} - ${normalizedProviderName}`
+function isVideoAsset(asset: AiStudioAssetRecord): boolean {
+  if (asset.role === 'video-output') return true
+  return /\.(mp4|mov|webm|m4v)(?:$|[?#])/i.test(String(asset.filePath ?? '').trim())
 }
 
 function PoolPreviewThumb({
@@ -41,18 +69,35 @@ function PoolPreviewThumb({
 }): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
+  const video = isVideoAsset(asset)
 
   return (
     <div className="group/thumb-item relative shrink-0 overflow-hidden rounded-[14px] border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-zinc-300">
       <div className="h-[74px] w-[56px] overflow-hidden bg-zinc-100">
         {src ? (
-          <img
-            src={src}
-            alt={basename(asset.filePath)}
-            className="h-full w-full object-cover"
-            draggable={false}
-            loading="lazy"
-          />
+          video ? (
+            <div className="relative h-full w-full bg-zinc-950">
+              <video
+                src={src}
+                className="h-full w-full object-cover"
+                muted
+                playsInline
+                preload="metadata"
+              />
+              <div className="absolute inset-x-0 bottom-0 inline-flex items-center justify-center bg-black/55 py-1 text-[10px] font-medium text-white">
+                <Clapperboard className="mr-1 h-3 w-3" />
+                视频
+              </div>
+            </div>
+          ) : (
+            <img
+              src={src}
+              alt={basename(asset.filePath)}
+              className="h-full w-full object-cover"
+              draggable={false}
+              loading="lazy"
+            />
+          )
         ) : null}
       </div>
       <button
@@ -70,53 +115,1086 @@ function PoolPreviewThumb({
   )
 }
 
+function PooledOutputPopover({
+  anchorRef,
+  open,
+  assets,
+  onRemove,
+  onMouseEnter,
+  onMouseLeave
+}: {
+  anchorRef: React.RefObject<HTMLDivElement | null>
+  open: boolean
+  assets: AiStudioAssetRecord[]
+  onRemove: (asset: AiStudioAssetRecord) => void
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}): React.JSX.Element | null {
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPanelStyle(null)
+      return
+    }
+
+    const updatePanelStyle = (): void => {
+      const rect = anchorRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const panelWidth = 272
+      const viewportPadding = 12
+      const left = Math.min(
+        Math.max(viewportPadding, rect.right - panelWidth),
+        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+      )
+      setPanelStyle({
+        left,
+        top: Math.max(viewportPadding, rect.top - 8),
+        width: panelWidth,
+        transform: 'translateY(-100%)'
+      })
+    }
+
+    updatePanelStyle()
+    window.addEventListener('resize', updatePanelStyle)
+    window.addEventListener('scroll', updatePanelStyle, true)
+    return () => {
+      window.removeEventListener('resize', updatePanelStyle)
+      window.removeEventListener('scroll', updatePanelStyle, true)
+    }
+  }, [anchorRef, assets.length, open])
+
+  if (!open || !panelStyle || assets.length === 0 || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div
+      className="fixed z-[260] pb-2"
+      style={panelStyle}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <div className="rounded-[20px] border border-zinc-200 bg-white p-2.5 shadow-[0_18px_40px_rgba(15,23,42,0.16)]">
+        <div className="flex w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          {assets.map((asset) => (
+            <PoolPreviewThumb key={asset.id} asset={asset} onRemove={onRemove} />
+          ))}
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+function createProviderProfile(providerName: string, baseUrl: string, apiKey: string): AiProviderProfile {
+  return {
+    id: crypto.randomUUID(),
+    providerName,
+    baseUrl: baseUrl.trim(),
+    apiKey: apiKey.trim(),
+    models: [],
+    defaultModelId: null
+  }
+}
+
+function resolveModelVisual(modelName: string): {
+  logoSrc: string | null
+  badgeText: string
+  badgeClassName: string
+} {
+  const normalized = normalizeAiProviderValue(modelName).toLowerCase()
+
+  if (normalized.includes('gemini')) {
+    return {
+      logoSrc: geminiLogo,
+      badgeText: 'GM',
+      badgeClassName: 'bg-white'
+    }
+  }
+
+  if (normalized.includes('nano-banana')) {
+    return {
+      logoSrc: null,
+      badgeText: 'NB',
+      badgeClassName: 'bg-gradient-to-br from-lime-200 via-emerald-300 to-green-400 text-emerald-950'
+    }
+  }
+
+  const fallbackText =
+    normalized
+      .split(/[^a-z0-9]+/i)
+      .filter(Boolean)[0]
+      ?.slice(0, 2)
+      .toUpperCase() || 'AI'
+
+  return {
+    logoSrc: null,
+    badgeText: fallbackText,
+    badgeClassName: 'bg-gradient-to-br from-sky-500 via-violet-500 to-fuchsia-500 text-white'
+  }
+}
+
+function ModelTriggerButton({
+  label,
+  modelName,
+  isOpen,
+  onClick,
+  disabled
+}: {
+  label: string
+  modelName?: string
+  isOpen?: boolean
+  onClick: () => void
+  disabled?: boolean
+}): React.JSX.Element {
+  const triggerVisual = resolveModelVisual(modelName ?? '')
+  const hasModel = Boolean(String(modelName ?? '').trim())
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex h-8 w-full items-center justify-between rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-left text-[12px] transition hover:border-zinc-300 focus-visible:border-sky-400 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span className="flex min-w-0 items-center gap-2 pr-3">
+        {hasModel ? (
+          <span
+            className={cn(
+              'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
+              triggerVisual.badgeClassName
+            )}
+          >
+            {triggerVisual.logoSrc ? (
+              <img src={triggerVisual.logoSrc} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <span>{triggerVisual.badgeText}</span>
+            )}
+          </span>
+        ) : null}
+        <span className="min-w-0 truncate text-[12px] font-medium text-zinc-900">{label}</span>
+      </span>
+      <ChevronDown
+        className={cn('h-4 w-4 shrink-0 text-zinc-400 transition', isOpen && 'rotate-180')}
+      />
+    </button>
+  )
+}
+
+function ImageModelSelector({
+  value,
+  disabled,
+  onChange
+}: {
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void | Promise<void>
+}): React.JSX.Element {
+  const [isOpen, setIsOpen] = useState(false)
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const currentOption =
+    IMAGE_MODEL_OPTIONS.find((option) => option.value === value) ?? IMAGE_MODEL_OPTIONS[0] ?? null
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPanelStyle(null)
+      return
+    }
+
+    const updatePanelStyle = (): void => {
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const panelWidth = 260
+      const viewportPadding = 12
+      const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+      )
+      setPanelStyle({
+        left,
+        top: Math.max(viewportPadding, rect.top - 8),
+        width: panelWidth,
+        transform: 'translateY(-100%)'
+      })
+    }
+
+    updatePanelStyle()
+    window.addEventListener('resize', updatePanelStyle)
+    window.addEventListener('scroll', updatePanelStyle, true)
+    return () => {
+      window.removeEventListener('resize', updatePanelStyle)
+      window.removeEventListener('scroll', updatePanelStyle, true)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const handlePointerDown = (event: MouseEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (containerRef.current?.contains(target)) return
+      if (panelRef.current?.contains(target)) return
+      setIsOpen(false)
+    }
+
+    const handleEsc = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleEsc)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleEsc)
+    }
+  }, [isOpen])
+
+  return (
+    <label className="flex w-[148px] min-w-[148px] shrink-0 flex-col gap-1">
+      <span className={CONTROL_FIELD_LABEL_CLASS}>模型</span>
+      <div ref={containerRef} className="relative">
+        <ModelTriggerButton
+          label={currentOption?.label ?? '选择模型'}
+          modelName={currentOption?.value ?? ''}
+          isOpen={isOpen}
+          onClick={() => {
+            if (disabled || IMAGE_MODEL_OPTIONS.length === 0) return
+            setIsOpen((prev) => !prev)
+          }}
+          disabled={disabled || IMAGE_MODEL_OPTIONS.length === 0}
+        />
+
+        {isOpen && panelStyle
+          ? createPortal(
+              <div
+                ref={panelRef}
+                className="fixed z-[280] rounded-[20px] border border-zinc-200 bg-white/96 p-2 shadow-[0_20px_44px_rgba(15,23,42,0.18)] backdrop-blur-xl"
+                style={panelStyle}
+              >
+                <div className="grid gap-1">
+                  {IMAGE_MODEL_OPTIONS.map((option) => {
+                    const selected = option.value === (currentOption?.value ?? '')
+                    const modelVisual = resolveModelVisual(option.value)
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          void onChange(option.value)
+                          setIsOpen(false)
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-2 rounded-[16px] border px-3 py-2 text-left text-[12px] transition',
+                          selected
+                            ? 'border-zinc-900 bg-zinc-950 text-white'
+                            : 'border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-300 hover:bg-white'
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
+                            modelVisual.badgeClassName
+                          )}
+                        >
+                          {modelVisual.logoSrc ? (
+                            <img src={modelVisual.logoSrc} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <span>{modelVisual.badgeText}</span>
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+                        {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>,
+              document.body
+            )
+          : null}
+      </div>
+    </label>
+  )
+}
+
+function VideoModelConfigurator({
+  state
+}: {
+  state: UseAiStudioStateResult
+}): React.JSX.Element {
+  const task = state.activeTask
+  const videoMeta = state.videoMeta
+  const config = useCmsStore((store) => store.config)
+  const updateConfig = useCmsStore((store) => store.updateConfig)
+  const addLog = useCmsStore((store) => store.addLog)
+  const providerProfiles = Array.isArray(config.aiProviderProfiles) ? config.aiProviderProfiles : []
+  const currentProviderName = normalizeAiProviderValue(task?.provider)
+  const currentModelName = String(videoMeta.model ?? '').trim()
+  const [isOpen, setIsOpen] = useState(false)
+  const [activeProviderName, setActiveProviderName] = useState('')
+  const [isCreatingProvider, setIsCreatingProvider] = useState(false)
+  const [providerNameDraft, setProviderNameDraft] = useState('')
+  const [providerBaseUrlDraft, setProviderBaseUrlDraft] = useState('')
+  const [providerApiKeyDraft, setProviderApiKeyDraft] = useState('')
+  const [isCreatingModel, setIsCreatingModel] = useState(false)
+  const [modelNameDraft, setModelNameDraft] = useState('')
+  const [modelEndpointDraft, setModelEndpointDraft] = useState('')
+  const [testingModelKey, setTestingModelKey] = useState('')
+  const [verifiedModelKeys, setVerifiedModelKeys] = useState<string[]>([])
+  const [failedModelKeys, setFailedModelKeys] = useState<string[]>([])
+
+  const hasProviders = providerProfiles.length > 0
+  const activeProviderProfile = useMemo(
+    () => findAiProviderProfile(providerProfiles, activeProviderName),
+    [activeProviderName, providerProfiles]
+  )
+  const providerDraftDirty = useMemo(() => {
+    if (!activeProviderProfile || isCreatingProvider) return false
+    return (
+      providerBaseUrlDraft.trim() !== activeProviderProfile.baseUrl.trim() ||
+      providerApiKeyDraft.trim() !== activeProviderProfile.apiKey.trim()
+    )
+  }, [activeProviderProfile, isCreatingProvider, providerApiKeyDraft, providerBaseUrlDraft])
+
+  const syncProviderEditor = (providerName: string): void => {
+    const providerProfile = findAiProviderProfile(providerProfiles, providerName)
+    setActiveProviderName(providerProfile?.providerName ?? normalizeAiProviderValue(providerName))
+    setProviderNameDraft('')
+    setProviderBaseUrlDraft(providerProfile?.baseUrl ?? '')
+    setProviderApiKeyDraft(providerProfile?.apiKey ?? '')
+    setIsCreatingProvider(false)
+    setIsCreatingModel(false)
+    setModelNameDraft('')
+    setModelEndpointDraft('')
+  }
+
+  const openConfigurator = (): void => {
+    if (hasProviders) {
+      syncProviderEditor(currentProviderName || providerProfiles[0]?.providerName || '')
+    } else {
+      setActiveProviderName('')
+      setIsCreatingProvider(false)
+      setProviderNameDraft('')
+      setProviderBaseUrlDraft('')
+      setProviderApiKeyDraft('')
+      setIsCreatingModel(false)
+      setModelNameDraft('')
+      setModelEndpointDraft('')
+    }
+    setIsOpen(true)
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handleEsc = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+    window.addEventListener('keydown', handleEsc)
+    return () => {
+      window.removeEventListener('keydown', handleEsc)
+    }
+  }, [isOpen])
+
+  const persistProviderProfiles = async (nextProfiles: AiProviderProfile[]): Promise<void> => {
+    updateConfig({ aiProviderProfiles: nextProfiles })
+    try {
+      await window.electronAPI.saveConfig({ aiProviderProfiles: nextProfiles })
+    } catch {
+      addLog('[AI Studio] 保存视频模型配置失败。')
+    }
+  }
+
+  const startCreateProvider = (): void => {
+    setIsCreatingProvider(true)
+    setActiveProviderName('')
+    setProviderNameDraft('')
+    setProviderBaseUrlDraft('')
+    setProviderApiKeyDraft('')
+    setIsCreatingModel(false)
+    setModelNameDraft('')
+    setModelEndpointDraft('')
+  }
+
+  const handleSaveProvider = async (): Promise<void> => {
+    try {
+      const providerName = normalizeAiProviderValue(
+        isCreatingProvider
+          ? providerNameDraft
+          : activeProviderProfile?.providerName || activeProviderName || providerProfiles[0]?.providerName
+      )
+      const baseUrl = providerBaseUrlDraft.trim()
+      const apiKey = providerApiKeyDraft.trim()
+      if (!providerName) throw new Error('请先填写供应商名称。')
+      if (!baseUrl) throw new Error('请先填写 Host / Base URL。')
+      if (!apiKey) throw new Error('请先填写 API Key。')
+
+      const existingProvider = findAiProviderProfile(providerProfiles, providerName)
+      const nextProfiles = existingProvider
+        ? providerProfiles.map((profile) =>
+            profile.id === existingProvider.id ? { ...profile, baseUrl, apiKey } : profile
+          )
+        : [...providerProfiles, createProviderProfile(providerName, baseUrl, apiKey)]
+
+      await persistProviderProfiles(nextProfiles)
+      syncProviderEditor(providerName)
+      addLog(`[AI Studio] 已保存视频供应商：${providerName}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 保存视频供应商失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleDeleteProvider = async (): Promise<void> => {
+    if (!activeProviderProfile) return
+    const confirmed = window.confirm(`确定删除供应商“${activeProviderProfile.providerName}”吗？`)
+    if (!confirmed) return
+
+    try {
+      const nextProfiles = providerProfiles.filter((profile) => profile.id !== activeProviderProfile.id)
+      await persistProviderProfiles(nextProfiles)
+      const nextProviderName = nextProfiles[0]?.providerName ?? ''
+      syncProviderEditor(nextProviderName)
+      await state.setVideoProvider(nextProviderName)
+      addLog(`[AI Studio] 已删除视频供应商：${activeProviderProfile.providerName}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 删除视频供应商失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const startCreateModel = (): void => {
+    if (!activeProviderProfile) {
+      window.alert('请先保存并选择供应商。')
+      return
+    }
+    setIsCreatingModel(true)
+    setModelNameDraft('')
+    setModelEndpointDraft('')
+  }
+
+  const handleSaveModel = async (): Promise<void> => {
+    try {
+      if (!activeProviderProfile) throw new Error('请先保存并选择供应商。')
+      const modelName = normalizeAiProviderValue(modelNameDraft)
+      const endpointPath = normalizeAiEndpointPath(modelEndpointDraft)
+      if (!modelName) throw new Error('请先填写模型名称。')
+      if (!endpointPath) throw new Error('请先填写模型 API 端点。')
+
+      const nextProfiles = providerProfiles.map((profile) => {
+        if (profile.id !== activeProviderProfile.id) return profile
+        const existingModel = findAiModelProfile(profile, modelName)
+        if (existingModel) {
+          return {
+            ...profile,
+            models: profile.models.map((model) =>
+              model.id === existingModel.id ? { ...model, endpointPath } : model
+            ),
+            defaultModelId: existingModel.id
+          }
+        }
+        return {
+          ...profile,
+          models: [
+            ...profile.models,
+            {
+              id: crypto.randomUUID(),
+              modelName,
+              endpointPath
+            }
+          ],
+          defaultModelId: profile.defaultModelId
+        }
+      })
+
+      await persistProviderProfiles(nextProfiles)
+      setIsCreatingModel(false)
+      setModelNameDraft('')
+      setModelEndpointDraft('')
+      addLog(`[AI Studio] 已保存视频模型：${activeProviderProfile.providerName} / ${modelName}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 保存视频模型失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleChooseModel = async (
+    providerProfile: AiProviderProfile,
+    modelName: string,
+    endpointPath: string
+  ): Promise<void> => {
+    try {
+      await state.setVideoProvider(providerProfile.providerName)
+      await state.setVideoModel({
+        provider: providerProfile.providerName,
+        model: modelName,
+        endpointPath
+      })
+      addLog(`[AI Studio] 已切换视频模型：${providerProfile.providerName} / ${modelName}`)
+      setIsOpen(false)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 切换视频模型失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleTestModel = async (
+    providerProfile: AiProviderProfile,
+    modelName: string,
+    endpointPath: string
+  ): Promise<void> => {
+    const normalizedModel = normalizeAiProviderValue(modelName)
+    const normalizedEndpoint = normalizeAiEndpointPath(endpointPath)
+    const testKey = `${providerProfile.id}:${normalizedModel}:${normalizedEndpoint}`
+    if (!normalizedModel || !normalizedEndpoint) {
+      window.alert('请先确保该模型已填写模型名和 API 端点。')
+      return
+    }
+
+    setTestingModelKey(testKey)
+    try {
+      const result = await window.api.cms.aiStudio.provider.testConnection({
+        provider: providerProfile.providerName,
+        baseUrl: providerProfile.baseUrl,
+        apiKey: providerProfile.apiKey,
+        defaultImageModel: normalizedModel,
+        endpointPath: normalizedEndpoint
+      } satisfies ProviderConnectionPayload)
+      addLog(
+        `[AI Studio] ${result.message}（Provider: ${result.provider} / Model: ${result.model} / Endpoint: ${result.endpointPath}）`
+      )
+      setVerifiedModelKeys((prev) => Array.from(new Set([...prev, testKey])))
+      setFailedModelKeys((prev) => prev.filter((key) => key !== testKey))
+    } catch (error) {
+      setVerifiedModelKeys((prev) => prev.filter((key) => key !== testKey))
+      setFailedModelKeys((prev) => Array.from(new Set([...prev, testKey])))
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(
+        `[AI Studio] 模型测试失败：${message}（Provider: ${providerProfile.providerName} / Model: ${normalizedModel} / Endpoint: ${normalizedEndpoint}）`
+      )
+      window.alert(
+        [
+          '模型测试失败',
+          `原因：${message}` ,
+          `Provider: ${providerProfile.providerName}` ,
+          `Model: ${normalizedModel}` ,
+          `Endpoint: ${normalizedEndpoint}`
+        ].join('\n')
+      )
+    } finally {
+      setTestingModelKey('')
+    }
+  }
+
+  const handleDeleteModel = async (
+    providerProfile: AiProviderProfile,
+    modelId: string,
+    modelName: string
+  ): Promise<void> => {
+    const confirmed = window.confirm(`确定删除模型“${modelName}”吗？`)
+    if (!confirmed) return
+
+    try {
+      const nextProfiles = providerProfiles.map((profile) => {
+        if (profile.id !== providerProfile.id) return profile
+        const nextModels = profile.models.filter((model) => model.id !== modelId)
+        const nextDefaultModelId =
+          profile.defaultModelId && nextModels.some((model) => model.id === profile.defaultModelId)
+            ? profile.defaultModelId
+            : nextModels[0]?.id ?? null
+        return {
+          ...profile,
+          models: nextModels,
+          defaultModelId: nextDefaultModelId
+        }
+      })
+
+      await persistProviderProfiles(nextProfiles)
+      setVerifiedModelKeys((prev) =>
+        prev.filter((key) => !key.startsWith(`${providerProfile.id}:${normalizeAiProviderValue(modelName)}:`))
+      )
+      setFailedModelKeys((prev) =>
+        prev.filter((key) => !key.startsWith(`${providerProfile.id}:${normalizeAiProviderValue(modelName)}:`))
+      )
+
+      if (providerProfile.providerName === currentProviderName && modelName === currentModelName) {
+        const nextProviderProfile =
+          nextProfiles.find((profile) => profile.id === providerProfile.id) ?? null
+        const fallbackModel = nextProviderProfile?.models[0] ?? null
+        await state.setVideoModel({
+          provider: providerProfile.providerName,
+          model: fallbackModel?.modelName ?? '',
+          endpointPath: fallbackModel?.endpointPath ?? ''
+        })
+      }
+
+      addLog(`[AI Studio] 已删除视频模型：${providerProfile.providerName} / ${modelName}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 删除视频模型失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const triggerLabel = currentModelName || (hasProviders ? '选择模型' : '新增模型供应商')
+  const fieldClass =
+    'h-10 rounded-[16px] border border-zinc-200 bg-zinc-50 px-3 text-[13px] text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-sky-400'
+
+  return (
+    <>
+      <label className="relative flex min-w-[198px] flex-[1.25] flex-col gap-1">
+        <span className={CONTROL_FIELD_LABEL_CLASS}>模型</span>
+        <ModelTriggerButton
+          label={triggerLabel}
+          modelName={currentModelName}
+          isOpen={isOpen}
+          onClick={() => {
+            if (isOpen) {
+              setIsOpen(false)
+              return
+            }
+            openConfigurator()
+          }}
+        />
+      </label>
+
+      {isOpen
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[220] flex items-center justify-center bg-black/10 p-4"
+              onMouseDown={() => setIsOpen(false)}
+            >
+              <div
+                className="w-[min(560px,calc(100vw-24px))] max-h-[72vh] overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-[0_30px_90px_rgba(15,23,42,0.22)]"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-3 border-b border-zinc-100 px-5 py-4">
+                  <div>
+                    <div className="text-[15px] font-semibold text-zinc-900">视频模型设置</div>
+                    <div className="mt-1 text-[12px] leading-5 text-zinc-500">
+                      供应商保存名称、Host 和 Key；模型保存模型名和 API 端点。点模型即可直接切换到当前视频任务。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsOpen(false)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-200 text-zinc-400 transition hover:bg-zinc-50 hover:text-zinc-700"
+                    aria-label="关闭模型设置"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="max-h-[calc(72vh-88px)] overflow-y-auto px-5 py-4">
+                  {!hasProviders && !isCreatingProvider ? (
+                    <div className="flex min-h-[180px] items-center justify-center rounded-[22px] border border-dashed border-zinc-200 bg-zinc-50/70">
+                      <Button
+                        type="button"
+                        onClick={startCreateProvider}
+                        className="h-11 rounded-full bg-zinc-950 px-5 text-[13px] text-white hover:bg-zinc-800"
+                      >
+                        <Plus className="h-4 w-4" />
+                        新增模型供应商
+                      </Button>
+                    </div>
+                  ) : null}
+
+                  {(hasProviders || isCreatingProvider) && (
+                    <div className="overflow-hidden rounded-[22px] border border-zinc-200 bg-zinc-50/70">
+                      {hasProviders ? (
+                        <div className="flex items-end gap-1 overflow-x-auto px-4 pt-3 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                          {providerProfiles.map((profile) => {
+                            const active = !isCreatingProvider && profile.providerName === activeProviderName
+                            return (
+                              <button
+                                key={profile.id}
+                                type="button"
+                                onClick={() => syncProviderEditor(profile.providerName)}
+                                className={cn(
+                                  'inline-flex h-11 shrink-0 items-center rounded-t-[16px] border border-b-0 px-4 text-[12px] font-medium transition',
+                                  active
+                                    ? 'border-zinc-300 bg-white text-zinc-950'
+                                    : 'border-zinc-200 bg-zinc-100/90 text-zinc-500 hover:bg-white hover:text-zinc-800'
+                                )}
+                              >
+                                {profile.providerName}
+                              </button>
+                            )
+                          })}
+                          <button
+                            type="button"
+                            onClick={startCreateProvider}
+                            className={cn(
+                              'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-t-[16px] border border-b-0 transition',
+                              isCreatingProvider
+                                ? 'border-zinc-300 bg-white text-zinc-950'
+                                : 'border-zinc-200 bg-zinc-100/90 text-zinc-500 hover:bg-white hover:text-zinc-800'
+                            )}
+                            aria-label="新增供应商"
+                          >
+                            <Plus className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ) : null}
+
+                      <div className={cn('bg-white p-4', hasProviders && 'border-t border-zinc-200')}>
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                          {isCreatingProvider ? (
+                            <label className="flex flex-col gap-1.5 md:col-span-2">
+                              <span className="text-[11px] font-medium text-zinc-500">供应商名称</span>
+                              <input
+                                value={providerNameDraft}
+                                onChange={(event) => setProviderNameDraft(event.target.value)}
+                                placeholder="例如：allapi"
+                                className={fieldClass}
+                                spellCheck={false}
+                              />
+                            </label>
+                          ) : null}
+
+                          <label className="flex flex-col gap-1.5">
+                            <span className="text-[11px] font-medium text-zinc-500">Host / Base URL</span>
+                            <input
+                              value={providerBaseUrlDraft}
+                              onChange={(event) => setProviderBaseUrlDraft(event.target.value)}
+                              placeholder="https://api.allapi.store"
+                              className={fieldClass}
+                              spellCheck={false}
+                            />
+                          </label>
+
+                          <label className="flex flex-col gap-1.5">
+                            <span className="text-[11px] font-medium text-zinc-500">API Key</span>
+                            <input
+                              type="password"
+                              value={providerApiKeyDraft}
+                              onChange={(event) => setProviderApiKeyDraft(event.target.value)}
+                              placeholder="填写当前供应商自己的 Key"
+                              className={fieldClass}
+                              autoComplete="new-password"
+                              spellCheck={false}
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {isCreatingProvider ? (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleSaveProvider()}
+                                className="h-9 rounded-full border-zinc-200 bg-white px-4 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                              >
+                                保存供应商
+                              </Button>
+                              {hasProviders ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => syncProviderEditor(providerProfiles[0]?.providerName || '')}
+                                  className="h-9 rounded-full border-zinc-200 bg-white px-4 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                                >
+                                  取消
+                                </Button>
+                              ) : null}
+                            </>
+                          ) : activeProviderProfile ? (
+                            <>
+                              {providerDraftDirty ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => void handleSaveProvider()}
+                                  className="h-9 rounded-full border-zinc-200 bg-white px-4 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                                >
+                                  保存修改
+                                </Button>
+                              ) : null}
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleDeleteProvider()}
+                                className="h-9 rounded-full border-rose-200 bg-rose-50 px-4 text-[12px] text-rose-600 hover:bg-rose-100 hover:text-rose-700"
+                              >
+                                删除供应商
+                              </Button>
+                            </>
+                          ) : null}
+                        </div>
+
+                        {!isCreatingProvider && activeProviderProfile ? (
+                          <div className="mt-5 border-t border-zinc-100 pt-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div className="text-[13px] font-semibold text-zinc-900">模型</div>
+                                <div className="mt-1 text-[11px] text-zinc-500">
+                                  点击模型即可切换；右侧按钮支持测试连接和删除模型。
+                                </div>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={startCreateModel}
+                                className="h-9 rounded-full border-zinc-200 bg-white px-4 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                              >
+                                <Plus className="h-4 w-4" />
+                                新增模型
+                              </Button>
+                            </div>
+
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              {activeProviderProfile.models.map((model) => {
+                                const applied =
+                                  activeProviderProfile.providerName === currentProviderName &&
+                                  model.modelName === currentModelName
+                                const modelVisual = resolveModelVisual(model.modelName)
+                                const modelKey = `${activeProviderProfile.id}:${normalizeAiProviderValue(model.modelName)}:${normalizeAiEndpointPath(model.endpointPath)}`
+                                const testing = testingModelKey === modelKey
+                                const verified = verifiedModelKeys.includes(modelKey)
+                                const failed = failedModelKeys.includes(modelKey)
+                                return (
+                                  <div
+                                    key={model.id}
+                                    className={cn(
+                                      'inline-flex items-center gap-1.5 rounded-full border px-2 py-1.5 transition',
+                                      applied
+                                        ? 'border-zinc-900 bg-zinc-950 text-white'
+                                        : 'border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-300 hover:bg-white'
+                                    )}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handleChooseModel(
+                                          activeProviderProfile,
+                                          model.modelName,
+                                          model.endpointPath
+                                        )
+                                      }
+                                      className="inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[12px] font-medium"
+                                    >
+                                      <span
+                                        className={cn(
+                                          'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
+                                          modelVisual.badgeClassName
+                                        )}
+                                      >
+                                        {modelVisual.logoSrc ? (
+                                          <img src={modelVisual.logoSrc} alt="" className="h-full w-full object-cover" />
+                                        ) : (
+                                          <span>{modelVisual.badgeText}</span>
+                                        )}
+                                      </span>
+                                      <span className="max-w-[172px] truncate">{model.modelName}</span>
+                                      {applied ? (
+                                        <span className="text-[10px] opacity-80">当前</span>
+                                      ) : null}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        void handleTestModel(
+                                          activeProviderProfile,
+                                          model.modelName,
+                                          model.endpointPath
+                                        )
+                                      }}
+                                      className={cn(
+                                        'inline-flex h-7 w-7 items-center justify-center rounded-full transition',
+                                        applied
+                                          ? 'bg-white/12 text-white hover:bg-white/18'
+                                          : 'bg-white text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900'
+                                      )}
+                                      aria-label={`测试模型 ${model.modelName}`}
+                                      title={verified ? '已验证，可再次测试' : failed ? '测试失败，可重试' : '测试模型'}
+                                      disabled={testing}
+                                    >
+                                      {verified && !testing ? (
+                                        <Check className="h-3.5 w-3.5" />
+                                      ) : failed && !testing ? (
+                                        <X className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <FlaskConical
+                                          className={cn('h-3.5 w-3.5', testing && 'animate-pulse')}
+                                        />
+                                      )}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        void handleDeleteModel(
+                                          activeProviderProfile,
+                                          model.id,
+                                          model.modelName
+                                        )
+                                      }}
+                                      className={cn(
+                                        'inline-flex h-7 w-7 items-center justify-center rounded-full transition',
+                                        applied
+                                          ? 'bg-white/12 text-white hover:bg-white/18'
+                                          : 'bg-white text-zinc-500 hover:bg-zinc-100 hover:text-rose-600'
+                                      )}
+                                      aria-label={`删除模型 ${model.modelName}`}
+                                      title="删除模型"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                )
+                              })}
+                              {activeProviderProfile.models.length === 0 ? (
+                                <div className="rounded-[16px] border border-dashed border-zinc-200 bg-zinc-50 px-4 py-3 text-[12px] text-zinc-400">
+                                  当前供应商还没有模型，点“新增模型”即可。
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {isCreatingModel ? (
+                              <div className="mt-4 grid grid-cols-1 gap-3 rounded-[18px] border border-zinc-200 bg-zinc-50/70 p-3">
+                                <label className="flex flex-col gap-1.5">
+                                  <span className="text-[11px] font-medium text-zinc-500">模型名称</span>
+                                  <input
+                                    value={modelNameDraft}
+                                    onChange={(event) => setModelNameDraft(event.target.value)}
+                                    placeholder="例如：jimeng-video-3.0"
+                                    className={fieldClass}
+                                    spellCheck={false}
+                                  />
+                                </label>
+
+                                <label className="flex flex-col gap-1.5">
+                                  <span className="text-[11px] font-medium text-zinc-500">模型 API 端点</span>
+                                  <input
+                                    value={modelEndpointDraft}
+                                    onChange={(event) => setModelEndpointDraft(event.target.value)}
+                                    placeholder="例如：/v1/video/create"
+                                    className={fieldClass}
+                                    spellCheck={false}
+                                  />
+                                </label>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => void handleSaveModel()}
+                                    className="h-9 rounded-full border-zinc-200 bg-white px-4 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                                  >
+                                    保存模型
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setIsCreatingModel(false)
+                                      setModelNameDraft('')
+                                      setModelEndpointDraft('')
+                                    }}
+                                    className="h-9 rounded-full border-zinc-200 bg-white px-4 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                                  >
+                                    取消
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+    </>
+  )
+}
+
 function ControlPanel({
   state,
-  promptDraft
+  promptDraft,
+  onPromptClear
 }: {
   state: UseAiStudioStateResult
   promptDraft: string
+  onPromptClear: () => void
 }): React.JSX.Element {
   const addLog = useCmsStore((store) => store.addLog)
-  const configuredProvider = useCmsStore((store) => store.config.aiProvider)
-  const configuredDefaultModel = useCmsStore((store) => store.config.aiDefaultImageModel)
   const task = state.activeTask
-  const currentModel =
-    String(configuredDefaultModel ?? '').trim() ||
-    String(task?.model ?? '').trim() ||
-    DEFAULT_GRSAI_IMAGE_MODEL
-  const currentModelDisplayLabel = formatModelDisplayLabel(
-    currentModel,
-    String(configuredProvider ?? '').trim() || String(task?.provider ?? '').trim()
-  )
-  const requestedCount = Math.max(1, state.masterOutputCount || 1)
+  const isVideoStudio = state.studioCapability === 'video'
+  const currentImageModel = String(task?.model ?? '').trim() || DEFAULT_GRSAI_IMAGE_MODEL
+  const currentVideoMeta = state.videoMeta
+  const requestedImageCount = Math.max(1, state.masterOutputCount || 1)
+  const requestedVideoCount = Math.max(1, currentVideoMeta.outputCount || 1)
   const isRunning = task?.status === 'running'
   const isInterrupting = task ? state.interruptingTaskIds.includes(task.id) : false
   const actionLabel = isRunning ? (isInterrupting ? '中断中...' : '中断任务') : '开始生成'
+  const poolTriggerRef = useRef<HTMLDivElement | null>(null)
+  const poolCloseTimerRef = useRef<number | null>(null)
 
-  const [outputCountDraft, setOutputCountDraft] = useState(String(requestedCount))
+  const [imageOutputCountDraft, setImageOutputCountDraft] = useState(String(requestedImageCount))
+  const [videoOutputCountDraft, setVideoOutputCountDraft] = useState(String(requestedVideoCount))
+  const [isPoolPopoverOpen, setIsPoolPopoverOpen] = useState(false)
 
   useEffect(() => {
-    setOutputCountDraft(String(requestedCount))
-  }, [requestedCount, task?.id])
+    setImageOutputCountDraft(String(requestedImageCount))
+  }, [requestedImageCount, task?.id])
+
+  useEffect(() => {
+    setVideoOutputCountDraft(String(requestedVideoCount))
+  }, [requestedVideoCount, task?.id, state.studioCapability])
+
+  useEffect(() => {
+    if (state.pooledOutputCount > 0) return
+    setIsPoolPopoverOpen(false)
+  }, [state.pooledOutputCount])
+
+  useEffect(
+    () => () => {
+      if (poolCloseTimerRef.current === null) return
+      window.clearTimeout(poolCloseTimerRef.current)
+    },
+    []
+  )
 
   const handleGenerate = async (): Promise<void> => {
     try {
-      if (!state.primaryImagePath) {
-        throw new Error('请先添加参考图。')
-      }
-
       const promptText = promptDraft.trim()
       if (!promptText) {
         throw new Error('请先输入提示词。')
       }
-      const normalizedRequestedCount = Math.max(1, Math.floor(Number(outputCountDraft) || 1))
+
+      if (isVideoStudio) {
+        await state.startVideoWorkflow({
+          taskId: task?.id ?? null,
+          promptText,
+          onStarted: onPromptClear
+        })
+        addLog('[AI Studio] 已启动视频生成任务')
+        return
+      }
+
+      if (!state.primaryImagePath) {
+        throw new Error('请先添加参考图。')
+      }
+      const normalizedRequestedCount = Math.max(1, Math.floor(Number(imageOutputCountDraft) || 1))
       await state.startMasterWorkflow({
         taskId: task?.id ?? null,
         promptText,
-        model: currentModel,
+        model: currentImageModel,
         requestedCount: normalizedRequestedCount,
-        templateId: null
+        templateId: null,
+        onStarted: onPromptClear
       })
       addLog('[AI Studio] 已启动生成任务')
     } catch (error) {
@@ -136,99 +1214,211 @@ function ControlPanel({
     }
   }
 
+  const clearPoolCloseTimer = (): void => {
+    if (poolCloseTimerRef.current === null) return
+    window.clearTimeout(poolCloseTimerRef.current)
+    poolCloseTimerRef.current = null
+  }
+
+  const openPoolPopover = (): void => {
+    clearPoolCloseTimer()
+    if (state.pooledOutputCount <= 0) return
+    setIsPoolPopoverOpen(true)
+  }
+
+  const scheduleClosePoolPopover = (): void => {
+    clearPoolCloseTimer()
+    poolCloseTimerRef.current = window.setTimeout(() => {
+      setIsPoolPopoverOpen(false)
+      poolCloseTimerRef.current = null
+    }, 90)
+  }
+
   const actionButtonClass =
-    'relative h-10 shrink-0 rounded-full border border-zinc-950 bg-white px-4 text-[13px] font-medium text-zinc-950 shadow-[0_8px_24px_rgba(15,23,42,0.08)] hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400'
+    'relative inline-flex h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-zinc-950 bg-white px-3 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400'
+  const fieldClass =
+    'h-8 rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-[12px] text-zinc-900 outline-none transition focus:border-sky-400'
 
   return (
-    <>
-      <div className="relative z-30 flex min-w-0 items-end gap-2 overflow-visible pb-1">
-        <label className="flex w-[120px] min-w-[120px] shrink-0 flex-col gap-1.5">
-          <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模型</span>
-          <select
-            value={currentModel}
-            onChange={(event) => void state.setModel(event.target.value)}
-            className="h-9 rounded-full border border-zinc-200 bg-zinc-50 px-3 text-[13px] text-zinc-900 outline-none transition focus:border-sky-400"
-            disabled={!task}
-          >
-            <option value={currentModel}>{currentModelDisplayLabel}</option>
-          </select>
-        </label>
+    <div className="relative z-30 flex min-w-0 items-end gap-2 overflow-x-auto overflow-y-visible pb-0.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+        {isVideoStudio ? (
+          <>
+            <VideoModelConfigurator state={state} />
 
-        <label className="flex w-[84px] min-w-[84px] shrink-0 flex-col gap-1.5">
-          <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">输出张数</span>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={outputCountDraft}
-            onChange={(event) => {
-              const rawValue = event.target.value
-              setOutputCountDraft(rawValue)
-              void state.setMasterOutputCount(Math.max(1, Math.floor(Number(rawValue) || 1)))
-            }}
-            onBlur={() => {
-              const normalizedValue = Math.max(1, Math.floor(Number(outputCountDraft) || 1))
-              setOutputCountDraft(String(normalizedValue))
-            }}
-            className="h-9 rounded-full border border-zinc-200 bg-zinc-50 px-3 text-[13px] text-zinc-900 outline-none transition focus:border-sky-400"
-            disabled={!task}
-          />
-        </label>
+            <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>模式</span>
+              <select
+                value={currentVideoMeta.mode}
+                onChange={(event) => void state.setVideoMode(event.target.value as never)}
+                className={fieldClass}
+              >
+                {VIDEO_MODE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
+            <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>比例</span>
+              <select
+                value={currentVideoMeta.aspectRatio}
+                onChange={(event) => void state.setVideoAspectRatio(event.target.value as never)}
+                className={fieldClass}
+              >
+                {VIDEO_ASPECT_RATIO_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <div className="flex shrink-0 items-center justify-end self-end gap-2">
-          <div className="group/pool relative z-[120] shrink-0">
-            {state.pooledOutputCount > 0 ? (
-              <div className="pointer-events-none absolute bottom-full right-0 z-[140] mb-1 translate-y-1 opacity-0 transition duration-150 group-hover/pool:pointer-events-auto group-hover/pool:translate-y-0 group-hover/pool:opacity-100 group-focus-within/pool:pointer-events-auto group-focus-within/pool:translate-y-0 group-focus-within/pool:opacity-100">
-                <div className="rounded-[22px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-                  <div className="flex w-[282px] gap-2 overflow-x-auto pb-1">
-                    {state.pooledOutputAssets.map((asset) => (
-                      <PoolPreviewThumb
-                        key={asset.id}
-                        asset={asset}
-                        onRemove={(targetAsset) =>
-                          void state.toggleDispatchOutputPoolForTask(targetAsset.taskId, targetAsset.id)
-                        }
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : null}
-            <Button
-              type="button"
-              className={cn(actionButtonClass, 'gap-1.5')}
-              onClick={() => void handleSendPool()}
-              disabled={state.pooledOutputCount <= 0}
-            >
-              <Send className="h-4 w-4" />
-              发送图池
-              {state.pooledOutputCount > 0 ? (
-                <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
-                  {state.pooledOutputCount}
-                </span>
-              ) : null}
-            </Button>
-          </div>
+            <label className="flex w-[88px] min-w-[88px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>清晰度</span>
+              <select
+                value={currentVideoMeta.resolution}
+                onChange={(event) => void state.setVideoResolution(event.target.value as never)}
+                className={fieldClass}
+              >
+                {VIDEO_RESOLUTION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
+            <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>时长</span>
+              <select
+                value={String(currentVideoMeta.duration)}
+                onChange={(event) => void state.setVideoDuration(Number(event.target.value) as never)}
+                className={fieldClass}
+              >
+                {VIDEO_DURATION_OPTIONS.map((option) => (
+                  <option key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex w-[80px] min-w-[80px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>条数</span>
+              <input
+                type="number"
+                min={1}
+                max={4}
+                step={1}
+                value={videoOutputCountDraft}
+                onChange={(event) => {
+                  const rawValue = event.target.value
+                  setVideoOutputCountDraft(rawValue)
+                  void state.setVideoOutputCount(
+                    Math.max(1, Math.min(4, Math.floor(Number(rawValue) || 1)))
+                  )
+                }}
+                onBlur={() => {
+                  const normalizedValue = Math.max(
+                    1,
+                    Math.min(4, Math.floor(Number(videoOutputCountDraft) || 1))
+                  )
+                  setVideoOutputCountDraft(String(normalizedValue))
+                }}
+                className={fieldClass}
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <ImageModelSelector
+              value={currentImageModel}
+              disabled={!task}
+              onChange={(value) => state.setModel(value)}
+            />
+
+            <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>
+                输出张数
+              </span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={imageOutputCountDraft}
+                onChange={(event) => {
+                  const rawValue = event.target.value
+                  setImageOutputCountDraft(rawValue)
+                  void state.setMasterOutputCount(Math.max(1, Math.floor(Number(rawValue) || 1)))
+                }}
+                onBlur={() => {
+                  const normalizedValue = Math.max(1, Math.floor(Number(imageOutputCountDraft) || 1))
+                  setImageOutputCountDraft(String(normalizedValue))
+                }}
+                className={fieldClass}
+                disabled={!task}
+              />
+            </label>
+          </>
+        )}
+      </div>
+
+      <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
+        <div
+          ref={poolTriggerRef}
+          className="relative z-[120] shrink-0"
+          onMouseEnter={openPoolPopover}
+          onMouseLeave={scheduleClosePoolPopover}
+          onFocusCapture={openPoolPopover}
+          onBlurCapture={scheduleClosePoolPopover}
+        >
           <Button
             type="button"
             className={cn(actionButtonClass, 'gap-1.5')}
-            onClick={() => {
-              if (isRunning) {
-                void state.interruptActiveTask()
-                return
-              }
-              void handleGenerate()
-            }}
-            disabled={isInterrupting}
+            onClick={() => void handleSendPool()}
+            disabled={state.pooledOutputCount <= 0}
           >
-            <ArrowUp className="h-4 w-4" />
-            {actionLabel}
+            <Send className="h-3.5 w-3.5" />
+            <span className="max-[1320px]:hidden">发送图池</span>
+            {state.pooledOutputCount > 0 ? (
+              <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
+                {state.pooledOutputCount}
+              </span>
+            ) : null}
           </Button>
         </div>
+
+        <PooledOutputPopover
+          anchorRef={poolTriggerRef}
+          open={state.pooledOutputCount > 0 && isPoolPopoverOpen}
+          assets={state.pooledOutputAssets}
+          onRemove={(targetAsset) =>
+            void state.toggleDispatchOutputPoolForTask(targetAsset.taskId, targetAsset.id)
+          }
+          onMouseEnter={openPoolPopover}
+          onMouseLeave={scheduleClosePoolPopover}
+        />
+
+        <Button
+          type="button"
+          className={cn(actionButtonClass, 'gap-1.5')}
+          onClick={() => {
+            if (isRunning) {
+              void state.interruptActiveTask()
+              return
+            }
+            void handleGenerate()
+          }}
+          disabled={isInterrupting}
+        >
+          <ArrowUp className="h-3.5 w-3.5" />
+          <span className="max-[1320px]:hidden">{actionLabel}</span>
+        </Button>
       </div>
-    </>
+    </div>
   )
 }
 

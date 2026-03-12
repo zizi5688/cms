@@ -678,6 +678,23 @@ function normalizeAiProviderProfiles(value: unknown): AiProviderProfile[] {
   return Array.from(map.values())
 }
 
+function shouldMaterializeLegacyAiProvider(selection: {
+  provider: string
+  baseUrl: string
+  apiKey: string
+  modelName: string
+  endpointPath: string
+}): boolean {
+  const providerName = normalizeAiProvider(selection.provider)
+  const baseUrl = normalizeConfigText(selection.baseUrl)
+  const apiKey = normalizeConfigText(selection.apiKey)
+  const modelName = normalizeConfigText(selection.modelName)
+  const endpointPath = normalizeAiEndpointPath(selection.endpointPath)
+
+  if (baseUrl || apiKey || modelName || endpointPath) return true
+  return providerName !== 'grsai'
+}
+
 function buildLegacyAiProviderProfiles(selection: {
   provider: string
   baseUrl: string
@@ -685,6 +702,8 @@ function buildLegacyAiProviderProfiles(selection: {
   modelName: string
   endpointPath: string
 }): AiProviderProfile[] {
+  if (!shouldMaterializeLegacyAiProvider(selection)) return []
+
   const providerName = normalizeAiProvider(selection.provider)
   const modelName = normalizeConfigText(selection.modelName)
   const endpointPath = normalizeAiEndpointPath(selection.endpointPath)
@@ -751,19 +770,8 @@ function resolveAiProviderState(
     aiProviderProfiles = buildLegacyAiProviderProfiles(legacy)
   }
 
-  let activeProvider =
+  const activeProvider =
     findAiProviderProfile(aiProviderProfiles, legacy.provider) ?? aiProviderProfiles[0] ?? null
-
-  if (!activeProvider) {
-    aiProviderProfiles = buildLegacyAiProviderProfiles({
-      provider: 'grsai',
-      baseUrl: '',
-      apiKey: '',
-      modelName: '',
-      endpointPath: ''
-    })
-    activeProvider = aiProviderProfiles[0] ?? null
-  }
 
   let activeModel = findAiModelProfile(activeProvider, legacy.modelName)
   if (!activeModel && activeProvider?.defaultModelId) {
@@ -1288,7 +1296,8 @@ app.whenReady().then(async () => {
         baseUrl: aiState.aiBaseUrl,
         apiKey: aiState.aiApiKey,
         defaultImageModel: aiState.aiDefaultImageModel,
-        endpointPath: aiState.aiEndpointPath
+        endpointPath: aiState.aiEndpointPath,
+        providerProfiles: aiState.aiProviderProfiles
       }
     }
   )
@@ -3587,7 +3596,17 @@ app.whenReady().then(async () => {
           : currentAiState.aiEndpointPath
 
       let activeProvider = findAiProviderProfile(aiProviderProfiles, desiredAiProvider)
-      if (!activeProvider) {
+      const shouldCreateMissingProvider =
+        !activeProvider &&
+        shouldMaterializeLegacyAiProvider({
+          provider: desiredAiProvider,
+          baseUrl: desiredAiBaseUrl,
+          apiKey: desiredAiApiKey,
+          modelName: desiredAiDefaultImageModel,
+          endpointPath: desiredAiEndpointPath
+        })
+
+      if (shouldCreateMissingProvider) {
         aiProviderProfiles = normalizeAiProviderProfiles([
           ...aiProviderProfiles,
           {
@@ -4527,13 +4546,18 @@ app.whenReady().then(async () => {
     })
   })
 
-  ipcMain.handle('cms.aiStudio.template.list', async () => aiStudioService.listTemplates())
+  ipcMain.handle('cms.aiStudio.template.list', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const capability = body.capability === 'video' ? 'video' : 'image'
+    return aiStudioService.listTemplates(capability)
+  })
 
   ipcMain.handle('cms.aiStudio.template.upsert', async (_event, payload: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     return aiStudioService.upsertTemplate({
       id: typeof body.id === 'string' ? body.id : undefined,
       provider: typeof body.provider === 'string' ? body.provider : undefined,
+      capability: body.capability === 'video' ? 'video' : 'image',
       name: typeof body.name === 'string' ? body.name : '',
       promptText: typeof body.promptText === 'string' ? body.promptText : undefined,
       config: body.config && typeof body.config === 'object' ? (body.config as Record<string, unknown>) : undefined
@@ -4546,7 +4570,10 @@ app.whenReady().then(async () => {
     return aiStudioService.deleteTemplate(templateId)
   })
 
-  ipcMain.handle('cms.aiStudio.provider.testConnection', async () => aiStudioService.testConnection())
+  ipcMain.handle('cms.aiStudio.provider.testConnection', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+    return aiStudioService.testConnection(body ?? undefined)
+  })
 
   ipcMain.handle('cms.aiStudio.task.importFolders', async (event, payload?: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}

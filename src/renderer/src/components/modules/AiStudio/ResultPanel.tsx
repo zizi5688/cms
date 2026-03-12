@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
-import { Check, ImagePlus, Plus, Sparkles, X } from 'lucide-react'
+import { Check, Clapperboard, ImageMinus, ImagePlus, Play, Plus, Sparkles, X } from 'lucide-react'
 
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
@@ -10,25 +10,31 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 
 import {
   buildStageProgress,
+  readVideoMetadata,
   readWorkflowMetadata,
   selectDispatchOutputAssets,
   type AiStudioAssetRecord,
   type AiStudioTaskView,
+  type AiStudioVideoFailureRecord,
   type AiStudioWorkflowFailureRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
-import { computePreviewTargetCount } from './workflowRunHelpers'
-import { resolvePreviewSlotState, type PreviewTileStatus } from './previewSlotHelpers'
-import { formatResolutionBadgeLabel } from './resolutionLabelHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
+const MAX_PREVIEW_SLOTS = 4
+const VIDEO_POSTER_CAPTURE_TIME_SEC = 0.05
+const videoPosterCache = new Map<string, string>()
+const videoPosterInflight = new Map<string, Promise<string>>()
+
+type PreviewTileStatus = 'ready' | 'loading' | 'failed' | 'idle'
 
 type PreviewSlot = {
   index: number
   asset: AiStudioAssetRecord | null
-  failure: AiStudioWorkflowFailureRecord | null
+  failure: AiStudioWorkflowFailureRecord | AiStudioVideoFailureRecord | null
   status: PreviewTileStatus
   statusText: string
+  detailText?: string
 }
 
 function basename(filePath: string | null | undefined): string {
@@ -62,6 +68,90 @@ function getAssetSequenceIndex(asset: AiStudioAssetRecord, fallbackIndex: number
   }
 
   return Math.max(1, asset.sortOrder + 1, fallbackIndex)
+}
+
+function normalizeOverlayText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function buildResolutionLabelFromDimensions(width: number, height: number): string {
+  const shortEdge = Math.min(Math.abs(Math.floor(width)), Math.abs(Math.floor(height)))
+  if (!Number.isFinite(shortEdge) || shortEdge <= 0) return ''
+  if (shortEdge >= 2160) return '4K'
+  if (shortEdge >= 1440) return '2K'
+  if (shortEdge >= 1080) return '1080p'
+  if (shortEdge >= 720) return '720p'
+  return `${shortEdge}p`
+}
+
+function readVideoAssetResolutionLabel(
+  asset: AiStudioAssetRecord | null | undefined,
+  fallbackResolution?: string | null
+): string {
+  if (!asset || !asset.metadata || typeof asset.metadata !== 'object') {
+    return normalizeOverlayText(fallbackResolution)
+  }
+
+  const metadata = asset.metadata as Record<string, unknown>
+  const explicitLabel = normalizeOverlayText(metadata.resolutionLabel)
+  if (explicitLabel) return explicitLabel
+
+  const width = Number(metadata.videoWidth ?? 0)
+  const height = Number(metadata.videoHeight ?? 0)
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    const label = buildResolutionLabelFromDimensions(width, height)
+    if (label) return label
+  }
+
+  const sizeText = normalizeOverlayText(metadata.videoSizeText ?? metadata.responseSize)
+  if (sizeText) {
+    const matched = sizeText.match(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/i)
+    if (matched) {
+      const parsedWidth = Number.parseInt(matched[1] ?? '', 10)
+      const parsedHeight = Number.parseInt(matched[2] ?? '', 10)
+      if (
+        Number.isFinite(parsedWidth) &&
+        Number.isFinite(parsedHeight) &&
+        parsedWidth > 0 &&
+        parsedHeight > 0
+      ) {
+        const label = buildResolutionLabelFromDimensions(parsedWidth, parsedHeight)
+        if (label) return label
+      }
+    }
+  }
+
+  const requestedResolution = normalizeOverlayText(metadata.requestedResolution)
+  if (requestedResolution) return requestedResolution
+
+  return normalizeOverlayText(fallbackResolution)
+}
+
+async function captureVideoPoster(filePath: string): Promise<string> {
+  const normalizedPath = String(filePath ?? '').trim()
+  if (!normalizedPath) throw new Error('视频路径为空')
+
+  const cacheKey = `${normalizedPath}@${VIDEO_POSTER_CAPTURE_TIME_SEC}`
+  const cached = videoPosterCache.get(cacheKey)
+  if (cached) return cached
+
+  const inflight = videoPosterInflight.get(cacheKey)
+  if (inflight) return inflight
+
+  const request = window.electronAPI
+    .captureVideoFrame(normalizedPath, VIDEO_POSTER_CAPTURE_TIME_SEC)
+    .then((savedPath) => {
+      const normalizedSavedPath = String(savedPath ?? '').trim()
+      if (!normalizedSavedPath) throw new Error('封面保存失败')
+      videoPosterCache.set(cacheKey, normalizedSavedPath)
+      return normalizedSavedPath
+    })
+    .finally(() => {
+      videoPosterInflight.delete(cacheKey)
+    })
+
+  videoPosterInflight.set(cacheKey, request)
+  return request
 }
 
 function ImageLightbox({
@@ -182,6 +272,7 @@ function PreviewStageTile({
   onTogglePool,
   pooled,
   onUseAsReference,
+  onGenerateVideo,
   referenceApplied,
   style
 }: {
@@ -192,6 +283,7 @@ function PreviewStageTile({
   onTogglePool?: () => void
   pooled?: boolean
   onUseAsReference?: () => void
+  onGenerateVideo?: () => void
   referenceApplied?: boolean
   style?: React.CSSProperties
 }): React.JSX.Element {
@@ -199,66 +291,49 @@ function PreviewStageTile({
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
   const showReferenceAction = Boolean(asset && onUseAsReference)
   const showPoolAction = Boolean(asset && onTogglePool)
-  const [loadedResolution, setLoadedResolution] = useState<{ width: number; height: number } | null>(null)
-  const resolutionBadgeLabel = loadedResolution
-    ? formatResolutionBadgeLabel(loadedResolution.width, loadedResolution.height)
-    : ''
+  const showGenerateVideoAction = Boolean(asset && onGenerateVideo)
 
   return (
     <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
       <div
         className={cn(
-          'relative overflow-hidden rounded-[28px] bg-transparent shadow-none transition',
-          status === 'failed' && 'shadow-[0_12px_32px_rgba(244,63,94,0.06)]'
+          'relative overflow-hidden rounded-[28px] bg-transparent transition'
         )}
       >
+        {status === 'loading' ? (
+          <div
+            className="pointer-events-none absolute inset-0 rounded-[28px] p-[1px] animate-[spin_2.6s_linear_infinite]"
+            style={{
+              background:
+                'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))'
+            }}
+          >
+            <div className="h-full w-full rounded-[27px] bg-transparent" />
+          </div>
+        ) : null}
 
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="block w-full text-left">
-            <div className="aspect-[3/4] overflow-hidden rounded-[28px] bg-transparent">
+            <div className="aspect-[3/4] overflow-hidden bg-transparent">
               <img
                 src={src}
                 alt={basename(asset?.filePath)}
                 className="h-full w-full object-cover transition duration-300 hover:scale-[1.01]"
                 draggable={false}
                 loading="lazy"
-                onLoad={(event) => {
-                  const target = event.currentTarget
-                  const width = Number(target.naturalWidth)
-                  const height = Number(target.naturalHeight)
-                  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-                    setLoadedResolution(null)
-                    return
-                  }
-                  setLoadedResolution((prev) =>
-                    prev && prev.width === width && prev.height === height ? prev : { width, height }
-                  )
-                }}
               />
             </div>
           </button>
         ) : status === 'failed' ? (
-          <div className="relative aspect-[3/4] rounded-[28px] border border-rose-200/90 bg-transparent">
+          <div className="relative aspect-[3/4] bg-transparent">
+            <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
             <div className="flex h-full items-center justify-center px-5 text-center text-sm font-medium leading-6 text-zinc-500">
               {statusText || '生成失败'}
             </div>
           </div>
         ) : (
-          <div className="aspect-[3/4] rounded-[28px] border border-zinc-200/35 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.9),rgba(244,244,245,0.28))]" />
+          <div className="aspect-[3/4] bg-transparent" />
         )}
-
-        {status === 'loading' ? (
-          <div className="pointer-events-none absolute right-3 top-3 z-10 flex h-8 items-center gap-2 rounded-full border border-white/70 bg-white/88 px-2.5 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-900/70" />
-            <span className="text-[11px] font-medium tracking-[0.08em] text-zinc-500">处理中</span>
-          </div>
-        ) : null}
-
-        {status !== 'failed' && resolutionBadgeLabel ? (
-          <div className="pointer-events-none absolute bottom-2.5 left-2.5 z-10 rounded-full border border-white/18 bg-black/24 px-2 py-0.5 text-[10px] font-medium tracking-[0.02em] text-white/92 shadow-[0_4px_12px_rgba(15,23,42,0.08)] backdrop-blur-sm">
-            {resolutionBadgeLabel}
-          </div>
-        ) : null}
 
         {showPoolAction || showReferenceAction ? (
           <div
@@ -279,12 +354,28 @@ function PreviewStageTile({
             ) : null}
             {showReferenceAction ? (
               <PreviewActionButton
-                icon={referenceApplied ? <Check className="h-3.5 w-3.5" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                icon={
+                  referenceApplied ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    <ImagePlus className="h-3.5 w-3.5" />
+                  )
+                }
                 label={referenceApplied ? '已作参考图' : '用作参考图'}
                 active={referenceApplied}
                 onClick={onUseAsReference!}
               />
             ) : null}
+          </div>
+        ) : null}
+
+        {showGenerateVideoAction ? (
+          <div className="pointer-events-none absolute bottom-3 right-3 z-10 opacity-0 transition duration-200 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100">
+            <PreviewActionButton
+              icon={<Clapperboard className="h-3.5 w-3.5" />}
+              label="生成视频"
+              onClick={onGenerateVideo!}
+            />
           </div>
         ) : null}
       </div>
@@ -306,7 +397,8 @@ function HistoryTaskSection({
   onOpenAsset: (asset: AiStudioAssetRecord) => void
 }): React.JSX.Element {
   const addLog = useCmsStore((store) => store.addLog)
-  const primaryAsset = task.inputAssets.find((asset) => asset.filePath === task.primaryImagePath) ?? null
+  const primaryAsset =
+    task.inputAssets.find((asset) => asset.filePath === task.primaryImagePath) ?? null
   const referenceAssets = task.inputAssets.filter((asset) =>
     task.referenceImagePaths.includes(asset.filePath)
   )
@@ -341,6 +433,10 @@ function HistoryTaskSection({
       ),
     [task]
   )
+  const hasDispatchOutputs = generatedAssets.length > 0
+  const selectedDispatchOutputCount = generatedAssets.filter((asset) => asset.selected).length
+  const areAllDispatchOutputsPooled =
+    hasDispatchOutputs && selectedDispatchOutputCount >= generatedAssets.length
   const masterCleanAssets = useMemo(
     () => task.outputAssets.filter((asset) => asset.role === MASTER_CLEAN_ROLE),
     [task.outputAssets]
@@ -354,7 +450,9 @@ function HistoryTaskSection({
     task.metadata && typeof task.metadata === 'object'
       ? String((task.metadata as Record<string, unknown>).latestSubmittedPrompt ?? '')
       : ''
-  const promptExcerpt = buildExcerpt(latestSubmittedPrompt || workflowMeta.masterStage.promptExtra || task.promptExtra)
+  const promptExcerpt = buildExcerpt(
+    latestSubmittedPrompt || workflowMeta.masterStage.promptExtra || task.promptExtra
+  )
   const isRunning = task.status === 'running'
   const failureRecords = workflowMeta.workflow.failures ?? []
   const currentReferencePaths = useMemo(
@@ -366,15 +464,6 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
-  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
-  const generatedAssetCount = generatedAssets.length
-  const pooledGeneratedAssetCount = useMemo(
-    () => generatedAssets.filter((asset) => asset.selected).length,
-    [generatedAssets]
-  )
-  const canBatchAddToPool = generatedAssetCount > 0
-  const allGeneratedAssetsPooled =
-    canBatchAddToPool && pooledGeneratedAssetCount === generatedAssetCount
 
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioWorkflowFailureRecord>()
@@ -400,13 +489,18 @@ function HistoryTaskSection({
       (max, record) => Math.max(max, record.sequenceIndex),
       0
     )
-    const previewTargetCount = computePreviewTargetCount({
-      isRunning,
-      currentItemTotal: workflowMeta.workflow.currentItemTotal || 0,
-      expectedOutputCount: expectedOutputCount || 0,
-      generatedCount: generatedAssets.length,
-      maxFailureIndex
-    })
+    const previewTargetCount = Math.min(
+      isRunning
+        ? Math.max(
+            workflowMeta.workflow.currentItemTotal || 0,
+            expectedOutputCount || 0,
+            generatedAssets.length,
+            maxFailureIndex,
+            1
+          )
+        : Math.max(generatedAssets.length, expectedOutputCount || 0, maxFailureIndex, 1),
+      MAX_PREVIEW_SLOTS
+    )
 
     if (previewTargetCount <= 0 && !currentAiMasterAsset) return [] as PreviewSlot[]
 
@@ -414,28 +508,27 @@ function HistoryTaskSection({
       const index = slotIndex + 1
       const asset = assetByIndex.get(index) ?? null
       const failure = failureByIndex.get(index) ?? null
-      const resolvedState = resolvePreviewSlotState({
-        index,
-        asset,
-        failureMessage: failure?.message ?? null,
-        isRunning,
-        currentLabel: stageProgress.currentLabel,
-        currentItemIndex: workflowMeta.workflow.currentItemIndex,
-        runtimeState: previewRuntimeStates[index] ?? null
-      })
+      const isLoadingSlot = isRunning && !asset && !failure
 
       return {
         index,
         asset,
         failure,
-        status: resolvedState.status,
-        statusText: resolvedState.statusText
+        status: asset ? 'ready' : failure ? 'failed' : isLoadingSlot ? 'loading' : 'idle',
+        statusText: failure ? failure.message : isLoadingSlot ? stageProgress.currentLabel : ''
       } satisfies PreviewSlot
     })
-  }, [currentAiMasterAsset, failureRecords, generatedAssets, isRunning, previewRuntimeStates, stageProgress.currentLabel, workflowMeta])
+  }, [
+    currentAiMasterAsset,
+    failureRecords,
+    generatedAssets,
+    isRunning,
+    stageProgress.currentLabel,
+    workflowMeta
+  ])
 
   const previewGapPx = 20
-  const previewTileWidth = `clamp(120px, calc((100% - ${(Math.max(previewSlots.length - 1, 0) * previewGapPx)}px) / ${Math.max(previewSlots.length, 1)}), 248px)`
+  const previewTileWidth = `clamp(120px, calc((100% - ${Math.max(previewSlots.length - 1, 0) * previewGapPx}px) / ${Math.max(previewSlots.length, 1)}), 248px)`
 
   const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
     try {
@@ -447,10 +540,22 @@ function HistoryTaskSection({
     }
   }
 
-  const handleSelectAllGeneratedAssets = async (): Promise<void> => {
-    if (!canBatchAddToPool || allGeneratedAssetsPooled) return
-
+  const handleGenerateVideo = async (asset: AiStudioAssetRecord): Promise<void> => {
     try {
+      await state.useOutputAsVideoSubjectReference(asset.filePath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 切换到视频生成失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleBatchPoolForTask = async (): Promise<void> => {
+    try {
+      if (areAllDispatchOutputsPooled) {
+        await state.clearSelectedDispatchOutputsForTask(task.id)
+        return
+      }
       await state.selectAllDispatchOutputsForTask(task.id)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -459,63 +564,71 @@ function HistoryTaskSection({
     }
   }
 
-  const threadHeader = (
-    <div className="flex min-w-0 items-start gap-4">
-      <div className="flex gap-2">
-        {threadAssets.slice(0, 4).map((asset) => (
-          <ThreadThumb key={asset.id} asset={asset} />
-        ))}
-      </div>
-      <div className="min-w-0 flex-1 pt-1">
-        <div className="flex min-w-0 flex-wrap items-start gap-2.5">
-          <div className="min-w-0 flex-1 text-[15px] font-medium leading-7 text-zinc-900">
-            {promptExcerpt}
-          </div>
-          <button
-            type="button"
-            onClick={() => void handleSelectAllGeneratedAssets()}
-            disabled={!canBatchAddToPool || allGeneratedAssetsPooled}
-            title={
-              !canBatchAddToPool
-                ? '该线程暂时还没有生成图片'
-                : allGeneratedAssetsPooled
-                  ? '该线程图片已全部加入图池'
-                  : '将该线程当前已生成图片批量加入图池'
-            }
-            className={cn(
-              'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition',
-              !canBatchAddToPool
-                ? 'cursor-not-allowed border-zinc-200/80 bg-zinc-50 text-zinc-400'
-                : allGeneratedAssetsPooled
-                  ? 'cursor-default border-emerald-200 bg-emerald-50 text-emerald-700'
-                  : 'border-zinc-200 bg-white text-zinc-700 shadow-[0_8px_18px_rgba(15,23,42,0.05)] hover:border-zinc-300 hover:bg-zinc-50'
-            )}
-          >
-            {allGeneratedAssetsPooled ? (
-              <Check className="h-3.5 w-3.5" />
-            ) : (
-              <Plus className="h-3.5 w-3.5" />
-            )}
-            <span>{allGeneratedAssetsPooled ? '已加入图池' : '批量加入图池'}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-
   if (previewSlots.length === 0 && !currentAiMasterAsset && failureRecords.length === 0) {
     return (
-      <section className="flex min-w-0 flex-col gap-4">{threadHeader}</section>
+      <section className="flex min-w-0 flex-col gap-4">
+        <div className="flex min-w-0 items-start gap-4">
+          <div className="flex gap-2">
+            {threadAssets.slice(0, 4).map((asset) => (
+              <ThreadThumb key={asset.id} asset={asset} />
+            ))}
+          </div>
+          <div className="flex min-w-0 flex-1 items-start justify-between gap-3 pt-1">
+            <div className="min-w-0 text-[15px] font-medium leading-7 text-zinc-900">
+              {promptExcerpt}
+            </div>
+            {hasDispatchOutputs ? (
+              <button
+                type="button"
+                onClick={() => void handleBatchPoolForTask()}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-zinc-950 bg-white px-4 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] transition hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
+              >
+                {areAllDispatchOutputsPooled ? (
+                  <ImageMinus className="h-3.5 w-3.5" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                <span>{areAllDispatchOutputsPooled ? '移出图池' : '批量加入图池'}</span>
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
     )
   }
 
   return (
     <section className="flex min-w-0 flex-col gap-4">
-      {threadHeader}
+      <div className="flex min-w-0 items-start gap-4">
+        <div className="flex gap-2">
+          {threadAssets.slice(0, 4).map((asset) => (
+            <ThreadThumb key={asset.id} asset={asset} />
+          ))}
+        </div>
+        <div className="flex min-w-0 flex-1 items-start justify-between gap-3 pt-1">
+          <div className="min-w-0 text-[15px] font-medium leading-7 text-zinc-900">
+            {promptExcerpt}
+          </div>
+          {hasDispatchOutputs ? (
+            <button
+              type="button"
+              onClick={() => void handleBatchPoolForTask()}
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-zinc-950 bg-white px-4 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] transition hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
+            >
+              {areAllDispatchOutputsPooled ? (
+                <ImageMinus className="h-3.5 w-3.5" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
+              <span>{areAllDispatchOutputsPooled ? '移出图池' : '批量加入图池'}</span>
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       {previewSlots.length > 0 ? (
         <div className="py-1">
-          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
             {previewSlots.map((slot) => (
               <PreviewStageTile
                 key={`${task.id}-preview-slot-${slot.index}`}
@@ -524,28 +637,39 @@ function HistoryTaskSection({
                 statusText={slot.statusText}
                 pooled={slot.asset?.selected}
                 style={{ width: previewTileWidth }}
-                onOpen={slot.asset ? () => onOpenAsset(slot.asset as AiStudioAssetRecord) : undefined}
+                onOpen={
+                  slot.asset ? () => onOpenAsset(slot.asset as AiStudioAssetRecord) : undefined
+                }
                 onTogglePool={
                   slot.asset
-                    ? () => void state.toggleDispatchOutputPoolForTask(task.id, slot.asset?.id ?? '')
+                    ? () =>
+                        void state.toggleDispatchOutputPoolForTask(task.id, slot.asset?.id ?? '')
                     : undefined
                 }
                 onUseAsReference={
-                  slot.asset ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord) : undefined
+                  slot.asset
+                    ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord)
+                    : undefined
                 }
-                referenceApplied={slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false}
+                onGenerateVideo={
+                  slot.asset ? () => void handleGenerateVideo(slot.asset as AiStudioAssetRecord) : undefined
+                }
+                referenceApplied={
+                  slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false
+                }
               />
             ))}
           </div>
         </div>
       ) : currentAiMasterAsset ? (
         <div className="py-1">
-          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
             <PreviewStageTile
               asset={currentAiMasterAsset}
               status="ready"
               style={{ width: 'min(248px, 100%)' }}
               onOpen={() => onOpenAsset(currentAiMasterAsset)}
+              onGenerateVideo={() => void handleGenerateVideo(currentAiMasterAsset)}
             />
           </div>
         </div>
@@ -554,11 +678,395 @@ function HistoryTaskSection({
   )
 }
 
-function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
+function VideoLightbox({
+  asset,
+  open,
+  onOpenChange
+}: {
+  asset: AiStudioAssetRecord | null
+  open: boolean
+  onOpenChange: (next: boolean) => void
+}): React.JSX.Element | null {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+
+  useEffect(() => {
+    if (!open) return
+    const onEsc = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onOpenChange(false)
+    }
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [onOpenChange, open])
+
+  if (!open || !asset || !src || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/88 p-6">
+      <button
+        type="button"
+        aria-label="关闭视频预览"
+        onClick={() => onOpenChange(false)}
+        className="absolute inset-0"
+      />
+      <div className="relative z-10 flex max-h-full max-w-[94vw] items-center justify-center">
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          className="absolute -right-3 -top-3 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/45 text-zinc-100 backdrop-blur transition hover:bg-black/70"
+          aria-label="关闭视频预览"
+        >
+          <X className="h-5 w-5" />
+        </button>
+        <video
+          src={src}
+          controls
+          autoPlay
+          className="max-h-[72vh] max-w-[72vw] rounded-3xl bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
+        />
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+function VideoPreviewTile({
+  asset,
+  status,
+  statusText,
+  detailText,
+  resolutionLabel,
+  onOpen,
+  onTogglePool,
+  pooled,
+  onUseAsReference,
+  referenceApplied,
+  style
+}: {
+  asset?: AiStudioAssetRecord | null
+  status: PreviewTileStatus
+  statusText?: string
+  detailText?: string
+  resolutionLabel?: string
+  onOpen?: () => void
+  onTogglePool?: () => void
+  pooled?: boolean
+  onUseAsReference?: () => void
+  referenceApplied?: boolean
+  style?: React.CSSProperties
+}): React.JSX.Element {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const sourcePath = String(asset?.filePath ?? '').trim()
+  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+  const [posterState, setPosterState] = useState<{ sourcePath: string; posterPath: string }>({
+    sourcePath: '',
+    posterPath: ''
+  })
+  const showPoolAction = Boolean(asset && onTogglePool)
+  const showReferenceAction = Boolean(asset && onUseAsReference)
+
+  useEffect(() => {
+    if (!sourcePath) return
+
+    let cancelled = false
+    void captureVideoPoster(sourcePath)
+      .then((savedPath) => {
+        if (cancelled) return
+        setPosterState({ sourcePath, posterPath: savedPath })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setPosterState({ sourcePath, posterPath: '' })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [sourcePath])
+
+  const posterSrc =
+    posterState.sourcePath === sourcePath && posterState.posterPath
+      ? resolveLocalImage(posterState.posterPath, workspacePath)
+      : ''
+
+  return (
+    <div className="flex shrink-0 flex-col gap-2" style={style}>
+      <div className="group/tile relative overflow-hidden rounded-[28px] bg-transparent">
+        {src && onOpen ? (
+          <button type="button" onClick={onOpen} className="relative block w-full text-left">
+            <div className="relative aspect-[9/16] overflow-hidden bg-black">
+              <video
+                src={src}
+                poster={posterSrc || undefined}
+                className="h-full w-full object-cover"
+                muted
+                playsInline
+                preload="metadata"
+              />
+              <div className="absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.42))]" />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-white/90 text-zinc-900 shadow-lg">
+                  <Play className="ml-0.5 h-5 w-5" fill="currentColor" />
+                </div>
+              </div>
+            </div>
+          </button>
+        ) : status === 'failed' ? (
+          <div className="relative aspect-[9/16] bg-transparent">
+            <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
+            <div className="flex h-full items-center justify-center px-5">
+              <div className="flex max-w-full flex-col items-center gap-2 text-center">
+                <div className="text-sm font-medium leading-6 text-zinc-500">
+                  {statusText || '生成失败'}
+                </div>
+                {detailText ? (
+                  <div className="max-w-full break-all text-[11px] leading-5 text-zinc-400">
+                    具体原因：{detailText}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="relative aspect-[9/16] bg-transparent">
+            <div className="absolute inset-0 flex items-center justify-center text-zinc-400">
+              <Clapperboard className="h-6 w-6" />
+            </div>
+          </div>
+        )}
+
+        {showPoolAction || showReferenceAction ? (
+          <div
+            className={cn(
+              'absolute right-3 top-3 z-10 flex items-center gap-1.5 transition duration-200',
+              pooled || referenceApplied
+                ? 'pointer-events-auto opacity-100'
+                : 'pointer-events-none opacity-0 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100'
+            )}
+          >
+            {showPoolAction ? (
+              <PreviewActionButton
+                icon={pooled ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                label={pooled ? '移出图池' : '添加到图池'}
+                active={pooled}
+                onClick={onTogglePool!}
+              />
+            ) : null}
+            {showReferenceAction ? (
+              <PreviewActionButton
+                icon={
+                  referenceApplied ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    <ImagePlus className="h-3.5 w-3.5" />
+                  )
+                }
+                label={referenceApplied ? '已作参考帧' : '用作参考帧'}
+                active={referenceApplied}
+                onClick={onUseAsReference!}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
+        {asset && resolutionLabel ? (
+          <div className="pointer-events-none absolute bottom-3 left-3 z-10 inline-flex h-6 items-center rounded-full bg-black/72 px-2.5 text-[10px] font-medium tracking-[0.04em] text-white shadow-[0_8px_18px_rgba(0,0,0,0.24)] backdrop-blur-sm">
+            {resolutionLabel}
+          </div>
+        ) : null}
+      </div>
+
+      {status !== 'failed' && statusText ? (
+        <div className="px-1 text-[13px] font-medium leading-6 text-zinc-500">{statusText}</div>
+      ) : null}
+    </div>
+  )
+}
+
+function VideoHistoryTaskSection({
+  task,
+  state,
+  onOpenAsset
+}: {
+  task: AiStudioTaskView
+  state: UseAiStudioStateResult
+  onOpenAsset: (asset: AiStudioAssetRecord) => void
+}): React.JSX.Element {
+  const addLog = useCmsStore((store) => store.addLog)
+  const videoMeta = useMemo(() => readVideoMetadata(task), [task])
+  const promptExcerpt = buildExcerpt(task.promptExtra)
+  const generatedAssets = useMemo(
+    () =>
+      [...selectDispatchOutputAssets(task)].sort(
+        (left, right) =>
+          getAssetSequenceIndex(left, left.sortOrder + 1) -
+            getAssetSequenceIndex(right, right.sortOrder + 1) || left.sortOrder - right.sortOrder
+      ),
+    [task]
+  )
+  const currentReferencePaths = useMemo(
+    () =>
+      new Set(
+        [
+          state.videoMeta.subjectReferencePath,
+          state.videoMeta.firstFramePath,
+          state.videoMeta.lastFramePath
+        ]
+          .map((filePath) => String(filePath ?? '').trim())
+          .filter(Boolean)
+      ),
+    [
+      state.videoMeta.firstFramePath,
+      state.videoMeta.lastFramePath,
+      state.videoMeta.subjectReferencePath
+    ]
+  )
+  const previewSlots = useMemo(() => {
+    const failureByIndex = new Map<number, AiStudioVideoFailureRecord>()
+    videoMeta.failures.forEach((record) => {
+      if (!failureByIndex.has(record.sequenceIndex)) {
+        failureByIndex.set(record.sequenceIndex, record)
+      }
+    })
+
+    const assetByIndex = new Map<number, AiStudioAssetRecord>()
+    generatedAssets.forEach((asset, index) => {
+      const sequenceIndex = getAssetSequenceIndex(asset, index + 1)
+      if (!assetByIndex.has(sequenceIndex)) {
+        assetByIndex.set(sequenceIndex, asset)
+      }
+    })
+
+    const targetCount = Math.min(
+      Math.max(generatedAssets.length, videoMeta.outputCount, videoMeta.currentItemTotal, 1),
+      MAX_PREVIEW_SLOTS
+    )
+
+    return Array.from({ length: targetCount }, (_, slotIndex) => {
+      const index = slotIndex + 1
+      const asset = assetByIndex.get(index) ?? null
+      const failure = failureByIndex.get(index) ?? null
+      const isLoading = task.status === 'running' && !asset && !failure
+      return {
+        index,
+        asset,
+        failure,
+        status: asset ? 'ready' : failure ? 'failed' : isLoading ? 'loading' : 'idle',
+        statusText: failure
+          ? failure.message
+          : isLoading
+            ? `第 ${index}/${videoMeta.currentItemTotal || videoMeta.outputCount} 条生成中`
+            : '',
+        detailText: failure?.detail
+      } satisfies PreviewSlot
+    })
+  }, [generatedAssets, task.status, videoMeta])
+
+  const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
+    try {
+      await state.useOutputAsVideoReference(asset.filePath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 回填视频参考失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  return (
+    <section className="flex min-w-0 flex-col gap-4">
+      <div className="flex min-w-0 items-start gap-4">
+        <div className="flex gap-2">
+          {task.inputAssets.slice(0, 2).map((asset) => (
+            <ThreadThumb key={asset.id} asset={asset} />
+          ))}
+        </div>
+        <div className="min-w-0 pt-1">
+          <div className="text-[15px] font-medium leading-7 text-zinc-900">
+            <span>{promptExcerpt}</span>
+            <span className="ml-2 inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 align-middle text-[11px] font-medium text-zinc-500 whitespace-nowrap">
+              {videoMeta.mode === 'first-last-frame' ? '首尾帧' : '主体参考'}
+            </span>
+            <span className="ml-2 inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 align-middle text-[11px] font-medium text-zinc-500 whitespace-nowrap">
+              {videoMeta.aspectRatio} · {videoMeta.resolution} · {videoMeta.duration}s
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="py-1">
+        <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
+          {previewSlots.map((slot) => (
+            <VideoPreviewTile
+              key={`${task.id}-video-slot-${slot.index}`}
+              asset={slot.asset}
+              status={slot.status}
+              statusText={slot.statusText}
+              detailText={slot.detailText}
+              resolutionLabel={
+                slot.asset ? readVideoAssetResolutionLabel(slot.asset, videoMeta.resolution) : ''
+              }
+              pooled={slot.asset?.selected}
+              style={{ width: 'clamp(148px, 24vw, 220px)' }}
+              onOpen={slot.asset ? () => onOpenAsset(slot.asset as AiStudioAssetRecord) : undefined}
+              onTogglePool={
+                slot.asset
+                  ? () => void state.toggleDispatchOutputPoolForTask(task.id, slot.asset?.id ?? '')
+                  : undefined
+              }
+              onUseAsReference={
+                slot.asset
+                  ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord)
+                  : undefined
+              }
+              referenceApplied={slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function ResultPanel({
+  state,
+  bottomSpacerHeight = 0
+}: {
+  state: UseAiStudioStateResult
+  bottomSpacerHeight?: number
+}): React.JSX.Element {
   const [lightboxAsset, setLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
+  const isVideoStudio = state.studioCapability === 'video'
+  const historyTailRef = useRef<HTMLDivElement | null>(null)
+  const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
+  const latestRevealHistoryKey =
+    isVideoStudio && latestHistoryTask
+      ? `${state.studioCapability}:${state.historyTasks.length}:${latestHistoryTask.id}:${latestHistoryTask.updatedAt}`
+      : ''
+  const previousLatestRevealHistoryKeyRef = useRef('')
+
+  useLayoutEffect(() => {
+    if (!isVideoStudio) return
+    if (!latestRevealHistoryKey) {
+      previousLatestRevealHistoryKeyRef.current = ''
+      return
+    }
+    if (previousLatestRevealHistoryKeyRef.current === latestRevealHistoryKey) return
+    previousLatestRevealHistoryKeyRef.current = latestRevealHistoryKey
+    historyTailRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+  }, [isVideoStudio, latestRevealHistoryKey])
 
   if (state.historyTasks.length === 0) {
-    return (
+    return isVideoStudio ? (
+      <VideoLightbox
+        asset={lightboxAsset}
+        open={Boolean(lightboxAsset)}
+        onOpenChange={(next) => {
+          if (!next) setLightboxAsset(null)
+        }}
+      />
+    ) : (
       <ImageLightbox
         asset={lightboxAsset}
         open={Boolean(lightboxAsset)}
@@ -572,23 +1080,44 @@ function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.El
   return (
     <>
       <div className="flex h-full min-h-0 flex-col gap-5 pb-4">
-        {state.historyTasks.map((task) => (
-          <HistoryTaskSection
-            key={task.id}
-            task={task}
-            state={state}
-            onOpenAsset={(asset) => setLightboxAsset(asset)}
-          />
-        ))}
+        {state.historyTasks.map((task) =>
+          isVideoStudio ? (
+            <VideoHistoryTaskSection
+              key={task.id}
+              task={task}
+              state={state}
+              onOpenAsset={(asset) => setLightboxAsset(asset)}
+            />
+          ) : (
+            <HistoryTaskSection
+              key={task.id}
+              task={task}
+              state={state}
+              onOpenAsset={(asset) => setLightboxAsset(asset)}
+            />
+          )
+        )}
+        <div aria-hidden="true" className="w-full shrink-0" style={{ height: `${Math.max(0, bottomSpacerHeight)}px` }} />
+        <div ref={historyTailRef} aria-hidden="true" className="h-px w-full shrink-0" />
       </div>
 
-      <ImageLightbox
-        asset={lightboxAsset}
-        open={Boolean(lightboxAsset)}
-        onOpenChange={(next) => {
-          if (!next) setLightboxAsset(null)
-        }}
-      />
+      {isVideoStudio ? (
+        <VideoLightbox
+          asset={lightboxAsset}
+          open={Boolean(lightboxAsset)}
+          onOpenChange={(next) => {
+            if (!next) setLightboxAsset(null)
+          }}
+        />
+      ) : (
+        <ImageLightbox
+          asset={lightboxAsset}
+          open={Boolean(lightboxAsset)}
+          onOpenChange={(next) => {
+            if (!next) setLightboxAsset(null)
+          }}
+        />
+      )}
     </>
   )
 }

@@ -309,6 +309,7 @@ type AiStudioImportedFolder = {
 type AiStudioTemplateRecord = {
   id: string
   provider: string
+  capability: 'image' | 'video'
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -921,7 +922,13 @@ const api = {
     },
     aiStudio: {
       provider: {
-        testConnection: (): Promise<{
+        testConnection: (payload?: {
+          provider?: string
+          baseUrl?: string
+          apiKey?: string
+          defaultImageModel?: string
+          endpointPath?: string
+        }): Promise<{
           success: boolean
           provider: string
           baseUrl: string
@@ -930,13 +937,15 @@ const api = {
           checkedAt: number
           statusCode: number | null
           message: string
-        }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection')
+        }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection', payload)
       },
       template: {
-        list: (): Promise<AiStudioTemplateRecord[]> => ipcRenderer.invoke('cms.aiStudio.template.list'),
+        list: (payload?: { capability?: 'image' | 'video' }): Promise<AiStudioTemplateRecord[]> =>
+          ipcRenderer.invoke('cms.aiStudio.template.list', payload),
         upsert: (payload: {
           id?: string
           provider?: string
+          capability?: 'image' | 'video'
           name: string
           promptText?: string
           config?: Record<string, unknown>

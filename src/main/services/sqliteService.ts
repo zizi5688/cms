@@ -85,15 +85,13 @@ export class SqliteService {
       CREATE TABLE IF NOT EXISTS ai_studio_templates (
         id TEXT PRIMARY KEY,
         provider TEXT NOT NULL DEFAULT 'grsai',
+        capability TEXT NOT NULL DEFAULT 'image',
         name TEXT NOT NULL,
         prompt_text TEXT NOT NULL DEFAULT '',
         config_json TEXT NOT NULL DEFAULT '{}',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_studio_templates_provider_name
-        ON ai_studio_templates (provider, name);
 
       CREATE TABLE IF NOT EXISTS ai_studio_tasks (
         id TEXT PRIMARY KEY,
@@ -165,6 +163,29 @@ export class SqliteService {
 
       CREATE INDEX IF NOT EXISTS idx_ai_studio_assets_task_id ON ai_studio_assets (task_id);
       CREATE INDEX IF NOT EXISTS idx_ai_studio_assets_selected ON ai_studio_assets (selected);
+    `)
+
+    const templateColumns = db
+      .prepare(`PRAGMA table_info(ai_studio_templates)`)
+      .all() as Array<{ name?: unknown }>
+    const hasTemplateCapability = templateColumns.some((column) => column?.name === 'capability')
+
+    if (!hasTemplateCapability) {
+      db.exec(`ALTER TABLE ai_studio_templates ADD COLUMN capability TEXT NOT NULL DEFAULT 'image';`)
+    }
+
+    db.exec(`
+      UPDATE ai_studio_templates
+      SET capability = 'image'
+      WHERE capability IS NULL OR TRIM(capability) = '';
+
+      DROP INDEX IF EXISTS idx_ai_studio_templates_provider_name;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_studio_templates_provider_capability_name
+        ON ai_studio_templates (provider, capability, name);
+
+      CREATE INDEX IF NOT EXISTS idx_ai_studio_templates_capability_updated_at
+        ON ai_studio_templates (capability, updated_at DESC, created_at DESC);
     `)
   }
 

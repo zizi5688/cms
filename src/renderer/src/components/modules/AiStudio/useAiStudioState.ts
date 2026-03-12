@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { useCmsStore } from '@renderer/store/useCmsStore'
-
-import { prepareWorkflowForMasterRun } from './workflowRunHelpers'
-import { runWithConcurrencyLimit } from './parallelRunHelpers'
-import type { PreviewSlotRuntimeState } from './previewSlotHelpers'
+import {
+  AI_VIDEO_PROFILES,
+  DEFAULT_AI_VIDEO_PROFILE_ID,
+  getAiVideoProfile,
+  type AiStudioCapability,
+  type AiStudioVideoMode,
+  type AiVideoAdapterKind,
+  type AiVideoAspectRatio,
+  type AiVideoDuration,
+  type AiVideoResolution
+} from '@renderer/lib/aiVideoProfiles'
+import {
+  buildVideoEndpointPair,
+  findAiProviderProfile,
+  normalizeAiProviderValue,
+  resolveAiProviderModel
+} from '@renderer/lib/aiProviderProfiles'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
+import { useCmsStore } from '@renderer/store/useCmsStore'
 
 export type AiStudioImportedFolder = {
   folderPath: string
@@ -16,6 +29,7 @@ export type AiStudioImportedFolder = {
 export type AiStudioTemplateRecord = {
   id: string
   provider: string
+  capability: AiStudioCapability
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -162,17 +176,68 @@ export type AiStudioStageProgress = {
   failureCount: number
 }
 
+export type AiStudioVideoFailureRecord = {
+  id: string
+  sequenceIndex: number
+  message: string
+  detail?: string
+  runId?: string
+  createdAt: number
+}
+
+export type AiStudioVideoMetadata = {
+  capability: 'video'
+  profileId: string
+  model: string
+  adapterKind: AiVideoAdapterKind
+  submitPath: string
+  queryPath: string
+  mode: AiStudioVideoMode
+  subjectReferencePath: string | null
+  firstFramePath: string | null
+  lastFramePath: string | null
+  aspectRatio: AiVideoAspectRatio
+  resolution: AiVideoResolution
+  duration: AiVideoDuration
+  outputCount: number
+  completedCount: number
+  failedCount: number
+  currentItemIndex: number
+  currentItemTotal: number
+  failures: AiStudioVideoFailureRecord[]
+}
+
 const AI_STUDIO_MASTER_OUTPUT_ROLE = 'master-raw'
 const AI_STUDIO_MASTER_CLEAN_ROLE = 'master-clean'
 const AI_STUDIO_CHILD_OUTPUT_ROLE = 'child-output'
+const AI_STUDIO_VIDEO_OUTPUT_ROLE = 'video-output'
 const AI_STUDIO_SOURCE_PRIMARY_ROLE = 'source-primary'
 const AI_STUDIO_SOURCE_REFERENCE_ROLE = 'source-reference'
-const AI_STUDIO_MASTER_CLEAN_CONCURRENCY = 2
+const AI_STUDIO_VIDEO_SUBJECT_REFERENCE_ROLE = 'video-subject-reference'
+const AI_STUDIO_VIDEO_FIRST_FRAME_ROLE = 'video-first-frame'
+const AI_STUDIO_VIDEO_LAST_FRAME_ROLE = 'video-last-frame'
 
-export function selectDispatchOutputAssets(task: Pick<AiStudioTaskView, 'outputAssets'>): AiStudioAssetRecord[] {
-  const childOutputAssets = task.outputAssets.filter((asset) => asset.role === AI_STUDIO_CHILD_OUTPUT_ROLE)
-  if (childOutputAssets.length > 0) return childOutputAssets
-  return task.outputAssets.filter((asset) => asset.role === AI_STUDIO_MASTER_CLEAN_ROLE)
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
+}
+
+function basenameWithoutExtension(filePath: string): string {
+  const normalized = String(filePath ?? '').trim()
+  if (!normalized) return ''
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  const fileName = parts[parts.length - 1] ?? normalized
+  return fileName.replace(/\.[^.]+$/, '').trim()
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+function normalizeReferencePaths(filePaths: string[], primaryImagePath: string | null): string[] {
+  return uniqueStrings(filePaths)
+    .filter((item) => item !== primaryImagePath)
+    .slice(0, MAX_AI_STUDIO_REFERENCE_IMAGES)
 }
 
 function normalizeVariantLines(value: unknown): string[] {
@@ -180,8 +245,188 @@ function normalizeVariantLines(value: unknown): string[] {
   return value.map((item) => String(item ?? '').trim()).filter(Boolean)
 }
 
+function normalizeVideoMode(value: unknown, fallback: AiStudioVideoMode): AiStudioVideoMode {
+  return value === 'first-last-frame' || value === 'subject-reference' ? value : fallback
+}
+
+function normalizeVideoAspectRatio(
+  value: unknown,
+  fallback: AiVideoAspectRatio
+): AiVideoAspectRatio {
+  return value === '16:9' || value === '9:16' || value === '1:1' ? value : fallback
+}
+
+function normalizeVideoResolution(value: unknown, fallback: AiVideoResolution): AiVideoResolution {
+  return value === '1080p' || value === '720p' ? value : fallback
+}
+
+function normalizeVideoDuration(value: unknown, fallback: AiVideoDuration): AiVideoDuration {
+  const numeric = Number(value)
+  return numeric === 8 ? 8 : numeric === 5 ? 5 : fallback
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number, max?: number): number {
+  const numeric = Number(value)
+  const normalized = Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback
+  if (typeof max === 'number' && Number.isFinite(max)) {
+    return Math.max(1, Math.min(max, normalized))
+  }
+  return Math.max(1, normalized)
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0
+}
+
+export function readTaskCapability(
+  task: Pick<AiStudioTaskRecord, 'metadata'> | null | undefined
+): AiStudioCapability {
+  const metadata = task?.metadata && typeof task.metadata === 'object' ? task.metadata : {}
+  return metadata.capability === 'video' ? 'video' : 'image'
+}
+
+function stripImageWorkflowMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  const next = metadata && typeof metadata === 'object' ? { ...metadata } : {}
+  delete next.workflow
+  delete next.masterStage
+  delete next.childStage
+  delete next.mode
+  if (next.capability === 'image') delete next.capability
+  return next
+}
+
+function stripVideoMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  const next = metadata && typeof metadata === 'object' ? { ...metadata } : {}
+  delete next.video
+  if (next.capability === 'video') delete next.capability
+  return next
+}
+
+function createDefaultVideoMetadata(profileId?: string | null): AiStudioVideoMetadata {
+  const profile = getAiVideoProfile(profileId ?? DEFAULT_AI_VIDEO_PROFILE_ID)
+  return {
+    capability: 'video',
+    profileId: profile.id,
+    model: profile.modelId,
+    adapterKind: profile.adapterKind,
+    submitPath: profile.submitPath,
+    queryPath: profile.queryPath,
+    mode: profile.defaultMode,
+    subjectReferencePath: null,
+    firstFramePath: null,
+    lastFramePath: null,
+    aspectRatio: profile.defaultAspectRatio,
+    resolution: profile.defaultResolution,
+    duration: profile.defaultDuration,
+    outputCount: 1,
+    completedCount: 0,
+    failedCount: 0,
+    currentItemIndex: 0,
+    currentItemTotal: 0,
+    failures: []
+  }
+}
+
+export function readVideoMetadata(
+  task: Pick<AiStudioTaskRecord, 'metadata'> | null | undefined
+): AiStudioVideoMetadata {
+  const metadata = task?.metadata && typeof task.metadata === 'object' ? task.metadata : {}
+  const record =
+    metadata.video && typeof metadata.video === 'object'
+      ? (metadata.video as Record<string, unknown>)
+      : {}
+  const profile = getAiVideoProfile(
+    typeof record.profileId === 'string' ? record.profileId : undefined
+  )
+  const base = createDefaultVideoMetadata(profile.id)
+
+  return {
+    capability: 'video',
+    profileId: typeof record.profileId === 'string' ? record.profileId : base.profileId,
+    model: String(record.model ?? '').trim() || base.model,
+    adapterKind: record.adapterKind === 'allapi-unified' ? 'allapi-unified' : base.adapterKind,
+    submitPath: String(record.submitPath ?? '').trim() || base.submitPath,
+    queryPath: String(record.queryPath ?? '').trim() || base.queryPath,
+    mode: normalizeVideoMode(record.mode, base.mode),
+    subjectReferencePath:
+      typeof record.subjectReferencePath === 'string' && record.subjectReferencePath.trim()
+        ? record.subjectReferencePath.trim()
+        : null,
+    firstFramePath:
+      typeof record.firstFramePath === 'string' && record.firstFramePath.trim()
+        ? record.firstFramePath.trim()
+        : null,
+    lastFramePath:
+      typeof record.lastFramePath === 'string' && record.lastFramePath.trim()
+        ? record.lastFramePath.trim()
+        : null,
+    aspectRatio: normalizeVideoAspectRatio(record.aspectRatio, base.aspectRatio),
+    resolution: normalizeVideoResolution(record.resolution, base.resolution),
+    duration: normalizeVideoDuration(record.duration, base.duration),
+    outputCount: normalizePositiveInteger(record.outputCount, base.outputCount, 4),
+    completedCount: normalizeNonNegativeInteger(record.completedCount),
+    failedCount: normalizeNonNegativeInteger(record.failedCount),
+    currentItemIndex: normalizeNonNegativeInteger(record.currentItemIndex),
+    currentItemTotal: normalizeNonNegativeInteger(record.currentItemTotal),
+    failures: Array.isArray(record.failures)
+      ? record.failures
+          .map((item, index) => {
+            const failure =
+              item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+            const display = normalizeVideoFailureDisplay(
+              String(failure.message ?? '').trim(),
+              typeof failure.detail === 'string' ? failure.detail : undefined
+            )
+            return {
+              id: String(failure.id ?? `video-failure-${index}`),
+              sequenceIndex: normalizePositiveInteger(failure.sequenceIndex, index + 1),
+              message: display.message,
+              detail: display.detail,
+              runId: typeof failure.runId === 'string' ? failure.runId : undefined,
+              createdAt: typeof failure.createdAt === 'number' ? failure.createdAt : Date.now()
+            } satisfies AiStudioVideoFailureRecord
+          })
+          .filter((item) => item.message)
+      : []
+  }
+}
+
+function writeVideoMetadata(
+  task: Pick<AiStudioTaskRecord, 'metadata'>,
+  nextVideo: AiStudioVideoMetadata
+): Record<string, unknown> {
+  const metadata = task.metadata && typeof task.metadata === 'object' ? task.metadata : {}
+  return {
+    ...stripImageWorkflowMetadata(metadata),
+    capability: 'video',
+    video: nextVideo
+  }
+}
+
+export function selectDispatchOutputAssets(
+  task: Pick<AiStudioTaskView, 'outputAssets'>
+): AiStudioAssetRecord[] {
+  const videoOutputAssets = task.outputAssets.filter(
+    (asset) => asset.role === AI_STUDIO_VIDEO_OUTPUT_ROLE
+  )
+  if (videoOutputAssets.length > 0) return videoOutputAssets
+  const childOutputAssets = task.outputAssets.filter(
+    (asset) => asset.role === AI_STUDIO_CHILD_OUTPUT_ROLE
+  )
+  if (childOutputAssets.length > 0) return childOutputAssets
+  return task.outputAssets.filter((asset) => asset.role === AI_STUDIO_MASTER_CLEAN_ROLE)
+}
+
 function createDefaultWorkflowMetadata(
-  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths'>
+  task: Pick<
+    AiStudioTaskRecord,
+    'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths'
+  >
 ): AiStudioWorkflowMetadata {
   return {
     workflow: {
@@ -217,7 +462,10 @@ function createDefaultWorkflowMetadata(
 }
 
 export function readWorkflowMetadata(
-  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>
+  task: Pick<
+    AiStudioTaskRecord,
+    'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'
+  >
 ): AiStudioWorkflowMetadata {
   const metadata =
     task.metadata && typeof task.metadata === 'object'
@@ -269,37 +517,35 @@ export function readWorkflowMetadata(
           ? workflowRecord.currentItemKind
           : 'idle',
       currentItemIndex:
-        typeof workflowRecord.currentItemIndex === 'number' && Number.isFinite(workflowRecord.currentItemIndex)
+        typeof workflowRecord.currentItemIndex === 'number' &&
+        Number.isFinite(workflowRecord.currentItemIndex)
           ? Math.max(0, Math.floor(workflowRecord.currentItemIndex))
           : 0,
       currentItemTotal:
-        typeof workflowRecord.currentItemTotal === 'number' && Number.isFinite(workflowRecord.currentItemTotal)
+        typeof workflowRecord.currentItemTotal === 'number' &&
+        Number.isFinite(workflowRecord.currentItemTotal)
           ? Math.max(0, Math.floor(workflowRecord.currentItemTotal))
           : 0,
       failures: Array.isArray(workflowRecord.failures)
         ? (workflowRecord.failures as unknown[])
             .map((item, index) => {
-              const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+              const record =
+                item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
               return {
-                id: typeof record.id === 'string' ? record.id : `failure-${index}`,
+                id: String(record.id ?? `failure-${index}`),
                 stageKind:
                   record.stageKind === 'master-clean' || record.stageKind === 'child-generate'
                     ? (record.stageKind as AiStudioWorkflowFailureRecord['stageKind'])
                     : 'master-generate',
-                sequenceIndex:
-                  typeof record.sequenceIndex === 'number' && Number.isFinite(record.sequenceIndex)
-                    ? Math.max(1, Math.floor(record.sequenceIndex))
-                    : index + 1,
-                message: typeof record.message === 'string' ? record.message : '未知错误',
+                sequenceIndex: normalizePositiveInteger(record.sequenceIndex, index + 1),
+                message: String(record.message ?? '').trim() || '未知错误',
                 assetId: typeof record.assetId === 'string' ? record.assetId : undefined,
                 runId: typeof record.runId === 'string' ? record.runId : undefined,
-                createdAt:
-                  typeof record.createdAt === 'number' && Number.isFinite(record.createdAt)
-                    ? Math.floor(record.createdAt)
-                    : Date.now()
+                createdAt: typeof record.createdAt === 'number' ? record.createdAt : Date.now()
               } satisfies AiStudioWorkflowFailureRecord
             })
-        : base.workflow.failures
+            .filter((item) => item.message)
+        : []
     },
     masterStage: {
       templateId:
@@ -311,19 +557,23 @@ export function readWorkflowMetadata(
           ? masterRecord.promptExtra
           : base.masterStage.promptExtra,
       requestedCount:
-        typeof masterRecord.requestedCount === 'number' && Number.isFinite(masterRecord.requestedCount)
+        typeof masterRecord.requestedCount === 'number' &&
+        Number.isFinite(masterRecord.requestedCount)
           ? Math.max(1, Math.floor(masterRecord.requestedCount))
           : base.masterStage.requestedCount,
       completedCount:
-        typeof masterRecord.completedCount === 'number' && Number.isFinite(masterRecord.completedCount)
+        typeof masterRecord.completedCount === 'number' &&
+        Number.isFinite(masterRecord.completedCount)
           ? Math.max(0, Math.floor(masterRecord.completedCount))
           : base.masterStage.completedCount,
       cleanSuccessCount:
-        typeof masterRecord.cleanSuccessCount === 'number' && Number.isFinite(masterRecord.cleanSuccessCount)
+        typeof masterRecord.cleanSuccessCount === 'number' &&
+        Number.isFinite(masterRecord.cleanSuccessCount)
           ? Math.max(0, Math.floor(masterRecord.cleanSuccessCount))
           : base.masterStage.cleanSuccessCount,
       cleanFailedCount:
-        typeof masterRecord.cleanFailedCount === 'number' && Number.isFinite(masterRecord.cleanFailedCount)
+        typeof masterRecord.cleanFailedCount === 'number' &&
+        Number.isFinite(masterRecord.cleanFailedCount)
           ? Math.max(0, Math.floor(masterRecord.cleanFailedCount))
           : base.masterStage.cleanFailedCount
     },
@@ -337,14 +587,16 @@ export function readWorkflowMetadata(
           ? childRecord.promptExtra
           : base.childStage.promptExtra,
       requestedCount:
-        typeof childRecord.requestedCount === 'number' && Number.isFinite(childRecord.requestedCount)
+        typeof childRecord.requestedCount === 'number' &&
+        Number.isFinite(childRecord.requestedCount)
           ? Math.max(1, Math.floor(childRecord.requestedCount))
           : base.childStage.requestedCount,
       variantLines: Array.isArray(childRecord.variantLines)
         ? normalizeVariantLines(childRecord.variantLines)
         : base.childStage.variantLines,
       completedCount:
-        typeof childRecord.completedCount === 'number' && Number.isFinite(childRecord.completedCount)
+        typeof childRecord.completedCount === 'number' &&
+        Number.isFinite(childRecord.completedCount)
           ? Math.max(0, Math.floor(childRecord.completedCount))
           : base.childStage.completedCount,
       failedCount:
@@ -356,7 +608,10 @@ export function readWorkflowMetadata(
 }
 
 function writeWorkflowMetadata(
-  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>,
+  task: Pick<
+    AiStudioTaskRecord,
+    'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'
+  >,
   nextWorkflow: AiStudioWorkflowMetadata
 ): Record<string, unknown> {
   const metadata =
@@ -364,7 +619,8 @@ function writeWorkflowMetadata(
       ? (task.metadata as Record<string, unknown>)
       : {}
   return {
-    ...metadata,
+    ...stripVideoMetadata(metadata),
+    capability: 'image',
     workflow: nextWorkflow.workflow,
     masterStage: nextWorkflow.masterStage,
     childStage: nextWorkflow.childStage,
@@ -372,22 +628,22 @@ function writeWorkflowMetadata(
   }
 }
 
-function sanitizeDraftMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
-  const next = metadata && typeof metadata === 'object' ? { ...metadata } : {}
+function sanitizeDraftMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  const next = stripVideoMetadata(stripImageWorkflowMetadata(metadata))
   delete next.latestSubmittedPrompt
   delete next.latestRequestSnapshot
   delete next.latestSubmittedAt
   delete next.latestSubmittedEndpointPath
-  delete next.workflow
-  delete next.masterStage
-  delete next.childStage
-  delete next.mode
   return next
 }
 
-
 function resetWorkflowMetadataForInputs(
-  task: Pick<AiStudioTaskRecord, 'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'>
+  task: Pick<
+    AiStudioTaskRecord,
+    'templateId' | 'promptExtra' | 'primaryImagePath' | 'referenceImagePaths' | 'metadata'
+  >
 ): AiStudioWorkflowMetadata {
   const nextWorkflow = readWorkflowMetadata(task)
   return {
@@ -429,6 +685,53 @@ function makeWorkflowFailureRecord(
     message: String(message ?? '').trim() || '未知错误',
     assetId: extra?.assetId,
     runId: extra?.runId,
+    createdAt: Date.now()
+  }
+}
+
+function normalizeVideoFailureDisplay(
+  message: string,
+  detail?: string | null
+): Pick<AiStudioVideoFailureRecord, 'message' | 'detail'> {
+  const normalizedMessage = String(message ?? '').trim()
+  const normalizedDetail = String(detail ?? '').trim()
+  const raw = normalizedDetail || normalizedMessage
+  const isContentReviewFailure = [
+    /public[-_\s]*error[-_\s]*audio[-_\s]*filtered/i,
+    /public[-_\s]*error[-_\s]*sexual/i,
+    /received empty response from gemini/i,
+    /no meaningful content in candidates/i,
+    /^生成失败$/i,
+    /上游负载饱和/i,
+    /processing[-_\s]*error/i
+  ].some((pattern) => pattern.test(raw))
+
+  if (isContentReviewFailure) {
+    return {
+      message: '内容审核未通过',
+      detail: raw
+    }
+  }
+
+  return {
+    message: normalizedMessage || '未知错误',
+    detail: normalizedDetail || undefined
+  }
+}
+
+function makeVideoFailureRecord(
+  sequenceIndex: number,
+  message: string,
+  runId?: string,
+  detail?: string | null
+): AiStudioVideoFailureRecord {
+  const display = normalizeVideoFailureDisplay(message, detail)
+  return {
+    id: `video-${sequenceIndex}-${Date.now()}`,
+    sequenceIndex,
+    message: display.message,
+    detail: display.detail,
+    runId,
     createdAt: Date.now()
   }
 }
@@ -481,7 +784,19 @@ function createTaskInterruptedError(): Error {
 }
 
 function isTaskInterruptedError(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'AiStudioTaskInterruptedError' || error.message === AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
+  return (
+    error instanceof Error &&
+    (error.name === 'AiStudioTaskInterruptedError' ||
+      error.message === AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
+  )
+}
+
+function resolveFailureStageKindForWorkflow(
+  kind: AiStudioWorkflowMetadata['workflow']['currentItemKind']
+): AiStudioWorkflowFailureRecord['stageKind'] {
+  if (kind === 'master-clean') return 'master-clean'
+  if (kind === 'child-generate') return 'child-generate'
+  return 'master-generate'
 }
 
 function sleepMs(ms: number): Promise<void> {
@@ -489,31 +804,23 @@ function sleepMs(ms: number): Promise<void> {
 }
 
 function buildChildPromptExtra(basePromptExtra: string, variantLine: string): string {
-  const parts = [String(basePromptExtra ?? '').trim(), String(variantLine ?? '').trim()].filter(Boolean)
+  const parts = [String(basePromptExtra ?? '').trim(), String(variantLine ?? '').trim()].filter(
+    Boolean
+  )
   return parts.join('\n\n')
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
+function buildVideoInputPaths(videoMeta: AiStudioVideoMetadata): string[] {
+  return videoMeta.mode === 'first-last-frame'
+    ? uniqueStrings([videoMeta.firstFramePath ?? '', videoMeta.lastFramePath ?? ''])
+    : uniqueStrings([videoMeta.subjectReferencePath ?? ''])
 }
 
-function basenameWithoutExtension(filePath: string): string {
-  const normalized = String(filePath ?? '').trim()
-  if (!normalized) return ''
-  const parts = normalized.split(/[\\/]/).filter(Boolean)
-  const fileName = parts[parts.length - 1] ?? normalized
-  return fileName.replace(/\.[^.]+$/, '').trim()
-}
-
-function sameStringArray(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false
-  return left.every((value, index) => value === right[index])
-}
-
-function normalizeReferencePaths(filePaths: string[], primaryImagePath: string | null): string[] {
-  return uniqueStrings(filePaths)
-    .filter((item) => item !== primaryImagePath)
-    .slice(0, MAX_AI_STUDIO_REFERENCE_IMAGES)
+function getVideoInputNameSource(videoMeta: AiStudioVideoMetadata): string {
+  if (videoMeta.mode === 'first-last-frame') {
+    return videoMeta.firstFramePath ?? videoMeta.lastFramePath ?? ''
+  }
+  return videoMeta.subjectReferencePath ?? ''
 }
 
 function buildInputAssetPayload(
@@ -572,6 +879,77 @@ function buildInputAssetPayload(
     })
   })
 
+  return writes
+}
+
+function buildVideoInputAssetPayload(
+  taskId: string,
+  videoMeta: AiStudioVideoMetadata
+): Array<{
+  id: string
+  taskId: string
+  kind: 'input'
+  role: string
+  filePath: string
+  previewPath: string
+  originPath: string
+  sortOrder: number
+  metadata: Record<string, unknown>
+}> {
+  const writes: Array<{
+    id: string
+    taskId: string
+    kind: 'input'
+    role: string
+    filePath: string
+    previewPath: string
+    originPath: string
+    sortOrder: number
+    metadata: Record<string, unknown>
+  }> = []
+
+  if (videoMeta.mode === 'first-last-frame') {
+    if (videoMeta.firstFramePath) {
+      writes.push({
+        id: `${taskId}:input:video-first-frame`,
+        taskId,
+        kind: 'input',
+        role: AI_STUDIO_VIDEO_FIRST_FRAME_ROLE,
+        filePath: videoMeta.firstFramePath,
+        previewPath: videoMeta.firstFramePath,
+        originPath: videoMeta.firstFramePath,
+        sortOrder: 0,
+        metadata: { importedAt: Date.now(), slot: 'first-frame' }
+      })
+    }
+    if (videoMeta.lastFramePath) {
+      writes.push({
+        id: `${taskId}:input:video-last-frame`,
+        taskId,
+        kind: 'input',
+        role: AI_STUDIO_VIDEO_LAST_FRAME_ROLE,
+        filePath: videoMeta.lastFramePath,
+        previewPath: videoMeta.lastFramePath,
+        originPath: videoMeta.lastFramePath,
+        sortOrder: 1,
+        metadata: { importedAt: Date.now(), slot: 'last-frame' }
+      })
+    }
+    return writes
+  }
+
+  if (!videoMeta.subjectReferencePath) return writes
+  writes.push({
+    id: `${taskId}:input:video-subject-reference`,
+    taskId,
+    kind: 'input',
+    role: AI_STUDIO_VIDEO_SUBJECT_REFERENCE_ROLE,
+    filePath: videoMeta.subjectReferencePath,
+    previewPath: videoMeta.subjectReferencePath,
+    originPath: videoMeta.subjectReferencePath,
+    sortOrder: 0,
+    metadata: { importedAt: Date.now(), slot: 'subject-reference' }
+  })
   return writes
 }
 
@@ -707,6 +1085,7 @@ function coerceTemplateRecord(template: unknown): AiStudioTemplateRecord {
   return {
     id: String(record.id ?? ''),
     provider: typeof record.provider === 'string' ? record.provider : 'grsai',
+    capability: record.capability === 'video' ? 'video' : 'image',
     name: typeof record.name === 'string' ? record.name : '',
     promptText: typeof record.promptText === 'string' ? record.promptText : '',
     config:
@@ -796,7 +1175,8 @@ function coerceAssetRecord(asset: unknown): AiStudioAssetRecord {
 
 export type UseAiStudioStateResult = ReturnType<typeof useAiStudioState>
 
-function useAiStudioState() {
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+const useAiStudioState = () => {
   const defaultModel = useCmsStore((state) => state.config.aiDefaultImageModel)
   const aiConfig = useCmsStore((state) => state.config)
   const addLog = useCmsStore((state) => state.addLog)
@@ -809,72 +1189,19 @@ function useAiStudioState() {
     {}
   )
   const [statusFilter, setStatusFilter] = useState<AiStudioTaskStatusFilter>('all')
+  const [studioCapability, setStudioCapabilityState] = useState<AiStudioCapability>('image')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isImporting, setIsImporting] = useState(false)
   const interruptRequestedTaskIdsRef = useRef<Set<string>>(new Set())
   const [interruptingTaskIds, setInterruptingTaskIds] = useState<string[]>([])
-  const [previewSlotRuntimeByTaskId, setPreviewSlotRuntimeByTaskId] = useState<
-    Record<string, Record<number, PreviewSlotRuntimeState>>
-  >({})
-
-  const replacePreviewSlotRuntimeStates = useCallback((taskId: string, nextStates: Record<number, PreviewSlotRuntimeState>) => {
-    const normalizedTaskId = String(taskId ?? '').trim()
-    if (!normalizedTaskId) return
-    setPreviewSlotRuntimeByTaskId((prev) => ({
-      ...prev,
-      [normalizedTaskId]: nextStates
-    }))
-  }, [])
-
-  const patchPreviewSlotRuntimeState = useCallback((
-    taskId: string,
-    sequenceIndex: number,
-    nextState: PreviewSlotRuntimeState | null
-  ) => {
-    const normalizedTaskId = String(taskId ?? '').trim()
-    const normalizedIndex = Math.max(1, Math.floor(Number(sequenceIndex) || 0))
-    if (!normalizedTaskId || normalizedIndex <= 0) return
-
-    setPreviewSlotRuntimeByTaskId((prev) => {
-      const current = { ...(prev[normalizedTaskId] ?? {}) }
-      if (nextState) {
-        current[normalizedIndex] = nextState
-      } else {
-        delete current[normalizedIndex]
-      }
-
-      if (Object.keys(current).length <= 0) {
-        if (!prev[normalizedTaskId]) return prev
-        const next = { ...prev }
-        delete next[normalizedTaskId]
-        return next
-      }
-
-      return {
-        ...prev,
-        [normalizedTaskId]: current
-      }
-    })
-  }, [])
-
-  const clearPreviewSlotRuntimeStates = useCallback((taskId: string) => {
-    const normalizedTaskId = String(taskId ?? '').trim()
-    if (!normalizedTaskId) return
-    setPreviewSlotRuntimeByTaskId((prev) => {
-      if (!prev[normalizedTaskId]) return prev
-      const next = { ...prev }
-      delete next[normalizedTaskId]
-      return next
-    })
-  }, [])
 
   const refresh = useCallback(async () => {
     setIsLoading(true)
     try {
       const [templateRows, taskRows, assetRows] = await Promise.all([
-        window.api.cms.aiStudio.template.list().catch(() => []),
+        window.api.cms.aiStudio.template.list({ capability: studioCapability }).catch(() => []),
         window.api.cms.aiStudio.task.list({ limit: 300 }),
         window.api.cms.aiStudio.asset.list().catch(() => [])
       ])
@@ -891,7 +1218,7 @@ function useAiStudioState() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [studioCapability])
 
   useEffect(() => {
     void refresh()
@@ -933,21 +1260,47 @@ function useAiStudioState() {
     })
   }, [assetsByTaskId, draftByTaskId, tasks])
 
+  const capabilityTaskViews = useMemo(
+    () => taskViews.filter((task) => readTaskCapability(task) === studioCapability),
+    [studioCapability, taskViews]
+  )
+
+  const setStudioCapability = useCallback(
+    (next: AiStudioCapability) => {
+      if (next !== studioCapability) {
+        setTemplates([])
+      }
+      setStudioCapabilityState(next)
+      setActiveTaskId((prev) => {
+        if (
+          prev &&
+          taskViews.some((task) => task.id === prev && readTaskCapability(task) === next)
+        ) {
+          return prev
+        }
+        return taskViews.find((task) => readTaskCapability(task) === next)?.id ?? prev
+      })
+    },
+    [studioCapability, taskViews]
+  )
+
   const visibleTasks = useMemo(() => {
-    if (statusFilter === 'all') return taskViews
-    return taskViews.filter((task) => inferStatusFilter(task.status) === statusFilter)
-  }, [statusFilter, taskViews])
+    if (statusFilter === 'all') return capabilityTaskViews
+    return capabilityTaskViews.filter((task) => inferStatusFilter(task.status) === statusFilter)
+  }, [capabilityTaskViews, statusFilter])
 
   const activeTask = useMemo(() => {
-    return taskViews.find((task) => task.id === activeTaskId) ?? taskViews[0] ?? null
-  }, [activeTaskId, taskViews])
+    return (
+      capabilityTaskViews.find((task) => task.id === activeTaskId) ?? capabilityTaskViews[0] ?? null
+    )
+  }, [activeTaskId, capabilityTaskViews])
 
   const historyTasks = useMemo(() => {
-    return taskViews
+    return capabilityTaskViews
       .filter((task) => isHistoricalTask(task))
       .slice()
       .sort((left, right) => left.createdAt - right.createdAt || left.updatedAt - right.updatedAt)
-  }, [taskViews])
+  }, [capabilityTaskViews])
 
   const activeInputAssets = activeTask?.inputAssets ?? []
   const activeOutputAssets = activeTask?.outputAssets ?? []
@@ -970,19 +1323,55 @@ function useAiStudioState() {
   const referenceImagePaths = activeTask?.referenceImagePaths ?? []
 
   const batchCostSummary = useMemo<AiStudioBatchCostSummary>(() => {
-    const basis =
-      selectedTaskIds.length > 0
-        ? taskViews.filter((task) => selectedTaskIds.includes(task.id))
-        : visibleTasks
+    const selectedCapabilityTasks = capabilityTaskViews.filter((task) =>
+      selectedTaskIds.includes(task.id)
+    )
+    const basis = selectedCapabilityTasks.length > 0 ? selectedCapabilityTasks : visibleTasks
     const min = basis.reduce((total, task) => total + (task.priceMinSnapshot ?? 0), 0)
     const max = basis.reduce(
       (total, task) => total + (task.priceMaxSnapshot ?? task.priceMinSnapshot ?? 0),
       0
     )
     return { min, max, label: formatCost(min, max) }
-  }, [selectedTaskIds, taskViews, visibleTasks])
+  }, [capabilityTaskViews, selectedTaskIds, visibleTasks])
 
-  const templateOptions = useMemo(() => sortTemplates(templates), [templates])
+  const templateOptions = useMemo(
+    () => sortTemplates(templates.filter((template) => template.capability === studioCapability)),
+    [studioCapability, templates]
+  )
+  const videoProfiles = AI_VIDEO_PROFILES
+  const videoMeta = useMemo(
+    () =>
+      studioCapability === 'video' ? readVideoMetadata(activeTask) : createDefaultVideoMetadata(),
+    [activeTask, studioCapability]
+  )
+  const selectedVideoProfile = useMemo(
+    () => getAiVideoProfile(videoMeta.profileId),
+    [videoMeta.profileId]
+  )
+  const resolveVideoProviderSelection = useCallback(
+    (providerName?: string | null, modelName?: string | null, endpointPath?: string | null) => {
+      const providerProfiles = Array.isArray(aiConfig.aiProviderProfiles)
+        ? aiConfig.aiProviderProfiles
+        : []
+      const activeProvider = findAiProviderProfile(providerProfiles, aiConfig.aiProvider)
+      const fallbackProviderName = activeProvider?.providerName ?? providerProfiles[0]?.providerName ?? ''
+      const normalizedProviderName = normalizeAiProviderValue(providerName) || fallbackProviderName
+      const providerProfile = findAiProviderProfile(providerProfiles, normalizedProviderName)
+      const normalizedModelName = normalizeAiProviderValue(modelName)
+      const resolvedModel = resolveAiProviderModel(providerProfile, normalizedModelName)
+      const endpointPair = buildVideoEndpointPair(
+        normalizeAiProviderValue(endpointPath) || resolvedModel?.endpointPath || ''
+      )
+      return {
+        providerName: providerProfile?.providerName ?? normalizedProviderName,
+        modelName: normalizedModelName || resolvedModel?.modelName || '',
+        submitPath: endpointPair.submitPath,
+        queryPath: endpointPair.queryPath
+      }
+    },
+    [aiConfig.aiProvider, aiConfig.aiProviderProfiles]
+  )
 
   const replaceTask = useCallback((nextTask: AiStudioTaskRecord) => {
     setTasks((prev) => mergeById(prev, [normalizeTask(nextTask)]))
@@ -998,9 +1387,17 @@ function useAiStudioState() {
     setAssets((prev) => mergeById(prev, nextAssets.map(coerceAssetRecord)))
   }, [])
 
-  const replaceTemplate = useCallback((nextTemplate: AiStudioTemplateRecord) => {
-    setTemplates((prev) => sortTemplates(mergeById(prev, [coerceTemplateRecord(nextTemplate)])))
-  }, [])
+  const replaceTemplate = useCallback(
+    (nextTemplate: AiStudioTemplateRecord) => {
+      const normalizedTemplate = coerceTemplateRecord(nextTemplate)
+      setTemplates((prev) =>
+        normalizedTemplate.capability === studioCapability
+          ? sortTemplates(mergeById(prev, [normalizedTemplate]))
+          : prev
+      )
+    },
+    [studioCapability]
+  )
 
   const requestTaskInterrupt = useCallback((taskId: string) => {
     const normalizedTaskId = String(taskId ?? '').trim()
@@ -1135,7 +1532,7 @@ function useAiStudioState() {
       const inheritedPromptExtra =
         payload.promptExtraOverride !== undefined
           ? payload.promptExtraOverride
-          : baseWorkflow?.masterStage.promptExtra ?? baseTask?.promptExtra ?? ''
+          : (baseWorkflow?.masterStage.promptExtra ?? baseTask?.promptExtra ?? '')
       const inferredName = basenameWithoutExtension(
         primaryImagePath ?? referenceImagePaths[0] ?? ''
       )
@@ -1201,9 +1598,166 @@ function useAiStudioState() {
     [defaultModel, replaceAssets, replaceTask, templateOptions]
   )
 
+  const createVideoTask = useCallback(
+    async (payload?: {
+      inheritFrom?: AiStudioTaskRecord | AiStudioTaskView | null
+      promptExtraOverride?: string
+      videoMetaOverride?: Partial<AiStudioVideoMetadata>
+    }) => {
+      const baseTask = payload?.inheritFrom ?? null
+      const baseVideoMeta =
+        baseTask && readTaskCapability(baseTask) === 'video'
+          ? readVideoMetadata(baseTask)
+          : createDefaultVideoMetadata()
+      const mergedVideoMeta = { ...baseVideoMeta, ...(payload?.videoMetaOverride ?? {}) }
+      const profile = getAiVideoProfile(mergedVideoMeta.profileId)
+      const providerSelection = resolveVideoProviderSelection(
+        baseTask?.provider,
+        String(mergedVideoMeta.model ?? '').trim(),
+        String(mergedVideoMeta.submitPath ?? '').trim()
+      )
+      const nextVideoMeta: AiStudioVideoMetadata = {
+        capability: 'video',
+        profileId: profile.id,
+        model: String(mergedVideoMeta.model ?? '').trim() || providerSelection.modelName || profile.modelId,
+        adapterKind:
+          mergedVideoMeta.adapterKind === 'allapi-unified' ? 'allapi-unified' : profile.adapterKind,
+        submitPath:
+          String(mergedVideoMeta.submitPath ?? '').trim() || providerSelection.submitPath || profile.submitPath,
+        queryPath:
+          String(mergedVideoMeta.queryPath ?? '').trim() || providerSelection.queryPath || profile.queryPath,
+        mode: normalizeVideoMode(mergedVideoMeta.mode, profile.defaultMode),
+        subjectReferencePath: String(mergedVideoMeta.subjectReferencePath ?? '').trim() || null,
+        firstFramePath: String(mergedVideoMeta.firstFramePath ?? '').trim() || null,
+        lastFramePath: String(mergedVideoMeta.lastFramePath ?? '').trim() || null,
+        aspectRatio: normalizeVideoAspectRatio(
+          mergedVideoMeta.aspectRatio,
+          profile.defaultAspectRatio
+        ),
+        resolution: normalizeVideoResolution(mergedVideoMeta.resolution, profile.defaultResolution),
+        duration: normalizeVideoDuration(mergedVideoMeta.duration, profile.defaultDuration),
+        outputCount: normalizePositiveInteger(
+          mergedVideoMeta.outputCount,
+          baseVideoMeta.outputCount,
+          4
+        ),
+        completedCount: 0,
+        failedCount: 0,
+        currentItemIndex: 0,
+        currentItemTotal: 0,
+        failures: []
+      }
+      const inputImagePaths = buildVideoInputPaths(nextVideoMeta)
+      const inferredName = basenameWithoutExtension(getVideoInputNameSource(nextVideoMeta))
+      const promptExtra =
+        payload?.promptExtraOverride !== undefined
+          ? payload.promptExtraOverride
+          : (baseTask?.promptExtra ?? '')
+      const created = coerceTaskRecord(
+        await window.api.cms.aiStudio.task.create({
+          templateId: null,
+          provider: providerSelection.providerName,
+          sourceFolderPath: null,
+          productName: inferredName || baseTask?.productName || '未命名视频任务',
+          status: 'draft',
+          aspectRatio: nextVideoMeta.aspectRatio,
+          outputCount: 1,
+          model: nextVideoMeta.model,
+          promptExtra,
+          primaryImagePath: null,
+          referenceImagePaths: [],
+          inputImagePaths,
+          remoteTaskId: null,
+          latestRunId: null,
+          priceMinSnapshot: null,
+          priceMaxSnapshot: null,
+          billedState: 'unbilled',
+          metadata: (() => {
+            const nextMetadata = {
+              ...sanitizeDraftMetadata(baseTask?.metadata),
+              importedImageCount: inputImagePaths.length
+            }
+            return writeVideoMetadata({ metadata: nextMetadata }, nextVideoMeta)
+          })()
+        })
+      )
+
+      const nextAssets =
+        inputImagePaths.length > 0
+          ? (
+              await window.api.cms.aiStudio.asset.upsert(
+                buildVideoInputAssetPayload(created.id, nextVideoMeta)
+              )
+            ).map(coerceAssetRecord)
+          : []
+
+      replaceTask(created)
+      replaceAssets(nextAssets)
+      setSelectedTaskIds([created.id])
+      setActiveTaskId(created.id)
+      return created
+    },
+    [replaceAssets, replaceTask, resolveVideoProviderSelection]
+  )
+
+  const syncVideoTaskInputs = useCallback(
+    async (
+      task: Pick<AiStudioTaskRecord, 'id' | 'metadata' | 'promptExtra' | 'productName'>,
+      nextVideoMetaInput: AiStudioVideoMetadata,
+      extraPatch?: Record<string, unknown>
+    ) => {
+      const nextVideoMeta = readVideoMetadata({
+        metadata: { capability: 'video', video: nextVideoMetaInput }
+      } as Pick<AiStudioTaskRecord, 'metadata'>)
+      const inputImagePaths = buildVideoInputPaths(nextVideoMeta)
+      const inferredName = basenameWithoutExtension(getVideoInputNameSource(nextVideoMeta))
+      const updated = await updateTaskPatch(task.id, {
+        sourceFolderPath: null,
+        status: 'draft',
+        productName: inferredName || task.productName || '未命名视频任务',
+        aspectRatio: nextVideoMeta.aspectRatio,
+        outputCount: 1,
+        model: nextVideoMeta.model,
+        primaryImagePath: null,
+        referenceImagePaths: [],
+        inputImagePaths,
+        remoteTaskId: null,
+        latestRunId: null,
+        priceMinSnapshot: null,
+        priceMaxSnapshot: null,
+        billedState: 'unbilled',
+        metadata: (() => {
+          const nextMetadata = {
+            ...sanitizeDraftMetadata(task.metadata),
+            importedImageCount: inputImagePaths.length
+          }
+          return writeVideoMetadata({ metadata: nextMetadata }, nextVideoMeta)
+        })(),
+        ...(extraPatch ?? {})
+      })
+
+      const nextAssets =
+        inputImagePaths.length > 0
+          ? (
+              await window.api.cms.aiStudio.asset.upsert(
+                buildVideoInputAssetPayload(task.id, nextVideoMeta)
+              )
+            ).map(coerceAssetRecord)
+          : []
+      replaceAssets(nextAssets)
+      setSelectedTaskIds([task.id])
+      setActiveTaskId(task.id)
+      return updated
+    },
+    [replaceAssets, updateTaskPatch]
+  )
+
   const syncTaskInputs = useCallback(
     async (
-      task: Pick<AiStudioTaskRecord, 'id' | 'templateId' | 'promptExtra' | 'metadata' | 'productName'>,
+      task: Pick<
+        AiStudioTaskRecord,
+        'id' | 'templateId' | 'promptExtra' | 'metadata' | 'productName'
+      >,
       primaryImagePath: string | null,
       referenceImagePaths: string[]
     ) => {
@@ -1266,6 +1820,221 @@ function useAiStudioState() {
       return updated
     },
     [replaceAssets, updateTaskPatch]
+  )
+
+  const ensureVideoDraftTask = useCallback(async () => {
+    const currentVideoTask =
+      studioCapability === 'video' && activeTask && readTaskCapability(activeTask) === 'video'
+        ? activeTask
+        : (taskViews.find((task) => readTaskCapability(task) === 'video') ?? null)
+
+    if (!currentVideoTask) {
+      return createVideoTask()
+    }
+
+    const outputCount =
+      'outputAssets' in currentVideoTask ? currentVideoTask.outputAssets.length : 0
+    const needsReset =
+      outputCount > 0 ||
+      Boolean(currentVideoTask.latestRunId) ||
+      Boolean(currentVideoTask.remoteTaskId) ||
+      currentVideoTask.status === 'running' ||
+      currentVideoTask.status === 'completed' ||
+      currentVideoTask.status === 'failed'
+
+    return needsReset ? createVideoTask({ inheritFrom: currentVideoTask }) : currentVideoTask
+  }, [activeTask, createVideoTask, studioCapability, taskViews])
+
+  const setVideoMode = useCallback(
+    async (value: AiStudioVideoMode) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.mode = value
+      if (value === 'subject-reference' && !nextVideoMeta.subjectReferencePath) {
+        nextVideoMeta.subjectReferencePath =
+          nextVideoMeta.firstFramePath ?? nextVideoMeta.lastFramePath ?? null
+      }
+      if (value === 'first-last-frame' && !nextVideoMeta.firstFramePath) {
+        nextVideoMeta.firstFramePath = nextVideoMeta.subjectReferencePath
+      }
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoProfileId = useCallback(
+    async (value: string) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      const profile = getAiVideoProfile(value)
+      nextVideoMeta.profileId = profile.id
+      nextVideoMeta.model = profile.modelId
+      nextVideoMeta.adapterKind = profile.adapterKind
+      nextVideoMeta.submitPath = profile.submitPath
+      nextVideoMeta.queryPath = profile.queryPath
+      if (!profile.supportsModes.includes(nextVideoMeta.mode)) {
+        nextVideoMeta.mode = profile.defaultMode
+      }
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoProvider = useCallback(
+    async (value: string) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      const providerSelection = resolveVideoProviderSelection(value, '', '')
+      nextVideoMeta.model = providerSelection.modelName
+      nextVideoMeta.submitPath = providerSelection.submitPath
+      nextVideoMeta.queryPath = providerSelection.queryPath
+      await syncVideoTaskInputs(task, nextVideoMeta, {
+        provider: providerSelection.providerName || normalizeAiProviderValue(value)
+      })
+    },
+    [ensureVideoDraftTask, resolveVideoProviderSelection, syncVideoTaskInputs]
+  )
+
+  const setVideoModel = useCallback(
+    async (payload: { provider?: string | null; model: string; endpointPath?: string | null }) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      const providerSelection = resolveVideoProviderSelection(
+        payload.provider ?? task.provider,
+        payload.model,
+        payload.endpointPath ?? nextVideoMeta.submitPath
+      )
+      nextVideoMeta.model = providerSelection.modelName
+      nextVideoMeta.submitPath = providerSelection.submitPath
+      nextVideoMeta.queryPath = providerSelection.queryPath
+      await syncVideoTaskInputs(task, nextVideoMeta, {
+        provider: providerSelection.providerName || normalizeAiProviderValue(payload.provider) || task.provider
+      })
+    },
+    [ensureVideoDraftTask, resolveVideoProviderSelection, syncVideoTaskInputs]
+  )
+
+  const setVideoSubjectReference = useCallback(
+    async (value: string | null) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.subjectReferencePath = String(value ?? '').trim() || null
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoFirstFrame = useCallback(
+    async (value: string | null) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.firstFramePath = String(value ?? '').trim() || null
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoLastFrame = useCallback(
+    async (value: string | null) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.lastFramePath = String(value ?? '').trim() || null
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const swapVideoFrames = useCallback(async () => {
+    const task = await ensureVideoDraftTask()
+    const nextVideoMeta = readVideoMetadata(task)
+    const firstFramePath = nextVideoMeta.firstFramePath
+    nextVideoMeta.firstFramePath = nextVideoMeta.lastFramePath
+    nextVideoMeta.lastFramePath = firstFramePath
+    await syncVideoTaskInputs(task, nextVideoMeta)
+  }, [ensureVideoDraftTask, syncVideoTaskInputs])
+
+  const setVideoAspectRatio = useCallback(
+    async (value: AiVideoAspectRatio) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.aspectRatio = value
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoResolution = useCallback(
+    async (value: AiVideoResolution) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.resolution = value
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoDuration = useCallback(
+    async (value: AiVideoDuration) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.duration = value
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const setVideoOutputCount = useCallback(
+    async (value: number) => {
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      nextVideoMeta.outputCount = normalizePositiveInteger(value, nextVideoMeta.outputCount, 4)
+      await syncVideoTaskInputs(task, nextVideoMeta)
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const useOutputAsVideoReference = useCallback(
+    async (filePath: string) => {
+      const normalizedPath = String(filePath ?? '').trim()
+      if (!normalizedPath) return false
+      const task = await ensureVideoDraftTask()
+      const nextVideoMeta = readVideoMetadata(task)
+      if (nextVideoMeta.mode === 'first-last-frame') {
+        if (!nextVideoMeta.firstFramePath || nextVideoMeta.firstFramePath === normalizedPath) {
+          nextVideoMeta.firstFramePath = normalizedPath
+        } else {
+          nextVideoMeta.lastFramePath = normalizedPath
+        }
+      } else {
+        nextVideoMeta.subjectReferencePath = normalizedPath
+      }
+      await syncVideoTaskInputs(task, nextVideoMeta)
+      return true
+    },
+    [ensureVideoDraftTask, syncVideoTaskInputs]
+  )
+
+  const useOutputAsVideoSubjectReference = useCallback(
+    async (filePath: string) => {
+      const normalizedPath = String(filePath ?? '').trim()
+      if (!normalizedPath) return false
+      const latestVideoTask =
+        taskViews
+          .filter((task) => readTaskCapability(task) === 'video')
+          .slice()
+          .sort((left, right) => right.createdAt - left.createdAt || right.updatedAt - left.updatedAt)[0] ?? null
+      await createVideoTask({
+        inheritFrom: latestVideoTask,
+        promptExtraOverride: '',
+        videoMetaOverride: {
+          mode: 'subject-reference',
+          subjectReferencePath: normalizedPath
+        }
+      })
+      setStudioCapabilityState('video')
+      return true
+    },
+    [createVideoTask, taskViews]
   )
 
   const applyInputSelection = useCallback(
@@ -1469,6 +2238,7 @@ function useAiStudioState() {
         await window.api.cms.aiStudio.template.upsert({
           id: String(payload.templateId ?? '').trim() || undefined,
           provider: 'grsai',
+          capability: studioCapability,
           name: String(payload.name ?? '').trim(),
           promptText: String(payload.promptText ?? '').trim()
         })
@@ -1476,7 +2246,7 @@ function useAiStudioState() {
       replaceTemplate(saved)
       return saved
     },
-    [replaceTemplate]
+    [replaceTemplate, studioCapability]
   )
 
   const deleteTemplate = useCallback(async (templateId: string) => {
@@ -1489,13 +2259,15 @@ function useAiStudioState() {
   }, [])
 
   const loadLatestTaskRecord = useCallback(async (taskId: string) => {
-    const row = await window.api.cms.aiStudio.task.list({ ids: [taskId], limit: 1 }).then((rows) => rows[0])
+    const row = await window.api.cms.aiStudio.task
+      .list({ ids: [taskId], limit: 1 })
+      .then((rows) => rows[0])
     return row ? coerceTaskRecord(row) : null
   }, [])
 
   const workflowMeta = useMemo(
     () =>
-      activeTask
+      activeTask && readTaskCapability(activeTask) === 'image'
         ? readWorkflowMetadata({
             templateId: activeTask.templateId,
             promptExtra: activeTask.promptExtra,
@@ -1509,12 +2281,17 @@ function useAiStudioState() {
 
   const selectedMasterTemplate = useMemo(() => {
     if (!workflowMeta?.masterStage.templateId) return null
-    return templateOptions.find((template) => template.id === workflowMeta.masterStage.templateId) ?? null
+    return (
+      templateOptions.find((template) => template.id === workflowMeta.masterStage.templateId) ??
+      null
+    )
   }, [templateOptions, workflowMeta])
 
   const selectedChildTemplate = useMemo(() => {
     if (!workflowMeta?.childStage.templateId) return null
-    return templateOptions.find((template) => template.id === workflowMeta.childStage.templateId) ?? null
+    return (
+      templateOptions.find((template) => template.id === workflowMeta.childStage.templateId) ?? null
+    )
   }, [templateOptions, workflowMeta])
 
   const selectedTemplate = selectedMasterTemplate
@@ -1537,15 +2314,19 @@ function useAiStudioState() {
     () => activeOutputAssets.filter((asset) => asset.role === AI_STUDIO_CHILD_OUTPUT_ROLE),
     [activeOutputAssets]
   )
+  const videoOutputAssets = useMemo(
+    () => activeOutputAssets.filter((asset) => asset.role === AI_STUDIO_VIDEO_OUTPUT_ROLE),
+    [activeOutputAssets]
+  )
   const currentAiMasterAsset = useMemo(() => {
     const currentId = workflowMeta?.workflow.currentAiMasterAssetId ?? ''
     if (!currentId) return null
     return masterCleanAssets.find((asset) => asset.id === currentId) ?? null
   }, [masterCleanAssets, workflowMeta])
-  const dispatchOutputAssets = useMemo(
-    () => (childOutputAssets.length > 0 ? childOutputAssets : masterCleanAssets),
-    [childOutputAssets, masterCleanAssets]
-  )
+  const dispatchOutputAssets = useMemo(() => {
+    if (videoOutputAssets.length > 0) return videoOutputAssets
+    return childOutputAssets.length > 0 ? childOutputAssets : masterCleanAssets
+  }, [childOutputAssets, masterCleanAssets, videoOutputAssets])
   const pooledOutputAssets = useMemo(
     () =>
       historyTasks.flatMap((task) =>
@@ -1562,21 +2343,28 @@ function useAiStudioState() {
     () => activeSelectedDispatchOutputAssets.map((asset) => asset.id),
     [activeSelectedDispatchOutputAssets]
   )
-  const selectAllDispatchOutputsForTask = useCallback(async (taskId: string) => {
-    const targetTask = taskViews.find((task) => task.id === taskId)
-    if (!targetTask) return [] as AiStudioAssetRecord[]
-    const assetIds = selectDispatchOutputAssets(targetTask).map((asset) => asset.id)
-    if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
-    return setOutputSelectionForTask(taskId, assetIds, true, true)
-  }, [setOutputSelectionForTask, taskViews])
 
-  const clearSelectedDispatchOutputsForTask = useCallback(async (taskId: string) => {
-    const targetTask = taskViews.find((task) => task.id === taskId)
-    if (!targetTask) return [] as AiStudioAssetRecord[]
-    const assetIds = selectDispatchOutputAssets(targetTask).map((asset) => asset.id)
-    if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
-    return setOutputSelectionForTask(taskId, assetIds, false, false)
-  }, [setOutputSelectionForTask, taskViews])
+  const selectAllDispatchOutputsForTask = useCallback(
+    async (taskId: string) => {
+      const targetTask = taskViews.find((task) => task.id === taskId)
+      if (!targetTask) return [] as AiStudioAssetRecord[]
+      const assetIds = selectDispatchOutputAssets(targetTask).map((asset) => asset.id)
+      if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
+      return setOutputSelectionForTask(taskId, assetIds, true, true)
+    },
+    [setOutputSelectionForTask, taskViews]
+  )
+
+  const clearSelectedDispatchOutputsForTask = useCallback(
+    async (taskId: string) => {
+      const targetTask = taskViews.find((task) => task.id === taskId)
+      if (!targetTask) return [] as AiStudioAssetRecord[]
+      const assetIds = selectDispatchOutputAssets(targetTask).map((asset) => asset.id)
+      if (assetIds.length === 0) return [] as AiStudioAssetRecord[]
+      return setOutputSelectionForTask(taskId, assetIds, false, false)
+    },
+    [setOutputSelectionForTask, taskViews]
+  )
 
   const selectAllDispatchOutputs = useCallback(async () => {
     if (!activeTask) return [] as AiStudioAssetRecord[]
@@ -1589,6 +2377,26 @@ function useAiStudioState() {
   }, [activeTask, clearSelectedDispatchOutputsForTask])
 
   const prepareNextDraftTask = useCallback(async () => {
+    if (studioCapability === 'video') {
+      if (
+        activeTask &&
+        readTaskCapability(activeTask) === 'video' &&
+        activeTask.status === 'draft' &&
+        activeTask.outputAssets.length === 0 &&
+        !activeTask.latestRunId &&
+        !activeTask.remoteTaskId
+      ) {
+        return activeTask
+      }
+      return createVideoTask({
+        inheritFrom:
+          (activeTask && readTaskCapability(activeTask) === 'video' ? activeTask : null) ??
+          taskViews.find((task) => readTaskCapability(task) === 'video') ??
+          null,
+        promptExtraOverride: ''
+      })
+    }
+
     if (
       activeTask &&
       activeTask.status === 'draft' &&
@@ -1606,7 +2414,7 @@ function useAiStudioState() {
       promptExtraOverride: '',
       templateIdOverride: null
     })
-  }, [activeTask, createTaskWithInputs])
+  }, [activeTask, createTaskWithInputs, createVideoTask, studioCapability, taskViews])
 
   const useDispatchOutputAsReference = useCallback(
     async (filePath: string) => {
@@ -1623,7 +2431,10 @@ function useAiStudioState() {
           : await prepareNextDraftTask()
 
       if (!draftTask) return false
-      if (draftTask.primaryImagePath === normalizedPath || draftTask.referenceImagePaths.includes(normalizedPath)) {
+      if (
+        draftTask.primaryImagePath === normalizedPath ||
+        draftTask.referenceImagePaths.includes(normalizedPath)
+      ) {
         return false
       }
 
@@ -1639,45 +2450,93 @@ function useAiStudioState() {
         throw new Error(`最多支持 ${MAX_AI_STUDIO_REFERENCE_IMAGES} 张参考图。`)
       }
 
-      await syncTaskInputs(
-        draftTask,
-        nextPrimaryImagePath,
-        nextReferenceImagePaths
-      )
+      await syncTaskInputs(draftTask, nextPrimaryImagePath, nextReferenceImagePaths)
       return true
     },
     [activeTask, prepareNextDraftTask, syncTaskInputs]
   )
 
-  const sendSelectedDispatchOutputsToWorkshop = useCallback(async (taskId?: string) => {
-    const targetTaskId = String(taskId ?? activeTask?.id ?? '').trim()
-    const targetTask = taskViews.find((task) => task.id === targetTaskId) ?? null
-    const targetDispatchOutputAssets = targetTask ? selectDispatchOutputAssets(targetTask) : []
-    const paths = uniqueStrings(
-      targetDispatchOutputAssets
-        .filter((asset) => asset.selected)
-        .map((asset) => String(asset.filePath ?? '').trim())
-    )
-    if (paths.length === 0) {
-      throw new Error('请先选择至少一张结果图。')
-    }
-    await prepareNextDraftTask()
-    setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
-    setActiveModule('workshop')
-    addLog(`[AI Studio] 已将 ${paths.length} 张结果图发送到数据工坊。`)
-    return paths
-  }, [activeTask, addLog, prepareNextDraftTask, setActiveModule, setWorkshopImport, taskViews])
+  const sendSelectedDispatchOutputsToWorkshop = useCallback(
+    async (taskId?: string) => {
+      const targetTaskId = String(taskId ?? activeTask?.id ?? '').trim()
+      const targetTask = taskViews.find((task) => task.id === targetTaskId) ?? null
+      const targetDispatchOutputAssets = targetTask ? selectDispatchOutputAssets(targetTask) : []
+      const selectedAssets = targetDispatchOutputAssets.filter((asset) => asset.selected)
+      const paths = uniqueStrings(
+        selectedAssets.map((asset) => String(asset.filePath ?? '').trim())
+      )
+      if (paths.length === 0) {
+        throw new Error(
+          studioCapability === 'video' ? '请先选择至少一个视频结果。' : '请先选择至少一张结果图。'
+        )
+      }
+
+      const isVideo = Boolean(
+        targetTask &&
+        (readTaskCapability(targetTask) === 'video' ||
+          selectedAssets.some((asset) => asset.role === AI_STUDIO_VIDEO_OUTPUT_ROLE))
+      )
+
+      if (isVideo) {
+        setWorkshopImport(
+          'video',
+          paths[0] ?? null,
+          selectedAssets[0]?.previewPath ?? null,
+          paths,
+          'ai-studio'
+        )
+        setActiveModule('workshop')
+        addLog(`[AI Studio] 已将 ${paths.length} 个视频结果发送到数据工坊。`)
+        return paths
+      }
+
+      await prepareNextDraftTask()
+      setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
+      setActiveModule('workshop')
+      addLog(`[AI Studio] 已将 ${paths.length} 张结果图发送到数据工坊。`)
+      return paths
+    },
+    [
+      activeTask,
+      addLog,
+      prepareNextDraftTask,
+      setActiveModule,
+      setWorkshopImport,
+      studioCapability,
+      taskViews
+    ]
+  )
 
   const sendPooledOutputsToWorkshop = useCallback(async () => {
-    const paths = uniqueStrings(pooledOutputAssets.map((asset) => String(asset.filePath ?? '').trim()))
+    const paths = uniqueStrings(
+      pooledOutputAssets.map((asset) => String(asset.filePath ?? '').trim())
+    )
     if (paths.length === 0) {
-      throw new Error('请先添加至少一张图片到图片池。')
+      throw new Error(
+        studioCapability === 'video'
+          ? '请先添加至少一个视频到图池。'
+          : '请先添加至少一张图片到图片池。'
+      )
     }
 
-    await prepareNextDraftTask()
-    setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
-    setActiveModule('workshop')
-    addLog(`[AI Studio] 已将图池中的 ${paths.length} 张结果图发送到数据工坊。`)
+    const isVideo = pooledOutputAssets.some((asset) => asset.role === AI_STUDIO_VIDEO_OUTPUT_ROLE)
+
+    if (isVideo) {
+      setWorkshopImport(
+        'video',
+        paths[0] ?? null,
+        pooledOutputAssets[0]?.previewPath ?? null,
+        paths,
+        'ai-studio'
+      )
+      setActiveModule('workshop')
+      addLog(`[AI Studio] 已将图池中的 ${paths.length} 个视频发送到数据工坊。`)
+    } else {
+      await prepareNextDraftTask()
+      setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
+      setActiveModule('workshop')
+      addLog(`[AI Studio] 已将图池中的 ${paths.length} 张结果图发送到数据工坊。`)
+    }
 
     const groupedAssetIds = new Map<string, string[]>()
     pooledOutputAssets.forEach((asset) => {
@@ -1693,19 +2552,31 @@ function useAiStudioState() {
     )
 
     return paths
-  }, [addLog, pooledOutputAssets, prepareNextDraftTask, setActiveModule, setOutputSelectionForTask, setWorkshopImport])
+  }, [
+    addLog,
+    pooledOutputAssets,
+    prepareNextDraftTask,
+    setActiveModule,
+    setOutputSelectionForTask,
+    setWorkshopImport,
+    studioCapability
+  ])
+
   const failureRecords = workflowMeta?.workflow.failures ?? []
   const stageProgress = useMemo(
-    () => (workflowMeta ? buildStageProgress(workflowMeta) : {
-      stage: 'master-setup' as AiStudioWorkflowStage,
-      currentLabel: '待开始',
-      currentIndex: 0,
-      currentTotal: 0,
-      totalCompleted: 0,
-      totalPlanned: 0,
-      successCount: 0,
-      failureCount: 0
-    }),
+    () =>
+      workflowMeta
+        ? buildStageProgress(workflowMeta)
+        : {
+            stage: 'master-setup' as AiStudioWorkflowStage,
+            currentLabel: '待开始',
+            currentIndex: 0,
+            currentTotal: 0,
+            totalCompleted: 0,
+            totalPlanned: 0,
+            successCount: 0,
+            failureCount: 0
+          },
     [workflowMeta]
   )
 
@@ -1957,6 +2828,7 @@ function useAiStudioState() {
         await window.api.cms.aiStudio.template.upsert({
           id: String(payload.templateId ?? '').trim() || undefined,
           provider: 'grsai',
+          capability: 'image',
           name: String(payload.name ?? '').trim(),
           promptText: String(payload.promptText ?? '').trim()
         })
@@ -2031,12 +2903,16 @@ function useAiStudioState() {
         throw createTaskInterruptedError()
       }
 
+      const taskCapability = readTaskCapability(
+        taskViews.find((item) => item.id === taskId) ?? null
+      )
+      const maxPollAttempts = taskCapability === 'video' ? 360 : 240
       let result = await window.api.cms.aiStudio.task.startRun({ taskId })
       let guard = 0
       while (
         result.status !== 'succeeded' &&
         result.status !== 'failed' &&
-        guard < 240
+        guard < maxPollAttempts
       ) {
         if (isTaskInterruptRequested(taskId)) {
           throw createTaskInterruptedError()
@@ -2057,11 +2933,26 @@ function useAiStudioState() {
       await refresh()
       return result
     },
-    [isTaskInterruptRequested, refresh]
+    [isTaskInterruptRequested, refresh, taskViews]
   )
 
   const processMasterCleanup = useCallback(
-    async (task: Pick<AiStudioTaskRecord, 'id'>, rawAsset: AiStudioAssetRecord, sequenceIndex: number) => {
+    async (
+      task: Pick<AiStudioTaskRecord, 'id'>,
+      rawAsset: AiStudioAssetRecord,
+      sequenceIndex: number
+    ) => {
+      const outputs = await window.electronAPI.processWatermark({
+        files: [rawAsset.filePath],
+        pythonPath: aiConfig.pythonPath,
+        scriptPath: aiConfig.watermarkScriptPath,
+        watermarkBox: aiConfig.watermarkBox
+      })
+      const cleanPath = Array.isArray(outputs) ? String(outputs[0] ?? '').trim() : ''
+      if (!cleanPath) {
+        throw new Error('[AI Studio] 去水印未返回输出文件。')
+      }
+
       const rawMetadata =
         rawAsset.metadata && typeof rawAsset.metadata === 'object'
           ? (rawAsset.metadata as Record<string, unknown>)
@@ -2083,8 +2974,7 @@ function useAiStudioState() {
             ...rawMetadata,
             stage: 'master',
             sequenceIndex,
-            watermarkStatus: 'skipped',
-            localCleanupSkipped: true
+            watermarkStatus: 'succeeded'
           }
         },
         {
@@ -2093,8 +2983,8 @@ function useAiStudioState() {
           runId: rawAsset.runId,
           kind: 'output',
           role: AI_STUDIO_MASTER_CLEAN_ROLE,
-          filePath: rawAsset.filePath,
-          previewPath: rawAsset.previewPath ?? rawAsset.filePath,
+          filePath: cleanPath,
+          previewPath: cleanPath,
           originPath: rawAsset.filePath,
           selected: false,
           sortOrder: rawAsset.sortOrder,
@@ -2102,233 +2992,422 @@ function useAiStudioState() {
             stage: 'master',
             sequenceIndex,
             sourceAssetId: rawAsset.id,
-            watermarkStatus: 'skipped',
-            localCleanupSkipped: true
+            watermarkStatus: 'succeeded'
           }
         }
       ])
     },
-    [upsertAssetsRemote]
+    [aiConfig.pythonPath, aiConfig.watermarkBox, aiConfig.watermarkScriptPath, upsertAssetsRemote]
   )
 
-  const startMasterWorkflow = useCallback(async (payload?: {
-    taskId?: string | null
-    promptText?: string
-    model?: string
-    requestedCount?: number
-    templateId?: string | null
-  }) => {
-    const sourceTaskView =
-      (payload?.taskId ? taskViews.find((item) => item.id === payload.taskId) ?? null : null) ??
-      activeTask
-    const sourceTask =
-      sourceTaskView ??
-      (payload?.taskId ? await loadLatestTaskRecord(payload.taskId) : null)
-
-    if (!sourceTask || !aiConfig.aiApiKey.trim()) {
-      throw new Error('[AI Studio] 请先配置 API Key。')
-    }
-    if (!sourceTask.primaryImagePath) {
-      throw new Error('[AI Studio] 请先添加参考图。')
-    }
-
-    const sourceWorkflow = readWorkflowMetadata(sourceTask)
-    const effectivePromptText =
-      payload?.promptText !== undefined
-        ? String(payload.promptText ?? '').trim()
-        : String(sourceWorkflow.masterStage.promptExtra ?? sourceTask.promptExtra ?? '').trim()
-    const effectiveTemplateId =
-      payload?.templateId !== undefined
-        ? String(payload.templateId ?? '').trim() || null
-        : (sourceWorkflow.masterStage.templateId ?? sourceTask.templateId ?? null)
-    const effectiveRequestedCount = Math.max(
-      1,
-      Math.floor(
-        Number(payload?.requestedCount ?? sourceWorkflow.masterStage.requestedCount ?? 1) || 1
+  const startVideoWorkflow = useCallback(
+    async (payload?: { taskId?: string | null; promptText?: string; onStarted?: () => void }) => {
+      const sourceTaskView =
+        (payload?.taskId ? (taskViews.find((item) => item.id === payload.taskId) ?? null) : null) ??
+        (activeTask && readTaskCapability(activeTask) === 'video' ? activeTask : null)
+      const sourceVideoMeta =
+        sourceTaskView && readTaskCapability(sourceTaskView) === 'video'
+          ? readVideoMetadata(sourceTaskView)
+          : videoMeta
+      const sourceProviderName = normalizeAiProviderValue(sourceTaskView?.provider)
+      const sourceProviderProfile = findAiProviderProfile(
+        Array.isArray(aiConfig.aiProviderProfiles) ? aiConfig.aiProviderProfiles : [],
+        sourceProviderName
       )
-    )
-    const effectiveModel =
-      String(payload?.model ?? sourceTask.model ?? defaultModel ?? DEFAULT_GRSAI_IMAGE_MODEL).trim() ||
-      DEFAULT_GRSAI_IMAGE_MODEL
 
-    const sourceOutputCount = 'outputAssets' in sourceTask ? sourceTask.outputAssets.length : 0
-    const needsReset =
-      sourceOutputCount > 0 ||
-      Boolean(sourceTask.latestRunId) ||
-      Boolean(sourceTask.remoteTaskId) ||
-      sourceTask.status === 'running' ||
-      sourceTask.status === 'completed' ||
-      sourceTask.status === 'failed'
+      if (!sourceProviderName || !sourceProviderProfile) {
+        throw new Error('[AI Studio] 请先在模型设置中创建并选择视频供应商。')
+      }
+      if (!sourceProviderProfile.apiKey.trim()) {
+        throw new Error('[AI Studio] 请先填写视频供应商 API Key。')
+      }
+      if (!sourceVideoMeta.model.trim()) {
+        throw new Error('[AI Studio] 请先选择或保存视频模型。')
+      }
+      if (!sourceVideoMeta.submitPath.trim()) {
+        throw new Error('[AI Studio] 请先填写视频模型 API 端点。')
+      }
 
-    const preparedTask = needsReset
-      ? await createTaskWithInputs({
-          primaryImagePath: sourceTask.primaryImagePath,
-          referenceImagePaths: sourceTask.referenceImagePaths,
-          inheritFrom: sourceTask,
-          promptExtraOverride: effectivePromptText,
-          templateIdOverride: effectiveTemplateId
-        })
-      : sourceTask
-    if (!preparedTask) return null
+      const effectivePromptText =
+        payload?.promptText !== undefined
+          ? String(payload.promptText ?? '').trim()
+          : String(sourceTaskView?.promptExtra ?? '').trim()
+      if (!effectivePromptText) {
+        throw new Error('[AI Studio] 请先输入提示词。')
+      }
+      if (sourceVideoMeta.mode === 'subject-reference' && !sourceVideoMeta.subjectReferencePath) {
+        throw new Error('[AI Studio] 请先添加主体参考图。')
+      }
+      if (
+        sourceVideoMeta.mode === 'first-last-frame' &&
+        (!sourceVideoMeta.firstFramePath || !sourceVideoMeta.lastFramePath)
+      ) {
+        throw new Error('[AI Studio] 请先补齐首尾帧。')
+      }
 
-    const workingTask =
-      (await loadLatestTaskRecord(preparedTask.id)) ??
-      (preparedTask.id === sourceTask.id
-        ? preparedTask
-        : coerceTaskRecord(
-            await window.api.cms.aiStudio.task
-              .list({ ids: [preparedTask.id], limit: 1 })
-              .then((rows) => rows[0])
-          ))
+      const sourceOutputCount = sourceTaskView?.outputAssets.length ?? 0
+      const needsReset =
+        !sourceTaskView ||
+        sourceOutputCount > 0 ||
+        Boolean(sourceTaskView.latestRunId) ||
+        Boolean(sourceTaskView.remoteTaskId) ||
+        sourceTaskView.status === 'running' ||
+        sourceTaskView.status === 'completed' ||
+        sourceTaskView.status === 'failed'
 
-    clearTaskInterrupt(workingTask.id)
+      const preparedTask = needsReset
+        ? await createVideoTask({
+            inheritFrom: sourceTaskView,
+            promptExtraOverride: effectivePromptText,
+            videoMetaOverride: sourceVideoMeta
+          })
+        : sourceTaskView
+      if (!preparedTask) return null
 
-    const workflow = prepareWorkflowForMasterRun(readWorkflowMetadata(workingTask), {
-      promptText: effectivePromptText,
-      templateId: effectiveTemplateId,
-      requestedCount: effectiveRequestedCount,
-      primaryImagePath: workingTask.primaryImagePath ?? null,
-      referenceImagePaths: workingTask.referenceImagePaths
-    })
+      const workingTask = (await loadLatestTaskRecord(preparedTask.id)) ?? preparedTask
 
-    let task = await updateTaskPatch(workingTask.id, {
-      templateId: effectiveTemplateId,
-      promptExtra: effectivePromptText,
-      model: effectiveModel,
-      outputCount: 1,
-      status: 'running',
-      remoteTaskId: null,
-      latestRunId: null,
-      metadata: writeWorkflowMetadata(workingTask, workflow)
-    })
-    await refresh()
+      clearTaskInterrupt(workingTask.id)
 
-    const shouldResetComposer = sourceTask.id === activeTask?.id
-    let preparedNextDraftAtStart = false
-    if (shouldResetComposer) {
-      await createTaskWithInputs({
-        primaryImagePath: null,
-        referenceImagePaths: [],
+      const initialVideoMeta = readVideoMetadata(workingTask)
+      initialVideoMeta.mode = sourceVideoMeta.mode
+      initialVideoMeta.profileId = sourceVideoMeta.profileId
+      initialVideoMeta.model = sourceVideoMeta.model
+      initialVideoMeta.adapterKind = sourceVideoMeta.adapterKind
+      initialVideoMeta.submitPath = sourceVideoMeta.submitPath
+      initialVideoMeta.queryPath = sourceVideoMeta.queryPath
+      initialVideoMeta.subjectReferencePath = sourceVideoMeta.subjectReferencePath
+      initialVideoMeta.firstFramePath = sourceVideoMeta.firstFramePath
+      initialVideoMeta.lastFramePath = sourceVideoMeta.lastFramePath
+      initialVideoMeta.aspectRatio = sourceVideoMeta.aspectRatio
+      initialVideoMeta.resolution = sourceVideoMeta.resolution
+      initialVideoMeta.duration = sourceVideoMeta.duration
+      initialVideoMeta.outputCount = sourceVideoMeta.outputCount
+      initialVideoMeta.completedCount = 0
+      initialVideoMeta.failedCount = 0
+      initialVideoMeta.currentItemIndex = 0
+      initialVideoMeta.currentItemTotal = sourceVideoMeta.outputCount
+      initialVideoMeta.failures = []
+
+      let task = await updateTaskPatch(workingTask.id, {
+        promptExtra: effectivePromptText,
+        model: initialVideoMeta.model,
+        aspectRatio: initialVideoMeta.aspectRatio,
+        outputCount: 1,
+        status: 'running',
+        remoteTaskId: null,
+        latestRunId: null,
+        metadata: writeVideoMetadata(workingTask, initialVideoMeta)
+      })
+      await refresh()
+      payload?.onStarted?.()
+
+      await createVideoTask({
         inheritFrom: task,
         promptExtraOverride: '',
-        templateIdOverride: null
+        videoMetaOverride: {
+          subjectReferencePath: null,
+          firstFramePath: null,
+          lastFramePath: null
+        }
       })
-      preparedNextDraftAtStart = true
-    }
 
-    const sequenceIndexes = Array.from(
-      { length: workflow.masterStage.requestedCount },
-      (_, slotIndex) => slotIndex + 1
-    )
-    replacePreviewSlotRuntimeStates(
-      task.id,
-      Object.fromEntries(
-        sequenceIndexes.map((sequenceIndex) => [
-          sequenceIndex,
-          {
-            status: 'queued',
-            message: '排队中'
-          } satisfies PreviewSlotRuntimeState
-        ])
-      )
-    )
+      let wasInterrupted = false
 
-    let wasInterrupted = false
+      for (let index = 1; index <= initialVideoMeta.outputCount; index += 1) {
+        const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
+        if (!latestTask) break
+        const loopVideoMeta = readVideoMetadata(latestTask)
+        loopVideoMeta.currentItemIndex = index
+        loopVideoMeta.currentItemTotal = loopVideoMeta.outputCount
+        task = await updateTaskPatch(latestTask.id, {
+          promptExtra: effectivePromptText,
+          model: loopVideoMeta.model,
+          aspectRatio: loopVideoMeta.aspectRatio,
+          outputCount: 1,
+          status: 'running',
+          metadata: writeVideoMetadata(latestTask, loopVideoMeta)
+        })
 
-    try {
-      const slotResults = await runWithConcurrencyLimit(
-        sequenceIndexes,
-        Math.min(AI_STUDIO_MASTER_CLEAN_CONCURRENCY, Math.max(sequenceIndexes.length, 1)),
-        async (sequenceIndex) => {
-          if (isTaskInterruptRequested(task.id)) {
-            wasInterrupted = true
-            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-              status: 'failed',
-              message: AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-            })
-            return {
-              sequenceIndex,
-              generated: false,
-              cleaned: false,
-              cleanFailed: false,
-              failure: makeWorkflowFailureRecord(
-                'master-generate',
-                sequenceIndex,
-                AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+        try {
+          const result = await executeRunToTerminal(latestTask.id)
+          const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+
+          if (result.status === 'succeeded' && outputAssets.length > 0) {
+            await upsertAssetsRemote(
+              outputAssets.map((asset, outputIndex) => ({
+                id: asset.id,
+                taskId: latestTask.id,
+                runId: asset.runId,
+                kind: 'output',
+                role: AI_STUDIO_VIDEO_OUTPUT_ROLE,
+                filePath: asset.filePath,
+                previewPath: asset.previewPath,
+                originPath: asset.originPath,
+                selected: asset.selected,
+                sortOrder: asset.sortOrder,
+                metadata: {
+                  ...(asset.metadata ?? {}),
+                  stage: 'video',
+                  sequenceIndex: index,
+                  outputIndex,
+                  videoMode: loopVideoMeta.mode,
+                  profileId: loopVideoMeta.profileId
+                }
+              }))
+            )
+            loopVideoMeta.completedCount += 1
+          } else {
+            loopVideoMeta.failedCount += 1
+            loopVideoMeta.failures.push(
+              makeVideoFailureRecord(
+                index,
+                result.run?.errorMessage || '视频生成失败',
+                result.run?.id
               )
-            }
+            )
+          }
+        } catch (error) {
+          if (isTaskInterruptedError(error)) {
+            wasInterrupted = true
+            loopVideoMeta.failedCount += 1
+            loopVideoMeta.failures.push(
+              makeVideoFailureRecord(index, AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
+            )
+            task = await updateTaskPatch(latestTask.id, {
+              status: loopVideoMeta.completedCount > 0 ? 'completed' : 'failed',
+              metadata: writeVideoMetadata(latestTask, loopVideoMeta),
+              promptExtra: effectivePromptText,
+              model: loopVideoMeta.model,
+              aspectRatio: loopVideoMeta.aspectRatio,
+              outputCount: 1
+            })
+            await refresh()
+            break
           }
 
-          patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-            status: 'generating',
-            message: '结果生成中'
+          loopVideoMeta.failedCount += 1
+          loopVideoMeta.failures.push(
+            makeVideoFailureRecord(index, error instanceof Error ? error.message : String(error))
+          )
+        }
+
+        task = await updateTaskPatch(latestTask.id, {
+          status: 'running',
+          metadata: writeVideoMetadata(latestTask, loopVideoMeta)
+        })
+        await refresh()
+      }
+
+      clearTaskInterrupt(task.id)
+
+      const finalTaskRecord = await loadLatestTaskRecord(task.id)
+      if (!finalTaskRecord) return null
+      const finalVideoMeta = readVideoMetadata(finalTaskRecord)
+      finalVideoMeta.currentItemIndex = 0
+      finalVideoMeta.currentItemTotal = finalVideoMeta.outputCount
+      const finalStatus = finalVideoMeta.completedCount > 0 ? 'completed' : 'failed'
+      await updateTaskPatch(finalTaskRecord.id, {
+        status: wasInterrupted && finalVideoMeta.completedCount > 0 ? 'completed' : finalStatus,
+        promptExtra: effectivePromptText,
+        model: finalVideoMeta.model,
+        aspectRatio: finalVideoMeta.aspectRatio,
+        outputCount: 1,
+        metadata: writeVideoMetadata(finalTaskRecord, finalVideoMeta)
+      })
+      await refresh()
+      return true
+    },
+    [
+      activeTask,
+      aiConfig.aiProviderProfiles,
+      createVideoTask,
+      executeRunToTerminal,
+      loadLatestTaskRecord,
+      refresh,
+      taskViews,
+      updateTaskPatch,
+      upsertAssetsRemote,
+      videoMeta
+    ]
+  )
+
+  const startMasterWorkflow = useCallback(
+    async (payload?: {
+      taskId?: string | null
+      promptText?: string
+      model?: string
+      requestedCount?: number
+      templateId?: string | null
+      onStarted?: () => void
+    }) => {
+      const sourceTaskView =
+        (payload?.taskId ? (taskViews.find((item) => item.id === payload.taskId) ?? null) : null) ??
+        activeTask
+      const sourceTask =
+        sourceTaskView ?? (payload?.taskId ? await loadLatestTaskRecord(payload.taskId) : null)
+
+      if (!sourceTask || !aiConfig.aiApiKey.trim()) {
+        throw new Error('[AI Studio] 请先配置 API Key。')
+      }
+      if (!sourceTask.primaryImagePath) {
+        throw new Error('[AI Studio] 请先添加参考图。')
+      }
+
+      const sourceWorkflow = readWorkflowMetadata(sourceTask)
+      const effectivePromptText =
+        payload?.promptText !== undefined
+          ? String(payload.promptText ?? '').trim()
+          : String(sourceWorkflow.masterStage.promptExtra ?? sourceTask.promptExtra ?? '').trim()
+      const effectiveTemplateId =
+        payload?.templateId !== undefined
+          ? String(payload.templateId ?? '').trim() || null
+          : (sourceWorkflow.masterStage.templateId ?? sourceTask.templateId ?? null)
+      const effectiveRequestedCount = Math.max(
+        1,
+        Math.floor(
+          Number(payload?.requestedCount ?? sourceWorkflow.masterStage.requestedCount ?? 1) || 1
+        )
+      )
+      const effectiveModel =
+        String(
+          payload?.model ?? sourceTask.model ?? defaultModel ?? DEFAULT_GRSAI_IMAGE_MODEL
+        ).trim() || DEFAULT_GRSAI_IMAGE_MODEL
+
+      const sourceOutputCount = 'outputAssets' in sourceTask ? sourceTask.outputAssets.length : 0
+      const needsReset =
+        sourceOutputCount > 0 ||
+        Boolean(sourceTask.latestRunId) ||
+        Boolean(sourceTask.remoteTaskId) ||
+        sourceTask.status === 'running' ||
+        sourceTask.status === 'completed' ||
+        sourceTask.status === 'failed'
+
+      const preparedTask = needsReset
+        ? await createTaskWithInputs({
+            primaryImagePath: sourceTask.primaryImagePath,
+            referenceImagePaths: sourceTask.referenceImagePaths,
+            inheritFrom: sourceTask,
+            promptExtraOverride: effectivePromptText,
+            templateIdOverride: effectiveTemplateId
           })
+        : sourceTask
+      if (!preparedTask) return null
 
-          try {
-            const result = await executeRunToTerminal(task.id)
-            const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+      const workingTask =
+        (await loadLatestTaskRecord(preparedTask.id)) ??
+        (preparedTask.id === sourceTask.id
+          ? preparedTask
+          : coerceTaskRecord(
+              await window.api.cms.aiStudio.task
+                .list({ ids: [preparedTask.id], limit: 1 })
+                .then((rows) => rows[0])
+            ))
 
-            if (result.status === 'succeeded' && outputAssets.length > 0) {
-              const relabeled = await upsertAssetsRemote(
-                outputAssets.slice(0, 1).map((asset) => ({
-                  id: asset.id,
-                  taskId: task.id,
-                  runId: asset.runId,
-                  kind: 'output',
-                  role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-                  filePath: asset.filePath,
-                  previewPath: asset.previewPath,
-                  originPath: asset.originPath,
-                  selected: asset.selected,
-                  sortOrder: sequenceIndex - 1,
-                  metadata: {
-                    ...(asset.metadata ?? {}),
-                    stage: 'master',
-                    sequenceIndex,
-                    outputIndex: 0,
-                    watermarkStatus: 'pending'
-                  }
-                }))
-              )
-              const rawAsset = relabeled[0]
-              if (!rawAsset) {
-                const message = '结果生成失败'
-                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                  status: 'failed',
-                  message
-                })
-                return {
-                  sequenceIndex,
-                  generated: false,
-                  cleaned: false,
-                  cleanFailed: false,
-                  failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
-                    runId: result.run?.id
-                  })
+      clearTaskInterrupt(workingTask.id)
+
+      const workflow = readWorkflowMetadata(workingTask)
+      workflow.workflow.activeStage = 'master-generating'
+      workflow.workflow.sourcePrimaryImagePath = workingTask.primaryImagePath ?? null
+      workflow.workflow.sourceReferenceImagePaths = uniqueStrings(workingTask.referenceImagePaths)
+      workflow.workflow.currentAiMasterAssetId = null
+      workflow.workflow.currentItemKind = 'master-generate'
+      workflow.workflow.currentItemIndex = 0
+      workflow.workflow.currentItemTotal = effectiveRequestedCount
+      workflow.workflow.failures = []
+      workflow.masterStage.templateId = effectiveTemplateId
+      workflow.masterStage.promptExtra = effectivePromptText
+      workflow.masterStage.requestedCount = effectiveRequestedCount
+      workflow.masterStage.completedCount = 0
+      workflow.masterStage.cleanSuccessCount = 0
+      workflow.masterStage.cleanFailedCount = 0
+      workflow.childStage.templateId = effectiveTemplateId
+      workflow.childStage.promptExtra = effectivePromptText
+      workflow.childStage.completedCount = 0
+      workflow.childStage.failedCount = 0
+
+      let task = await updateTaskPatch(workingTask.id, {
+        templateId: effectiveTemplateId,
+        promptExtra: effectivePromptText,
+        model: effectiveModel,
+        outputCount: 1,
+        status: 'running',
+        remoteTaskId: null,
+        latestRunId: null,
+        metadata: writeWorkflowMetadata(workingTask, workflow)
+      })
+      await refresh()
+      payload?.onStarted?.()
+
+      let wasInterrupted = false
+
+      for (let index = 1; index <= workflow.masterStage.requestedCount; index += 1) {
+        const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
+        if (!latestTask) break
+        const loopWorkflow = readWorkflowMetadata(latestTask)
+        loopWorkflow.workflow.activeStage = 'master-generating'
+        loopWorkflow.workflow.currentItemKind = 'master-generate'
+        loopWorkflow.workflow.currentItemIndex = index
+        loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
+        task = await updateTaskPatch(latestTask.id, {
+          templateId: loopWorkflow.masterStage.templateId,
+          promptExtra: loopWorkflow.masterStage.promptExtra,
+          outputCount: 1,
+          status: 'running',
+          metadata: writeWorkflowMetadata(latestTask, loopWorkflow)
+        })
+
+        try {
+          const result = await executeRunToTerminal(latestTask.id)
+          const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+          loopWorkflow.masterStage.completedCount += 1
+
+          if (result.status === 'succeeded' && outputAssets.length > 0) {
+            const relabeled = await upsertAssetsRemote(
+              outputAssets.map((asset, outputIndex) => ({
+                id: asset.id,
+                taskId: latestTask.id,
+                runId: asset.runId,
+                kind: 'output',
+                role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                filePath: asset.filePath,
+                previewPath: asset.previewPath,
+                originPath: asset.originPath,
+                selected: asset.selected,
+                sortOrder: asset.sortOrder,
+                metadata: {
+                  ...(asset.metadata ?? {}),
+                  stage: 'master',
+                  sequenceIndex: index,
+                  outputIndex,
+                  watermarkStatus: 'pending'
                 }
-              }
-
-              patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                status: 'cleaning',
-                message: '去水印处理中'
+              }))
+            )
+            const rawAsset = relabeled[0]
+            if (rawAsset) {
+              loopWorkflow.workflow.activeStage = 'master-cleaning'
+              loopWorkflow.workflow.currentItemKind = 'master-clean'
+              loopWorkflow.workflow.currentItemIndex = index
+              loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
+              await updateTaskPatch(latestTask.id, {
+                metadata: writeWorkflowMetadata(latestTask, loopWorkflow),
+                status: 'running'
               })
-
               try {
-                await processMasterCleanup({ id: task.id }, rawAsset, sequenceIndex)
-                patchPreviewSlotRuntimeState(task.id, sequenceIndex, null)
-                return {
-                  sequenceIndex,
-                  generated: true,
-                  cleaned: true,
-                  cleanFailed: false,
-                  failure: null
-                }
+                await processMasterCleanup(latestTask, rawAsset, index)
+                loopWorkflow.masterStage.cleanSuccessCount += 1
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error)
+                loopWorkflow.masterStage.cleanFailedCount += 1
+                loopWorkflow.workflow.failures.push(
+                  makeWorkflowFailureRecord('master-clean', index, message, {
+                    assetId: rawAsset.id
+                  })
+                )
                 await upsertAssetsRemote([
                   {
                     id: rawAsset.id,
-                    taskId: task.id,
+                    taskId: latestTask.id,
                     runId: rawAsset.runId,
                     kind: 'output',
                     role: AI_STUDIO_MASTER_OUTPUT_ROLE,
@@ -2340,175 +3419,113 @@ function useAiStudioState() {
                     metadata: {
                       ...(rawAsset.metadata ?? {}),
                       stage: 'master',
-                      sequenceIndex,
+                      sequenceIndex: index,
                       watermarkStatus: 'failed'
                     }
                   }
                 ])
-                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                  status: 'failed',
-                  message
-                })
-                return {
-                  sequenceIndex,
-                  generated: true,
-                  cleaned: false,
-                  cleanFailed: true,
-                  failure: makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
-                    assetId: rawAsset.id
-                  })
-                }
               }
             }
-
-            const message = result.run?.errorMessage || '结果生成失败'
-            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-              status: 'failed',
-              message
-            })
-            return {
-              sequenceIndex,
-              generated: false,
-              cleaned: false,
-              cleanFailed: false,
-              failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
-                runId: result.run?.id
-              })
-            }
-          } catch (error) {
-            const interrupted = isTaskInterruptedError(error)
-            if (interrupted) {
-              wasInterrupted = true
-            }
-            const message = interrupted
-              ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-              : (error instanceof Error ? error.message : String(error))
-            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-              status: 'failed',
-              message
-            })
-            return {
-              sequenceIndex,
-              generated: false,
-              cleaned: false,
-              cleanFailed: false,
-              failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message)
-            }
+          } else {
+            loopWorkflow.workflow.failures.push(
+              makeWorkflowFailureRecord(
+                'master-generate',
+                index,
+                result.run?.errorMessage || '结果生成失败',
+                { runId: result.run?.id }
+              )
+            )
           }
+        } catch (error) {
+          if (isTaskInterruptedError(error)) {
+            wasInterrupted = true
+            loopWorkflow.workflow.failures.push(
+              makeWorkflowFailureRecord(
+                resolveFailureStageKindForWorkflow(loopWorkflow.workflow.currentItemKind),
+                Math.max(1, index),
+                AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+              )
+            )
+            loopWorkflow.workflow.activeStage = 'master-selecting'
+            loopWorkflow.workflow.currentItemKind = 'idle'
+            loopWorkflow.workflow.currentItemIndex = 0
+            loopWorkflow.workflow.currentItemTotal = loopWorkflow.masterStage.requestedCount
+            task = await updateTaskPatch(latestTask.id, {
+              status: loopWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed',
+              metadata: writeWorkflowMetadata(latestTask, loopWorkflow),
+              promptExtra: loopWorkflow.masterStage.promptExtra,
+              templateId: loopWorkflow.masterStage.templateId,
+              outputCount: 1
+            })
+            await refresh()
+            break
+          }
+
+          loopWorkflow.masterStage.completedCount += 1
+          loopWorkflow.workflow.failures.push(
+            makeWorkflowFailureRecord(
+              'master-generate',
+              index,
+              error instanceof Error ? error.message : String(error)
+            )
+          )
         }
-      )
 
-      const finalizedTaskRecord = (await loadLatestTaskRecord(task.id)) ?? task
-      const finalizedWorkflow = readWorkflowMetadata(finalizedTaskRecord)
-      finalizedWorkflow.workflow.activeStage = 'master-selecting'
-      finalizedWorkflow.workflow.currentItemKind = 'idle'
-      finalizedWorkflow.workflow.currentItemIndex = 0
-      finalizedWorkflow.workflow.currentItemTotal = finalizedWorkflow.masterStage.requestedCount
-      finalizedWorkflow.masterStage.completedCount = slotResults.filter((item) => item.generated).length
-      finalizedWorkflow.masterStage.cleanSuccessCount = slotResults.filter((item) => item.cleaned).length
-      finalizedWorkflow.masterStage.cleanFailedCount = slotResults.filter((item) => item.cleanFailed).length
-      finalizedWorkflow.workflow.failures = slotResults
-        .map((item) => item.failure)
-        .filter(Boolean) as AiStudioWorkflowFailureRecord[]
-
-      const finalStatus = finalizedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
-      task = await updateTaskPatch(finalizedTaskRecord.id, {
-        status: finalStatus,
-        metadata: writeWorkflowMetadata(finalizedTaskRecord, finalizedWorkflow),
-        promptExtra: finalizedWorkflow.masterStage.promptExtra,
-        templateId: finalizedWorkflow.masterStage.templateId,
-        outputCount: 1
-      })
-      await refresh()
-
-      if ((finalStatus === 'ready' || wasInterrupted) && !preparedNextDraftAtStart) {
-        await createTaskWithInputs({
-          primaryImagePath: null,
-          referenceImagePaths: [],
-          inheritFrom: task,
-          promptExtraOverride: '',
-          templateIdOverride: null
+        task = await updateTaskPatch(latestTask.id, {
+          status: 'running',
+          metadata: writeWorkflowMetadata(latestTask, loopWorkflow)
         })
+        await refresh()
       }
 
-      return true
-    } catch (error) {
-      wasInterrupted = isTaskInterruptedError(error)
-      const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
-      const latestWorkflow = readWorkflowMetadata(latestTask)
-      const failureMessage = wasInterrupted
-        ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-        : (error instanceof Error ? error.message : String(error))
-
-      replacePreviewSlotRuntimeStates(
-        latestTask.id,
-        Object.fromEntries(
-          Array.from({ length: latestWorkflow.masterStage.requestedCount }, (_, slotIndex) => [
-            slotIndex + 1,
-            {
-              status: 'failed',
-              message: failureMessage
-            } satisfies PreviewSlotRuntimeState
-          ])
-        )
-      )
-
-      latestWorkflow.workflow.activeStage = 'master-selecting'
-      latestWorkflow.workflow.currentItemKind = 'idle'
-      latestWorkflow.workflow.currentItemIndex = 0
-      latestWorkflow.workflow.currentItemTotal = latestWorkflow.masterStage.requestedCount
-      latestWorkflow.masterStage.completedCount = 0
-      latestWorkflow.masterStage.cleanSuccessCount = 0
-      latestWorkflow.masterStage.cleanFailedCount = 0
-      latestWorkflow.workflow.failures = Array.from(
-        { length: latestWorkflow.masterStage.requestedCount },
-        (_, slotIndex) =>
-          makeWorkflowFailureRecord('master-generate', slotIndex + 1, failureMessage)
-      )
-
-      const finalStatus = latestWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
-      task = await updateTaskPatch(latestTask.id, {
-        status: finalStatus,
-        metadata: writeWorkflowMetadata(latestTask, latestWorkflow),
-        promptExtra: latestWorkflow.masterStage.promptExtra,
-        templateId: latestWorkflow.masterStage.templateId,
-        outputCount: 1
-      })
-      await refresh()
-
-      if ((finalStatus === 'ready' || wasInterrupted) && !preparedNextDraftAtStart) {
-        await createTaskWithInputs({
-          primaryImagePath: null,
-          referenceImagePaths: [],
-          inheritFrom: task,
-          promptExtraOverride: '',
-          templateIdOverride: null
-        })
-      }
-
-      return true
-    } finally {
       clearTaskInterrupt(task.id)
-      clearPreviewSlotRuntimeStates(task.id)
-    }
-  }, [
-    activeTask,
-    aiConfig.aiApiKey,
-    clearPreviewSlotRuntimeStates,
-    clearTaskInterrupt,
-    createTaskWithInputs,
-    defaultModel,
-    executeRunToTerminal,
-    isTaskInterruptRequested,
-    loadLatestTaskRecord,
-    patchPreviewSlotRuntimeState,
-    processMasterCleanup,
-    refresh,
-    replacePreviewSlotRuntimeStates,
-    taskViews,
-    updateTaskPatch,
-    upsertAssetsRemote
-  ])
+
+      const completedTask = await window.api.cms.aiStudio.task
+        .list({ ids: [task.id], limit: 1 })
+        .then((rows) => rows[0])
+      if (!completedTask) return null
+      const completedRecord = coerceTaskRecord(completedTask)
+      const completedWorkflow = readWorkflowMetadata(completedRecord)
+      completedWorkflow.workflow.activeStage = 'master-selecting'
+      completedWorkflow.workflow.currentItemKind = 'idle'
+      completedWorkflow.workflow.currentItemIndex = 0
+      completedWorkflow.workflow.currentItemTotal = completedWorkflow.masterStage.requestedCount
+      const finalStatus = completedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
+      const finalizedTask = await updateTaskPatch(completedRecord.id, {
+        status: finalStatus,
+        metadata: writeWorkflowMetadata(completedRecord, completedWorkflow),
+        promptExtra: completedWorkflow.masterStage.promptExtra,
+        templateId: completedWorkflow.masterStage.templateId,
+        outputCount: 1
+      })
+      await refresh()
+
+      if (finalStatus === 'ready' || wasInterrupted) {
+        await createTaskWithInputs({
+          primaryImagePath: null,
+          referenceImagePaths: [],
+          inheritFrom: finalizedTask,
+          promptExtraOverride: '',
+          templateIdOverride: null
+        })
+      }
+
+      return true
+    },
+    [
+      activeTask,
+      aiConfig.aiApiKey,
+      createTaskWithInputs,
+      defaultModel,
+      executeRunToTerminal,
+      loadLatestTaskRecord,
+      processMasterCleanup,
+      refresh,
+      taskViews,
+      updateTaskPatch,
+      upsertAssetsRemote
+    ]
+  )
 
   const retryMasterCleanup = useCallback(
     async (assetId: string) => {
@@ -2548,7 +3565,14 @@ function useAiStudioState() {
       })
       await refresh()
     },
-    [activeTask, loadLatestTaskRecord, masterRawAssets, processMasterCleanup, refresh, updateTaskPatch]
+    [
+      activeTask,
+      loadLatestTaskRecord,
+      masterRawAssets,
+      processMasterCleanup,
+      refresh,
+      updateTaskPatch
+    ]
   )
 
   const retryMasterGeneration = useCallback(
@@ -2626,7 +3650,9 @@ function useAiStudioState() {
               const message = error instanceof Error ? error.message : String(error)
               workingWorkflow.masterStage.cleanFailedCount += 1
               workingWorkflow.workflow.failures.push(
-                makeWorkflowFailureRecord('master-clean', sequenceIndex, message, { assetId: rawAsset.id })
+                makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
+                  assetId: rawAsset.id
+                })
               )
               await upsertAssetsRemote([
                 {
@@ -2652,7 +3678,8 @@ function useAiStudioState() {
           }
         } else {
           workingWorkflow.workflow.failures = workingWorkflow.workflow.failures.filter(
-            (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
+            (item) =>
+              !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
           )
           workingWorkflow.workflow.failures.push(
             makeWorkflowFailureRecord(
@@ -2714,13 +3741,17 @@ function useAiStudioState() {
       if (!activeTask) return
       const target = masterCleanAssets.find((asset) => asset.id === assetId)
       if (!target) return
-      await patchWorkflowMetadata(activeTask, (draft) => {
-        draft.workflow.currentAiMasterAssetId = target.id
-        draft.workflow.activeStage = 'child-ready'
-        draft.workflow.currentItemKind = 'idle'
-        draft.workflow.currentItemIndex = 0
-        draft.workflow.currentItemTotal = draft.childStage.requestedCount
-      }, { status: 'ready' })
+      await patchWorkflowMetadata(
+        activeTask,
+        (draft) => {
+          draft.workflow.currentAiMasterAssetId = target.id
+          draft.workflow.activeStage = 'child-ready'
+          draft.workflow.currentItemKind = 'idle'
+          draft.workflow.currentItemIndex = 0
+          draft.workflow.currentItemTotal = draft.childStage.requestedCount
+        },
+        { status: 'ready' }
+      )
       await refresh()
     },
     [activeTask, masterCleanAssets, patchWorkflowMetadata, refresh]
@@ -2738,9 +3769,14 @@ function useAiStudioState() {
       throw new Error('[AI Studio] 请先为子图阶段选择模板。')
     }
     if (childOutputAssets.length > 0) {
-      throw new Error('[AI Studio] 当前任务已有子图结果，本版 MVP 暂不支持在同一任务内重复生成子图。')
+      throw new Error(
+        '[AI Studio] 当前任务已有子图结果，本版 MVP 暂不支持在同一任务内重复生成子图。'
+      )
     }
-    const variantList = normalizeVariantLines(workflow.childStage.variantLines).slice(0, workflow.childStage.requestedCount)
+    const variantList = normalizeVariantLines(workflow.childStage.variantLines).slice(
+      0,
+      workflow.childStage.requestedCount
+    )
     if (variantList.length < workflow.childStage.requestedCount) {
       throw new Error('[AI Studio] Variant 数量不足，请先补齐对应行数。')
     }
@@ -2771,7 +3807,9 @@ function useAiStudioState() {
     for (let index = 0; index < variantList.length; index += 1) {
       const sequenceIndex = index + 1
       const variantLine = variantList[index]
-      const latestTaskRecord = await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0])
+      const latestTaskRecord = await window.api.cms.aiStudio.task
+        .list({ ids: [task.id], limit: 1 })
+        .then((rows) => rows[0])
       if (!latestTaskRecord) break
       const latestTask = coerceTaskRecord(latestTaskRecord)
       const latestWorkflow = readWorkflowMetadata(latestTask)
@@ -2779,7 +3817,10 @@ function useAiStudioState() {
       latestWorkflow.workflow.currentItemKind = 'child-generate'
       latestWorkflow.workflow.currentItemIndex = sequenceIndex
       latestWorkflow.workflow.currentItemTotal = latestWorkflow.childStage.requestedCount
-      const currentPromptExtra = buildChildPromptExtra(latestWorkflow.childStage.promptExtra, variantLine)
+      const currentPromptExtra = buildChildPromptExtra(
+        latestWorkflow.childStage.promptExtra,
+        variantLine
+      )
       task = await updateTaskPatch(latestTask.id, {
         templateId: latestWorkflow.childStage.templateId,
         promptExtra: currentPromptExtra,
@@ -2790,7 +3831,11 @@ function useAiStudioState() {
 
       try {
         const result = await executeRunToTerminal(latestTask.id)
-        if (result.status === 'succeeded' && Array.isArray(result.outputs) && result.outputs.length > 0) {
+        if (
+          result.status === 'succeeded' &&
+          Array.isArray(result.outputs) &&
+          result.outputs.length > 0
+        ) {
           await upsertAssetsRemote(
             result.outputs.map((asset) => ({
               id: asset.id,
@@ -2827,7 +3872,11 @@ function useAiStudioState() {
       } catch (error) {
         latestWorkflow.childStage.failedCount += 1
         latestWorkflow.workflow.failures.push(
-          makeWorkflowFailureRecord('child-generate', sequenceIndex, error instanceof Error ? error.message : String(error))
+          makeWorkflowFailureRecord(
+            'child-generate',
+            sequenceIndex,
+            error instanceof Error ? error.message : String(error)
+          )
         )
       }
 
@@ -2841,7 +3890,9 @@ function useAiStudioState() {
       await refresh()
     }
 
-    const finalTaskRecord = await window.api.cms.aiStudio.task.list({ ids: [task.id], limit: 1 }).then((rows) => rows[0])
+    const finalTaskRecord = await window.api.cms.aiStudio.task
+      .list({ ids: [task.id], limit: 1 })
+      .then((rows) => rows[0])
     if (!finalTaskRecord) return null
     const finalTask = coerceTaskRecord(finalTaskRecord)
     const finalWorkflow = readWorkflowMetadata(finalTask)
@@ -2870,12 +3921,18 @@ function useAiStudioState() {
   ])
 
   const exceptionCount = useMemo(
-    () => taskViews.filter((task) => task.status === 'failed').length,
-    [taskViews]
+    () => capabilityTaskViews.filter((task) => task.status === 'failed').length,
+    [capabilityTaskViews]
   )
 
   return {
+    studioCapability,
+    setStudioCapability,
     templates: templateOptions,
+    videoProfiles,
+    videoMeta,
+    selectedVideoProfile,
+    videoMode: videoMeta.mode,
     selectedTemplate: selectedTemplateBase ?? selectedTemplate,
     selectedMasterTemplate,
     selectedChildTemplate,
@@ -2883,12 +3940,13 @@ function useAiStudioState() {
     visibleTasks,
     historyTasks,
     activeTask,
-    activeTaskId,
+    activeTaskId: activeTask?.id ?? activeTaskId,
     activeInputAssets,
     activeOutputAssets,
     masterRawAssets,
     masterCleanAssets,
     childOutputAssets,
+    videoOutputAssets,
     currentAiMasterAsset,
     activeSelectedOutputAssets,
     activeSelectedOutputIds,
@@ -2912,7 +3970,6 @@ function useAiStudioState() {
     workflowMeta,
     activeStage,
     stageProgress,
-    previewSlotRuntimeByTaskId,
     failureRecords,
     masterOutputCount,
     childOutputCount,
@@ -2939,6 +3996,8 @@ function useAiStudioState() {
     sendPooledOutputsToWorkshop,
     prepareNextDraftTask,
     useDispatchOutputAsReference,
+    useOutputAsVideoReference,
+    useOutputAsVideoSubjectReference,
     interruptActiveTask,
     seedDemoTask,
     assignPrimaryImage,
@@ -2960,7 +4019,20 @@ function useAiStudioState() {
     setMasterOutputCount,
     setChildOutputCount,
     setVariantLines,
+    setVideoMode,
+    setVideoProfileId,
+    setVideoProvider,
+    setVideoModel,
+    setVideoSubjectReference,
+    setVideoFirstFrame,
+    setVideoLastFrame,
+    swapVideoFrames,
+    setVideoAspectRatio,
+    setVideoResolution,
+    setVideoDuration,
+    setVideoOutputCount,
     startMasterWorkflow,
+    startVideoWorkflow,
     retryMasterCleanup,
     retryMasterGeneration,
     setCurrentAiMaster,
