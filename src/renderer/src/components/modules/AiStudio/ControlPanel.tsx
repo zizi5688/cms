@@ -29,6 +29,10 @@ import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore, type AiProviderProfile } from '@renderer/store/useCmsStore'
 
+import {
+  normalizeOutputCountDraftOnBlur,
+  parseOutputCountDraft
+} from './outputCountDraftHelpers'
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
 const VIDEO_MODE_OPTIONS = [
@@ -1668,6 +1672,13 @@ function ControlPanel({
       }
 
       if (isVideoStudio) {
+        const normalizedRequestedCount = parseOutputCountDraft(videoOutputCountDraft, {
+          fieldLabel: '输出条数',
+          min: 1,
+          max: 4
+        })
+        setVideoOutputCountDraft(String(normalizedRequestedCount))
+        await state.setVideoOutputCount(normalizedRequestedCount)
         await state.startVideoWorkflow({
           taskId: task?.id ?? null,
           promptText,
@@ -1680,7 +1691,14 @@ function ControlPanel({
       if (!state.primaryImagePath) {
         throw new Error('请先添加参考图。')
       }
-      const normalizedRequestedCount = Math.max(1, Math.floor(Number(imageOutputCountDraft) || 1))
+      const normalizedRequestedCount = parseOutputCountDraft(imageOutputCountDraft, {
+        fieldLabel: '输出张数',
+        min: 1
+      })
+      setImageOutputCountDraft(String(normalizedRequestedCount))
+      if (task) {
+        await state.setMasterOutputCount(normalizedRequestedCount)
+      }
       await state.startMasterWorkflow({
         taskId: task?.id ?? null,
         promptText,
@@ -1804,24 +1822,21 @@ function ControlPanel({
             <label className="flex w-[80px] min-w-[80px] shrink-0 flex-col gap-1">
               <span className={CONTROL_FIELD_LABEL_CLASS}>条数</span>
               <input
-                type="number"
-                min={1}
-                max={4}
-                step={1}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
                 value={videoOutputCountDraft}
-                onChange={(event) => {
-                  const rawValue = event.target.value
-                  setVideoOutputCountDraft(rawValue)
-                  void state.setVideoOutputCount(
-                    Math.max(1, Math.min(4, Math.floor(Number(rawValue) || 1)))
-                  )
-                }}
+                onChange={(event) => setVideoOutputCountDraft(event.target.value)}
                 onBlur={() => {
-                  const normalizedValue = Math.max(
-                    1,
-                    Math.min(4, Math.floor(Number(videoOutputCountDraft) || 1))
-                  )
-                  setVideoOutputCountDraft(String(normalizedValue))
+                  const normalizedValue = normalizeOutputCountDraftOnBlur(videoOutputCountDraft, {
+                    fieldLabel: '输出条数',
+                    min: 1,
+                    max: 4
+                  })
+                  setVideoOutputCountDraft(normalizedValue)
+                  if (/^\d+$/.test(String(normalizedValue))) {
+                    void state.setVideoOutputCount(Number.parseInt(normalizedValue, 10))
+                  }
                 }}
                 className={fieldClass}
               />
@@ -1834,21 +1849,20 @@ function ControlPanel({
             <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
               <span className={CONTROL_FIELD_LABEL_CLASS}>输出张数</span>
               <input
-                type="number"
-                min={1}
-                step={1}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
                 value={imageOutputCountDraft}
-                onChange={(event) => {
-                  const rawValue = event.target.value
-                  setImageOutputCountDraft(rawValue)
-                  void state.setMasterOutputCount(Math.max(1, Math.floor(Number(rawValue) || 1)))
-                }}
+                onChange={(event) => setImageOutputCountDraft(event.target.value)}
                 onBlur={() => {
-                  const normalizedValue = Math.max(
-                    1,
-                    Math.floor(Number(imageOutputCountDraft) || 1)
-                  )
-                  setImageOutputCountDraft(String(normalizedValue))
+                  const normalizedValue = normalizeOutputCountDraftOnBlur(imageOutputCountDraft, {
+                    fieldLabel: '输出张数',
+                    min: 1
+                  })
+                  setImageOutputCountDraft(normalizedValue)
+                  if (/^\d+$/.test(String(normalizedValue))) {
+                    void state.setMasterOutputCount(Number.parseInt(normalizedValue, 10))
+                  }
                 }}
                 className={fieldClass}
                 disabled={!task}
