@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
@@ -37,6 +37,8 @@ const VIDEO_DURATION_OPTIONS = [
   { value: 5, label: '5 秒' },
   { value: 8, label: '8 秒' }
 ] as const
+
+const CONTROL_FIELD_LABEL_CLASS = 'text-[11px] font-medium tracking-[0.04em] text-zinc-500'
 
 type ProviderConnectionPayload = {
   provider: string
@@ -139,6 +141,14 @@ function resolveModelVisual(modelName: string): {
     }
   }
 
+  if (normalized.includes('nano-banana')) {
+    return {
+      logoSrc: null,
+      badgeText: 'NB',
+      badgeClassName: 'bg-gradient-to-br from-lime-200 via-emerald-300 to-green-400 text-emerald-950'
+    }
+  }
+
   const fallbackText =
     normalized
       .split(/[^a-z0-9]+/i)
@@ -151,6 +161,192 @@ function resolveModelVisual(modelName: string): {
     badgeText: fallbackText,
     badgeClassName: 'bg-gradient-to-br from-sky-500 via-violet-500 to-fuchsia-500 text-white'
   }
+}
+
+function ModelTriggerButton({
+  label,
+  modelName,
+  isOpen,
+  onClick,
+  disabled
+}: {
+  label: string
+  modelName?: string
+  isOpen?: boolean
+  onClick: () => void
+  disabled?: boolean
+}): React.JSX.Element {
+  const triggerVisual = resolveModelVisual(modelName ?? '')
+  const hasModel = Boolean(String(modelName ?? '').trim())
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex h-8 w-full items-center justify-between rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-left text-[12px] transition hover:border-zinc-300 focus-visible:border-sky-400 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span className="flex min-w-0 items-center gap-2 pr-3">
+        {hasModel ? (
+          <span
+            className={cn(
+              'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
+              triggerVisual.badgeClassName
+            )}
+          >
+            {triggerVisual.logoSrc ? (
+              <img src={triggerVisual.logoSrc} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <span>{triggerVisual.badgeText}</span>
+            )}
+          </span>
+        ) : null}
+        <span className="min-w-0 truncate text-[12px] font-medium text-zinc-900">{label}</span>
+      </span>
+      <ChevronDown
+        className={cn('h-4 w-4 shrink-0 text-zinc-400 transition', isOpen && 'rotate-180')}
+      />
+    </button>
+  )
+}
+
+function ImageModelSelector({
+  value,
+  disabled,
+  onChange
+}: {
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void | Promise<void>
+}): React.JSX.Element {
+  const [isOpen, setIsOpen] = useState(false)
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const currentOption =
+    IMAGE_MODEL_OPTIONS.find((option) => option.value === value) ?? IMAGE_MODEL_OPTIONS[0] ?? null
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPanelStyle(null)
+      return
+    }
+
+    const updatePanelStyle = (): void => {
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const panelWidth = 260
+      const viewportPadding = 12
+      const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+      )
+      setPanelStyle({
+        left,
+        top: Math.max(viewportPadding, rect.top - 8),
+        width: panelWidth,
+        transform: 'translateY(-100%)'
+      })
+    }
+
+    updatePanelStyle()
+    window.addEventListener('resize', updatePanelStyle)
+    window.addEventListener('scroll', updatePanelStyle, true)
+    return () => {
+      window.removeEventListener('resize', updatePanelStyle)
+      window.removeEventListener('scroll', updatePanelStyle, true)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const handlePointerDown = (event: MouseEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (containerRef.current?.contains(target)) return
+      if (panelRef.current?.contains(target)) return
+      setIsOpen(false)
+    }
+
+    const handleEsc = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleEsc)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleEsc)
+    }
+  }, [isOpen])
+
+  return (
+    <label className="flex w-[148px] min-w-[148px] shrink-0 flex-col gap-1">
+      <span className={CONTROL_FIELD_LABEL_CLASS}>模型</span>
+      <div ref={containerRef} className="relative">
+        <ModelTriggerButton
+          label={currentOption?.label ?? '选择模型'}
+          modelName={currentOption?.value ?? ''}
+          isOpen={isOpen}
+          onClick={() => {
+            if (disabled || IMAGE_MODEL_OPTIONS.length === 0) return
+            setIsOpen((prev) => !prev)
+          }}
+          disabled={disabled || IMAGE_MODEL_OPTIONS.length === 0}
+        />
+
+        {isOpen && panelStyle
+          ? createPortal(
+              <div
+                ref={panelRef}
+                className="fixed z-[280] rounded-[20px] border border-zinc-200 bg-white/96 p-2 shadow-[0_20px_44px_rgba(15,23,42,0.18)] backdrop-blur-xl"
+                style={panelStyle}
+              >
+                <div className="grid gap-1">
+                  {IMAGE_MODEL_OPTIONS.map((option) => {
+                    const selected = option.value === (currentOption?.value ?? '')
+                    const modelVisual = resolveModelVisual(option.value)
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          void onChange(option.value)
+                          setIsOpen(false)
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-2 rounded-[16px] border px-3 py-2 text-left text-[12px] transition',
+                          selected
+                            ? 'border-zinc-900 bg-zinc-950 text-white'
+                            : 'border-zinc-200 bg-zinc-50 text-zinc-700 hover:border-zinc-300 hover:bg-white'
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
+                            modelVisual.badgeClassName
+                          )}
+                        >
+                          {modelVisual.logoSrc ? (
+                            <img src={modelVisual.logoSrc} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <span>{modelVisual.badgeText}</span>
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+                        {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>,
+              document.body
+            )
+          : null}
+      </div>
+    </label>
+  )
 }
 
 function VideoModelConfigurator({
@@ -475,7 +671,6 @@ function VideoModelConfigurator({
     }
   }
 
-  const triggerVisual = resolveModelVisual(currentModelName)
   const triggerLabel = currentModelName || (hasProviders ? '选择模型' : '新增模型供应商')
   const fieldClass =
     'h-10 rounded-[16px] border border-zinc-200 bg-zinc-50 px-3 text-[13px] text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-sky-400'
@@ -483,9 +678,11 @@ function VideoModelConfigurator({
   return (
     <>
       <label className="relative flex min-w-[198px] flex-[1.25] flex-col gap-1">
-        <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模型</span>
-        <button
-          type="button"
+        <span className={CONTROL_FIELD_LABEL_CLASS}>模型</span>
+        <ModelTriggerButton
+          label={triggerLabel}
+          modelName={currentModelName}
+          isOpen={isOpen}
           onClick={() => {
             if (isOpen) {
               setIsOpen(false)
@@ -493,31 +690,7 @@ function VideoModelConfigurator({
             }
             openConfigurator()
           }}
-          className="inline-flex h-8 w-full items-center justify-between rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-left text-[12px] transition hover:border-zinc-300 focus-visible:border-sky-400 focus-visible:outline-none"
-        >
-          <span className="flex min-w-0 items-center gap-2 pr-3">
-            {currentModelName ? (
-              <span
-                className={cn(
-                  'inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold',
-                  triggerVisual.badgeClassName
-                )}
-              >
-                {triggerVisual.logoSrc ? (
-                  <img src={triggerVisual.logoSrc} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <span>{triggerVisual.badgeText}</span>
-                )}
-              </span>
-            ) : null}
-            <span className="min-w-0 truncate text-[12px] font-medium text-zinc-900">
-              {triggerLabel}
-            </span>
-          </span>
-          <ChevronDown
-            className={cn('h-4 w-4 shrink-0 text-zinc-400 transition', isOpen && 'rotate-180')}
-          />
-        </button>
+        />
       </label>
 
       {isOpen
@@ -968,7 +1141,7 @@ function ControlPanel({
             <VideoModelConfigurator state={state} />
 
             <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模式</span>
+              <span className={CONTROL_FIELD_LABEL_CLASS}>模式</span>
               <select
                 value={currentVideoMeta.mode}
                 onChange={(event) => void state.setVideoMode(event.target.value as never)}
@@ -983,7 +1156,7 @@ function ControlPanel({
             </label>
 
             <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">比例</span>
+              <span className={CONTROL_FIELD_LABEL_CLASS}>比例</span>
               <select
                 value={currentVideoMeta.aspectRatio}
                 onChange={(event) => void state.setVideoAspectRatio(event.target.value as never)}
@@ -998,7 +1171,7 @@ function ControlPanel({
             </label>
 
             <label className="flex w-[88px] min-w-[88px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">清晰度</span>
+              <span className={CONTROL_FIELD_LABEL_CLASS}>清晰度</span>
               <select
                 value={currentVideoMeta.resolution}
                 onChange={(event) => void state.setVideoResolution(event.target.value as never)}
@@ -1013,7 +1186,7 @@ function ControlPanel({
             </label>
 
             <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">时长</span>
+              <span className={CONTROL_FIELD_LABEL_CLASS}>时长</span>
               <select
                 value={String(currentVideoMeta.duration)}
                 onChange={(event) => void state.setVideoDuration(Number(event.target.value) as never)}
@@ -1028,7 +1201,7 @@ function ControlPanel({
             </label>
 
             <label className="flex w-[80px] min-w-[80px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">条数</span>
+              <span className={CONTROL_FIELD_LABEL_CLASS}>条数</span>
               <input
                 type="number"
                 min={1}
@@ -1055,24 +1228,14 @@ function ControlPanel({
           </>
         ) : (
           <>
-            <label className="flex w-[112px] min-w-[112px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">模型</span>
-              <select
-                value={currentImageModel}
-                onChange={(event) => void state.setModel(event.target.value)}
-                className={fieldClass}
-                disabled={!task}
-              >
-                {IMAGE_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <ImageModelSelector
+              value={currentImageModel}
+              disabled={!task}
+              onChange={(value) => state.setModel(value)}
+            />
 
             <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
-              <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-400">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>
                 输出张数
               </span>
               <input

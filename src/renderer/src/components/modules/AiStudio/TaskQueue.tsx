@@ -686,7 +686,7 @@ function VideoInputCard({
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
 
   return (
-    <div className="group relative flex w-[78px] shrink-0 flex-col items-center gap-1.5">
+    <div className="group relative h-[104px] w-[78px] shrink-0">
       <button
         type="button"
         onClick={() => {
@@ -698,12 +698,14 @@ function VideoInputCard({
         }}
         disabled={disabled}
         className={cn(
-          'relative h-[104px] w-[78px] overflow-hidden rounded-[22px] border bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,244,245,0.92))] shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition',
+          'flex h-full w-full items-center justify-center overflow-hidden rounded-[22px] border bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,244,245,0.92))] shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition',
           asset
             ? 'border-zinc-200 hover:-translate-y-0.5 hover:border-zinc-300'
             : 'border-dashed border-zinc-300 text-zinc-400 hover:border-zinc-400 hover:text-zinc-700',
           disabled && 'cursor-wait opacity-70'
         )}
+        aria-label={asset ? `预览${title}` : `上传${title}`}
+        title={title}
       >
         {src ? (
           <img
@@ -714,15 +716,8 @@ function VideoInputCard({
             loading="lazy"
           />
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 text-zinc-400">
-            <ImagePlus className="h-4 w-4" />
-            <span className="text-[10px] font-medium">上传图片</span>
-          </div>
+          <ImagePlus className="h-5 w-5" />
         )}
-
-        <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(15,23,42,0.72))] px-1.5 py-1.5 text-center text-[10px] font-medium text-white">
-          {title}
-        </div>
       </button>
 
       {asset ? (

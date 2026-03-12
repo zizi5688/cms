@@ -213,7 +213,7 @@ function ThreadThumb({ asset }: { asset: AiStudioAssetRecord }): React.JSX.Eleme
   const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
 
   return (
-    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
+    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl bg-transparent">
       {src ? (
         <img
           src={src}
@@ -294,9 +294,7 @@ function PreviewStageTile({
     <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
       <div
         className={cn(
-          'relative overflow-hidden rounded-[28px] bg-white shadow-[0_18px_50px_rgba(15,23,42,0.08)] transition',
-          status === 'loading' && 'shadow-[0_22px_60px_rgba(15,23,42,0.12)]',
-          status === 'failed' && 'shadow-[0_18px_42px_rgba(244,63,94,0.08)]'
+          'relative overflow-hidden rounded-[28px] bg-transparent transition'
         )}
       >
         {status === 'loading' ? (
@@ -307,13 +305,13 @@ function PreviewStageTile({
                 'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))'
             }}
           >
-            <div className="h-full w-full rounded-[27px] bg-zinc-100/95" />
+            <div className="h-full w-full rounded-[27px] bg-transparent" />
           </div>
         ) : null}
 
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="block w-full text-left">
-            <div className="aspect-[3/4] overflow-hidden bg-zinc-100">
+            <div className="aspect-[3/4] overflow-hidden bg-transparent">
               <img
                 src={src}
                 alt={basename(asset?.filePath)}
@@ -324,14 +322,14 @@ function PreviewStageTile({
             </div>
           </button>
         ) : status === 'failed' ? (
-          <div className="relative aspect-[3/4] bg-[linear-gradient(180deg,rgba(250,250,250,1),rgba(244,244,245,1))]">
+          <div className="relative aspect-[3/4] bg-transparent">
             <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
             <div className="flex h-full items-center justify-center px-5 text-center text-sm font-medium leading-6 text-zinc-500">
               {statusText || '生成失败'}
             </div>
           </div>
         ) : (
-          <div className="aspect-[3/4] bg-[linear-gradient(180deg,rgba(244,244,245,0.96),rgba(228,228,231,0.9))]" />
+          <div className="aspect-[3/4] bg-transparent" />
         )}
 
         {showPoolAction || showReferenceAction ? (
@@ -718,7 +716,7 @@ function VideoPreviewTile({
 
   return (
     <div className="flex shrink-0 flex-col gap-2" style={style}>
-      <div className="group/tile relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
+      <div className="group/tile relative overflow-hidden rounded-[28px] bg-transparent">
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="relative block w-full text-left">
             <div className="relative aspect-[9/16] overflow-hidden bg-black">
@@ -739,7 +737,7 @@ function VideoPreviewTile({
             </div>
           </button>
         ) : status === 'failed' ? (
-          <div className="relative aspect-[9/16] bg-[linear-gradient(180deg,rgba(250,250,250,1),rgba(244,244,245,1))]">
+          <div className="relative aspect-[9/16] bg-transparent">
             <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
             <div className="flex h-full items-center justify-center px-5">
               <div className="flex max-w-full flex-col items-center gap-2 text-center">
@@ -755,7 +753,7 @@ function VideoPreviewTile({
             </div>
           </div>
         ) : (
-          <div className="relative aspect-[9/16] bg-[linear-gradient(180deg,rgba(244,244,245,0.96),rgba(228,228,231,0.9))]">
+          <div className="relative aspect-[9/16] bg-transparent">
             <div className="absolute inset-0 flex items-center justify-center text-zinc-400">
               <Clapperboard className="h-6 w-6" />
             </div>
@@ -954,7 +952,13 @@ function VideoHistoryTaskSection({
   )
 }
 
-function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
+function ResultPanel({
+  state,
+  bottomSpacerHeight = 0
+}: {
+  state: UseAiStudioStateResult
+  bottomSpacerHeight?: number
+}): React.JSX.Element {
   const [lightboxAsset, setLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
   const isVideoStudio = state.studioCapability === 'video'
   const historyTailRef = useRef<HTMLDivElement | null>(null)
@@ -1014,6 +1018,7 @@ function ResultPanel({ state }: { state: UseAiStudioStateResult }): React.JSX.El
             />
           )
         )}
+        <div aria-hidden="true" className="w-full shrink-0" style={{ height: `${Math.max(0, bottomSpacerHeight)}px` }} />
         <div ref={historyTailRef} aria-hidden="true" className="h-px w-full shrink-0" />
       </div>
 
