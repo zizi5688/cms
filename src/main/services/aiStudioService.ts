@@ -6,6 +6,7 @@ import { basename, extname, join, resolve } from 'path'
 import ffmpeg from 'fluent-ffmpeg'
 import ffprobeStaticImport from 'ffprobe-static'
 
+import { resolveAiStudioProviderConfig } from './aiStudioProviderConfigHelpers'
 import { buildGeminiGenerationConfig, resolveImageSizeForModel } from './aiStudioRequestPayloadHelpers'
 import { SqliteService } from './sqliteService'
 
@@ -172,21 +173,6 @@ type AiStudioProviderConfig = {
   providerProfiles?: unknown
 }
 
-type AiStudioProviderModelProfile = {
-  id: string
-  modelName: string
-  endpointPath: string
-}
-
-type AiStudioProviderProfile = {
-  id: string
-  providerName: string
-  baseUrl: string
-  apiKey: string
-  models: AiStudioProviderModelProfile[]
-  defaultModelId: string | null
-}
-
 type DbConnection = {
   prepare: (sql: string) => {
     run: (...args: unknown[]) => unknown
@@ -340,82 +326,6 @@ function parseJsonStringArray(value: unknown): string[] {
   } catch {
     return []
   }
-}
-
-function normalizeProviderProfiles(value: unknown): AiStudioProviderProfile[] {
-  if (!Array.isArray(value)) return []
-
-  const profiles: AiStudioProviderProfile[] = []
-  value.forEach((item, index) => {
-    const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
-    const providerName = normalizeText(record.providerName ?? record.name)
-    if (!providerName) return
-
-    const models: AiStudioProviderModelProfile[] = []
-    if (Array.isArray(record.models)) {
-      record.models.forEach((modelItem, modelIndex) => {
-        const modelRecord =
-          modelItem && typeof modelItem === 'object' ? (modelItem as Record<string, unknown>) : {}
-        const modelName = normalizeText(modelRecord.modelName ?? modelRecord.name)
-        if (!modelName) return
-        models.push({
-          id: normalizeText(modelRecord.id) || `${providerName}:${modelIndex}`,
-          modelName,
-          endpointPath: normalizeText(modelRecord.endpointPath)
-        })
-      })
-    }
-
-    const requestedDefaultModelId = normalizeNullableText(record.defaultModelId)
-    profiles.push({
-      id: normalizeText(record.id) || `${providerName}:${index}`,
-      providerName,
-      baseUrl: normalizeText(record.baseUrl),
-      apiKey: normalizeText(record.apiKey),
-      models,
-      defaultModelId:
-        requestedDefaultModelId && models.some((model) => model.id === requestedDefaultModelId)
-          ? requestedDefaultModelId
-          : (models[0]?.id ?? null)
-    })
-  })
-
-  return profiles
-}
-
-function findProviderProfile(
-  profiles: AiStudioProviderProfile[],
-  providerName: string
-): AiStudioProviderProfile | null {
-  const normalized = normalizeText(providerName).toLowerCase()
-  if (!normalized) return null
-  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? null
-}
-
-function findProviderModelProfile(
-  providerProfile: AiStudioProviderProfile | null,
-  modelName: string
-): AiStudioProviderModelProfile | null {
-  if (!providerProfile) return null
-  const normalized = normalizeText(modelName).toLowerCase()
-  if (!normalized) return null
-  return (
-    providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
-  )
-}
-
-function resolveProviderModelProfile(
-  providerProfile: AiStudioProviderProfile | null,
-  preferredModelName: string
-): AiStudioProviderModelProfile | null {
-  const preferred = findProviderModelProfile(providerProfile, preferredModelName)
-  if (preferred) return preferred
-  if (providerProfile?.defaultModelId) {
-    return (
-      providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
-    )
-  }
-  return providerProfile?.models[0] ?? null
 }
 
 function toJson(value: unknown): string {
@@ -1533,43 +1443,7 @@ export class AiStudioService {
   }
 
   private getProviderConfig(task?: AiStudioTaskRecord): AiStudioProviderConfig {
-    const provided = asObject(this.resolveProviderConfig())
-    const fallback: AiStudioProviderConfig = {
-      provider: normalizeText(provided.provider) || 'grsai',
-      baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl)),
-      apiKey: normalizeText(provided.apiKey),
-      defaultImageModel: resolveConfiguredModel(provided.defaultImageModel, DEFAULT_IMAGE_MODEL),
-      endpointPath: normalizeText(provided.endpointPath),
-      providerProfiles: provided.providerProfiles
-    }
-
-    if (!task || readTaskCapability(task) !== 'video') {
-      return fallback
-    }
-
-    const providerProfiles = normalizeProviderProfiles(provided.providerProfiles)
-    const taskProviderName = normalizeText(task.provider)
-    const providerProfile = findProviderProfile(providerProfiles, taskProviderName)
-    if (!providerProfile) {
-      return {
-        ...fallback,
-        provider: taskProviderName || fallback.provider,
-        defaultImageModel: resolveConfiguredModel(task.model, fallback.defaultImageModel)
-      }
-    }
-
-    const modelProfile = resolveProviderModelProfile(providerProfile, task.model)
-    return {
-      provider: providerProfile.providerName,
-      baseUrl: sanitizeBaseUrl(providerProfile.baseUrl),
-      apiKey: normalizeText(providerProfile.apiKey),
-      defaultImageModel: resolveConfiguredModel(
-        modelProfile?.modelName ?? task.model,
-        fallback.defaultImageModel
-      ),
-      endpointPath: normalizeText(modelProfile?.endpointPath) || fallback.endpointPath,
-      providerProfiles: provided.providerProfiles
-    }
+    return resolveAiStudioProviderConfig(asObject(this.resolveProviderConfig()), task ?? null)
   }
 
   private async requestProvider(
@@ -1744,7 +1618,7 @@ export class AiStudioService {
       throw new Error('[AI Studio] 请先设置主图后再开始生成。')
     }
 
-    const config = this.getProviderConfig()
+    const config = this.getProviderConfig(task)
     const template = this.getTemplateById(task.templateId)
     const prompt = resolvePrompt(task, template)
     const model = resolveConfiguredModel(
@@ -1908,9 +1782,11 @@ export class AiStudioService {
     requestSnapshot: Record<string, unknown>,
     errorMessage: string
   ): Promise<void> {
+    const task = this.getTaskOrThrow(taskId)
+    const config = this.getProviderConfig(task)
     await this.recordRunAttempt({
       taskId,
-      provider: this.getProviderConfig().provider,
+      provider: config.provider,
       status: 'failed',
       billedState: 'not_billable',
       requestPayload: requestSnapshot,
@@ -2188,7 +2064,8 @@ export class AiStudioService {
   }
 
   async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
-    const config = this.getProviderConfig()
+    const task = this.getTaskOrThrow(taskId)
+    const config = this.getProviderConfig(task)
     const context = await this.buildSubmitContext(taskId)
     const priceSnapshot = await this.resolvePriceSnapshot(context.model)
     const submitApiPath = config.endpointPath || GRSAI_DRAW_PATH
@@ -2196,7 +2073,9 @@ export class AiStudioService {
     const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(submitApiPath)
 
     try {
-      const response = await this.requestProvider(submitApiPath, context.requestPayload)
+      const response = await this.requestProvider(submitApiPath, context.requestPayload, {
+        providerConfig: config
+      })
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       const directResultItems = extractResultItems(response.payload)
 
