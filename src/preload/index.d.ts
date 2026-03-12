@@ -318,6 +318,7 @@ declare global {
   type AiStudioTemplateRecord = {
     id: string
     provider: string
+    capability: 'image' | 'video'
     name: string
     promptText: string
     config: Record<string, unknown>
@@ -827,10 +828,11 @@ declare global {
           }>
         }
         template: {
-          list: () => Promise<AiStudioTemplateRecord[]>
+          list: (payload?: { capability?: 'image' | 'video' }) => Promise<AiStudioTemplateRecord[]>
           upsert: (payload: {
             id?: string
             provider?: string
+            capability?: 'image' | 'video'
             name: string
             promptText?: string
             config?: Record<string, unknown>

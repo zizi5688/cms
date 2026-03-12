@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
-import { Check, Clapperboard, ImagePlus, Play, Plus, Sparkles, X } from 'lucide-react'
+import { Check, Clapperboard, ImageMinus, ImagePlus, Play, Plus, Sparkles, X } from 'lucide-react'
 
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
@@ -272,6 +272,7 @@ function PreviewStageTile({
   onTogglePool,
   pooled,
   onUseAsReference,
+  onGenerateVideo,
   referenceApplied,
   style
 }: {
@@ -282,6 +283,7 @@ function PreviewStageTile({
   onTogglePool?: () => void
   pooled?: boolean
   onUseAsReference?: () => void
+  onGenerateVideo?: () => void
   referenceApplied?: boolean
   style?: React.CSSProperties
 }): React.JSX.Element {
@@ -289,6 +291,7 @@ function PreviewStageTile({
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
   const showReferenceAction = Boolean(asset && onUseAsReference)
   const showPoolAction = Boolean(asset && onTogglePool)
+  const showGenerateVideoAction = Boolean(asset && onGenerateVideo)
 
   return (
     <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
@@ -365,6 +368,16 @@ function PreviewStageTile({
             ) : null}
           </div>
         ) : null}
+
+        {showGenerateVideoAction ? (
+          <div className="pointer-events-none absolute bottom-3 right-3 z-10 opacity-0 transition duration-200 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100">
+            <PreviewActionButton
+              icon={<Clapperboard className="h-3.5 w-3.5" />}
+              label="生成视频"
+              onClick={onGenerateVideo!}
+            />
+          </div>
+        ) : null}
       </div>
 
       {status !== 'failed' && statusText ? (
@@ -420,6 +433,10 @@ function HistoryTaskSection({
       ),
     [task]
   )
+  const hasDispatchOutputs = generatedAssets.length > 0
+  const selectedDispatchOutputCount = generatedAssets.filter((asset) => asset.selected).length
+  const areAllDispatchOutputsPooled =
+    hasDispatchOutputs && selectedDispatchOutputCount >= generatedAssets.length
   const masterCleanAssets = useMemo(
     () => task.outputAssets.filter((asset) => asset.role === MASTER_CLEAN_ROLE),
     [task.outputAssets]
@@ -523,6 +540,30 @@ function HistoryTaskSection({
     }
   }
 
+  const handleGenerateVideo = async (asset: AiStudioAssetRecord): Promise<void> => {
+    try {
+      await state.useOutputAsVideoSubjectReference(asset.filePath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 切换到视频生成失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleBatchPoolForTask = async (): Promise<void> => {
+    try {
+      if (areAllDispatchOutputsPooled) {
+        await state.clearSelectedDispatchOutputsForTask(task.id)
+        return
+      }
+      await state.selectAllDispatchOutputsForTask(task.id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 批量加入图池失败：${message}`)
+      window.alert(message)
+    }
+  }
+
   if (previewSlots.length === 0 && !currentAiMasterAsset && failureRecords.length === 0) {
     return (
       <section className="flex min-w-0 flex-col gap-4">
@@ -532,8 +573,24 @@ function HistoryTaskSection({
               <ThreadThumb key={asset.id} asset={asset} />
             ))}
           </div>
-          <div className="min-w-0 pt-1">
-            <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
+          <div className="flex min-w-0 flex-1 items-start justify-between gap-3 pt-1">
+            <div className="min-w-0 text-[15px] font-medium leading-7 text-zinc-900">
+              {promptExcerpt}
+            </div>
+            {hasDispatchOutputs ? (
+              <button
+                type="button"
+                onClick={() => void handleBatchPoolForTask()}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-zinc-950 bg-white px-4 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] transition hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
+              >
+                {areAllDispatchOutputsPooled ? (
+                  <ImageMinus className="h-3.5 w-3.5" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                <span>{areAllDispatchOutputsPooled ? '移出图池' : '批量加入图池'}</span>
+              </button>
+            ) : null}
           </div>
         </div>
       </section>
@@ -548,8 +605,24 @@ function HistoryTaskSection({
             <ThreadThumb key={asset.id} asset={asset} />
           ))}
         </div>
-        <div className="min-w-0 pt-1">
-          <div className="text-[15px] font-medium leading-7 text-zinc-900">{promptExcerpt}</div>
+        <div className="flex min-w-0 flex-1 items-start justify-between gap-3 pt-1">
+          <div className="min-w-0 text-[15px] font-medium leading-7 text-zinc-900">
+            {promptExcerpt}
+          </div>
+          {hasDispatchOutputs ? (
+            <button
+              type="button"
+              onClick={() => void handleBatchPoolForTask()}
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-zinc-950 bg-white px-4 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] transition hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
+            >
+              {areAllDispatchOutputsPooled ? (
+                <ImageMinus className="h-3.5 w-3.5" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
+              <span>{areAllDispatchOutputsPooled ? '移出图池' : '批量加入图池'}</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -578,6 +651,9 @@ function HistoryTaskSection({
                     ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord)
                     : undefined
                 }
+                onGenerateVideo={
+                  slot.asset ? () => void handleGenerateVideo(slot.asset as AiStudioAssetRecord) : undefined
+                }
                 referenceApplied={
                   slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false
                 }
@@ -593,6 +669,7 @@ function HistoryTaskSection({
               status="ready"
               style={{ width: 'min(248px, 100%)' }}
               onOpen={() => onOpenAsset(currentAiMasterAsset)}
+              onGenerateVideo={() => void handleGenerateVideo(currentAiMasterAsset)}
             />
           </div>
         </div>
@@ -963,20 +1040,22 @@ function ResultPanel({
   const isVideoStudio = state.studioCapability === 'video'
   const historyTailRef = useRef<HTMLDivElement | null>(null)
   const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
-  const latestRunningHistoryKey =
-    latestHistoryTask && latestHistoryTask.status === 'running' ? `${latestHistoryTask.id}:running` : ''
-  const previousLatestRunningHistoryKeyRef = useRef('')
+  const latestRevealHistoryKey =
+    isVideoStudio && latestHistoryTask
+      ? `${state.studioCapability}:${state.historyTasks.length}:${latestHistoryTask.id}:${latestHistoryTask.updatedAt}`
+      : ''
+  const previousLatestRevealHistoryKeyRef = useRef('')
 
   useLayoutEffect(() => {
     if (!isVideoStudio) return
-    if (!latestRunningHistoryKey) {
-      previousLatestRunningHistoryKeyRef.current = ''
+    if (!latestRevealHistoryKey) {
+      previousLatestRevealHistoryKeyRef.current = ''
       return
     }
-    if (previousLatestRunningHistoryKeyRef.current === latestRunningHistoryKey) return
-    previousLatestRunningHistoryKeyRef.current = latestRunningHistoryKey
+    if (previousLatestRevealHistoryKeyRef.current === latestRevealHistoryKey) return
+    previousLatestRevealHistoryKeyRef.current = latestRevealHistoryKey
     historyTailRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-  }, [isVideoStudio, latestRunningHistoryKey])
+  }, [isVideoStudio, latestRevealHistoryKey])
 
   if (state.historyTasks.length === 0) {
     return isVideoStudio ? (

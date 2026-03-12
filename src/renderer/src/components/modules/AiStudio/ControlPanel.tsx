@@ -115,6 +115,76 @@ function PoolPreviewThumb({
   )
 }
 
+function PooledOutputPopover({
+  anchorRef,
+  open,
+  assets,
+  onRemove,
+  onMouseEnter,
+  onMouseLeave
+}: {
+  anchorRef: React.RefObject<HTMLDivElement | null>
+  open: boolean
+  assets: AiStudioAssetRecord[]
+  onRemove: (asset: AiStudioAssetRecord) => void
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}): React.JSX.Element | null {
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPanelStyle(null)
+      return
+    }
+
+    const updatePanelStyle = (): void => {
+      const rect = anchorRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const panelWidth = 272
+      const viewportPadding = 12
+      const left = Math.min(
+        Math.max(viewportPadding, rect.right - panelWidth),
+        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+      )
+      setPanelStyle({
+        left,
+        top: Math.max(viewportPadding, rect.top - 8),
+        width: panelWidth,
+        transform: 'translateY(-100%)'
+      })
+    }
+
+    updatePanelStyle()
+    window.addEventListener('resize', updatePanelStyle)
+    window.addEventListener('scroll', updatePanelStyle, true)
+    return () => {
+      window.removeEventListener('resize', updatePanelStyle)
+      window.removeEventListener('scroll', updatePanelStyle, true)
+    }
+  }, [anchorRef, assets.length, open])
+
+  if (!open || !panelStyle || assets.length === 0 || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div
+      className="fixed z-[260] pb-2"
+      style={panelStyle}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <div className="rounded-[20px] border border-zinc-200 bg-white p-2.5 shadow-[0_18px_40px_rgba(15,23,42,0.16)]">
+        <div className="flex w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          {assets.map((asset) => (
+            <PoolPreviewThumb key={asset.id} asset={asset} onRemove={onRemove} />
+          ))}
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 function createProviderProfile(providerName: string, baseUrl: string, apiKey: string): AiProviderProfile {
   return {
     id: crypto.randomUUID(),
@@ -1069,9 +1139,12 @@ function ControlPanel({
   const isRunning = task?.status === 'running'
   const isInterrupting = task ? state.interruptingTaskIds.includes(task.id) : false
   const actionLabel = isRunning ? (isInterrupting ? '中断中...' : '中断任务') : '开始生成'
+  const poolTriggerRef = useRef<HTMLDivElement | null>(null)
+  const poolCloseTimerRef = useRef<number | null>(null)
 
   const [imageOutputCountDraft, setImageOutputCountDraft] = useState(String(requestedImageCount))
   const [videoOutputCountDraft, setVideoOutputCountDraft] = useState(String(requestedVideoCount))
+  const [isPoolPopoverOpen, setIsPoolPopoverOpen] = useState(false)
 
   useEffect(() => {
     setImageOutputCountDraft(String(requestedImageCount))
@@ -1080,6 +1153,19 @@ function ControlPanel({
   useEffect(() => {
     setVideoOutputCountDraft(String(requestedVideoCount))
   }, [requestedVideoCount, task?.id, state.studioCapability])
+
+  useEffect(() => {
+    if (state.pooledOutputCount > 0) return
+    setIsPoolPopoverOpen(false)
+  }, [state.pooledOutputCount])
+
+  useEffect(
+    () => () => {
+      if (poolCloseTimerRef.current === null) return
+      window.clearTimeout(poolCloseTimerRef.current)
+    },
+    []
+  )
 
   const handleGenerate = async (): Promise<void> => {
     try {
@@ -1126,6 +1212,26 @@ function ControlPanel({
       addLog(`[AI Studio] 发送图池失败：${message}`)
       window.alert(message)
     }
+  }
+
+  const clearPoolCloseTimer = (): void => {
+    if (poolCloseTimerRef.current === null) return
+    window.clearTimeout(poolCloseTimerRef.current)
+    poolCloseTimerRef.current = null
+  }
+
+  const openPoolPopover = (): void => {
+    clearPoolCloseTimer()
+    if (state.pooledOutputCount <= 0) return
+    setIsPoolPopoverOpen(true)
+  }
+
+  const scheduleClosePoolPopover = (): void => {
+    clearPoolCloseTimer()
+    poolCloseTimerRef.current = window.setTimeout(() => {
+      setIsPoolPopoverOpen(false)
+      poolCloseTimerRef.current = null
+    }, 90)
   }
 
   const actionButtonClass =
@@ -1261,27 +1367,14 @@ function ControlPanel({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
-        <div className="group/pool relative z-[120] shrink-0">
-          {state.pooledOutputCount > 0 ? (
-            <div className="pointer-events-none absolute bottom-full right-0 z-[140] mb-1 translate-y-1 opacity-0 transition duration-150 group-hover/pool:pointer-events-auto group-hover/pool:translate-y-0 group-hover/pool:opacity-100 group-focus-within/pool:pointer-events-auto group-focus-within/pool:translate-y-0 group-focus-within/pool:opacity-100">
-              <div className="rounded-[20px] border border-zinc-200 bg-white p-2.5 shadow-[0_18px_40px_rgba(15,23,42,0.16)]">
-                <div className="flex w-[248px] gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                  {state.pooledOutputAssets.map((asset) => (
-                    <PoolPreviewThumb
-                      key={asset.id}
-                      asset={asset}
-                      onRemove={(targetAsset) =>
-                        void state.toggleDispatchOutputPoolForTask(
-                          targetAsset.taskId,
-                          targetAsset.id
-                        )
-                      }
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : null}
+        <div
+          ref={poolTriggerRef}
+          className="relative z-[120] shrink-0"
+          onMouseEnter={openPoolPopover}
+          onMouseLeave={scheduleClosePoolPopover}
+          onFocusCapture={openPoolPopover}
+          onBlurCapture={scheduleClosePoolPopover}
+        >
           <Button
             type="button"
             className={cn(actionButtonClass, 'gap-1.5')}
@@ -1297,6 +1390,17 @@ function ControlPanel({
             ) : null}
           </Button>
         </div>
+
+        <PooledOutputPopover
+          anchorRef={poolTriggerRef}
+          open={state.pooledOutputCount > 0 && isPoolPopoverOpen}
+          assets={state.pooledOutputAssets}
+          onRemove={(targetAsset) =>
+            void state.toggleDispatchOutputPoolForTask(targetAsset.taskId, targetAsset.id)
+          }
+          onMouseEnter={openPoolPopover}
+          onMouseLeave={scheduleClosePoolPopover}
+        />
 
         <Button
           type="button"

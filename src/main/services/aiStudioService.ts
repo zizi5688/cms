@@ -11,6 +11,7 @@ import { SqliteService } from './sqliteService'
 export type AiStudioTemplateRecord = {
   id: string
   provider: string
+  capability: 'image' | 'video'
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -1302,6 +1303,10 @@ type AiStudioVideoMetadataRecord = {
   outputCount: number
 }
 
+function normalizeTemplateCapability(value: unknown): 'image' | 'video' {
+  return value === 'video' ? 'video' : 'image'
+}
+
 function readTaskCapability(task: Pick<AiStudioTaskRecord, 'metadata'>): 'image' | 'video' {
   const metadata = parseJsonObject(task.metadata)
   return metadata.capability === 'video' ? 'video' : 'image'
@@ -1375,6 +1380,7 @@ function mapTemplateRow(row: Record<string, unknown>): AiStudioTemplateRecord {
   return {
     id: normalizeText(row.id),
     provider: normalizeText(row.provider) || 'grsai',
+    capability: normalizeTemplateCapability(row.capability),
     name: normalizeText(row.name),
     promptText: normalizeText(row.prompt_text),
     config: parseJsonObject(row.config_json),
@@ -1524,14 +1530,18 @@ export class AiStudioService {
 
   private getTemplateByProviderAndName(
     provider: string,
+    capability: 'image' | 'video',
     name: string
   ): AiStudioTemplateRecord | null {
     const normalizedProvider = normalizeText(provider)
+    const normalizedCapability = normalizeTemplateCapability(capability)
     const normalizedName = normalizeText(name)
     if (!normalizedProvider || !normalizedName) return null
     const row = this.db
-      .prepare(`SELECT * FROM ai_studio_templates WHERE provider = ? AND name = ? LIMIT 1`)
-      .get(normalizedProvider, normalizedName)
+      .prepare(
+        `SELECT * FROM ai_studio_templates WHERE provider = ? AND capability = ? AND name = ? LIMIT 1`
+      )
+      .get(normalizedProvider, normalizedCapability, normalizedName)
     return row ? mapTemplateRow(row) : null
   }
 
@@ -2683,10 +2693,13 @@ export class AiStudioService {
     return this.getRunById(normalizedRunId)
   }
 
-  listTemplates(): AiStudioTemplateRecord[] {
+  listTemplates(capability: 'image' | 'video' = 'image'): AiStudioTemplateRecord[] {
+    const normalizedCapability = normalizeTemplateCapability(capability)
     const rows = this.db
-      .prepare(`SELECT * FROM ai_studio_templates ORDER BY updated_at DESC, created_at DESC`)
-      .all()
+      .prepare(
+        `SELECT * FROM ai_studio_templates WHERE capability = ? ORDER BY updated_at DESC, created_at DESC`
+      )
+      .all(normalizedCapability)
     return rows.map(mapTemplateRow)
   }
 
@@ -2706,14 +2719,16 @@ export class AiStudioService {
   upsertTemplate(input: {
     id?: string
     provider?: string
+    capability?: 'image' | 'video'
     name: string
     promptText?: string
     config?: Record<string, unknown>
   }): AiStudioTemplateRecord {
     const provider = normalizeText(input.provider) || 'grsai'
+    const capability = normalizeTemplateCapability(input.capability)
     const name = normalizeText(input.name)
     if (!name) throw new Error('[AI Studio] 模板名称不能为空。')
-    const existing = this.getTemplateByProviderAndName(provider, name)
+    const existing = this.getTemplateByProviderAndName(provider, capability, name)
     const normalizedId = normalizeText(input.id)
     const id = normalizedId || existing?.id || randomUUID()
     const promptText = normalizeText(input.promptText)
@@ -2724,21 +2739,24 @@ export class AiStudioService {
         .prepare(
           `
             INSERT INTO ai_studio_templates (
-              id, provider, name, prompt_text, config_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+              id, provider, capability, name, prompt_text, config_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               provider = excluded.provider,
+              capability = excluded.capability,
               name = excluded.name,
               prompt_text = excluded.prompt_text,
               config_json = excluded.config_json,
               updated_at = excluded.updated_at;
           `
         )
-        .run(id, provider, name, promptText, toJson(input.config ?? {}), now, now)
+        .run(id, provider, capability, name, promptText, toJson(input.config ?? {}), now, now)
     } catch (error) {
       if (
         error instanceof Error &&
-        /ai_studio_templates\.provider,\s*ai_studio_templates\.name/i.test(error.message)
+        /(ai_studio_templates\.provider,\s*ai_studio_templates\.(capability,\s*)?name|idx_ai_studio_templates_provider_capability_name|idx_ai_studio_templates_provider_name)/i.test(
+          error.message
+        )
       ) {
         throw new Error('[AI Studio] 已存在同名提示词模板，请直接选择它或换一个名字。')
       }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
@@ -261,113 +261,167 @@ function QuickInsertPopover({
   onEdit: (template: PromptTemplateOption) => void
   onDelete: (template: PromptTemplateOption) => void
 }): React.JSX.Element {
+  const anchorRef = useRef<HTMLDivElement | null>(null)
   const [hoveredPreview, setHoveredPreview] = useState<
     { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null
   >(null)
+  const [isOpen, setIsOpen] = useState(false)
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties | null>(null)
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPanelStyle(null)
+      return
+    }
+
+    const updatePanelStyle = (): void => {
+      const rect = anchorRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const panelWidth = 252
+      const viewportPadding = 12
+      const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+      )
+      setPanelStyle({
+        left,
+        top: Math.max(viewportPadding, rect.bottom),
+        width: panelWidth,
+        transform: 'translateY(-100%)'
+      })
+    }
+
+    updatePanelStyle()
+    window.addEventListener('resize', updatePanelStyle)
+    window.addEventListener('scroll', updatePanelStyle, true)
+    return () => {
+      window.removeEventListener('resize', updatePanelStyle)
+      window.removeEventListener('scroll', updatePanelStyle, true)
+    }
+  }, [isOpen, templates.length])
 
   return (
-    <div className="group/quick relative shrink-0 self-start pr-2 -mr-2">
+    <div
+      ref={anchorRef}
+      className="relative shrink-0 self-start pr-2 -mr-2"
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => {
+        setIsOpen(false)
+        setHoveredPreview(null)
+      }}
+    >
       <button
         type="button"
+        onFocus={() => setIsOpen(true)}
         className="inline-flex h-7 items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-100/90 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
       >
         <Sparkles className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate max-[1180px]:hidden">快捷插入</span>
       </button>
 
-      <div
-        className="pointer-events-none absolute bottom-full left-0 z-[120] pb-2 opacity-0 transition duration-150 group-hover/quick:pointer-events-auto group-hover/quick:opacity-100 group-focus-within/quick:pointer-events-auto group-focus-within/quick:opacity-100"
-        onMouseLeave={() => setHoveredPreview(null)}
-      >
-        <div className="relative w-[252px] rounded-[20px] border border-zinc-200 bg-white p-1.5 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-          <div
-            className="max-h-[170px] overflow-y-auto pr-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          >
-            <div className="grid grid-cols-3 gap-1">
-              <div className="min-w-0">
-                <button
-                  type="button"
-                  onClick={onCreate}
-                  onMouseEnter={() => setHoveredPreview({ type: 'create' })}
-                  onFocus={() => setHoveredPreview({ type: 'create' })}
-                  className="flex h-8 w-full items-center justify-center rounded-[11px] border border-dashed border-zinc-300 bg-zinc-50/85 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-400 hover:bg-white"
-                  title="新增模板"
-                >
-                  <span className="block w-full truncate">新增模板</span>
-                </button>
-              </div>
-
-              {templates.map((template) => (
-                <div key={template.id} className="min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => onInsert(template)}
-                    onMouseEnter={() => setHoveredPreview({ type: 'template', template })}
-                    onFocus={() => setHoveredPreview({ type: 'template', template })}
-                    className="flex h-8 w-full items-center justify-center rounded-[11px] border border-zinc-200 bg-zinc-50/70 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-300 hover:bg-white"
-                    title={template.name}
-                  >
-                    <span className="block w-full truncate">{template.name}</span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {hoveredPreview ? (
+      {isOpen && panelStyle && typeof document !== 'undefined'
+        ? createPortal(
             <div
-              className="absolute left-full top-0 z-[140] pl-2"
-              onMouseEnter={() => setHoveredPreview((prev) => prev)}
+              className="fixed z-[220]"
+              style={panelStyle}
+              onMouseEnter={() => setIsOpen(true)}
+              onMouseLeave={() => {
+                setIsOpen(false)
+                setHoveredPreview(null)
+              }}
             >
-              <div className="absolute inset-y-0 left-0 w-2" />
-              <div className="w-[248px] rounded-[20px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-                {hoveredPreview.type === 'create' ? (
-                  <div className="text-[12px] leading-5 text-zinc-600">
-                    录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
+              <div className="relative rounded-[20px] border border-zinc-200 bg-white p-1.5 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
+                <div
+                  className="max-h-[170px] overflow-y-auto pr-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                >
+                  <div className="grid grid-cols-3 gap-1">
+                    <div className="min-w-0">
+                      <button
+                        type="button"
+                        onClick={onCreate}
+                        onMouseEnter={() => setHoveredPreview({ type: 'create' })}
+                        onFocus={() => setHoveredPreview({ type: 'create' })}
+                        className="flex h-8 w-full items-center justify-center rounded-[11px] border border-dashed border-zinc-300 bg-zinc-50/85 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-400 hover:bg-white"
+                        title="新增模板"
+                      >
+                        <span className="block w-full truncate">新增模板</span>
+                      </button>
+                    </div>
+
+                    {templates.map((template) => (
+                      <div key={template.id} className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => onInsert(template)}
+                          onMouseEnter={() => setHoveredPreview({ type: 'template', template })}
+                          onFocus={() => setHoveredPreview({ type: 'template', template })}
+                          className="flex h-8 w-full items-center justify-center rounded-[11px] border border-zinc-200 bg-zinc-50/70 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-300 hover:bg-white"
+                          title={template.name}
+                        >
+                          <span className="block w-full truncate">{template.name}</span>
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
-                        <span className="block truncate">{hoveredPreview.template.name}</span>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <button
-                          type="button"
-                          className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            onEdit(hoveredPreview.template)
-                          }}
-                        >
-                          修改
-                        </button>
-                        <button
-                          type="button"
-                          className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            onDelete(hoveredPreview.template)
-                          }}
-                        >
-                          删除
-                        </button>
-                      </div>
+                </div>
+
+                {hoveredPreview ? (
+                  <div
+                    className="absolute bottom-0 left-full z-[230] pl-2"
+                    onMouseEnter={() => setHoveredPreview((prev) => prev)}
+                  >
+                    <div className="absolute inset-y-0 left-0 w-2" />
+                    <div className="w-[248px] rounded-[20px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
+                      {hoveredPreview.type === 'create' ? (
+                        <div className="text-[12px] leading-5 text-zinc-600">
+                          录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
+                              <span className="block truncate">{hoveredPreview.template.name}</span>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <button
+                                type="button"
+                                className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  onEdit(hoveredPreview.template)
+                                }}
+                              >
+                                修改
+                              </button>
+                              <button
+                                type="button"
+                                className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  onDelete(hoveredPreview.template)
+                                }}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </div>
+                          <div
+                            className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                          >
+                            {buildTemplatePreview(hoveredPreview.template.promptText)}
+                          </div>
+                        </>
+                      )}
                     </div>
-                    <div
-                      className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-                      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                    >
-                      {buildTemplatePreview(hoveredPreview.template.promptText)}
-                    </div>
-                  </>
-                )}
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ) : null}
-        </div>
-      </div>
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   )
 }

@@ -29,6 +29,7 @@ export type AiStudioImportedFolder = {
 export type AiStudioTemplateRecord = {
   id: string
   provider: string
+  capability: AiStudioCapability
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -1084,6 +1085,7 @@ function coerceTemplateRecord(template: unknown): AiStudioTemplateRecord {
   return {
     id: String(record.id ?? ''),
     provider: typeof record.provider === 'string' ? record.provider : 'grsai',
+    capability: record.capability === 'video' ? 'video' : 'image',
     name: typeof record.name === 'string' ? record.name : '',
     promptText: typeof record.promptText === 'string' ? record.promptText : '',
     config:
@@ -1199,7 +1201,7 @@ const useAiStudioState = () => {
     setIsLoading(true)
     try {
       const [templateRows, taskRows, assetRows] = await Promise.all([
-        window.api.cms.aiStudio.template.list().catch(() => []),
+        window.api.cms.aiStudio.template.list({ capability: studioCapability }).catch(() => []),
         window.api.cms.aiStudio.task.list({ limit: 300 }),
         window.api.cms.aiStudio.asset.list().catch(() => [])
       ])
@@ -1216,7 +1218,7 @@ const useAiStudioState = () => {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [studioCapability])
 
   useEffect(() => {
     void refresh()
@@ -1265,6 +1267,9 @@ const useAiStudioState = () => {
 
   const setStudioCapability = useCallback(
     (next: AiStudioCapability) => {
+      if (next !== studioCapability) {
+        setTemplates([])
+      }
       setStudioCapabilityState(next)
       setActiveTaskId((prev) => {
         if (
@@ -1276,7 +1281,7 @@ const useAiStudioState = () => {
         return taskViews.find((task) => readTaskCapability(task) === next)?.id ?? prev
       })
     },
-    [taskViews]
+    [studioCapability, taskViews]
   )
 
   const visibleTasks = useMemo(() => {
@@ -1330,7 +1335,10 @@ const useAiStudioState = () => {
     return { min, max, label: formatCost(min, max) }
   }, [capabilityTaskViews, selectedTaskIds, visibleTasks])
 
-  const templateOptions = useMemo(() => sortTemplates(templates), [templates])
+  const templateOptions = useMemo(
+    () => sortTemplates(templates.filter((template) => template.capability === studioCapability)),
+    [studioCapability, templates]
+  )
   const videoProfiles = AI_VIDEO_PROFILES
   const videoMeta = useMemo(
     () =>
@@ -1379,9 +1387,17 @@ const useAiStudioState = () => {
     setAssets((prev) => mergeById(prev, nextAssets.map(coerceAssetRecord)))
   }, [])
 
-  const replaceTemplate = useCallback((nextTemplate: AiStudioTemplateRecord) => {
-    setTemplates((prev) => sortTemplates(mergeById(prev, [coerceTemplateRecord(nextTemplate)])))
-  }, [])
+  const replaceTemplate = useCallback(
+    (nextTemplate: AiStudioTemplateRecord) => {
+      const normalizedTemplate = coerceTemplateRecord(nextTemplate)
+      setTemplates((prev) =>
+        normalizedTemplate.capability === studioCapability
+          ? sortTemplates(mergeById(prev, [normalizedTemplate]))
+          : prev
+      )
+    },
+    [studioCapability]
+  )
 
   const requestTaskInterrupt = useCallback((taskId: string) => {
     const normalizedTaskId = String(taskId ?? '').trim()
@@ -1998,6 +2014,29 @@ const useAiStudioState = () => {
     [ensureVideoDraftTask, syncVideoTaskInputs]
   )
 
+  const useOutputAsVideoSubjectReference = useCallback(
+    async (filePath: string) => {
+      const normalizedPath = String(filePath ?? '').trim()
+      if (!normalizedPath) return false
+      const latestVideoTask =
+        taskViews
+          .filter((task) => readTaskCapability(task) === 'video')
+          .slice()
+          .sort((left, right) => right.createdAt - left.createdAt || right.updatedAt - left.updatedAt)[0] ?? null
+      await createVideoTask({
+        inheritFrom: latestVideoTask,
+        promptExtraOverride: '',
+        videoMetaOverride: {
+          mode: 'subject-reference',
+          subjectReferencePath: normalizedPath
+        }
+      })
+      setStudioCapabilityState('video')
+      return true
+    },
+    [createVideoTask, taskViews]
+  )
+
   const applyInputSelection = useCallback(
     async (payload: { primaryImagePath: string | null; referenceImagePaths: string[] }) => {
       const normalizedPrimary = String(payload.primaryImagePath ?? '').trim() || null
@@ -2199,6 +2238,7 @@ const useAiStudioState = () => {
         await window.api.cms.aiStudio.template.upsert({
           id: String(payload.templateId ?? '').trim() || undefined,
           provider: 'grsai',
+          capability: studioCapability,
           name: String(payload.name ?? '').trim(),
           promptText: String(payload.promptText ?? '').trim()
         })
@@ -2206,7 +2246,7 @@ const useAiStudioState = () => {
       replaceTemplate(saved)
       return saved
     },
-    [replaceTemplate]
+    [replaceTemplate, studioCapability]
   )
 
   const deleteTemplate = useCallback(async (templateId: string) => {
@@ -2788,6 +2828,7 @@ const useAiStudioState = () => {
         await window.api.cms.aiStudio.template.upsert({
           id: String(payload.templateId ?? '').trim() || undefined,
           provider: 'grsai',
+          capability: 'image',
           name: String(payload.name ?? '').trim(),
           promptText: String(payload.promptText ?? '').trim()
         })
@@ -3956,6 +3997,7 @@ const useAiStudioState = () => {
     prepareNextDraftTask,
     useDispatchOutputAsReference,
     useOutputAsVideoReference,
+    useOutputAsVideoSubjectReference,
     interruptActiveTask,
     seedDemoTask,
     assignPrimaryImage,
