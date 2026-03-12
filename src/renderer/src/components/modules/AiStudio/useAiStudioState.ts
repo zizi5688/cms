@@ -15,7 +15,7 @@ import {
   buildVideoEndpointPair,
   findAiProviderProfile,
   normalizeAiProviderValue,
-  resolveAiProviderModel
+  resolveAiTaskProviderSelection
 } from '@renderer/lib/aiProviderProfiles'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { useCmsStore } from '@renderer/store/useCmsStore'
@@ -1349,28 +1349,43 @@ const useAiStudioState = () => {
     () => getAiVideoProfile(videoMeta.profileId),
     [videoMeta.profileId]
   )
+  const providerProfiles = useMemo(
+    () => (Array.isArray(aiConfig.aiProviderProfiles) ? aiConfig.aiProviderProfiles : []),
+    [aiConfig.aiProviderProfiles]
+  )
+  const resolveImageProviderSelection = useCallback(
+    (providerName?: string | null, modelName?: string | null) =>
+      resolveAiTaskProviderSelection(providerProfiles, {
+        taskProviderName: providerName,
+        taskModelName: modelName,
+        fallbackProviderName: aiConfig.aiProvider,
+        fallbackModelName: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
+      }),
+    [aiConfig.aiProvider, defaultModel, providerProfiles]
+  )
+  const resolveImageTaskProviderState = useCallback(
+    (task?: Pick<AiStudioTaskRecord, 'provider' | 'model'> | null) =>
+      resolveImageProviderSelection(task?.provider, task?.model),
+    [resolveImageProviderSelection]
+  )
   const resolveVideoProviderSelection = useCallback(
     (providerName?: string | null, modelName?: string | null, endpointPath?: string | null) => {
-      const providerProfiles = Array.isArray(aiConfig.aiProviderProfiles)
-        ? aiConfig.aiProviderProfiles
-        : []
-      const activeProvider = findAiProviderProfile(providerProfiles, aiConfig.aiProvider)
-      const fallbackProviderName = activeProvider?.providerName ?? providerProfiles[0]?.providerName ?? ''
-      const normalizedProviderName = normalizeAiProviderValue(providerName) || fallbackProviderName
-      const providerProfile = findAiProviderProfile(providerProfiles, normalizedProviderName)
-      const normalizedModelName = normalizeAiProviderValue(modelName)
-      const resolvedModel = resolveAiProviderModel(providerProfile, normalizedModelName)
-      const endpointPair = buildVideoEndpointPair(
-        normalizeAiProviderValue(endpointPath) || resolvedModel?.endpointPath || ''
-      )
+      const resolved = resolveAiTaskProviderSelection(providerProfiles, {
+        taskProviderName: providerName,
+        taskModelName: modelName,
+        taskEndpointPath: endpointPath,
+        fallbackProviderName: aiConfig.aiProvider,
+        fallbackModelName: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
+      })
+      const endpointPair = buildVideoEndpointPair(resolved.endpointPath)
       return {
-        providerName: providerProfile?.providerName ?? normalizedProviderName,
-        modelName: normalizedModelName || resolvedModel?.modelName || '',
+        providerName: resolved.providerName,
+        modelName: resolved.modelName,
         submitPath: endpointPair.submitPath,
         queryPath: endpointPair.queryPath
       }
     },
-    [aiConfig.aiProvider, aiConfig.aiProviderProfiles]
+    [aiConfig.aiProvider, defaultModel, providerProfiles]
   )
 
   const replaceTask = useCallback((nextTask: AiStudioTaskRecord) => {
@@ -1465,15 +1480,16 @@ const useAiStudioState = () => {
       const importedAssets: AiStudioAssetRecord[] = []
 
       for (const folder of folders) {
+        const imageProviderSelection = resolveImageProviderSelection('', '')
         const created = coerceTaskRecord(
           await window.api.cms.aiStudio.task.create({
-            provider: 'grsai',
+            provider: imageProviderSelection.providerName || aiConfig.aiProvider || 'grsai',
             sourceFolderPath: folder.folderPath,
             productName: folder.productName,
             status: 'draft',
             aspectRatio: '3:4',
             outputCount: 1,
-            model: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
+            model: imageProviderSelection.modelName || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
             inputImagePaths: folder.imageFilePaths,
             metadata: { importedImageCount: folder.imageFilePaths.length }
           })
@@ -1505,7 +1521,7 @@ const useAiStudioState = () => {
     } finally {
       setIsImporting(false)
     }
-  }, [defaultModel])
+  }, [aiConfig.aiProvider, defaultModel, resolveImageProviderSelection])
 
   const createTaskWithInputs = useCallback(
     async (payload: {
@@ -1533,19 +1549,28 @@ const useAiStudioState = () => {
         payload.promptExtraOverride !== undefined
           ? payload.promptExtraOverride
           : (baseWorkflow?.masterStage.promptExtra ?? baseTask?.promptExtra ?? '')
+      const imageProviderSelection = resolveImageProviderSelection(baseTask?.provider, baseTask?.model)
       const inferredName = basenameWithoutExtension(
         primaryImagePath ?? referenceImagePaths[0] ?? ''
       )
       const created = coerceTaskRecord(
         await window.api.cms.aiStudio.task.create({
           templateId: inheritedTemplateId,
-          provider: 'grsai',
+          provider:
+            imageProviderSelection.providerName ||
+            normalizeAiProviderValue(baseTask?.provider) ||
+            aiConfig.aiProvider ||
+            'grsai',
           sourceFolderPath: null,
           productName: inferredName || baseTask?.productName || '未命名任务',
           status: 'draft',
           aspectRatio: baseTask?.aspectRatio ?? '3:4',
           outputCount: baseTask?.outputCount ?? 1,
-          model: baseTask?.model || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
+          model:
+            imageProviderSelection.modelName ||
+            baseTask?.model ||
+            defaultModel ||
+            DEFAULT_GRSAI_IMAGE_MODEL,
           promptExtra: inheritedPromptExtra,
           primaryImagePath,
           referenceImagePaths,
@@ -1595,7 +1620,7 @@ const useAiStudioState = () => {
       setActiveTaskId(created.id)
       return created
     },
-    [defaultModel, replaceAssets, replaceTask, templateOptions]
+    [aiConfig.aiProvider, defaultModel, replaceAssets, replaceTask, resolveImageProviderSelection]
   )
 
   const createVideoTask = useCallback(
@@ -1821,6 +1846,38 @@ const useAiStudioState = () => {
     },
     [replaceAssets, updateTaskPatch]
   )
+
+  const ensureImageDraftTask = useCallback(async () => {
+    const currentImageTask =
+      studioCapability === 'image' && activeTask && readTaskCapability(activeTask) === 'image'
+        ? activeTask
+        : (taskViews.find((task) => readTaskCapability(task) === 'image') ?? null)
+
+    if (!currentImageTask) {
+      return createTaskWithInputs({
+        primaryImagePath: null,
+        referenceImagePaths: []
+      })
+    }
+
+    const outputCount =
+      'outputAssets' in currentImageTask ? currentImageTask.outputAssets.length : 0
+    const needsReset =
+      outputCount > 0 ||
+      Boolean(currentImageTask.latestRunId) ||
+      Boolean(currentImageTask.remoteTaskId) ||
+      currentImageTask.status === 'running' ||
+      currentImageTask.status === 'completed' ||
+      currentImageTask.status === 'failed'
+
+    return needsReset
+      ? createTaskWithInputs({
+          primaryImagePath: currentImageTask.primaryImagePath,
+          referenceImagePaths: currentImageTask.referenceImagePaths,
+          inheritFrom: currentImageTask
+        })
+      : currentImageTask
+  }, [activeTask, createTaskWithInputs, studioCapability, taskViews])
 
   const ensureVideoDraftTask = useCallback(async () => {
     const currentVideoTask =
@@ -2876,12 +2933,43 @@ const useAiStudioState = () => {
     [activeTask, updateTaskPatch]
   )
 
+  const setImageProvider = useCallback(
+    async (value: string) => {
+      const task = await ensureImageDraftTask()
+      const nextSelection = resolveImageProviderSelection(value, '')
+      await updateTaskPatch(task.id, {
+        provider: nextSelection.providerName || normalizeAiProviderValue(value) || task.provider,
+        model: nextSelection.modelName || task.model || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
+      })
+    },
+    [defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch]
+  )
+
+  const setImageModel = useCallback(
+    async (payload: { provider?: string | null; model: string }) => {
+      const task = await ensureImageDraftTask()
+      const nextSelection = resolveImageProviderSelection(payload.provider ?? task.provider, payload.model)
+      await updateTaskPatch(task.id, {
+        provider:
+          nextSelection.providerName ||
+          normalizeAiProviderValue(payload.provider) ||
+          task.provider,
+        model:
+          nextSelection.modelName ||
+          payload.model ||
+          task.model ||
+          defaultModel ||
+          DEFAULT_GRSAI_IMAGE_MODEL
+      })
+    },
+    [defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch]
+  )
+
   const setModel = useCallback(
     async (value: string) => {
-      if (!activeTask) return
-      await updateTaskPatch(activeTask.id, { model: value })
+      await setImageModel({ model: value })
     },
-    [activeTask, updateTaskPatch]
+    [setImageModel]
   )
 
   const setTemplateId = useCallback(
@@ -3245,9 +3333,12 @@ const useAiStudioState = () => {
         activeTask
       const sourceTask =
         sourceTaskView ?? (payload?.taskId ? await loadLatestTaskRecord(payload.taskId) : null)
-
-      if (!sourceTask || !aiConfig.aiApiKey.trim()) {
-        throw new Error('[AI Studio] 请先配置 API Key。')
+      const sourceProviderSelection = resolveImageTaskProviderState(sourceTask)
+      if (!sourceTask || !sourceProviderSelection.providerProfile) {
+        throw new Error('[AI Studio] 请先在模型设置中创建并选择图片供应商。')
+      }
+      if (!sourceProviderSelection.apiKey.trim()) {
+        throw new Error('[AI Studio] 请先填写图片供应商 API Key。')
       }
       if (!sourceTask.primaryImagePath) {
         throw new Error('[AI Studio] 请先添加参考图。')
@@ -3270,7 +3361,11 @@ const useAiStudioState = () => {
       )
       const effectiveModel =
         String(
-          payload?.model ?? sourceTask.model ?? defaultModel ?? DEFAULT_GRSAI_IMAGE_MODEL
+          payload?.model ??
+            sourceTask.model ??
+            sourceProviderSelection.modelName ??
+            defaultModel ??
+            DEFAULT_GRSAI_IMAGE_MODEL
         ).trim() || DEFAULT_GRSAI_IMAGE_MODEL
 
       const sourceOutputCount = 'outputAssets' in sourceTask ? sourceTask.outputAssets.length : 0
@@ -3327,6 +3422,8 @@ const useAiStudioState = () => {
 
       let task = await updateTaskPatch(workingTask.id, {
         templateId: effectiveTemplateId,
+        provider:
+          sourceProviderSelection.providerName || normalizeAiProviderValue(workingTask.provider),
         promptExtra: effectivePromptText,
         model: effectiveModel,
         outputCount: 1,
@@ -3514,13 +3611,13 @@ const useAiStudioState = () => {
     },
     [
       activeTask,
-      aiConfig.aiApiKey,
       createTaskWithInputs,
       defaultModel,
       executeRunToTerminal,
       loadLatestTaskRecord,
       processMasterCleanup,
       refresh,
+      resolveImageTaskProviderState,
       taskViews,
       updateTaskPatch,
       upsertAssetsRemote
@@ -3577,8 +3674,12 @@ const useAiStudioState = () => {
 
   const retryMasterGeneration = useCallback(
     async (sequenceIndex: number) => {
-      if (!activeTask || !aiConfig.aiApiKey.trim()) {
-        throw new Error('[AI Studio] 请先配置 API Key。')
+      const activeProviderSelection = resolveImageTaskProviderState(activeTask)
+      if (!activeTask || !activeProviderSelection.providerProfile) {
+        throw new Error('[AI Studio] 请先在模型设置中创建并选择图片供应商。')
+      }
+      if (!activeProviderSelection.apiKey.trim()) {
+        throw new Error('[AI Studio] 请先填写图片供应商 API Key。')
       }
 
       const latestTask = await loadLatestTaskRecord(activeTask.id)
@@ -3719,11 +3820,11 @@ const useAiStudioState = () => {
     },
     [
       activeTask,
-      aiConfig.aiApiKey,
       executeRunToTerminal,
       loadLatestTaskRecord,
       processMasterCleanup,
       refresh,
+      resolveImageTaskProviderState,
       updateTaskPatch,
       upsertAssetsRemote
     ]
@@ -3758,8 +3859,12 @@ const useAiStudioState = () => {
   )
 
   const startChildWorkflow = useCallback(async () => {
-    if (!activeTask || !aiConfig.aiApiKey.trim()) {
-      throw new Error('[AI Studio] 请先配置 API Key。')
+    const activeProviderSelection = resolveImageTaskProviderState(activeTask)
+    if (!activeTask || !activeProviderSelection.providerProfile) {
+      throw new Error('[AI Studio] 请先在模型设置中创建并选择图片供应商。')
+    }
+    if (!activeProviderSelection.apiKey.trim()) {
+      throw new Error('[AI Studio] 请先填写图片供应商 API Key。')
     }
     const workflow = workflowMeta
     if (!workflow?.workflow.currentAiMasterAssetId) {
@@ -3911,10 +4016,10 @@ const useAiStudioState = () => {
     return true
   }, [
     activeTask,
-    aiConfig.aiApiKey,
     childOutputAssets.length,
     executeRunToTerminal,
     refresh,
+    resolveImageTaskProviderState,
     updateTaskPatch,
     upsertAssetsRemote,
     workflowMeta
@@ -4007,6 +4112,8 @@ const useAiStudioState = () => {
     setPromptExtra,
     setOutputCount,
     setAspectRatio,
+    setImageProvider,
+    setImageModel,
     setModel,
     setTemplateId,
     saveTemplate,
