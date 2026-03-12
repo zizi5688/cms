@@ -16,6 +16,11 @@ import {
   type AiStudioAssetRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
+import {
+  resolveQuickInsertButtonLabel,
+  resolveQuickInsertClickOutcome
+} from './quickInsertActionHelpers'
+import { resolveQuickInsertPanelPosition } from './quickInsertPopoverPositionHelpers'
 
 type ElectronPathFile = File & { path?: string }
 
@@ -121,6 +126,7 @@ function ImageLightbox({
 }
 
 type PromptTemplateOption = UseAiStudioStateResult['templates'][number]
+type QuickInsertPreview = { type: 'create' } | { type: 'template'; template: PromptTemplateOption }
 
 function buildTemplatePreview(promptText: string): string {
   const normalized = String(promptText ?? '').trim()
@@ -262,11 +268,67 @@ function QuickInsertPopover({
   onDelete: (template: PromptTemplateOption) => void
 }): React.JSX.Element {
   const anchorRef = useRef<HTMLDivElement | null>(null)
-  const [hoveredPreview, setHoveredPreview] = useState<
-    { type: 'create' } | { type: 'template'; template: PromptTemplateOption } | null
-  >(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const closeTimerRef = useRef<number | null>(null)
+  const [activePreview, setActivePreview] = useState<QuickInsertPreview | null>(null)
+  const [armedPreviewKey, setArmedPreviewKey] = useState<string | null>(null)
   const [isOpen, setIsOpen] = useState(false)
   const [panelStyle, setPanelStyle] = useState<React.CSSProperties | null>(null)
+
+  const clearCloseTimer = (): void => {
+    if (closeTimerRef.current === null) return
+    window.clearTimeout(closeTimerRef.current)
+    closeTimerRef.current = null
+  }
+
+  const openPopover = (): void => {
+    clearCloseTimer()
+    setIsOpen(true)
+  }
+
+  const scheduleClose = (): void => {
+    clearCloseTimer()
+    closeTimerRef.current = window.setTimeout(() => {
+      resetPopoverState()
+    }, 120)
+  }
+
+  const resetPopoverState = (): void => {
+    clearCloseTimer()
+    setIsOpen(false)
+    setActivePreview(null)
+    setArmedPreviewKey(null)
+  }
+
+  const previewKeyOf = (preview: QuickInsertPreview | null): string | null => {
+    if (!preview) return null
+    return preview.type === 'create' ? 'create' : `template:${preview.template.id}`
+  }
+
+  const handlePrimaryAction = (nextPreview: QuickInsertPreview): void => {
+    const nextPreviewKey = previewKeyOf(nextPreview)
+    if (!nextPreviewKey) return
+
+    const outcome = resolveQuickInsertClickOutcome({
+      armedPreviewKey,
+      clickedPreviewKey: nextPreviewKey
+    })
+
+    if (outcome === 'select') {
+      setActivePreview(nextPreview)
+      setArmedPreviewKey(nextPreviewKey)
+      return
+    }
+
+    if (nextPreview.type === 'create') {
+      onCreate()
+    } else {
+      onInsert(nextPreview.template)
+    }
+
+    resetPopoverState()
+  }
 
   useLayoutEffect(() => {
     if (!isOpen) {
@@ -275,20 +337,18 @@ function QuickInsertPopover({
     }
 
     const updatePanelStyle = (): void => {
-      const rect = anchorRef.current?.getBoundingClientRect()
+      const rect = triggerRef.current?.getBoundingClientRect()
       if (!rect) return
       const panelWidth = 252
       const viewportPadding = 12
-      const left = Math.min(
-        Math.max(viewportPadding, rect.left),
-        Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding)
+      setPanelStyle(
+        resolveQuickInsertPanelPosition({
+          triggerRect: rect,
+          panelWidth,
+          viewportWidth: window.innerWidth,
+          viewportPadding
+        })
       )
-      setPanelStyle({
-        left,
-        top: Math.max(viewportPadding, rect.bottom),
-        width: panelWidth,
-        transform: 'translateY(-100%)'
-      })
     }
 
     updatePanelStyle()
@@ -300,35 +360,57 @@ function QuickInsertPopover({
     }
   }, [isOpen, templates.length])
 
+  useEffect(() => {
+    if (!isOpen) return
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (triggerRef.current?.contains(target)) return
+      if (panelRef.current?.contains(target)) return
+      resetPopoverState()
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') resetPopoverState()
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    return () => {
+      clearCloseTimer()
+    }
+  }, [])
+
   return (
-    <div
-      ref={anchorRef}
-      className="relative shrink-0 self-start pr-2 -mr-2"
-      onMouseEnter={() => setIsOpen(true)}
-      onMouseLeave={() => {
-        setIsOpen(false)
-        setHoveredPreview(null)
-      }}
-    >
+    <div ref={anchorRef} className="relative shrink-0 self-start pr-2 -mr-2">
       <button
+        ref={triggerRef}
         type="button"
-        onFocus={() => setIsOpen(true)}
-        className="inline-flex h-7 items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-100/90 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
+        onMouseEnter={openPopover}
+        onMouseLeave={scheduleClose}
+        onFocus={openPopover}
+        className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-zinc-200 bg-zinc-100/90 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
       >
         <Sparkles className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 truncate max-[1180px]:hidden">快捷插入</span>
+        <span>快捷插入</span>
       </button>
 
       {isOpen && panelStyle && typeof document !== 'undefined'
         ? createPortal(
             <div
+              ref={panelRef}
               className="fixed z-[220]"
               style={panelStyle}
-              onMouseEnter={() => setIsOpen(true)}
-              onMouseLeave={() => {
-                setIsOpen(false)
-                setHoveredPreview(null)
-              }}
+              onMouseEnter={openPopover}
+              onMouseLeave={scheduleClose}
             >
               <div className="relative rounded-[20px] border border-zinc-200 bg-white p-1.5 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
                 <div
@@ -337,43 +419,80 @@ function QuickInsertPopover({
                 >
                   <div className="grid grid-cols-3 gap-1">
                     <div className="min-w-0">
+                      {(() => {
+                        const preview = { type: 'create' } as const
+                        const previewKey = previewKeyOf(preview)
+                        const isActive = previewKeyOf(activePreview) === previewKey
+                        return (
                       <button
                         type="button"
-                        onClick={onCreate}
-                        onMouseEnter={() => setHoveredPreview({ type: 'create' })}
-                        onFocus={() => setHoveredPreview({ type: 'create' })}
-                        className="flex h-8 w-full items-center justify-center rounded-[11px] border border-dashed border-zinc-300 bg-zinc-50/85 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-400 hover:bg-white"
+                        onClick={() => handlePrimaryAction(preview)}
+                        onFocus={() => setActivePreview(preview)}
+                        className={cn(
+                          'flex h-8 w-full items-center justify-center rounded-[11px] px-1.5 text-center text-[11px] font-medium transition',
+                          isActive
+                            ? 'border border-zinc-950 bg-zinc-950 text-white'
+                            : 'border border-dashed border-zinc-300 bg-zinc-50/85 text-zinc-900 hover:border-zinc-400 hover:bg-white'
+                        )}
                         title="新增模板"
                       >
-                        <span className="block w-full truncate">新增模板</span>
+                        <span className="block w-full truncate">
+                          {resolveQuickInsertButtonLabel({
+                            armedPreviewKey,
+                            itemPreviewKey: previewKey ?? 'create',
+                            defaultLabel: '新增模板',
+                            armedLabel: '新建'
+                          })}
+                        </span>
                       </button>
+                        )
+                      })()}
                     </div>
 
                     {templates.map((template) => (
                       <div key={template.id} className="min-w-0">
-                        <button
-                          type="button"
-                          onClick={() => onInsert(template)}
-                          onMouseEnter={() => setHoveredPreview({ type: 'template', template })}
-                          onFocus={() => setHoveredPreview({ type: 'template', template })}
-                          className="flex h-8 w-full items-center justify-center rounded-[11px] border border-zinc-200 bg-zinc-50/70 px-1.5 text-center text-[11px] font-medium text-zinc-900 transition hover:border-zinc-300 hover:bg-white"
-                          title={template.name}
-                        >
-                          <span className="block w-full truncate">{template.name}</span>
-                        </button>
+                        {(() => {
+                          const preview = { type: 'template', template } as const
+                          const previewKey = previewKeyOf(preview)
+                          const isActive = previewKeyOf(activePreview) === previewKey
+
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handlePrimaryAction(preview)}
+                              onFocus={() => setActivePreview(preview)}
+                              className={cn(
+                                'flex h-8 w-full items-center justify-center rounded-[11px] px-1.5 text-center text-[11px] font-medium transition',
+                                isActive
+                                  ? 'border border-zinc-950 bg-zinc-950 text-white'
+                                  : 'border border-zinc-200 bg-zinc-50/70 text-zinc-900 hover:border-zinc-300 hover:bg-white'
+                              )}
+                              title={template.name}
+                            >
+                              <span className="block w-full truncate">
+                                {resolveQuickInsertButtonLabel({
+                                  armedPreviewKey,
+                                  itemPreviewKey: previewKey ?? `template:${template.id}`,
+                                  defaultLabel: template.name,
+                                  armedLabel: '插入'
+                                })}
+                              </span>
+                            </button>
+                          )
+                        })()}
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {hoveredPreview ? (
+                {activePreview ? (
                   <div
                     className="absolute bottom-0 left-full z-[230] pl-2"
-                    onMouseEnter={() => setHoveredPreview((prev) => prev)}
+                    onMouseEnter={() => setActivePreview((prev) => prev)}
                   >
                     <div className="absolute inset-y-0 left-0 w-2" />
                     <div className="w-[248px] rounded-[20px] border border-zinc-200 bg-white p-3 shadow-[0_22px_48px_rgba(15,23,42,0.16)]">
-                      {hoveredPreview.type === 'create' ? (
+                      {activePreview.type === 'create' ? (
                         <div className="text-[12px] leading-5 text-zinc-600">
                           录入模板名字和提示词内容，后续就能从这里快速插入到本次输入框。
                         </div>
@@ -381,7 +500,7 @@ function QuickInsertPopover({
                         <>
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0 text-[13px] font-medium leading-5 text-zinc-900">
-                              <span className="block truncate">{hoveredPreview.template.name}</span>
+                              <span className="block truncate">{activePreview.template.name}</span>
                             </div>
                             <div className="flex shrink-0 items-center gap-2">
                               <button
@@ -389,7 +508,7 @@ function QuickInsertPopover({
                                 className="text-[11px] font-medium text-zinc-500 transition hover:text-zinc-900"
                                 onClick={(event) => {
                                   event.stopPropagation()
-                                  onEdit(hoveredPreview.template)
+                                  onEdit(activePreview.template)
                                 }}
                               >
                                 修改
@@ -399,7 +518,7 @@ function QuickInsertPopover({
                                 className="text-[11px] font-medium text-rose-500 transition hover:text-rose-600"
                                 onClick={(event) => {
                                   event.stopPropagation()
-                                  onDelete(hoveredPreview.template)
+                                  onDelete(activePreview.template)
                                 }}
                               >
                                 删除
@@ -410,7 +529,7 @@ function QuickInsertPopover({
                             className="mt-2 max-h-[176px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-5 text-zinc-600 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
                             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
                           >
-                            {buildTemplatePreview(hoveredPreview.template.promptText)}
+                            {buildTemplatePreview(activePreview.template.promptText)}
                           </div>
                         </>
                       )}
