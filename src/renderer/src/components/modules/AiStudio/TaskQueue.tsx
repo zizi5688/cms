@@ -397,10 +397,10 @@ function QuickInsertPopover({
         onMouseEnter={openPopover}
         onMouseLeave={scheduleClose}
         onFocus={openPopover}
-        className="inline-flex h-7 items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-100/90 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
+        className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-zinc-200 bg-zinc-100/90 px-2.5 text-[11px] font-medium text-zinc-500 transition hover:border-zinc-300 hover:bg-white hover:text-zinc-700"
       >
         <Sparkles className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 truncate max-[1180px]:hidden">快捷插入</span>
+        <span>快捷插入</span>
       </button>
 
       {isOpen && panelStyle && typeof document !== 'undefined'
