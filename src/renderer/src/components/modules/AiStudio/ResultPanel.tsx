@@ -19,6 +19,7 @@ import {
   type AiStudioWorkflowFailureRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
+import { resolvePreviewTileSurfaceClassNames } from './previewTileSurfaceHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
 const MAX_PREVIEW_SLOTS = 4
@@ -292,14 +293,11 @@ function PreviewStageTile({
   const showReferenceAction = Boolean(asset && onUseAsReference)
   const showPoolAction = Boolean(asset && onTogglePool)
   const showGenerateVideoAction = Boolean(asset && onGenerateVideo)
+  const surfaceClassNames = resolvePreviewTileSurfaceClassNames('image', status)
 
   return (
     <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
-      <div
-        className={cn(
-          'relative overflow-hidden rounded-[28px] bg-transparent transition'
-        )}
-      >
+      <div className={surfaceClassNames.shellClassName}>
         {status === 'loading' ? (
           <div
             className="pointer-events-none absolute inset-0 rounded-[28px] p-[1px] animate-[spin_2.6s_linear_infinite]"
@@ -308,13 +306,13 @@ function PreviewStageTile({
                 'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))'
             }}
           >
-            <div className="h-full w-full rounded-[27px] bg-transparent" />
+            <div className={surfaceClassNames.loadingInnerClassName} />
           </div>
         ) : null}
 
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="block w-full text-left">
-            <div className="aspect-[3/4] overflow-hidden bg-transparent">
+            <div className={surfaceClassNames.readyBodyClassName}>
               <img
                 src={src}
                 alt={basename(asset?.filePath)}
@@ -325,14 +323,14 @@ function PreviewStageTile({
             </div>
           </button>
         ) : status === 'failed' ? (
-          <div className="relative aspect-[3/4] bg-transparent">
+          <div className={surfaceClassNames.failedBodyClassName}>
             <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
             <div className="flex h-full items-center justify-center px-5 text-center text-sm font-medium leading-6 text-zinc-500">
               {statusText || '生成失败'}
             </div>
           </div>
         ) : (
-          <div className="aspect-[3/4] bg-transparent" />
+          <div className={surfaceClassNames.idleBodyClassName} />
         )}
 
         {showPoolAction || showReferenceAction ? (
@@ -652,7 +650,9 @@ function HistoryTaskSection({
                     : undefined
                 }
                 onGenerateVideo={
-                  slot.asset ? () => void handleGenerateVideo(slot.asset as AiStudioAssetRecord) : undefined
+                  slot.asset
+                    ? () => void handleGenerateVideo(slot.asset as AiStudioAssetRecord)
+                    : undefined
                 }
                 referenceApplied={
                   slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false
@@ -790,13 +790,14 @@ function VideoPreviewTile({
     posterState.sourcePath === sourcePath && posterState.posterPath
       ? resolveLocalImage(posterState.posterPath, workspacePath)
       : ''
+  const surfaceClassNames = resolvePreviewTileSurfaceClassNames('video', status)
 
   return (
     <div className="flex shrink-0 flex-col gap-2" style={style}>
-      <div className="group/tile relative overflow-hidden rounded-[28px] bg-transparent">
+      <div className={cn('group/tile', surfaceClassNames.shellClassName)}>
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="relative block w-full text-left">
-            <div className="relative aspect-[9/16] overflow-hidden bg-black">
+            <div className={surfaceClassNames.readyBodyClassName}>
               <video
                 src={src}
                 poster={posterSrc || undefined}
@@ -814,7 +815,7 @@ function VideoPreviewTile({
             </div>
           </button>
         ) : status === 'failed' ? (
-          <div className="relative aspect-[9/16] bg-transparent">
+          <div className={surfaceClassNames.failedBodyClassName}>
             <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
             <div className="flex h-full items-center justify-center px-5">
               <div className="flex max-w-full flex-col items-center gap-2 text-center">
@@ -830,7 +831,7 @@ function VideoPreviewTile({
             </div>
           </div>
         ) : (
-          <div className="relative aspect-[9/16] bg-transparent">
+          <div className={surfaceClassNames.idleBodyClassName}>
             <div className="absolute inset-0 flex items-center justify-center text-zinc-400">
               <Clapperboard className="h-6 w-6" />
             </div>
@@ -1097,7 +1098,11 @@ function ResultPanel({
             />
           )
         )}
-        <div aria-hidden="true" className="w-full shrink-0" style={{ height: `${Math.max(0, bottomSpacerHeight)}px` }} />
+        <div
+          aria-hidden="true"
+          className="w-full shrink-0"
+          style={{ height: `${Math.max(0, bottomSpacerHeight)}px` }}
+        />
         <div ref={historyTailRef} aria-hidden="true" className="h-px w-full shrink-0" />
       </div>
 
