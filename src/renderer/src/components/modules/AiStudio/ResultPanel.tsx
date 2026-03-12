@@ -1042,13 +1042,12 @@ function ResultPanel({
   const historyTailRef = useRef<HTMLDivElement | null>(null)
   const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
   const latestRevealHistoryKey =
-    isVideoStudio && latestHistoryTask
+    latestHistoryTask
       ? `${state.studioCapability}:${state.historyTasks.length}:${latestHistoryTask.id}:${latestHistoryTask.updatedAt}`
       : ''
   const previousLatestRevealHistoryKeyRef = useRef('')
 
   useLayoutEffect(() => {
-    if (!isVideoStudio) return
     if (!latestRevealHistoryKey) {
       previousLatestRevealHistoryKeyRef.current = ''
       return
@@ -1056,7 +1055,7 @@ function ResultPanel({
     if (previousLatestRevealHistoryKeyRef.current === latestRevealHistoryKey) return
     previousLatestRevealHistoryKeyRef.current = latestRevealHistoryKey
     historyTailRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-  }, [isVideoStudio, latestRevealHistoryKey])
+  }, [latestRevealHistoryKey])
 
   if (state.historyTasks.length === 0) {
     return isVideoStudio ? (
