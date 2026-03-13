@@ -16,6 +16,12 @@ import {
   findByText as _sharedFindByText,
   describeElement as _sharedDescribeElement
 } from './xhs-shared/dom-helpers'
+import {
+  buildTopicDropdownContainerTextIndex,
+  TOPIC_DROPDOWN_NODE_SELECTOR,
+  isLikelyTopicDropdownContainerSignature,
+  orderTopicDropdownCandidates
+} from './xhs-shared/topicDropdownHelpers'
 
 const XHS_PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish'
 
@@ -877,15 +883,6 @@ function insertTextAtCursor(el: EditorElement, text: string): void {
   }
 }
 
-async function simulateRealClick(element: HTMLElement): Promise<void> {
-  logPlain(`[Tag] 模拟鼠标点击`)
-  await simulateClick(element, {
-    highlightColor: null,
-    preDelayRange: [50, 150],
-    log: false
-  })
-}
-
 function dispatchCharKeyboardEvents(el: HTMLElement, char: string): void {
   const key = String(char ?? '')
   if (!key) return
@@ -915,6 +912,16 @@ async function typeChar(editor: EditorElement, char: string, { delayMs = 90 }: {
   insertTextAtCursor(editor, c)
   if (target instanceof HTMLElement) dispatchCharKeyboardEventsUp(target, c)
   await sleep(Math.max(0, Math.floor(delayMs)))
+}
+
+async function sendInputKey(key: 'Enter' | 'Space'): Promise<boolean> {
+  try {
+    const ok = await ipcRenderer.invoke('cms.xhs.sendKey', { key })
+    return ok === true
+  } catch (error) {
+    void error
+    return false
+  }
 }
 
 function isLikelyBlueText(el: HTMLElement): boolean {
@@ -952,31 +959,77 @@ function hasRichTopicInEditor(editorEl: HTMLElement, topic: string): boolean {
   return false
 }
 
-function findDropdownItem(topicName: string, editorEl: HTMLElement): HTMLElement | null {
-  const name = String(topicName ?? '').trim().replace(/^#+/, '')
-  if (!name) return null
-  const wanted = `#${name}`
+const topicDropdownContainerIds = new WeakMap<HTMLElement, string>()
+let topicDropdownContainerSeq = 0
 
-  const editorRect = editorEl.getBoundingClientRect()
-  const toleranceX = 20
-  const toleranceTop = 0
-  const toleranceBottom = 200
+function getTopicDropdownContainerId(container: HTMLElement): string {
+  const current = topicDropdownContainerIds.get(container)
+  if (current) return current
+  topicDropdownContainerSeq += 1
+  const next = `topic-dropdown-${topicDropdownContainerSeq}`
+  topicDropdownContainerIds.set(container, next)
+  return next
+}
 
-  const nodes = Array.from(
-    document.querySelectorAll(
-      [
-        'body li',
-        'body div[role="option"]',
-        'body [class*="topic"]',
-        'body [class*="Topic"]',
-        'body div',
-        'body span'
-      ].join(', ')
-    )
-  )
+function isTopicDropdownContainer(root: HTMLElement, editorEl: HTMLElement): boolean {
+  if (!isVisible(root)) return false
+  if (root === document.body || root === document.documentElement) return false
+  if (root.contains(editorEl)) return false
 
-  const matches: { el: HTMLElement; top: number; score: number; isCreate: boolean }[] = []
+  const rect = root.getBoundingClientRect()
+  if (rect.width <= 40 || rect.height <= 20 || rect.height > 480) return false
+
+  try {
+    const optionCount = root.querySelectorAll('li, [role="option"], [class*="option"], [class*="Option"]').length
+    return isLikelyTopicDropdownContainerSignature({
+      role: root.getAttribute('role'),
+      className: typeof root.className === 'string' ? root.className : '',
+      tagName: root.tagName,
+      optionCount,
+      hasTippyRootAttr: root.hasAttribute('data-tippy-root')
+    })
+  } catch (error) {
+    void error
+    return false
+  }
+}
+
+function findTopicDropdownContainer(node: HTMLElement, editorEl: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = node
+  while (current && current !== document.body) {
+    if (isTopicDropdownContainer(current, editorEl)) return current
+    current = current.parentElement
+  }
+  return null
+}
+
+function collectTopicDropdownCandidates(
+  editorEl: HTMLElement,
+  options?: { topicName?: string }
+): Array<{
+  id: string
+  el: HTMLElement
+  text: string
+  containerId: string | null
+  domOrder: number
+  rect: { top: number; left: number; width: number; height: number }
+  isCreate: boolean
+}> {
+  const name = String(options?.topicName ?? '').trim().replace(/^#+/, '')
+  const wanted = name ? `#${name}` : ''
+  const nodes = Array.from(document.querySelectorAll(TOPIC_DROPDOWN_NODE_SELECTOR))
+
+  const matches: Array<{
+    id: string
+    el: HTMLElement
+    text: string
+    containerId: string | null
+    domOrder: number
+    rect: { top: number; left: number; width: number; height: number }
+    isCreate: boolean
+  }> = []
   const seen = new Set<HTMLElement>()
+  let domOrder = 0
 
   for (const node of nodes) {
     if (!(node instanceof HTMLElement)) continue
@@ -986,75 +1039,74 @@ function findDropdownItem(topicName: string, editorEl: HTMLElement): HTMLElement
 
     const text = normalizeText(node.innerText || node.textContent || '')
     if (!text) continue
-    if (!text.includes(wanted)) continue
-
-    const rect = node.getBoundingClientRect()
-    if (rect.width <= 4 || rect.height <= 4) continue
-    if (rect.height > 80) continue
-    if (rect.bottom <= editorRect.top - toleranceTop) continue
-    if (rect.top > editorRect.bottom + toleranceBottom) continue
-    if (rect.bottom < 0 || rect.top > window.innerHeight) continue
-
-    const centerX = rect.left + rect.width / 2
-    if (centerX < editorRect.left - toleranceX || centerX > editorRect.right + toleranceX) continue
+    if (wanted && !text.includes(wanted)) continue
 
     const clickable =
-      (node.closest('li, [role="option"], button, a') as HTMLElement | null) ||
+      (node.closest('.item, [role="option"], li, button, a') as HTMLElement | null) ||
       (node.closest('div') as HTMLElement | null) ||
       node
     const candidate = clickable && isVisible(clickable) ? clickable : node
     if (candidate.isContentEditable || candidate.closest('[contenteditable]')) continue
 
-    const candidateRect = candidate.getBoundingClientRect()
-    const candidateCenterX = candidateRect.left + candidateRect.width / 2
-    if (
-      candidateCenterX < editorRect.left - toleranceX ||
-      candidateCenterX > editorRect.right + toleranceX
-    )
-      continue
-    if (candidateRect.bottom <= editorRect.top - toleranceTop) continue
-    if (candidateRect.top > editorRect.bottom + toleranceBottom) continue
-    if (candidateRect.height > 80) continue
-
     if (seen.has(candidate)) continue
+    const container = findTopicDropdownContainer(candidate, editorEl)
+    if (!container) continue
+
     seen.add(candidate)
     const candidateText = normalizeText(candidate.innerText || candidate.textContent || '')
+    if (!candidateText) continue
+    if (wanted && !candidateText.includes(wanted)) continue
     const isCreate = candidateText.includes('新建话题') || candidateText.includes('创建')
+    const candidateRect = candidate.getBoundingClientRect()
+    domOrder += 1
     matches.push({
+      id: `candidate-${domOrder}`,
       el: candidate,
-      top: candidateRect.top,
-      score: candidateText.length || text.length,
+      text: candidateText || text,
+      containerId: container ? getTopicDropdownContainerId(container) : null,
+      domOrder,
+      rect: {
+        top: candidateRect.top,
+        left: candidateRect.left,
+        width: candidateRect.width,
+        height: candidateRect.height
+      },
       isCreate
     })
   }
 
-  if (matches.length > 0) {
-    const nonCreate = matches.filter((m) => !m.isCreate)
-    const pool = nonCreate.length > 0 ? nonCreate : matches
-    pool.sort((a, b) => {
-      if (Math.abs(a.top - b.top) > 5) return a.top - b.top
-      return a.score - b.score
-    })
-    const target = pool[0].el
-    try {
-      const rect = target.getBoundingClientRect()
-      const targetText = normalizeText(target.innerText || target.textContent || '')
-      const originalBg = target.style.backgroundColor
-      const originalBorder = target.style.border
-      target.style.backgroundColor = '#00ff00'
-      target.style.border = '2px solid red'
-      setTimeout(() => {
-        target.style.backgroundColor = originalBg
-        target.style.border = originalBorder
-      }, 1000)
-      logPlain(`[Tag] 锁定目标: "${targetText}" (H:${Math.round(rect.height)}px)`)
-    } catch (error) {
-      void error
-    }
-    return target
-  }
+  return matches
+}
 
-  return null
+function captureTopicDropdownBaseline(editorEl: HTMLElement): Map<string, string> {
+  return buildTopicDropdownContainerTextIndex(collectTopicDropdownCandidates(editorEl))
+}
+
+function findDropdownItems(
+  topicName: string,
+  editorEl: HTMLElement,
+  options?: { baselineTextByContainerId?: ReadonlyMap<string, string> | null }
+): HTMLElement[] {
+  const name = String(topicName ?? '').trim().replace(/^#+/, '')
+  if (!name) return []
+
+  const matches = collectTopicDropdownCandidates(editorEl, { topicName: name })
+  const ordered = orderTopicDropdownCandidates(matches, {
+    baselineTextByContainerId: options?.baselineTextByContainerId ?? null
+  })
+  const targetMap = new Map(matches.map((item) => [item.id, item.el]))
+  return ordered.map((item) => targetMap.get(item.id)).filter((item): item is HTMLElement => Boolean(item))
+}
+
+async function confirmTopicRendered(editor: EditorElement, topicName: string): Promise<boolean> {
+  if (!isContentEditable(editor)) return true
+  return waitFor(() => (hasRichTopicInEditor(editor, topicName) ? true : null), {
+    timeoutMs: 2500,
+    intervalMs: 250,
+    timeoutMessage: '话题未渲染为富文本（蓝字）'
+  })
+    .then(() => true)
+    .catch(() => false)
 }
 
 async function insertTopic(editor: EditorElement, topicName: string): Promise<void> {
@@ -1069,6 +1121,7 @@ async function insertTopic(editor: EditorElement, topicName: string): Promise<vo
       : String((editor as HTMLElement).innerText || (editor as HTMLElement).textContent || '')
   const lastChar = existingText.slice(-1)
   if (existingText && lastChar && !/\s/.test(lastChar)) insertTextAtCursor(editor, ' ')
+  const dropdownBaseline = editor instanceof HTMLElement ? captureTopicDropdownBaseline(editor) : new Map<string, string>()
 
   logAction(`[Tag] 正在输入话题: #${normalized}`)
 
@@ -1077,33 +1130,43 @@ async function insertTopic(editor: EditorElement, topicName: string): Promise<vo
     await typeChar(editor, ch, { delayMs: 60 })
   }
 
-  const target = await waitFor(() => findDropdownItem(normalized, editor) || null, {
+  const initialCandidates = await waitFor(() => {
+    const list = findDropdownItems(normalized, editor, {
+      baselineTextByContainerId: dropdownBaseline
+    })
+    return list.length > 0 ? list : null
+  }, {
     timeoutMs: 6000,
     intervalMs: 250,
     timeoutMessage: '未找到话题下拉项。'
   }).catch(() => null)
 
-  if (target) {
-    logPlain(`[Tag] 找到下拉选项: "${normalizeText(target.innerText || target.textContent || '')}"，准备点击...`)
-    await simulateRealClick(target)
-    if (isContentEditable(editor)) {
-      await waitFor(() => (hasRichTopicInEditor(editor, normalized) ? true : null), {
-        timeoutMs: 2500,
-        intervalMs: 250,
-        timeoutMessage: '话题未渲染为富文本（蓝字）'
-      }).catch(() => {
-        logPlain(`[Tag] ⚠️ 话题可能未变为蓝字: #${normalized}`)
-      })
+  if (initialCandidates && initialCandidates.length > 0) {
+    const preview = initialCandidates
+      .slice(0, 4)
+      .map((item) => `"${normalizeText(item.innerText || item.textContent || '')}"`)
+      .join(' | ')
+    logPlain(`[Tag] 下拉候选顺序: ${preview}`)
+
+    focusAndMoveCaretToEnd(editor)
+    logPlain('[Tag] 发送空格，交给小红书确认弹层第一项')
+    const sent = await sendInputKey('Space')
+    const applied = sent ? await confirmTopicRendered(editor, normalized) : false
+    if (!sent) {
+      logPlain('[Tag] ❌ 空格按键发送失败，未能触发小红书第一项确认。')
+    } else if (!applied) {
+      logPlain(`[Tag] ⚠️ 话题可能未变为蓝字: #${normalized}`)
     }
   } else {
     logPlain('[Tag] ❌ 未找到下拉选项，可能无法生成蓝色话题标签。')
   }
 
-  await sleep(500)
-  insertTextAtCursor(editor, ' ')
+  await sleep(300)
 }
 
-async function fillContent(content: string): Promise<void> {
+async function fillContent(
+  content: string
+): Promise<void> {
   const el = await waitFor(
     () => {
       return (
@@ -1143,12 +1206,7 @@ async function fillContent(content: string): Promise<void> {
 
   if (isContentEditable(el)) {
     const pressEnter = async (): Promise<void> => {
-      try {
-        const ok = await ipcRenderer.invoke('cms.xhs.sendKey', { key: 'Enter' })
-        if (ok === true) return
-      } catch (error) {
-        void error
-      }
+      if (await sendInputKey('Enter')) return
       try {
         document.execCommand('insertText', false, '\n')
       } catch (error) {
@@ -1173,7 +1231,8 @@ async function fillContent(content: string): Promise<void> {
       await sleep(80)
       focusAndMoveCaretToEnd(el)
     }
-    for (const topic of topics) {
+    for (let index = 0; index < topics.length; index++) {
+      const topic = topics[index]!
       logPlain(`[文案] 正在智能输入话题：#${topic}`)
       await insertTopic(el, topic)
       await sleep(120)
@@ -1186,7 +1245,8 @@ async function fillContent(content: string): Promise<void> {
     await sleep(120)
     focusAndMoveCaretToEnd(el)
     if (topics.length > 0 && cleanText) insertTextAtCursor(el, '\n')
-    for (const topic of topics) {
+    for (let index = 0; index < topics.length; index++) {
+      const topic = topics[index]!
       logPlain(`[文案] 正在智能输入话题：#${topic}`)
       await insertTopic(el, topic)
       await sleep(120)
