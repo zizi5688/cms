@@ -16,6 +16,7 @@ import {
 
 import { Button } from '@renderer/components/ui/button'
 import geminiLogo from '@renderer/assets/ai-model-logos/gemini.svg'
+import { getAllowedVideoDurations } from '@renderer/lib/aiVideoProfiles'
 import {
   buildAiConfigPatch,
   findAiModelProfile,
@@ -1633,6 +1634,13 @@ function ControlPanel({
   )
   const currentImageModel = currentImageSelection.modelName || DEFAULT_GRSAI_IMAGE_MODEL
   const currentVideoMeta = state.videoMeta
+  const availableVideoDurationOptions = useMemo(
+    () =>
+      VIDEO_DURATION_OPTIONS.filter((option) =>
+        getAllowedVideoDurations(currentVideoMeta.model).includes(option.value)
+      ),
+    [currentVideoMeta.model]
+  )
   const requestedImageCount = Math.max(1, state.masterOutputCount || 1)
   const requestedVideoCount = Math.max(1, currentVideoMeta.outputCount || 1)
   const previewRuntimeStates = task ? state.previewSlotRuntimeByTaskId[task.id] ?? {} : null
@@ -1820,7 +1828,7 @@ function ControlPanel({
                 }
                 className={fieldClass}
               >
-                {VIDEO_DURATION_OPTIONS.map((option) => (
+                {availableVideoDurationOptions.map((option) => (
                   <option key={option.value} value={String(option.value)}>
                     {option.label}
                   </option>

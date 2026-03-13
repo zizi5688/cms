@@ -4,6 +4,7 @@ import {
   AI_VIDEO_PROFILES,
   DEFAULT_AI_VIDEO_PROFILE_ID,
   getAiVideoProfile,
+  normalizeVideoDurationForModel,
   type AiStudioCapability,
   type AiStudioVideoMode,
   type AiVideoAdapterKind,
@@ -336,7 +337,11 @@ function createDefaultVideoMetadata(profileId?: string | null): AiStudioVideoMet
     lastFramePath: null,
     aspectRatio: profile.defaultAspectRatio,
     resolution: profile.defaultResolution,
-    duration: profile.defaultDuration,
+    duration: normalizeVideoDurationForModel(
+      profile.defaultDuration,
+      profile.modelId,
+      profile.defaultDuration
+    ),
     outputCount: 1,
     completedCount: 0,
     failedCount: 0,
@@ -358,11 +363,12 @@ export function readVideoMetadata(
     typeof record.profileId === 'string' ? record.profileId : undefined
   )
   const base = createDefaultVideoMetadata(profile.id)
+  const model = String(record.model ?? '').trim() || base.model
 
   return {
     capability: 'video',
     profileId: typeof record.profileId === 'string' ? record.profileId : base.profileId,
-    model: String(record.model ?? '').trim() || base.model,
+    model,
     adapterKind: record.adapterKind === 'allapi-unified' ? 'allapi-unified' : base.adapterKind,
     submitPath: String(record.submitPath ?? '').trim() || base.submitPath,
     queryPath: String(record.queryPath ?? '').trim() || base.queryPath,
@@ -381,7 +387,11 @@ export function readVideoMetadata(
         : null,
     aspectRatio: normalizeVideoAspectRatio(record.aspectRatio, base.aspectRatio),
     resolution: normalizeVideoResolution(record.resolution, base.resolution),
-    duration: normalizeVideoDuration(record.duration, base.duration),
+    duration: normalizeVideoDurationForModel(
+      normalizeVideoDuration(record.duration, base.duration),
+      model,
+      base.duration
+    ),
     outputCount: normalizePositiveInteger(record.outputCount, base.outputCount, 4),
     completedCount: normalizeNonNegativeInteger(record.completedCount),
     failedCount: normalizeNonNegativeInteger(record.failedCount),
@@ -1841,7 +1851,11 @@ const useAiStudioState = () => {
           profile.defaultAspectRatio
         ),
         resolution: normalizeVideoResolution(mergedVideoMeta.resolution, profile.defaultResolution),
-        duration: normalizeVideoDuration(mergedVideoMeta.duration, profile.defaultDuration),
+        duration: normalizeVideoDurationForModel(
+          normalizeVideoDuration(mergedVideoMeta.duration, profile.defaultDuration),
+          String(mergedVideoMeta.model ?? '').trim() || providerSelection.modelName || profile.modelId,
+          profile.defaultDuration
+        ),
         outputCount: normalizePositiveInteger(
           mergedVideoMeta.outputCount,
           baseVideoMeta.outputCount,
@@ -2215,7 +2229,11 @@ const useAiStudioState = () => {
     async (value: AiVideoDuration) => {
       const task = await ensureVideoDraftTask()
       const nextVideoMeta = readVideoMetadata(task)
-      nextVideoMeta.duration = value
+      nextVideoMeta.duration = normalizeVideoDurationForModel(
+        value,
+        nextVideoMeta.model,
+        nextVideoMeta.duration
+      )
       await syncVideoTaskInputs(task, nextVideoMeta)
     },
     [ensureVideoDraftTask, syncVideoTaskInputs]
@@ -3338,119 +3356,151 @@ const useAiStudioState = () => {
         }
       })
 
+      replacePreviewSlotRuntimeStates(
+        task.id,
+        buildQueuedPreviewSlotRuntimeStates(initialVideoMeta.outputCount)
+      )
+
       let wasInterrupted = false
 
-      for (let index = 1; index <= initialVideoMeta.outputCount; index += 1) {
-        const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
-        if (!latestTask) break
-        const loopVideoMeta = readVideoMetadata(latestTask)
-        loopVideoMeta.currentItemIndex = index
-        loopVideoMeta.currentItemTotal = loopVideoMeta.outputCount
-        task = await updateTaskPatch(latestTask.id, {
-          promptExtra: effectivePromptText,
-          model: loopVideoMeta.model,
-          aspectRatio: loopVideoMeta.aspectRatio,
-          outputCount: 1,
-          status: 'running',
-          metadata: writeVideoMetadata(latestTask, loopVideoMeta)
-        })
+      try {
+        for (let index = 1; index <= initialVideoMeta.outputCount; index += 1) {
+          const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
+          if (!latestTask) break
+          const loopVideoMeta = readVideoMetadata(latestTask)
+          loopVideoMeta.currentItemIndex = index
+          loopVideoMeta.currentItemTotal = loopVideoMeta.outputCount
+          task = await updateTaskPatch(latestTask.id, {
+            promptExtra: effectivePromptText,
+            model: loopVideoMeta.model,
+            aspectRatio: loopVideoMeta.aspectRatio,
+            outputCount: 1,
+            status: 'running',
+            metadata: writeVideoMetadata(latestTask, loopVideoMeta)
+          })
+          patchPreviewSlotRuntimeState(task.id, index, {
+            status: 'generating',
+            message: '结果生成中'
+          })
 
-        try {
-          const result = await executeRunToTerminal(latestTask.id)
-          const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+          try {
+            const result = await executeRunToTerminal(latestTask.id)
+            const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
 
-          if (result.status === 'succeeded' && outputAssets.length > 0) {
-            await upsertAssetsRemote(
-              outputAssets.map((asset, outputIndex) => ({
-                id: asset.id,
-                taskId: latestTask.id,
-                runId: asset.runId,
-                kind: 'output',
-                role: AI_STUDIO_VIDEO_OUTPUT_ROLE,
-                filePath: asset.filePath,
-                previewPath: asset.previewPath,
-                originPath: asset.originPath,
-                selected: asset.selected,
-                sortOrder: asset.sortOrder,
-                metadata: {
-                  ...(asset.metadata ?? {}),
-                  stage: 'video',
-                  sequenceIndex: index,
-                  outputIndex,
-                  videoMode: loopVideoMeta.mode,
-                  profileId: loopVideoMeta.profileId
-                }
-              }))
-            )
-            loopVideoMeta.completedCount += 1
-          } else {
-            loopVideoMeta.failedCount += 1
-            loopVideoMeta.failures.push(
-              makeVideoFailureRecord(
+            if (result.status === 'succeeded' && outputAssets.length > 0) {
+              await upsertAssetsRemote(
+                outputAssets.map((asset, outputIndex) => ({
+                  id: asset.id,
+                  taskId: latestTask.id,
+                  runId: asset.runId,
+                  kind: 'output',
+                  role: AI_STUDIO_VIDEO_OUTPUT_ROLE,
+                  filePath: asset.filePath,
+                  previewPath: asset.previewPath,
+                  originPath: asset.originPath,
+                  selected: asset.selected,
+                  sortOrder: asset.sortOrder,
+                  metadata: {
+                    ...(asset.metadata ?? {}),
+                    stage: 'video',
+                    sequenceIndex: index,
+                    outputIndex,
+                    videoMode: loopVideoMeta.mode,
+                    profileId: loopVideoMeta.profileId
+                  }
+                }))
+              )
+              loopVideoMeta.completedCount += 1
+              patchPreviewSlotRuntimeState(task.id, index, null)
+            } else {
+              const failureRecord = makeVideoFailureRecord(
                 index,
                 result.run?.errorMessage || '视频生成失败',
                 result.run?.id
               )
+              loopVideoMeta.failedCount += 1
+              loopVideoMeta.failures.push(failureRecord)
+              patchPreviewSlotRuntimeState(task.id, index, {
+                status: 'failed',
+                message: failureRecord.message
+              })
+            }
+          } catch (error) {
+            if (isTaskInterruptedError(error)) {
+              const failureRecord = makeVideoFailureRecord(
+                index,
+                AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+              )
+              wasInterrupted = true
+              loopVideoMeta.failedCount += 1
+              loopVideoMeta.failures.push(failureRecord)
+              patchPreviewSlotRuntimeState(task.id, index, {
+                status: 'failed',
+                message: failureRecord.message
+              })
+              task = await updateTaskPatch(latestTask.id, {
+                status: loopVideoMeta.completedCount > 0 ? 'completed' : 'failed',
+                metadata: writeVideoMetadata(latestTask, loopVideoMeta),
+                promptExtra: effectivePromptText,
+                model: loopVideoMeta.model,
+                aspectRatio: loopVideoMeta.aspectRatio,
+                outputCount: 1
+              })
+              await refresh()
+              break
+            }
+
+            const failureRecord = makeVideoFailureRecord(
+              index,
+              error instanceof Error ? error.message : String(error)
             )
-          }
-        } catch (error) {
-          if (isTaskInterruptedError(error)) {
-            wasInterrupted = true
             loopVideoMeta.failedCount += 1
-            loopVideoMeta.failures.push(
-              makeVideoFailureRecord(index, AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
-            )
-            task = await updateTaskPatch(latestTask.id, {
-              status: loopVideoMeta.completedCount > 0 ? 'completed' : 'failed',
-              metadata: writeVideoMetadata(latestTask, loopVideoMeta),
-              promptExtra: effectivePromptText,
-              model: loopVideoMeta.model,
-              aspectRatio: loopVideoMeta.aspectRatio,
-              outputCount: 1
+            loopVideoMeta.failures.push(failureRecord)
+            patchPreviewSlotRuntimeState(task.id, index, {
+              status: 'failed',
+              message: failureRecord.message
             })
-            await refresh()
-            break
           }
 
-          loopVideoMeta.failedCount += 1
-          loopVideoMeta.failures.push(
-            makeVideoFailureRecord(index, error instanceof Error ? error.message : String(error))
-          )
+          task = await updateTaskPatch(latestTask.id, {
+            status: 'running',
+            metadata: writeVideoMetadata(latestTask, loopVideoMeta)
+          })
+          await refresh()
         }
 
-        task = await updateTaskPatch(latestTask.id, {
-          status: 'running',
-          metadata: writeVideoMetadata(latestTask, loopVideoMeta)
+        const finalTaskRecord = await loadLatestTaskRecord(task.id)
+        if (!finalTaskRecord) return null
+        const finalVideoMeta = readVideoMetadata(finalTaskRecord)
+        finalVideoMeta.currentItemIndex = 0
+        finalVideoMeta.currentItemTotal = finalVideoMeta.outputCount
+        const finalStatus = finalVideoMeta.completedCount > 0 ? 'completed' : 'failed'
+        await updateTaskPatch(finalTaskRecord.id, {
+          status: wasInterrupted && finalVideoMeta.completedCount > 0 ? 'completed' : finalStatus,
+          promptExtra: effectivePromptText,
+          model: finalVideoMeta.model,
+          aspectRatio: finalVideoMeta.aspectRatio,
+          outputCount: 1,
+          metadata: writeVideoMetadata(finalTaskRecord, finalVideoMeta)
         })
         await refresh()
+        return true
+      } finally {
+        clearTaskInterrupt(task.id)
+        clearPreviewSlotRuntimeStates(task.id)
       }
-
-      clearTaskInterrupt(task.id)
-
-      const finalTaskRecord = await loadLatestTaskRecord(task.id)
-      if (!finalTaskRecord) return null
-      const finalVideoMeta = readVideoMetadata(finalTaskRecord)
-      finalVideoMeta.currentItemIndex = 0
-      finalVideoMeta.currentItemTotal = finalVideoMeta.outputCount
-      const finalStatus = finalVideoMeta.completedCount > 0 ? 'completed' : 'failed'
-      await updateTaskPatch(finalTaskRecord.id, {
-        status: wasInterrupted && finalVideoMeta.completedCount > 0 ? 'completed' : finalStatus,
-        promptExtra: effectivePromptText,
-        model: finalVideoMeta.model,
-        aspectRatio: finalVideoMeta.aspectRatio,
-        outputCount: 1,
-        metadata: writeVideoMetadata(finalTaskRecord, finalVideoMeta)
-      })
-      await refresh()
-      return true
     },
     [
       activeTask,
       aiConfig.aiProviderProfiles,
+      clearPreviewSlotRuntimeStates,
+      clearTaskInterrupt,
       createVideoTask,
       executeRunToTerminal,
       loadLatestTaskRecord,
+      patchPreviewSlotRuntimeState,
       refresh,
+      replacePreviewSlotRuntimeStates,
       taskViews,
       updateTaskPatch,
       upsertAssetsRemote,

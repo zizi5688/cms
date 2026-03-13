@@ -16,8 +16,9 @@ test('image preview tiles keep the border while giving loading placeholders a so
   assert.match(failed.failedBodyClassName, /\bbg-transparent\b/)
 })
 
-test('video preview tiles keep the border while preserving transparent failure backgrounds', () => {
+test('video preview tiles reuse the solid loading base while preserving transparent failure backgrounds', () => {
   const ready = resolvePreviewTileSurfaceClassNames('video', 'ready')
+  const loading = resolvePreviewTileSurfaceClassNames('video', 'loading')
   const failed = resolvePreviewTileSurfaceClassNames('video', 'failed')
   const idle = resolvePreviewTileSurfaceClassNames('video', 'idle')
 
@@ -25,6 +26,7 @@ test('video preview tiles keep the border while preserving transparent failure b
   assert.match(ready.shellClassName, /\bborder-zinc-200\b/)
   assert.match(ready.shellClassName, /\bbg-transparent\b/)
   assert.doesNotMatch(ready.shellClassName, /shadow-\[/)
+  assert.match(loading.loadingInnerClassName, /\bbg-zinc-100\b/)
   assert.match(failed.failedBodyClassName, /\bbg-transparent\b/)
-  assert.match(idle.idleBodyClassName, /\bbg-transparent\b/)
+  assert.match(idle.idleBodyClassName, /\bbg-zinc-100\b/)
 })

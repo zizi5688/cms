@@ -286,6 +286,29 @@ function PreviewActionButton({
   )
 }
 
+function PreviewPlaceholderStateContent({
+  icon,
+  status,
+  statusText
+}: {
+  icon: React.ReactNode
+  status: PreviewTileStatus
+  statusText?: string
+}): React.JSX.Element {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center px-5">
+      <div className="flex max-w-full flex-col items-center gap-2.5 text-center">
+        <div className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/75 bg-white/90 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+          {icon}
+        </div>
+        {status === 'loading' && statusText ? (
+          <div className="text-sm font-medium leading-6 text-zinc-500">{statusText}</div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function PreviewStageTile({
   asset,
   status,
@@ -375,16 +398,11 @@ function PreviewStageTile({
           </div>
         ) : (
           <div className={surfaceClassNames.idleBodyClassName}>
-            <div className="absolute inset-0 flex items-center justify-center px-5">
-              <div className="flex max-w-full flex-col items-center gap-2.5 text-center">
-                <div className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/75 bg-white/90 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
-                  <ImageIcon className="h-4 w-4" />
-                </div>
-                {status === 'loading' && statusText ? (
-                  <div className="text-sm font-medium leading-6 text-zinc-500">{statusText}</div>
-                ) : null}
-              </div>
-            </div>
+            <PreviewPlaceholderStateContent
+              icon={<ImageIcon className="h-4 w-4" />}
+              status={status}
+              statusText={statusText}
+            />
           </div>
         )}
 
@@ -1018,6 +1036,18 @@ function VideoPreviewTile({
   return (
     <div className="flex shrink-0 flex-col gap-2" style={style}>
       <div className={cn('group/tile', surfaceClassNames.shellClassName)}>
+        {status === 'loading' ? (
+          <div
+            className="pointer-events-none absolute inset-0 rounded-[28px] p-[1px] animate-[spin_2.6s_linear_infinite]"
+            style={{
+              background:
+                'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))'
+            }}
+          >
+            <div className={surfaceClassNames.loadingInnerClassName} />
+          </div>
+        ) : null}
+
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="relative block w-full text-left">
             <div className={surfaceClassNames.readyBodyClassName}>
@@ -1055,9 +1085,11 @@ function VideoPreviewTile({
           </div>
         ) : (
           <div className={surfaceClassNames.idleBodyClassName}>
-            <div className="absolute inset-0 flex items-center justify-center text-zinc-400">
-              <Clapperboard className="h-6 w-6" />
-            </div>
+            <PreviewPlaceholderStateContent
+              icon={<Clapperboard className="h-4 w-4" />}
+              status={status}
+              statusText={statusText}
+            />
           </div>
         )}
 
@@ -1102,7 +1134,7 @@ function VideoPreviewTile({
         ) : null}
       </div>
 
-      {status !== 'failed' && statusText ? (
+      {status !== 'failed' && status !== 'loading' && statusText ? (
         <div className="px-1 text-[13px] font-medium leading-6 text-zinc-500">{statusText}</div>
       ) : null}
     </div>
@@ -1147,6 +1179,26 @@ function VideoHistoryTaskSection({
       state.videoMeta.subjectReferencePath
     ]
   )
+  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
+  const isRunning =
+    task.status === 'running' || hasActivePreviewSlotRuntimeStates(previewRuntimeStates)
+  const [previewNowMs, setPreviewNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!isRunning) {
+      setPreviewNowMs(Date.now())
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      setPreviewNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [isRunning])
+
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioVideoFailureRecord>()
     videoMeta.failures.forEach((record) => {
@@ -1172,21 +1224,27 @@ function VideoHistoryTaskSection({
       const index = slotIndex + 1
       const asset = assetByIndex.get(index) ?? null
       const failure = failureByIndex.get(index) ?? null
-      const isLoading = task.status === 'running' && !asset && !failure
+      const resolvedState = resolvePreviewSlotState({
+        index,
+        asset,
+        failureMessage: failure?.message ?? null,
+        isRunning,
+        nowMs: previewNowMs,
+        currentLabel: videoMeta.currentItemIndex > 0 ? '结果生成中' : '排队中',
+        currentItemIndex: videoMeta.currentItemIndex,
+        runtimeState: previewRuntimeStates[index] ?? null
+      })
+
       return {
         index,
         asset,
         failure,
-        status: asset ? 'ready' : failure ? 'failed' : isLoading ? 'loading' : 'idle',
-        statusText: failure
-          ? failure.message
-          : isLoading
-            ? `第 ${index}/${videoMeta.currentItemTotal || videoMeta.outputCount} 条生成中`
-            : '',
+        status: resolvedState.status,
+        statusText: resolvedState.statusText,
         detailText: failure?.detail
       } satisfies PreviewSlot
     })
-  }, [generatedAssets, task.status, videoMeta])
+  }, [generatedAssets, isRunning, previewNowMs, previewRuntimeStates, videoMeta])
 
   const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
     try {

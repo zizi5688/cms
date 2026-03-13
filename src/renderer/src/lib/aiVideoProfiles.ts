@@ -76,3 +76,32 @@ export function getAiVideoProfile(profileId?: string | null): AiVideoProfile {
   const normalized = String(profileId ?? '').trim()
   return AI_VIDEO_PROFILES.find((profile) => profile.id === normalized) ?? AI_VIDEO_PROFILES[0]!
 }
+
+function normalizeVideoModelName(modelId?: string | null): string {
+  return String(modelId ?? '').trim().toLowerCase()
+}
+
+export function isFixedEightSecondVideoModel(modelId?: string | null): boolean {
+  const normalized = normalizeVideoModelName(modelId)
+  return normalized.startsWith('veo3') || normalized.startsWith('veo-3')
+}
+
+export function getAllowedVideoDurations(modelId?: string | null): AiVideoDuration[] {
+  return isFixedEightSecondVideoModel(modelId) ? [8] : [5, 8]
+}
+
+export function normalizeVideoDurationForModel(
+  value: unknown,
+  modelId: string | null | undefined,
+  fallback: AiVideoDuration
+): AiVideoDuration {
+  const numeric = Number(value)
+  const allowed = getAllowedVideoDurations(modelId)
+  if (allowed.includes(numeric as AiVideoDuration)) {
+    return numeric as AiVideoDuration
+  }
+  if (allowed.includes(fallback)) {
+    return fallback
+  }
+  return allowed[0] ?? 8
+}
