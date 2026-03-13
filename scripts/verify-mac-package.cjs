@@ -2,6 +2,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const asar = require('@electron/asar')
 
 function fail(message) {
   console.error(`[verify-mac-package] FAIL: ${message}`)
@@ -47,8 +48,9 @@ if (expectedArch === 'arm64' && !appPath.includes('mac-arm64')) {
 const resourcesDir = path.join(appPath, 'Contents', 'Resources')
 const externalNodeModulesDir = path.join(resourcesDir, 'node_modules')
 const unpackedNodeModulesDir = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules')
+const asarPath = path.join(resourcesDir, 'app.asar')
 
-mustBeNonEmptyFile(path.join(resourcesDir, 'app.asar'), 'app.asar')
+mustBeNonEmptyFile(asarPath, 'app.asar')
 mustExist(externalNodeModulesDir, 'external runtime node_modules')
 
 const runtimeDeps = [
@@ -59,8 +61,8 @@ const runtimeDeps = [
   ['fast-uri/package.json', 'fast-uri runtime'],
   ['require-from-string/package.json', 'require-from-string runtime'],
   ['dot-prop/package.json', 'dot-prop runtime'],
-    ['p-limit/package.json', 'p-limit runtime'],
-    ['yocto-queue/package.json', 'yocto-queue runtime'],
+  ['p-limit/package.json', 'p-limit runtime'],
+  ['yocto-queue/package.json', 'yocto-queue runtime'],
   ['sharp/package.json', 'sharp runtime'],
   ['detect-libc/package.json', 'detect-libc runtime'],
   ['@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node', 'sharp darwin arm64 native binary'],
@@ -90,6 +92,27 @@ const bundledResources = [
 
 for (const [relativePath, label] of bundledResources) {
   mustBeNonEmptyFile(path.join(resourcesDir, relativePath), label)
+}
+
+const disallowedPrefixes = [
+  '/.claude',
+  '/.github',
+  '/.githooks',
+  '/.trae',
+  '/.worktrees',
+  '/AI_Tools',
+  '/dist',
+  '/docs',
+  '/outputs',
+  '/python',
+  '/scripts',
+  '/skills'
+]
+
+const packagedEntries = asar.listPackage(asarPath)
+const leakedEntry = packagedEntries.find((entry) => disallowedPrefixes.some((prefix) => entry === prefix || entry.startsWith(`${prefix}/`)))
+if (leakedEntry) {
+  fail(`Found local-only content in app.asar: ${leakedEntry}`)
 }
 
 info(`PASS: app=${appPath}, arch=${expectedArch}`)
