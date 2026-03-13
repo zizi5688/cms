@@ -285,7 +285,25 @@ function ImageLab(): React.JSX.Element {
   }
 
   useEffect(() => {
-    if (materialImport.source !== 'aiStudio' || materialImport.paths.length === 0) return
+    if (
+      materialImport.source !== 'aiStudio' ||
+      materialImport.target !== 'video' ||
+      materialImport.paths.length === 0
+    ) {
+      return
+    }
+
+    setActivePanel('video')
+  }, [materialImport.paths.length, materialImport.source, materialImport.target])
+
+  useEffect(() => {
+    if (
+      materialImport.source !== 'aiStudio' ||
+      materialImport.target !== 'image' ||
+      materialImport.paths.length === 0
+    ) {
+      return
+    }
 
     let cancelled = false
 
@@ -311,7 +329,7 @@ function ImageLab(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [addLog, clearMaterialImport, materialImport])
+  }, [addLog, clearMaterialImport, materialImport, setActivePanel])
 
   const handlePickMediaFiles = async (): Promise<void> => {
     if (isProcessing) return

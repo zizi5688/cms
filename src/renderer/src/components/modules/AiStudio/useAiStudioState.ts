@@ -34,6 +34,7 @@ import {
   resolveMasterWorkflowConcurrency,
   summarizeMasterSlotResults
 } from './workflowRunHelpers'
+import { buildPoolDispatchPlan } from './poolDispatchHelpers'
 
 export type AiStudioImportedFolder = {
   folderPath: string
@@ -1219,6 +1220,7 @@ const useAiStudioState = () => {
   const aiConfig = useCmsStore((state) => state.config)
   const addLog = useCmsStore((state) => state.addLog)
   const setWorkshopImport = useCmsStore((state) => state.setWorkshopImport)
+  const setMaterialImport = useCmsStore((state) => state.setMaterialImport)
   const setActiveModule = useCmsStore((state) => state.setActiveModule)
   const [templates, setTemplates] = useState<AiStudioTemplateRecord[]>([])
   const [tasks, setTasks] = useState<AiStudioTaskRecord[]>([])
@@ -2764,50 +2766,45 @@ const useAiStudioState = () => {
   )
 
   const sendPooledOutputsToWorkshop = useCallback(async () => {
-    const paths = uniqueStrings(
-      pooledOutputAssets.map((asset) => String(asset.filePath ?? '').trim())
-    )
-    if (paths.length === 0) {
-      throw new Error(
-        studioCapability === 'video'
-          ? '请先添加至少一个视频到图池。'
-          : '请先添加至少一张图片到图片池。'
-      )
-    }
+    const plan = buildPoolDispatchPlan({
+      action: 'workshop',
+      studioCapability,
+      assets: pooledOutputAssets
+    })
 
-    const isVideo = pooledOutputAssets.some((asset) => asset.role === AI_STUDIO_VIDEO_OUTPUT_ROLE)
-
-    if (isVideo) {
+    if (plan.mediaType === 'video') {
       setWorkshopImport(
         'video',
-        paths[0] ?? null,
+        plan.paths[0] ?? null,
         pooledOutputAssets[0]?.previewPath ?? null,
-        paths,
+        plan.paths,
         'ai-studio'
       )
       setActiveModule('workshop')
-      addLog(`[AI Studio] 已将图池中的 ${paths.length} 个视频发送到数据工坊。`)
+      addLog(`[AI Studio] 已将素材池中的 ${plan.paths.length} 个视频发送到数据工坊。`)
     } else {
       await prepareNextDraftTask()
-      setWorkshopImport('image', paths[0] ?? null, null, paths, 'ai-studio')
+      setWorkshopImport('image', plan.paths[0] ?? null, null, plan.paths, 'ai-studio')
       setActiveModule('workshop')
-      addLog(`[AI Studio] 已将图池中的 ${paths.length} 张结果图发送到数据工坊。`)
+      addLog(`[AI Studio] 已将素材池中的 ${plan.paths.length} 张结果图发送到数据工坊。`)
     }
 
-    const groupedAssetIds = new Map<string, string[]>()
-    pooledOutputAssets.forEach((asset) => {
-      const group = groupedAssetIds.get(asset.taskId) ?? []
-      group.push(asset.id)
-      groupedAssetIds.set(asset.taskId, group)
-    })
+    if (plan.clearSelection) {
+      const groupedAssetIds = new Map<string, string[]>()
+      pooledOutputAssets.forEach((asset) => {
+        const group = groupedAssetIds.get(asset.taskId) ?? []
+        group.push(asset.id)
+        groupedAssetIds.set(asset.taskId, group)
+      })
 
-    await Promise.all(
-      Array.from(groupedAssetIds.entries()).map(([taskId, assetIds]) =>
-        setOutputSelectionForTask(taskId, assetIds, false, false)
+      await Promise.all(
+        Array.from(groupedAssetIds.entries()).map(([taskId, assetIds]) =>
+          setOutputSelectionForTask(taskId, assetIds, false, false)
+        )
       )
-    )
+    }
 
-    return paths
+    return plan.paths
   }, [
     addLog,
     pooledOutputAssets,
@@ -2817,6 +2814,19 @@ const useAiStudioState = () => {
     setWorkshopImport,
     studioCapability
   ])
+
+  const sendPooledOutputsToVideoComposer = useCallback(async () => {
+    const plan = buildPoolDispatchPlan({
+      action: 'remix',
+      studioCapability,
+      assets: pooledOutputAssets
+    })
+
+    setMaterialImport(plan.paths, 'aiStudio', 'video')
+    setActiveModule('material')
+    addLog(`[AI Studio] 已将素材池中的 ${plan.paths.length} 张图片发送到素材处理的视频处理模块。`)
+    return plan.paths
+  }, [addLog, pooledOutputAssets, setActiveModule, setMaterialImport, studioCapability])
 
   const failureRecords = workflowMeta?.workflow.failures ?? []
   const stageProgress = useMemo(
@@ -4418,6 +4428,7 @@ const useAiStudioState = () => {
     clearSelectedDispatchOutputsForTask,
     sendSelectedDispatchOutputsToWorkshop,
     sendPooledOutputsToWorkshop,
+    sendPooledOutputsToVideoComposer,
     prepareNextDraftTask,
     useDispatchOutputAsReference,
     useOutputAsVideoReference,

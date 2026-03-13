@@ -35,6 +35,7 @@ import {
   parseOutputCountDraft
 } from './outputCountDraftHelpers'
 import { resolvePrimaryGenerateButtonState } from './controlPanelHelpers'
+import { canStartPoolRemix, resolvePoolSendButtonText } from './poolDispatchHelpers'
 import { hasActivePreviewSlotRuntimeStates } from './previewSlotHelpers'
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
@@ -139,6 +140,8 @@ function PooledOutputPopover({
   anchorRef,
   open,
   assets,
+  showRemixShortcut,
+  onStartRemix,
   onRemove,
   onMouseEnter,
   onMouseLeave
@@ -146,6 +149,8 @@ function PooledOutputPopover({
   anchorRef: React.RefObject<HTMLDivElement | null>
   open: boolean
   assets: AiStudioAssetRecord[]
+  showRemixShortcut: boolean
+  onStartRemix: () => void
   onRemove: (asset: AiStudioAssetRecord) => void
   onMouseEnter: () => void
   onMouseLeave: () => void
@@ -195,6 +200,16 @@ function PooledOutputPopover({
     >
       <div className="rounded-[20px] border border-zinc-200 bg-white p-2.5 shadow-[0_18px_40px_rgba(15,23,42,0.16)]">
         <div className="flex w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          {showRemixShortcut ? (
+            <button
+              type="button"
+              onClick={onStartRemix}
+              className="inline-flex h-[74px] w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-[14px] border border-zinc-200 bg-zinc-950 px-2 text-center text-[11px] font-medium text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-zinc-800"
+            >
+              <Clapperboard className="h-4 w-4" />
+              <span className="leading-4">开始混剪</span>
+            </button>
+          ) : null}
           {assets.map((asset) => (
             <PoolPreviewThumb key={asset.id} asset={asset} onRemove={onRemove} />
           ))}
@@ -1737,7 +1752,17 @@ function ControlPanel({
       await state.sendPooledOutputsToWorkshop()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 发送图池失败：${message}`)
+      addLog(`[AI Studio] 发送素材池失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleStartRemix = async (): Promise<void> => {
+    try {
+      await state.sendPooledOutputsToVideoComposer()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 开始混剪失败：${message}`)
       window.alert(message)
     }
   }
@@ -1766,6 +1791,8 @@ function ControlPanel({
     'relative inline-flex h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-zinc-950 bg-white px-3 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400'
   const fieldClass =
     'h-8 rounded-full border border-zinc-200 bg-zinc-50 px-2.5 text-[12px] text-zinc-900 outline-none transition focus:border-sky-400'
+  const canStartPooledRemix = canStartPoolRemix(state.pooledOutputAssets)
+  const sendPoolButtonText = resolvePoolSendButtonText()
 
   return (
     <div className="relative z-30 flex min-w-0 items-end gap-2 overflow-x-auto overflow-y-visible pb-0.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
@@ -1905,7 +1932,7 @@ function ControlPanel({
             disabled={state.pooledOutputCount <= 0}
           >
             <Send className="h-3.5 w-3.5" />
-            <span className="max-[1320px]:hidden">发送图池</span>
+            <span className="max-[1320px]:hidden">{sendPoolButtonText}</span>
             {state.pooledOutputCount > 0 ? (
               <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
                 {state.pooledOutputCount}
@@ -1918,6 +1945,8 @@ function ControlPanel({
           anchorRef={poolTriggerRef}
           open={state.pooledOutputCount > 0 && isPoolPopoverOpen}
           assets={state.pooledOutputAssets}
+          showRemixShortcut={canStartPooledRemix}
+          onStartRemix={() => void handleStartRemix()}
           onRemove={(targetAsset) =>
             void state.toggleDispatchOutputPoolForTask(targetAsset.taskId, targetAsset.id)
           }

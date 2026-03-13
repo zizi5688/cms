@@ -23,6 +23,7 @@ export type WorkshopImport = {
 export type MaterialImport = {
   paths: string[]
   source: 'aiStudio' | null
+  target: 'image' | 'video' | null
 }
 
 export interface Task {
@@ -132,7 +133,11 @@ export interface CmsState {
     paths?: string[] | null,
     source?: WorkshopImport['source']
   ) => void
-  setMaterialImport: (paths: string[] | null, source?: MaterialImport['source']) => void
+  setMaterialImport: (
+    paths: string[] | null,
+    source?: MaterialImport['source'],
+    target?: MaterialImport['target']
+  ) => void
   clearMaterialImport: () => void
   addFiles: (paths: string[]) => void
   addFilesToUpload: (paths: string[]) => void
@@ -198,7 +203,7 @@ const useCmsStore = create<CmsState>((set) => ({
   csvContent: '',
   dataWorkshopFolderPath: '',
   workshopImport: { type: null, path: null, source: null },
-  materialImport: { paths: [], source: null },
+  materialImport: { paths: [], source: null, target: null },
   uploadFiles: [],
   workspacePath: '',
   activeModule: 'material',
@@ -247,7 +252,7 @@ const useCmsStore = create<CmsState>((set) => ({
         }
       }
     }),
-  setMaterialImport: (paths, source = 'aiStudio') =>
+  setMaterialImport: (paths, source = 'aiStudio', target = 'image') =>
     set(() => {
       const normalizedPaths = Array.from(
         new Set(
@@ -256,10 +261,12 @@ const useCmsStore = create<CmsState>((set) => ({
             .filter(Boolean)
         )
       )
-      if (normalizedPaths.length === 0 || !source) return { materialImport: { paths: [], source: null } }
-      return { materialImport: { paths: normalizedPaths, source } }
+      if (normalizedPaths.length === 0 || !source || !target) {
+        return { materialImport: { paths: [], source: null, target: null } }
+      }
+      return { materialImport: { paths: normalizedPaths, source, target } }
     }),
-  clearMaterialImport: () => set(() => ({ materialImport: { paths: [], source: null } })),
+  clearMaterialImport: () => set(() => ({ materialImport: { paths: [], source: null, target: null } })),
   addFiles: (paths) =>
     set((state) => {
       const normalized = (paths ?? []).map((p) => String(p ?? '').trim()).filter(Boolean)
@@ -356,7 +363,7 @@ const useCmsStore = create<CmsState>((set) => ({
       csvContent: '',
       dataWorkshopFolderPath: '',
       workshopImport: { type: null, path: null, source: null },
-      materialImport: { paths: [], source: null },
+      materialImport: { paths: [], source: null, target: null },
       uploadFiles: [],
       selectedKeywordId: null,
       selectedProductId: null,

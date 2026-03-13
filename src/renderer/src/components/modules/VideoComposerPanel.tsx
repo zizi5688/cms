@@ -160,6 +160,8 @@ const INITIAL_SAVED_TEMPLATE = loadSavedTemplate()
 
 function VideoComposerPanel(): React.JSX.Element {
   const addLog = useCmsStore((s) => s.addLog)
+  const materialImport = useCmsStore((s) => s.materialImport)
+  const clearMaterialImport = useCmsStore((s) => s.clearMaterialImport)
   const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
   const setActiveModule = useCmsStore((s) => s.setActiveModule)
 
@@ -404,6 +406,35 @@ function VideoComposerPanel(): React.JSX.Element {
       return next.size === prev.size ? prev : next
     })
   }, [generatedVideos])
+
+  useEffect(() => {
+    if (
+      materialImport.source !== 'aiStudio' ||
+      materialImport.target !== 'video' ||
+      materialImport.paths.length === 0
+    ) {
+      return
+    }
+
+    const normalizedImages = Array.from(new Set(materialImport.paths.filter((item) => isImageFile(item))))
+    const normalizedVideos = Array.from(new Set(materialImport.paths.filter((item) => isVideoFile(item))))
+
+    if (normalizedImages.length === 0 && normalizedVideos.length === 0) {
+      setError('AI 工作台回流的素材里没有可用的图片/视频文件。')
+      addLog('[视频处理] AI 工作台回流素材未识别到可用文件。')
+      clearMaterialImport()
+      return
+    }
+
+    setSourceRootPath('')
+    setSourceImages(normalizedImages)
+    setSourceVideos(normalizedVideos)
+    setError(null)
+    addLog(
+      `[视频处理] 已接收 AI 工作台素材：图片 ${normalizedImages.length} 张，视频 ${normalizedVideos.length} 条。`
+    )
+    clearMaterialImport()
+  }, [addLog, clearMaterialImport, materialImport])
 
   useEffect(() => {
     setVideoAspectRatioMap((prev) => {
