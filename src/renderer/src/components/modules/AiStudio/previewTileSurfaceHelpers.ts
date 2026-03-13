@@ -19,7 +19,7 @@ export function resolvePreviewTileSurfaceClassNames(
   return {
     shellClassName,
     loadingInnerClassName:
-      kind === 'image'
+      kind === 'image' || kind === 'video'
         ? 'h-full w-full rounded-[27px] bg-zinc-100'
         : 'h-full w-full rounded-[27px] bg-transparent',
     readyBodyClassName:
@@ -33,6 +33,6 @@ export function resolvePreviewTileSurfaceClassNames(
     idleBodyClassName:
       kind === 'image'
         ? 'relative aspect-[3/4] bg-zinc-100'
-        : 'relative aspect-[9/16] bg-transparent'
+        : 'relative aspect-[9/16] bg-zinc-100'
   }
 }

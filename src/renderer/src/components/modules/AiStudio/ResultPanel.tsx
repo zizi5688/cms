@@ -10,6 +10,7 @@ import {
   ImagePlus,
   Play,
   Plus,
+  RotateCcw,
   Sparkles,
   X
 } from 'lucide-react'
@@ -30,8 +31,17 @@ import {
   type UseAiStudioStateResult
 } from './useAiStudioState'
 import { resolveLoadedImageBadgeLabel } from './imagePreviewBadgeHelpers'
-import { resolvePreviewSlotState, type PreviewTileStatus } from './previewSlotHelpers'
+import {
+  hasActivePreviewSlotRuntimeStates,
+  resolvePreviewSlotState,
+  type PreviewTileStatus
+} from './previewSlotHelpers'
 import { resolvePreviewTileSurfaceClassNames } from './previewTileSurfaceHelpers'
+import {
+  resolveInitialVideoPreviewPath,
+  resolvePreparedVideoPreviewPath,
+  shouldFallbackToOriginalVideo
+} from './videoPreviewSourceHelpers'
 import { computePreviewTargetCount } from './workflowRunHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
@@ -276,6 +286,29 @@ function PreviewActionButton({
   )
 }
 
+function PreviewPlaceholderStateContent({
+  icon,
+  status,
+  statusText
+}: {
+  icon: React.ReactNode
+  status: PreviewTileStatus
+  statusText?: string
+}): React.JSX.Element {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center px-5">
+      <div className="flex max-w-full flex-col items-center gap-2.5 text-center">
+        <div className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/75 bg-white/90 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+          {icon}
+        </div>
+        {status === 'loading' && statusText ? (
+          <div className="text-sm font-medium leading-6 text-zinc-500">{statusText}</div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function PreviewStageTile({
   asset,
   status,
@@ -285,6 +318,7 @@ function PreviewStageTile({
   pooled,
   onUseAsReference,
   onGenerateVideo,
+  onRegenerate,
   referenceApplied,
   style
 }: {
@@ -296,6 +330,7 @@ function PreviewStageTile({
   pooled?: boolean
   onUseAsReference?: () => void
   onGenerateVideo?: () => void
+  onRegenerate?: () => void
   referenceApplied?: boolean
   style?: React.CSSProperties
 }): React.JSX.Element {
@@ -304,6 +339,7 @@ function PreviewStageTile({
   const showReferenceAction = Boolean(asset && onUseAsReference)
   const showPoolAction = Boolean(asset && onTogglePool)
   const showGenerateVideoAction = Boolean(asset && onGenerateVideo)
+  const showRegenerateAction = Boolean(onRegenerate && (asset || status === 'failed'))
   const surfaceClassNames = resolvePreviewTileSurfaceClassNames('image', status)
   const [loadedResolution, setLoadedResolution] = useState<{ width: number; height: number } | null>(
     null
@@ -362,16 +398,11 @@ function PreviewStageTile({
           </div>
         ) : (
           <div className={surfaceClassNames.idleBodyClassName}>
-            <div className="absolute inset-0 flex items-center justify-center px-5">
-              <div className="flex max-w-full flex-col items-center gap-2.5 text-center">
-                <div className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/75 bg-white/90 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
-                  <ImageIcon className="h-4 w-4" />
-                </div>
-                {status === 'loading' && statusText ? (
-                  <div className="text-sm font-medium leading-6 text-zinc-500">{statusText}</div>
-                ) : null}
-              </div>
-            </div>
+            <PreviewPlaceholderStateContent
+              icon={<ImageIcon className="h-4 w-4" />}
+              status={status}
+              statusText={statusText}
+            />
           </div>
         )}
 
@@ -409,13 +440,29 @@ function PreviewStageTile({
           </div>
         ) : null}
 
-        {showGenerateVideoAction ? (
-          <div className="pointer-events-none absolute bottom-3 right-3 z-10 opacity-0 transition duration-200 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100">
-            <PreviewActionButton
-              icon={<Clapperboard className="h-3.5 w-3.5" />}
-              label="生成视频"
-              onClick={onGenerateVideo!}
-            />
+        {showGenerateVideoAction || showRegenerateAction ? (
+          <div
+            className={cn(
+              'absolute bottom-3 right-3 z-10 flex items-center gap-1.5 transition duration-200',
+              status === 'failed'
+                ? 'pointer-events-auto opacity-100'
+                : 'pointer-events-none opacity-0 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100'
+            )}
+          >
+            {showRegenerateAction ? (
+              <PreviewActionButton
+                icon={<RotateCcw className="h-3.5 w-3.5" />}
+                label="重新生成"
+                onClick={onRegenerate!}
+              />
+            ) : null}
+            {showGenerateVideoAction ? (
+              <PreviewActionButton
+                icon={<Clapperboard className="h-3.5 w-3.5" />}
+                label="生成视频"
+                onClick={onGenerateVideo!}
+              />
+            ) : null}
           </div>
         ) : null}
 
@@ -499,7 +546,11 @@ function HistoryTaskSection({
   const promptExcerpt = buildExcerpt(
     latestSubmittedPrompt || workflowMeta.masterStage.promptExtra || task.promptExtra
   )
-  const isRunning = task.status === 'running'
+  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
+  const isRunning =
+    task.status === 'running' || hasActivePreviewSlotRuntimeStates(previewRuntimeStates)
+  const isInterrupting = state.interruptingTaskIds.includes(task.id)
+  const [previewNowMs, setPreviewNowMs] = useState(() => Date.now())
   const failureRecords = workflowMeta.workflow.failures ?? []
   const currentReferencePaths = useMemo(
     () =>
@@ -510,7 +561,21 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
-  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
+
+  useEffect(() => {
+    if (!isRunning) {
+      setPreviewNowMs(Date.now())
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      setPreviewNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [isRunning])
 
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioWorkflowFailureRecord>()
@@ -555,6 +620,7 @@ function HistoryTaskSection({
         asset,
         failureMessage: failure?.message ?? null,
         isRunning,
+        nowMs: previewNowMs,
         currentLabel: stageProgress.currentLabel,
         currentItemIndex: workflowMeta.workflow.currentItemIndex,
         runtimeState: previewRuntimeStates[index] ?? null
@@ -573,6 +639,7 @@ function HistoryTaskSection({
     failureRecords,
     generatedAssets,
     isRunning,
+    previewNowMs,
     previewRuntimeStates,
     stageProgress.currentLabel,
     workflowMeta
@@ -597,6 +664,26 @@ function HistoryTaskSection({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 切换到视频生成失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleRegenerate = async (sequenceIndex: number): Promise<void> => {
+    try {
+      await state.retryMasterGeneration(task.id, sequenceIndex)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 重新生成失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleInterruptTask = async (): Promise<void> => {
+    try {
+      await state.interruptTask(task.id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 取消任务失败：${message}`)
       window.alert(message)
     }
   }
@@ -679,6 +766,19 @@ function HistoryTaskSection({
 
       {previewSlots.length > 0 ? (
         <div className="py-1">
+          {isRunning ? (
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleInterruptTask()}
+                disabled={isInterrupting}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-zinc-950 bg-white px-4 text-[12px] font-medium text-zinc-950 shadow-[0_8px_20px_rgba(15,23,42,0.08)] transition hover:bg-zinc-50 disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
+              >
+                <X className="h-3.5 w-3.5" />
+                <span>{isInterrupting ? '取消中...' : '取消任务'}</span>
+              </button>
+            </div>
+          ) : null}
           <div className="flex flex-nowrap items-start gap-5 overflow-x-auto pb-1">
             {previewSlots.map((slot) => (
               <PreviewStageTile
@@ -705,6 +805,11 @@ function HistoryTaskSection({
                 onGenerateVideo={
                   slot.asset
                     ? () => void handleGenerateVideo(slot.asset as AiStudioAssetRecord)
+                    : undefined
+                }
+                onRegenerate={
+                  !isRunning && (slot.asset || slot.status === 'failed')
+                    ? () => void handleRegenerate(slot.index)
                     : undefined
                 }
                 referenceApplied={
@@ -740,8 +845,19 @@ function VideoLightbox({
   open: boolean
   onOpenChange: (next: boolean) => void
 }): React.JSX.Element | null {
+  const addLog = useCmsStore((store) => store.addLog)
   const workspacePath = useCmsStore((store) => store.workspacePath)
-  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+  const rawOriginalVideoPath = String(asset?.filePath ?? '').trim()
+  const rawInitialVideoPath = resolveInitialVideoPreviewPath(
+    rawOriginalVideoPath,
+    asset?.previewPath ?? null
+  )
+  const resolvedOriginalVideoSrc = rawOriginalVideoPath
+    ? resolveLocalImage(rawOriginalVideoPath, workspacePath)
+    : ''
+  const [playableVideoSrc, setPlayableVideoSrc] = useState('')
+  const [didFallbackToOriginalVideo, setDidFallbackToOriginalVideo] = useState(false)
+  const [isVideoLoaded, setIsVideoLoaded] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -754,7 +870,70 @@ function VideoLightbox({
     }
   }, [onOpenChange, open])
 
-  if (!open || !asset || !src || typeof document === 'undefined') return null
+  useEffect(() => {
+    if (!open || !asset) {
+      setPlayableVideoSrc('')
+      setDidFallbackToOriginalVideo(false)
+      setIsVideoLoaded(false)
+      return
+    }
+
+    const initialResolvedSrc = rawInitialVideoPath
+      ? resolveLocalImage(rawInitialVideoPath, workspacePath)
+      : ''
+    setPlayableVideoSrc(initialResolvedSrc)
+    setDidFallbackToOriginalVideo(false)
+    setIsVideoLoaded(false)
+
+    if (!rawOriginalVideoPath) return
+
+    let cancelled = false
+    void window.electronAPI
+      .prepareVideoPreview(rawOriginalVideoPath)
+      .then((prepared) => {
+        if (cancelled) return
+        const nextRawPath = resolvePreparedVideoPreviewPath(prepared, rawOriginalVideoPath)
+        setPlayableVideoSrc(resolveLocalImage(nextRawPath, workspacePath))
+      })
+      .catch((error) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : String(error)
+        addLog(`[AI Studio] 视频预览准备失败，回退原视频：${message}`)
+        setPlayableVideoSrc(resolvedOriginalVideoSrc)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    addLog,
+    asset,
+    open,
+    rawInitialVideoPath,
+    rawOriginalVideoPath,
+    resolvedOriginalVideoSrc,
+    workspacePath
+  ])
+
+  const handleVideoPreviewError = (): void => {
+    if (
+      shouldFallbackToOriginalVideo({
+        resolvedOriginalVideoSrc,
+        playableVideoSrc,
+        didFallbackToOriginalVideo
+      })
+    ) {
+      setDidFallbackToOriginalVideo(true)
+      setPlayableVideoSrc(resolvedOriginalVideoSrc)
+      setIsVideoLoaded(false)
+      addLog(`[AI Studio] 视频预览加载失败，已回退原视频路径。src=${playableVideoSrc}`)
+      return
+    }
+
+    addLog(`[AI Studio] 视频预览加载失败：src=${playableVideoSrc || '<empty>'}`)
+  }
+
+  if (!open || !asset || !playableVideoSrc || typeof document === 'undefined') return null
 
   return createPortal(
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/88 p-6">
@@ -773,12 +952,21 @@ function VideoLightbox({
         >
           <X className="h-5 w-5" />
         </button>
-        <video
-          src={src}
-          controls
-          autoPlay
-          className="max-h-[72vh] max-w-[72vw] rounded-3xl bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
-        />
+        <div className="relative">
+          <video
+            key={playableVideoSrc}
+            src={playableVideoSrc}
+            controls
+            preload="metadata"
+            playsInline
+            className="max-h-[72vh] max-w-[72vw] rounded-3xl bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
+            onLoadedData={() => setIsVideoLoaded(true)}
+            onError={handleVideoPreviewError}
+          />
+          {!isVideoLoaded ? (
+            <div className="pointer-events-none absolute inset-0 rounded-3xl bg-zinc-950/60" />
+          ) : null}
+        </div>
       </div>
     </div>,
     document.body
@@ -848,6 +1036,18 @@ function VideoPreviewTile({
   return (
     <div className="flex shrink-0 flex-col gap-2" style={style}>
       <div className={cn('group/tile', surfaceClassNames.shellClassName)}>
+        {status === 'loading' ? (
+          <div
+            className="pointer-events-none absolute inset-0 rounded-[28px] p-[1px] animate-[spin_2.6s_linear_infinite]"
+            style={{
+              background:
+                'conic-gradient(from_0deg,rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08),rgba(24,24,27,0.72),rgba(24,24,27,0.08))'
+            }}
+          >
+            <div className={surfaceClassNames.loadingInnerClassName} />
+          </div>
+        ) : null}
+
         {src && onOpen ? (
           <button type="button" onClick={onOpen} className="relative block w-full text-left">
             <div className={surfaceClassNames.readyBodyClassName}>
@@ -885,9 +1085,11 @@ function VideoPreviewTile({
           </div>
         ) : (
           <div className={surfaceClassNames.idleBodyClassName}>
-            <div className="absolute inset-0 flex items-center justify-center text-zinc-400">
-              <Clapperboard className="h-6 w-6" />
-            </div>
+            <PreviewPlaceholderStateContent
+              icon={<Clapperboard className="h-4 w-4" />}
+              status={status}
+              statusText={statusText}
+            />
           </div>
         )}
 
@@ -932,7 +1134,7 @@ function VideoPreviewTile({
         ) : null}
       </div>
 
-      {status !== 'failed' && statusText ? (
+      {status !== 'failed' && status !== 'loading' && statusText ? (
         <div className="px-1 text-[13px] font-medium leading-6 text-zinc-500">{statusText}</div>
       ) : null}
     </div>
@@ -977,6 +1179,26 @@ function VideoHistoryTaskSection({
       state.videoMeta.subjectReferencePath
     ]
   )
+  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
+  const isRunning =
+    task.status === 'running' || hasActivePreviewSlotRuntimeStates(previewRuntimeStates)
+  const [previewNowMs, setPreviewNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!isRunning) {
+      setPreviewNowMs(Date.now())
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      setPreviewNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [isRunning])
+
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioVideoFailureRecord>()
     videoMeta.failures.forEach((record) => {
@@ -1002,21 +1224,27 @@ function VideoHistoryTaskSection({
       const index = slotIndex + 1
       const asset = assetByIndex.get(index) ?? null
       const failure = failureByIndex.get(index) ?? null
-      const isLoading = task.status === 'running' && !asset && !failure
+      const resolvedState = resolvePreviewSlotState({
+        index,
+        asset,
+        failureMessage: failure?.message ?? null,
+        isRunning,
+        nowMs: previewNowMs,
+        currentLabel: videoMeta.currentItemIndex > 0 ? '结果生成中' : '排队中',
+        currentItemIndex: videoMeta.currentItemIndex,
+        runtimeState: previewRuntimeStates[index] ?? null
+      })
+
       return {
         index,
         asset,
         failure,
-        status: asset ? 'ready' : failure ? 'failed' : isLoading ? 'loading' : 'idle',
-        statusText: failure
-          ? failure.message
-          : isLoading
-            ? `第 ${index}/${videoMeta.currentItemTotal || videoMeta.outputCount} 条生成中`
-            : '',
+        status: resolvedState.status,
+        statusText: resolvedState.statusText,
         detailText: failure?.detail
       } satisfies PreviewSlot
     })
-  }, [generatedAssets, task.status, videoMeta])
+  }, [generatedAssets, isRunning, previewNowMs, previewRuntimeStates, videoMeta])
 
   const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
     try {

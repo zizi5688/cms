@@ -16,6 +16,7 @@ import {
 
 import { Button } from '@renderer/components/ui/button'
 import geminiLogo from '@renderer/assets/ai-model-logos/gemini.svg'
+import { getAllowedVideoDurations } from '@renderer/lib/aiVideoProfiles'
 import {
   buildAiConfigPatch,
   findAiModelProfile,
@@ -33,6 +34,8 @@ import {
   normalizeOutputCountDraftOnBlur,
   parseOutputCountDraft
 } from './outputCountDraftHelpers'
+import { resolvePrimaryGenerateButtonState } from './controlPanelHelpers'
+import { hasActivePreviewSlotRuntimeStates } from './previewSlotHelpers'
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
 const VIDEO_MODE_OPTIONS = [
@@ -1631,11 +1634,25 @@ function ControlPanel({
   )
   const currentImageModel = currentImageSelection.modelName || DEFAULT_GRSAI_IMAGE_MODEL
   const currentVideoMeta = state.videoMeta
+  const availableVideoDurationOptions = useMemo(
+    () =>
+      VIDEO_DURATION_OPTIONS.filter((option) =>
+        getAllowedVideoDurations(currentVideoMeta.model).includes(option.value)
+      ),
+    [currentVideoMeta.model]
+  )
   const requestedImageCount = Math.max(1, state.masterOutputCount || 1)
   const requestedVideoCount = Math.max(1, currentVideoMeta.outputCount || 1)
-  const isRunning = task?.status === 'running'
+  const previewRuntimeStates = task ? state.previewSlotRuntimeByTaskId[task.id] ?? {} : null
+  const isRunning =
+    task?.status === 'running' ||
+    (!isVideoStudio && hasActivePreviewSlotRuntimeStates(previewRuntimeStates))
   const isInterrupting = task ? state.interruptingTaskIds.includes(task.id) : false
-  const actionLabel = isRunning ? (isInterrupting ? '中断中...' : '中断任务') : '开始生成'
+  const primaryActionState = resolvePrimaryGenerateButtonState({
+    isVideoStudio,
+    isRunning,
+    isInterrupting
+  })
   const poolTriggerRef = useRef<HTMLDivElement | null>(null)
   const poolCloseTimerRef = useRef<number | null>(null)
 
@@ -1811,7 +1828,7 @@ function ControlPanel({
                 }
                 className={fieldClass}
               >
-                {VIDEO_DURATION_OPTIONS.map((option) => (
+                {availableVideoDurationOptions.map((option) => (
                   <option key={option.value} value={String(option.value)}>
                     {option.label}
                   </option>
@@ -1912,16 +1929,16 @@ function ControlPanel({
           type="button"
           className={cn(actionButtonClass, 'gap-1.5')}
           onClick={() => {
-            if (isRunning) {
+            if (primaryActionState.intent === 'interrupt') {
               void state.interruptActiveTask()
               return
             }
             void handleGenerate()
           }}
-          disabled={isInterrupting}
+          disabled={primaryActionState.disabled}
         >
           <ArrowUp className="h-3.5 w-3.5" />
-          <span className="max-[1320px]:hidden">{actionLabel}</span>
+          <span className="max-[1320px]:hidden">{primaryActionState.actionLabel}</span>
         </Button>
       </div>
     </div>

@@ -63,6 +63,16 @@ function normalizeRequestedCount(value: number, fallback = 1): number {
   return Math.max(1, Math.floor(Number(value) || fallback || 1))
 }
 
+export function resolveMasterWorkflowConcurrency(
+  requestedCount: number,
+  maxConcurrency = 10
+): number {
+  return Math.min(
+    normalizeRequestedCount(requestedCount),
+    normalizeRequestedCount(maxConcurrency)
+  )
+}
+
 export function prepareWorkflowForMasterRun<T extends WorkflowLike>(
   workflow: T,
   input: PrepareWorkflowForMasterRunInput
