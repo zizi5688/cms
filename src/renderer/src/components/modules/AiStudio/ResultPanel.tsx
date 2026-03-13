@@ -29,6 +29,7 @@ import {
   type AiStudioWorkflowFailureRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
+import { resolveLoadedImageBadgeLabel } from './imagePreviewBadgeHelpers'
 import { resolvePreviewSlotState, type PreviewTileStatus } from './previewSlotHelpers'
 import { resolvePreviewTileSurfaceClassNames } from './previewTileSurfaceHelpers'
 import { computePreviewTargetCount } from './workflowRunHelpers'
@@ -304,6 +305,14 @@ function PreviewStageTile({
   const showPoolAction = Boolean(asset && onTogglePool)
   const showGenerateVideoAction = Boolean(asset && onGenerateVideo)
   const surfaceClassNames = resolvePreviewTileSurfaceClassNames('image', status)
+  const [loadedResolution, setLoadedResolution] = useState<{ width: number; height: number } | null>(
+    null
+  )
+  const resolutionBadgeLabel = resolveLoadedImageBadgeLabel(loadedResolution)
+
+  useEffect(() => {
+    setLoadedResolution(null)
+  }, [src])
 
   return (
     <div className="group/tile flex min-w-0 shrink-0 flex-col gap-2" style={style}>
@@ -329,6 +338,18 @@ function PreviewStageTile({
                 className="h-full w-full object-cover transition duration-300 hover:scale-[1.01]"
                 draggable={false}
                 loading="lazy"
+                onLoad={(event) => {
+                  const target = event.currentTarget
+                  const width = Number(target.naturalWidth)
+                  const height = Number(target.naturalHeight)
+                  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                    setLoadedResolution(null)
+                    return
+                  }
+                  setLoadedResolution((prev) =>
+                    prev && prev.width === width && prev.height === height ? prev : { width, height }
+                  )
+                }}
               />
             </div>
           </button>
@@ -395,6 +416,12 @@ function PreviewStageTile({
               label="生成视频"
               onClick={onGenerateVideo!}
             />
+          </div>
+        ) : null}
+
+        {asset && resolutionBadgeLabel ? (
+          <div className="pointer-events-none absolute bottom-3 left-3 z-10 inline-flex h-6 items-center rounded-full bg-black/72 px-2.5 text-[10px] font-medium tracking-[0.04em] text-white shadow-[0_8px_18px_rgba(0,0,0,0.24)] backdrop-blur-sm">
+            {resolutionBadgeLabel}
           </div>
         ) : null}
       </div>
