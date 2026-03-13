@@ -2,7 +2,17 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
-import { Check, Clapperboard, ImageMinus, ImagePlus, Play, Plus, Sparkles, X } from 'lucide-react'
+import {
+  Check,
+  Clapperboard,
+  Image as ImageIcon,
+  ImageMinus,
+  ImagePlus,
+  Play,
+  Plus,
+  Sparkles,
+  X
+} from 'lucide-react'
 
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
@@ -19,15 +29,15 @@ import {
   type AiStudioWorkflowFailureRecord,
   type UseAiStudioStateResult
 } from './useAiStudioState'
+import { resolvePreviewSlotState, type PreviewTileStatus } from './previewSlotHelpers'
 import { resolvePreviewTileSurfaceClassNames } from './previewTileSurfaceHelpers'
+import { computePreviewTargetCount } from './workflowRunHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
 const MAX_PREVIEW_SLOTS = 4
 const VIDEO_POSTER_CAPTURE_TIME_SEC = 0.05
 const videoPosterCache = new Map<string, string>()
 const videoPosterInflight = new Map<string, Promise<string>>()
-
-type PreviewTileStatus = 'ready' | 'loading' | 'failed' | 'idle'
 
 type PreviewSlot = {
   index: number
@@ -330,7 +340,18 @@ function PreviewStageTile({
             </div>
           </div>
         ) : (
-          <div className={surfaceClassNames.idleBodyClassName} />
+          <div className={surfaceClassNames.idleBodyClassName}>
+            <div className="absolute inset-0 flex items-center justify-center px-5">
+              <div className="flex max-w-full flex-col items-center gap-2.5 text-center">
+                <div className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/75 bg-white/90 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+                  <ImageIcon className="h-4 w-4" />
+                </div>
+                {status === 'loading' && statusText ? (
+                  <div className="text-sm font-medium leading-6 text-zinc-500">{statusText}</div>
+                ) : null}
+              </div>
+            </div>
+          </div>
         )}
 
         {showPoolAction || showReferenceAction ? (
@@ -378,7 +399,7 @@ function PreviewStageTile({
         ) : null}
       </div>
 
-      {status !== 'failed' && statusText ? (
+      {status !== 'failed' && status !== 'loading' && statusText ? (
         <div className="px-1 text-[13px] font-medium leading-6 text-zinc-500">{statusText}</div>
       ) : null}
     </div>
@@ -462,6 +483,7 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
+  const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
 
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioWorkflowFailureRecord>()
@@ -487,18 +509,13 @@ function HistoryTaskSection({
       (max, record) => Math.max(max, record.sequenceIndex),
       0
     )
-    const previewTargetCount = Math.min(
-      isRunning
-        ? Math.max(
-            workflowMeta.workflow.currentItemTotal || 0,
-            expectedOutputCount || 0,
-            generatedAssets.length,
-            maxFailureIndex,
-            1
-          )
-        : Math.max(generatedAssets.length, expectedOutputCount || 0, maxFailureIndex, 1),
-      MAX_PREVIEW_SLOTS
-    )
+    const previewTargetCount = computePreviewTargetCount({
+      isRunning,
+      currentItemTotal: workflowMeta.workflow.currentItemTotal || 0,
+      expectedOutputCount: expectedOutputCount || 0,
+      generatedCount: generatedAssets.length,
+      maxFailureIndex
+    })
 
     if (previewTargetCount <= 0 && !currentAiMasterAsset) return [] as PreviewSlot[]
 
@@ -506,14 +523,22 @@ function HistoryTaskSection({
       const index = slotIndex + 1
       const asset = assetByIndex.get(index) ?? null
       const failure = failureByIndex.get(index) ?? null
-      const isLoadingSlot = isRunning && !asset && !failure
+      const resolvedState = resolvePreviewSlotState({
+        index,
+        asset,
+        failureMessage: failure?.message ?? null,
+        isRunning,
+        currentLabel: stageProgress.currentLabel,
+        currentItemIndex: workflowMeta.workflow.currentItemIndex,
+        runtimeState: previewRuntimeStates[index] ?? null
+      })
 
       return {
         index,
         asset,
         failure,
-        status: asset ? 'ready' : failure ? 'failed' : isLoadingSlot ? 'loading' : 'idle',
-        statusText: failure ? failure.message : isLoadingSlot ? stageProgress.currentLabel : ''
+        status: resolvedState.status,
+        statusText: resolvedState.statusText
       } satisfies PreviewSlot
     })
   }, [
@@ -521,6 +546,7 @@ function HistoryTaskSection({
     failureRecords,
     generatedAssets,
     isRunning,
+    previewRuntimeStates,
     stageProgress.currentLabel,
     workflowMeta
   ])

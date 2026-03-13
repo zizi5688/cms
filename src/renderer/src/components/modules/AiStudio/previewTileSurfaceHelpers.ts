@@ -18,7 +18,10 @@ export function resolvePreviewTileSurfaceClassNames(
 
   return {
     shellClassName,
-    loadingInnerClassName: 'h-full w-full rounded-[27px] bg-transparent',
+    loadingInnerClassName:
+      kind === 'image'
+        ? 'h-full w-full rounded-[27px] bg-zinc-100'
+        : 'h-full w-full rounded-[27px] bg-transparent',
     readyBodyClassName:
       kind === 'image'
         ? 'aspect-[3/4] overflow-hidden bg-transparent'
@@ -29,7 +32,7 @@ export function resolvePreviewTileSurfaceClassNames(
         : 'relative aspect-[9/16] bg-transparent',
     idleBodyClassName:
       kind === 'image'
-        ? 'aspect-[3/4] bg-transparent'
+        ? 'relative aspect-[3/4] bg-zinc-100'
         : 'relative aspect-[9/16] bg-transparent'
   }
 }
