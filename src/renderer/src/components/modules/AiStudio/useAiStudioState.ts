@@ -23,8 +23,14 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 import { runWithConcurrencyLimit } from './parallelRunHelpers'
 import type { PreviewSlotRuntimeState } from './previewSlotHelpers'
 import {
+  bindMasterGeneratedAssetToSlot,
+  buildSkippedMasterCleanupAssets
+} from './masterCleanupHelpers'
+import { findAbandonedPreSubmitTaskIds } from './staleTaskRecoveryHelpers'
+import {
   buildQueuedPreviewSlotRuntimeStates,
   prepareWorkflowForMasterRun,
+  resolveMasterWorkflowConcurrency,
   summarizeMasterSlotResults
 } from './workflowRunHelpers'
 
@@ -430,6 +436,27 @@ export function selectDispatchOutputAssets(
   return task.outputAssets.filter((asset) => asset.role === AI_STUDIO_MASTER_CLEAN_ROLE)
 }
 
+function readAssetSequenceIndex(
+  asset: Pick<AiStudioAssetRecord, 'sortOrder' | 'metadata'> | null | undefined
+): number {
+  if (!asset) return 0
+  const metadata =
+    asset.metadata && typeof asset.metadata === 'object'
+      ? (asset.metadata as Record<string, unknown>)
+      : {}
+  const rawIndex = metadata.sequenceIndex
+  const numericIndex =
+    typeof rawIndex === 'number' && Number.isFinite(rawIndex)
+      ? rawIndex
+      : Number.parseInt(String(rawIndex ?? ''), 10)
+
+  if (Number.isFinite(numericIndex) && numericIndex > 0) {
+    return Math.max(1, Math.floor(numericIndex))
+  }
+
+  return Math.max(1, asset.sortOrder + 1)
+}
+
 function createDefaultWorkflowMetadata(
   task: Pick<
     AiStudioTaskRecord,
@@ -784,7 +811,7 @@ export function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiSt
 }
 
 const AI_STUDIO_TASK_INTERRUPTED_MESSAGE = '[AI Studio] 任务已手动中断。'
-const AI_STUDIO_MASTER_CLEAN_CONCURRENCY = 2
+const AI_STUDIO_MASTER_CLEAN_CONCURRENCY = 10
 
 function createTaskInterruptedError(): Error {
   const error = new Error(AI_STUDIO_TASK_INTERRUPTED_MESSAGE)
@@ -1196,6 +1223,8 @@ const useAiStudioState = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [isImporting, setIsImporting] = useState(false)
   const interruptRequestedTaskIdsRef = useRef<Set<string>>(new Set())
+  const sessionStartedAtRef = useRef(Date.now())
+  const hasRecoveredAbandonedTasksRef = useRef(false)
   const [interruptingTaskIds, setInterruptingTaskIds] = useState<string[]>([])
   const [previewSlotRuntimeByTaskId, setPreviewSlotRuntimeByTaskId] = useState<
     Record<string, Record<number, PreviewSlotRuntimeState>>
@@ -1205,9 +1234,21 @@ const useAiStudioState = () => {
     (taskId: string, nextStates: Record<number, PreviewSlotRuntimeState>) => {
       const normalizedTaskId = String(taskId ?? '').trim()
       if (!normalizedTaskId) return
+      const nowMs = Date.now()
       setPreviewSlotRuntimeByTaskId((prev) => ({
         ...prev,
-        [normalizedTaskId]: nextStates
+        [normalizedTaskId]: Object.fromEntries(
+          Object.entries(nextStates).map(([slotKey, state]) => [
+            slotKey,
+            {
+              ...state,
+              startedAt:
+                Number.isFinite(Number(state?.startedAt)) && Number(state?.startedAt) > 0
+                  ? Number(state.startedAt)
+                  : nowMs
+            } satisfies PreviewSlotRuntimeState
+          ])
+        )
       }))
     },
     []
@@ -1222,7 +1263,17 @@ const useAiStudioState = () => {
       setPreviewSlotRuntimeByTaskId((prev) => {
         const current = { ...(prev[normalizedTaskId] ?? {}) }
         if (nextState) {
-          current[normalizedIndex] = nextState
+          const previousState = current[normalizedIndex] ?? null
+          const nextStartedAt =
+            Number.isFinite(Number(nextState.startedAt)) && Number(nextState.startedAt) > 0
+              ? Number(nextState.startedAt)
+              : previousState && previousState.status === nextState.status
+                ? Number(previousState.startedAt ?? 0) || Date.now()
+                : Date.now()
+          current[normalizedIndex] = {
+            ...nextState,
+            startedAt: nextStartedAt
+          }
         } else {
           delete current[normalizedIndex]
         }
@@ -1254,6 +1305,61 @@ const useAiStudioState = () => {
     })
   }, [])
 
+  const buildAbandonedTaskRecoveryPatch = useCallback((task: AiStudioTaskRecord) => {
+    if (readTaskCapability(task) === 'video') {
+      const videoMeta = readVideoMetadata(task)
+      return {
+        status: 'failed' as const,
+        metadata: writeVideoMetadata(task, {
+          ...videoMeta,
+          currentItemIndex: 0,
+          currentItemTotal: videoMeta.outputCount
+        })
+      }
+    }
+
+    const workflow = readWorkflowMetadata(task)
+    const wasChildStage = workflow.workflow.activeStage === 'child-generating'
+    return {
+      status: 'failed' as const,
+      metadata: writeWorkflowMetadata(task, {
+        ...workflow,
+        workflow: {
+          ...workflow.workflow,
+          activeStage: wasChildStage ? 'child-ready' : 'master-selecting',
+          currentItemKind: 'idle',
+          currentItemIndex: 0,
+          currentItemTotal: wasChildStage
+            ? workflow.childStage.requestedCount
+            : workflow.masterStage.requestedCount
+        }
+      })
+    }
+  }, [])
+
+  const recoverAbandonedPreSubmitTasks = useCallback(
+    async (taskRows: AiStudioTaskRecord[]) => {
+      const abandonedTaskIds = new Set(
+        findAbandonedPreSubmitTaskIds(taskRows, sessionStartedAtRef.current)
+      )
+      if (abandonedTaskIds.size <= 0) {
+        return 0
+      }
+
+      let recoveredCount = 0
+      for (const task of taskRows) {
+        if (!abandonedTaskIds.has(task.id)) continue
+        await window.api.cms.aiStudio.task.update({
+          taskId: task.id,
+          patch: buildAbandonedTaskRecoveryPatch(task)
+        })
+        recoveredCount += 1
+      }
+      return recoveredCount
+    },
+    [buildAbandonedTaskRecoveryPatch]
+  )
+
   const refresh = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -1280,6 +1386,24 @@ const useAiStudioState = () => {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    if (hasRecoveredAbandonedTasksRef.current || isLoading) return
+    hasRecoveredAbandonedTasksRef.current = true
+
+    void (async () => {
+      try {
+        const recoveredCount = await recoverAbandonedPreSubmitTasks(tasks)
+        if (recoveredCount > 0) {
+          addLog(`[AI Studio] 已恢复 ${recoveredCount} 个上次会话中断的任务。`)
+          await refresh()
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        addLog(`[AI Studio] 恢复悬挂任务失败：${message}`)
+      }
+    })()
+  }, [addLog, isLoading, recoverAbandonedPreSubmitTasks, refresh, tasks])
 
   const assetsByTaskId = useMemo(() => {
     const map = new Map<string, AiStudioAssetRecord[]>()
@@ -3087,62 +3211,20 @@ const useAiStudioState = () => {
       rawAsset: AiStudioAssetRecord,
       sequenceIndex: number
     ) => {
-      const outputs = await window.electronAPI.processWatermark({
-        files: [rawAsset.filePath],
-        pythonPath: aiConfig.pythonPath,
-        scriptPath: aiConfig.watermarkScriptPath,
-        watermarkBox: aiConfig.watermarkBox
-      })
-      const cleanPath = Array.isArray(outputs) ? String(outputs[0] ?? '').trim() : ''
-      if (!cleanPath) {
-        throw new Error('[AI Studio] 去水印未返回输出文件。')
-      }
-
-      const rawMetadata =
-        rawAsset.metadata && typeof rawAsset.metadata === 'object'
-          ? (rawAsset.metadata as Record<string, unknown>)
-          : {}
-
+      const [nextRawAsset, cleanAsset] = buildSkippedMasterCleanupAssets(rawAsset, sequenceIndex)
       await upsertAssetsRemote([
         {
-          id: rawAsset.id,
-          taskId: task.id,
-          runId: rawAsset.runId,
-          kind: 'output',
-          role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-          filePath: rawAsset.filePath,
-          previewPath: rawAsset.previewPath,
-          originPath: rawAsset.originPath,
-          selected: rawAsset.selected,
-          sortOrder: rawAsset.sortOrder,
-          metadata: {
-            ...rawMetadata,
-            stage: 'master',
-            sequenceIndex,
-            watermarkStatus: 'succeeded'
-          }
+          ...nextRawAsset,
+          taskId: task.id
         },
         {
-          id: `${rawAsset.id}:clean`,
+          ...cleanAsset,
           taskId: task.id,
-          runId: rawAsset.runId,
-          kind: 'output',
-          role: AI_STUDIO_MASTER_CLEAN_ROLE,
-          filePath: cleanPath,
-          previewPath: cleanPath,
-          originPath: rawAsset.filePath,
-          selected: false,
-          sortOrder: rawAsset.sortOrder,
-          metadata: {
-            stage: 'master',
-            sequenceIndex,
-            sourceAssetId: rawAsset.id,
-            watermarkStatus: 'succeeded'
-          }
+          role: AI_STUDIO_MASTER_CLEAN_ROLE
         }
       ])
     },
-    [aiConfig.pythonPath, aiConfig.watermarkBox, aiConfig.watermarkScriptPath, upsertAssetsRemote]
+    [upsertAssetsRemote]
   )
 
   const startVideoWorkflow = useCallback(
@@ -3480,7 +3562,18 @@ const useAiStudioState = () => {
       await refresh()
       payload?.onStarted?.()
 
-      let wasInterrupted = false
+      try {
+        await createTaskWithInputs({
+          primaryImagePath: null,
+          referenceImagePaths: [],
+          inheritFrom: task,
+          promptExtraOverride: '',
+          templateIdOverride: null
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        addLog(`[AI Studio] 创建下一张图片草稿失败：${message}`)
+      }
 
       const sequenceIndexes = Array.from(
         { length: workflow.masterStage.requestedCount },
@@ -3494,10 +3587,12 @@ const useAiStudioState = () => {
       try {
         const slotResults = await runWithConcurrencyLimit(
           sequenceIndexes,
-          Math.min(AI_STUDIO_MASTER_CLEAN_CONCURRENCY, Math.max(sequenceIndexes.length, 1)),
+          resolveMasterWorkflowConcurrency(
+            sequenceIndexes.length,
+            AI_STUDIO_MASTER_CLEAN_CONCURRENCY
+          ),
           async (sequenceIndex) => {
             if (isTaskInterruptRequested(task.id)) {
-              wasInterrupted = true
               patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
                 status: 'failed',
                 message: AI_STUDIO_TASK_INTERRUPTED_MESSAGE
@@ -3564,11 +3659,6 @@ const useAiStudioState = () => {
                   }
                 }
 
-                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                  status: 'cleaning',
-                  message: '去水印处理中'
-                })
-
                 try {
                   await processMasterCleanup({ id: task.id }, rawAsset, sequenceIndex)
                   patchPreviewSlotRuntimeState(task.id, sequenceIndex, null)
@@ -3633,9 +3723,6 @@ const useAiStudioState = () => {
               }
             } catch (error) {
               const interrupted = isTaskInterruptedError(error)
-              if (interrupted) {
-                wasInterrupted = true
-              }
               const message = interrupted
                 ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
                 : (error instanceof Error ? error.message : String(error))
@@ -3678,24 +3765,11 @@ const useAiStudioState = () => {
         })
         await refresh()
 
-        if (finalStatus === 'ready' || wasInterrupted) {
-          await createTaskWithInputs({
-            primaryImagePath: null,
-            referenceImagePaths: [],
-            inheritFrom: task,
-            promptExtraOverride: '',
-            templateIdOverride: null
-          })
-        }
-
         return true
       } catch (error) {
         const latestTask = (await loadLatestTaskRecord(task.id)) ?? task
         const latestWorkflow = readWorkflowMetadata(latestTask)
         const interrupted = isTaskInterruptedError(error)
-        if (interrupted) {
-          wasInterrupted = true
-        }
         const failureMessage = interrupted
           ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
           : (error instanceof Error ? error.message : String(error))
@@ -3736,16 +3810,6 @@ const useAiStudioState = () => {
         })
         await refresh()
 
-        if (wasInterrupted) {
-          await createTaskWithInputs({
-            primaryImagePath: null,
-            referenceImagePaths: [],
-            inheritFrom: task,
-            promptExtraOverride: '',
-            templateIdOverride: null
-          })
-        }
-
         return true
       } finally {
         clearTaskInterrupt(task.id)
@@ -3757,6 +3821,7 @@ const useAiStudioState = () => {
       clearPreviewSlotRuntimeStates,
       clearTaskInterrupt,
       createTaskWithInputs,
+      addLog,
       defaultModel,
       executeRunToTerminal,
       isTaskInterruptRequested,
@@ -3821,26 +3886,58 @@ const useAiStudioState = () => {
   )
 
   const retryMasterGeneration = useCallback(
-    async (sequenceIndex: number) => {
-      const activeProviderSelection = resolveImageTaskProviderState(activeTask)
-      if (!activeTask || !activeProviderSelection.providerProfile) {
+    async (taskId: string, sequenceIndex: number) => {
+      const normalizedTaskId = String(taskId ?? '').trim()
+      const normalizedSequenceIndex = Math.max(1, Math.floor(Number(sequenceIndex) || 1))
+      if (!normalizedTaskId) return
+
+      const latestTask = await loadLatestTaskRecord(normalizedTaskId)
+      if (!latestTask) return
+
+      const taskProviderSelection = resolveImageTaskProviderState(latestTask)
+      if (!taskProviderSelection.providerProfile) {
         throw new Error('[AI Studio] 请先在模型设置中创建并选择图片供应商。')
       }
-      if (!activeProviderSelection.apiKey.trim()) {
+      if (!taskProviderSelection.apiKey.trim()) {
         throw new Error('[AI Studio] 请先填写图片供应商 API Key。')
       }
 
-      const latestTask = await loadLatestTaskRecord(activeTask.id)
-      if (!latestTask) return
+      const outputAssets = (
+        await window.api.cms.aiStudio.asset.list({
+          taskId: normalizedTaskId,
+          kind: 'output'
+        })
+      ).map(coerceAssetRecord)
+      const existingRawAsset =
+        outputAssets.find(
+          (asset) =>
+            asset.role === AI_STUDIO_MASTER_OUTPUT_ROLE &&
+            readAssetSequenceIndex(asset) === normalizedSequenceIndex
+        ) ?? null
+      const hasSuccessfulCleanAsset = outputAssets.some(
+        (asset) =>
+          asset.role === AI_STUDIO_MASTER_CLEAN_ROLE &&
+          readAssetSequenceIndex(asset) === normalizedSequenceIndex
+      )
 
       const latestWorkflow = readWorkflowMetadata(latestTask)
+      const hadGeneratedBefore = Boolean(existingRawAsset)
+      const hadFailedCleanBefore = latestWorkflow.workflow.failures.some(
+        (item) =>
+          item.stageKind === 'master-clean' && item.sequenceIndex === normalizedSequenceIndex
+      )
       latestWorkflow.workflow.failures = latestWorkflow.workflow.failures.filter(
-        (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
+        (item) => item.sequenceIndex !== normalizedSequenceIndex
       )
       latestWorkflow.workflow.activeStage = 'master-generating'
       latestWorkflow.workflow.currentItemKind = 'master-generate'
-      latestWorkflow.workflow.currentItemIndex = sequenceIndex
+      latestWorkflow.workflow.currentItemIndex = normalizedSequenceIndex
       latestWorkflow.workflow.currentItemTotal = latestWorkflow.masterStage.requestedCount
+
+      patchPreviewSlotRuntimeState(normalizedTaskId, normalizedSequenceIndex, {
+        status: 'generating',
+        message: '结果生成中'
+      })
 
       await updateTaskPatch(latestTask.id, {
         templateId: latestWorkflow.masterStage.templateId,
@@ -3852,54 +3949,68 @@ const useAiStudioState = () => {
       await refresh()
 
       const workingTask = await loadLatestTaskRecord(latestTask.id)
-      if (!workingTask) return
+      if (!workingTask) {
+        patchPreviewSlotRuntimeState(normalizedTaskId, normalizedSequenceIndex, null)
+        return
+      }
+
       const workingWorkflow = readWorkflowMetadata(workingTask)
+      workingWorkflow.workflow.failures = workingWorkflow.workflow.failures.filter(
+        (item) => item.sequenceIndex !== normalizedSequenceIndex
+      )
 
       try {
         const result = await executeRunToTerminal(workingTask.id)
-        const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+        const nextOutputAssets = (result.outputs ?? []).map(coerceAssetRecord)
 
-        if (result.status === 'succeeded' && outputAssets.length > 0) {
-          const relabeled = await upsertAssetsRemote(
-            outputAssets.map((asset, outputIndex) => ({
-              id: asset.id,
-              taskId: workingTask.id,
-              runId: asset.runId,
-              kind: 'output',
-              role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-              filePath: asset.filePath,
-              previewPath: asset.previewPath,
-              originPath: asset.originPath,
-              selected: asset.selected,
-              sortOrder: asset.sortOrder,
-              metadata: {
-                ...(asset.metadata ?? {}),
-                stage: 'master',
-                sequenceIndex,
-                outputIndex,
-                watermarkStatus: 'pending'
-              }
-            }))
+        if (result.status === 'succeeded' && nextOutputAssets.length > 0) {
+          const nextRawAsset = bindMasterGeneratedAssetToSlot(
+            {
+              ...nextOutputAssets[0],
+              taskId: workingTask.id
+            },
+            normalizedSequenceIndex,
+            existingRawAsset
+              ? {
+                  id: existingRawAsset.id,
+                  taskId: workingTask.id,
+                  sortOrder: existingRawAsset.sortOrder,
+                  selected: existingRawAsset.selected
+                }
+              : null
           )
+          const relabeled = await upsertAssetsRemote([nextRawAsset])
           const rawAsset = relabeled[0]
-          if (rawAsset) {
-            workingWorkflow.workflow.activeStage = 'master-cleaning'
-            workingWorkflow.workflow.currentItemKind = 'master-clean'
-            workingWorkflow.workflow.currentItemIndex = sequenceIndex
-            workingWorkflow.workflow.currentItemTotal = workingWorkflow.masterStage.requestedCount
-            await updateTaskPatch(workingTask.id, {
-              status: 'running',
-              metadata: writeWorkflowMetadata(workingTask, workingWorkflow)
-            })
 
+          if (!rawAsset) {
+            const message = '结果生成失败'
+            workingWorkflow.workflow.failures.push(
+              makeWorkflowFailureRecord('master-generate', normalizedSequenceIndex, message, {
+                runId: result.run?.id
+              })
+            )
+          } else {
             try {
-              await processMasterCleanup(workingTask, rawAsset, sequenceIndex)
-              workingWorkflow.masterStage.cleanSuccessCount += 1
+              await processMasterCleanup(workingTask, rawAsset, normalizedSequenceIndex)
+              if (!hadGeneratedBefore) {
+                workingWorkflow.masterStage.completedCount += 1
+              }
+              if (hadFailedCleanBefore && workingWorkflow.masterStage.cleanFailedCount > 0) {
+                workingWorkflow.masterStage.cleanFailedCount -= 1
+              }
+              if (!hasSuccessfulCleanAsset) {
+                workingWorkflow.masterStage.cleanSuccessCount += 1
+              }
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
-              workingWorkflow.masterStage.cleanFailedCount += 1
+              if (!hadGeneratedBefore) {
+                workingWorkflow.masterStage.completedCount += 1
+              }
+              if (!hasSuccessfulCleanAsset && !hadFailedCleanBefore) {
+                workingWorkflow.masterStage.cleanFailedCount += 1
+              }
               workingWorkflow.workflow.failures.push(
-                makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
+                makeWorkflowFailureRecord('master-clean', normalizedSequenceIndex, message, {
                   assetId: rawAsset.id
                 })
               )
@@ -3918,7 +4029,7 @@ const useAiStudioState = () => {
                   metadata: {
                     ...(rawAsset.metadata ?? {}),
                     stage: 'master',
-                    sequenceIndex,
+                    sequenceIndex: normalizedSequenceIndex,
                     watermarkStatus: 'failed'
                   }
                 }
@@ -3926,27 +4037,20 @@ const useAiStudioState = () => {
             }
           }
         } else {
-          workingWorkflow.workflow.failures = workingWorkflow.workflow.failures.filter(
-            (item) =>
-              !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
-          )
           workingWorkflow.workflow.failures.push(
             makeWorkflowFailureRecord(
               'master-generate',
-              sequenceIndex,
+              normalizedSequenceIndex,
               result.run?.errorMessage || '结果生成失败',
               { runId: result.run?.id }
             )
           )
         }
       } catch (error) {
-        workingWorkflow.workflow.failures = workingWorkflow.workflow.failures.filter(
-          (item) => !(item.stageKind === 'master-generate' && item.sequenceIndex === sequenceIndex)
-        )
         workingWorkflow.workflow.failures.push(
           makeWorkflowFailureRecord(
             'master-generate',
-            sequenceIndex,
+            normalizedSequenceIndex,
             error instanceof Error ? error.message : String(error)
           )
         )
@@ -3965,11 +4069,12 @@ const useAiStudioState = () => {
         outputCount: 1
       })
       await refresh()
+      patchPreviewSlotRuntimeState(normalizedTaskId, normalizedSequenceIndex, null)
     },
     [
-      activeTask,
       executeRunToTerminal,
       loadLatestTaskRecord,
+      patchPreviewSlotRuntimeState,
       processMasterCleanup,
       refresh,
       resolveImageTaskProviderState,
@@ -3978,12 +4083,27 @@ const useAiStudioState = () => {
     ]
   )
 
+  const interruptTask = useCallback(
+    async (taskId: string) => {
+      const normalizedTaskId = String(taskId ?? '').trim()
+      if (!normalizedTaskId) return false
+
+      const targetTask =
+        taskViews.find((task) => task.id === normalizedTaskId) ??
+        (await loadLatestTaskRecord(normalizedTaskId))
+      if (!targetTask || targetTask.status !== 'running') return false
+
+      requestTaskInterrupt(normalizedTaskId)
+      addLog('[AI Studio] 已请求中断任务。')
+      return true
+    },
+    [addLog, loadLatestTaskRecord, requestTaskInterrupt, taskViews]
+  )
+
   const interruptActiveTask = useCallback(async () => {
-    if (!activeTask || activeTask.status !== 'running') return false
-    requestTaskInterrupt(activeTask.id)
-    addLog('[AI Studio] 已请求中断当前任务。')
-    return true
-  }, [activeTask, addLog, requestTaskInterrupt])
+    if (!activeTask) return false
+    return interruptTask(activeTask.id)
+  }, [activeTask, interruptTask])
 
   const setCurrentAiMaster = useCallback(
     async (assetId: string) => {
@@ -4252,6 +4372,7 @@ const useAiStudioState = () => {
     useDispatchOutputAsReference,
     useOutputAsVideoReference,
     useOutputAsVideoSubjectReference,
+    interruptTask,
     interruptActiveTask,
     seedDemoTask,
     assignPrimaryImage,

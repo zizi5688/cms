@@ -6,6 +6,13 @@ import { basename, extname, join, resolve } from 'path'
 import ffmpeg from 'fluent-ffmpeg'
 import ffprobeStaticImport from 'ffprobe-static'
 
+import {
+  AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS,
+  normalizeAiStudioProviderFailureMessage,
+  normalizeAiStudioProviderTransportErrorMessage,
+  resolveAiStudioProviderRequestTimeoutMs
+} from './aiStudioProviderErrorHelpers'
+import { readWorkflowSourceDescriptor } from './aiStudioWorkflowSourceHelpers'
 import { resolveAiStudioProviderConfig } from './aiStudioProviderConfigHelpers'
 import {
   buildGeminiGenerationConfig,
@@ -395,6 +402,8 @@ const DEFAULT_ADD_WATERMARK = false
 const CONNECTION_TEST_ID = '__codex_connection_test__'
 const AI_STUDIO_VIDEO_DEBUG_MARKER = 'temp-video-debug-2026-03-12'
 const AI_STUDIO_VIDEO_DEBUG_FILE_NAME = 'ai-studio-video-debug.jsonl'
+const AI_STUDIO_IMAGE_DEBUG_MARKER = 'temp-image-debug-2026-03-13'
+const AI_STUDIO_IMAGE_DEBUG_FILE_NAME = 'ai-studio-image-debug.jsonl'
 const HTTP_IMAGE_ACCEPT = 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
 const HTTP_VIDEO_ACCEPT = 'video/mp4,video/webm,video/*,*/*;q=0.8'
 const DEFAULT_USER_AGENT =
@@ -1238,42 +1247,6 @@ function readVideoMetadata(
   }
 }
 
-type AiStudioWorkflowSourceDescriptor = {
-  activeStage: string
-  currentAiMasterAssetId: string | null
-  sourcePrimaryImagePath: string | null
-  sourceReferenceImagePaths: string[]
-  useCurrentAiMasterAsPrimary: boolean
-}
-
-function readWorkflowSourceDescriptor(task: AiStudioTaskRecord): AiStudioWorkflowSourceDescriptor {
-  const metadata = parseJsonObject(task.metadata)
-  const workflow = asObject(metadata.workflow)
-  const activeStage = normalizeText(workflow.activeStage)
-  const useCurrentAiMasterAsPrimary =
-    activeStage === 'child-ready' ||
-    activeStage === 'child-generating' ||
-    activeStage === 'completed'
-
-  const metadataReferencePaths = normalizeStringArray(workflow.sourceReferenceImagePaths)
-
-  return {
-    activeStage,
-    currentAiMasterAssetId: useCurrentAiMasterAsPrimary
-      ? normalizeNullableText(workflow.currentAiMasterAssetId)
-      : null,
-    sourcePrimaryImagePath: useCurrentAiMasterAsPrimary
-      ? (normalizeNullableText(workflow.sourcePrimaryImagePath) ?? task.primaryImagePath)
-      : task.primaryImagePath,
-    sourceReferenceImagePaths: useCurrentAiMasterAsPrimary
-      ? metadataReferencePaths.length > 0
-        ? metadataReferencePaths
-        : task.referenceImagePaths
-      : task.referenceImagePaths,
-    useCurrentAiMasterAsPrimary
-  }
-}
-
 function uniqueNormalizedPaths(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => normalizeText(value)).filter(Boolean)))
 }
@@ -1384,6 +1357,10 @@ export class AiStudioService {
     return join(this.getWorkspacePath(), 'debug', AI_STUDIO_VIDEO_DEBUG_FILE_NAME)
   }
 
+  private getImageDebugLogPath(): string {
+    return join(this.getWorkspacePath(), 'debug', AI_STUDIO_IMAGE_DEBUG_FILE_NAME)
+  }
+
   private async appendVideoDebugLog(
     stage: string,
     payload: Record<string, unknown>
@@ -1407,6 +1384,32 @@ export class AiStudioService {
       )
     } catch (error) {
       console.warn('[AI Studio][VideoDebug] 写入失败：', error)
+    }
+  }
+
+  private async appendImageDebugLog(
+    stage: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    const logPath = this.getImageDebugLogPath()
+    const entry = {
+      marker: AI_STUDIO_IMAGE_DEBUG_MARKER,
+      stage,
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+      payload: summarizeVideoDebugValue(payload)
+    }
+
+    try {
+      await mkdir(join(this.getWorkspacePath(), 'debug'), { recursive: true })
+      await appendFile(
+        logPath,
+        `${JSON.stringify(entry)}
+`,
+        'utf8'
+      )
+    } catch (error) {
+      console.warn('[AI Studio][ImageDebug] 写入失败：', error)
     }
   }
 
@@ -1459,6 +1462,8 @@ export class AiStudioService {
       allowStatusCodes?: number[]
       allowProviderCodes?: number[]
       providerConfig?: AiStudioProviderConfig
+      timeoutMs?: number | null
+      debugLogKind?: 'image' | 'video'
       debugContext?: Record<string, unknown>
     }
   ): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
@@ -1476,6 +1481,21 @@ export class AiStudioService {
     const init: RequestInit = {
       method,
       headers
+    }
+    const timeoutMs = resolveAiStudioProviderRequestTimeoutMs(
+      options?.timeoutMs === undefined
+        ? AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS
+        : options.timeoutMs
+    )
+    const abortController = timeoutMs === null ? null : new AbortController()
+    const timeoutHandle =
+      timeoutMs === null || !abortController
+        ? null
+        : setTimeout(() => {
+            abortController.abort()
+          }, timeoutMs)
+    if (abortController) {
+      init.signal = abortController.signal
     }
 
     let requestUrl = buildProviderUrl(config.baseUrl, apiPath)
@@ -1499,8 +1519,14 @@ export class AiStudioService {
     }
 
     const debugContext = options?.debugContext ?? null
+    const debugLogger =
+      options?.debugLogKind === 'image'
+        ? this.appendImageDebugLog.bind(this)
+        : options?.debugLogKind === 'video'
+          ? this.appendVideoDebugLog.bind(this)
+          : null
     if (debugContext) {
-      await this.appendVideoDebugLog('video.provider.request', {
+      await debugLogger?.(`${options?.debugLogKind ?? 'request'}.provider.request`, {
         ...debugContext,
         method,
         apiPath,
@@ -1517,23 +1543,32 @@ export class AiStudioService {
     }
 
     let response: Response
+    let rawText = ''
     try {
       response = await fetch(requestUrl, init)
+      rawText = await response.text()
     } catch (error) {
+      const normalizedError =
+        normalizeAiStudioProviderTransportErrorMessage(error) ??
+        (error instanceof Error ? error.message : String(error))
       if (debugContext) {
-        await this.appendVideoDebugLog('video.provider.fetch_error', {
+        await debugLogger?.(`${options?.debugLogKind ?? 'request'}.provider.fetch_error`, {
           ...debugContext,
           method,
           apiPath,
           requestUrl,
-          error: error instanceof Error ? error.message : String(error)
+          timeoutMs,
+          error: normalizedError
         })
       }
-      throw error
+      throw new Error(normalizedError)
+    } finally {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle)
+      }
     }
 
     const statusCode = response.status
-    const rawText = await response.text()
     let parsedPayload: Record<string, unknown> = {}
     if (rawText) {
       try {
@@ -1544,11 +1579,12 @@ export class AiStudioService {
     }
 
     if (debugContext) {
-      await this.appendVideoDebugLog('video.provider.response', {
+      await debugLogger?.(`${options?.debugLogKind ?? 'request'}.provider.response`, {
         ...debugContext,
         method,
         apiPath,
         requestUrl,
+        timeoutMs,
         statusCode,
         responsePayload: parsedPayload
       })
@@ -1569,8 +1605,11 @@ export class AiStudioService {
     const allowStatusCodes = new Set(options?.allowStatusCodes ?? [])
     if (!response.ok && !allowStatusCodes.has(statusCode)) {
       throw new Error(
-        extractFailureReason(parsedPayload) ??
-          `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${apiPath}）。`
+        normalizeAiStudioProviderFailureMessage({
+          statusCode,
+          payload: parsedPayload,
+          fallback: `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${apiPath}）。`
+        }) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${apiPath}）。`
       )
     }
 
@@ -1578,8 +1617,11 @@ export class AiStudioService {
     const allowProviderCodes = new Set(options?.allowProviderCodes ?? [])
     if (providerCode !== null && providerCode !== 0 && !allowProviderCodes.has(providerCode)) {
       throw new Error(
-        extractFailureReason(parsedPayload) ??
-          `[AI Studio] AI 服务请求失败（业务码 ${providerCode}）。`
+        normalizeAiStudioProviderFailureMessage({
+          statusCode,
+          payload: parsedPayload,
+          fallback: `[AI Studio] AI 服务请求失败（业务码 ${providerCode}）。`
+        }) ?? `[AI Studio] AI 服务请求失败（业务码 ${providerCode}）。`
       )
     }
 
@@ -2078,9 +2120,30 @@ export class AiStudioService {
     const looksLikeChatCompletions = isChatCompletionsPath(submitApiPath)
     const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(submitApiPath)
 
+    await this.appendImageDebugLog('image.submit.context', {
+      taskId,
+      provider: task.provider,
+      providerConfig: {
+        provider: config.provider,
+        baseUrl: config.baseUrl,
+        endpointPath: config.endpointPath,
+        defaultImageModel: config.defaultImageModel,
+        apiKeyPresent: Boolean(config.apiKey)
+      },
+      submitPath: submitApiPath,
+      requestSnapshot: context.requestSnapshot
+    })
+
     try {
       const response = await this.requestProvider(submitApiPath, context.requestPayload, {
-        providerConfig: config
+        providerConfig: config,
+        debugLogKind: 'image',
+        debugContext: {
+          flow: 'image-submit',
+          taskId,
+          model: context.model,
+          submitPath: submitApiPath
+        }
       })
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       const directResultItems = extractResultItems(response.payload)
@@ -2105,6 +2168,11 @@ export class AiStudioService {
           taskId,
           runId: run.id,
           responsePayload: response.payload
+        })
+        await this.appendImageDebugLog('image.submit.direct_result', {
+          taskId,
+          runId: run.id,
+          outputCount: outputs.length
         })
         const latestRun = this.getRunById(run.id) ?? run
         return toExecutionResult(this.getTaskOrThrow(taskId), latestRun, outputs)
@@ -2134,6 +2202,12 @@ export class AiStudioService {
         startedAt: Date.now()
       })
 
+      await this.appendImageDebugLog('image.submit.accepted', {
+        taskId,
+        runId: run.id,
+        remoteTaskId
+      })
+
       return toExecutionResult(
         this.getTaskOrThrow(taskId),
         run,
@@ -2143,6 +2217,11 @@ export class AiStudioService {
       const message = error instanceof Error ? error.message : String(error)
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
+      await this.appendImageDebugLog('image.submit.error', {
+        taskId,
+        submitPath: submitApiPath,
+        error: message
+      })
       throw error
     }
   }
@@ -2183,6 +2262,7 @@ export class AiStudioService {
     try {
       const response = await this.requestProvider(context.submitPath, context.requestPayload, {
         providerConfig: config,
+        timeoutMs: null,
         debugContext: {
           flow: 'video-submit',
           taskId,
@@ -2444,6 +2524,7 @@ export class AiStudioService {
       {
         method: 'GET',
         providerConfig,
+        timeoutMs: null,
         debugContext: {
           flow: 'video-poll',
           taskId,

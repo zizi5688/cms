@@ -33,6 +33,8 @@ import {
   normalizeOutputCountDraftOnBlur,
   parseOutputCountDraft
 } from './outputCountDraftHelpers'
+import { resolvePrimaryGenerateButtonState } from './controlPanelHelpers'
+import { hasActivePreviewSlotRuntimeStates } from './previewSlotHelpers'
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
 const VIDEO_MODE_OPTIONS = [
@@ -1633,9 +1635,16 @@ function ControlPanel({
   const currentVideoMeta = state.videoMeta
   const requestedImageCount = Math.max(1, state.masterOutputCount || 1)
   const requestedVideoCount = Math.max(1, currentVideoMeta.outputCount || 1)
-  const isRunning = task?.status === 'running'
+  const previewRuntimeStates = task ? state.previewSlotRuntimeByTaskId[task.id] ?? {} : null
+  const isRunning =
+    task?.status === 'running' ||
+    (!isVideoStudio && hasActivePreviewSlotRuntimeStates(previewRuntimeStates))
   const isInterrupting = task ? state.interruptingTaskIds.includes(task.id) : false
-  const actionLabel = isRunning ? (isInterrupting ? '中断中...' : '中断任务') : '开始生成'
+  const primaryActionState = resolvePrimaryGenerateButtonState({
+    isVideoStudio,
+    isRunning,
+    isInterrupting
+  })
   const poolTriggerRef = useRef<HTMLDivElement | null>(null)
   const poolCloseTimerRef = useRef<number | null>(null)
 
@@ -1912,16 +1921,16 @@ function ControlPanel({
           type="button"
           className={cn(actionButtonClass, 'gap-1.5')}
           onClick={() => {
-            if (isRunning) {
+            if (primaryActionState.intent === 'interrupt') {
               void state.interruptActiveTask()
               return
             }
             void handleGenerate()
           }}
-          disabled={isInterrupting}
+          disabled={primaryActionState.disabled}
         >
           <ArrowUp className="h-3.5 w-3.5" />
-          <span className="max-[1320px]:hidden">{actionLabel}</span>
+          <span className="max-[1320px]:hidden">{primaryActionState.actionLabel}</span>
         </Button>
       </div>
     </div>

@@ -5,6 +5,7 @@ import {
   buildQueuedPreviewSlotRuntimeStates,
   computePreviewTargetCount,
   prepareWorkflowForMasterRun,
+  resolveMasterWorkflowConcurrency,
   summarizeMasterSlotResults
 } from './workflowRunHelpers.ts'
 
@@ -73,6 +74,11 @@ test('buildQueuedPreviewSlotRuntimeStates seeds every requested image slot as qu
     2: { status: 'queued', message: '排队中' },
     3: { status: 'queued', message: '排队中' }
   })
+})
+
+test('resolveMasterWorkflowConcurrency caps parallel image generation at ten tasks', () => {
+  assert.equal(resolveMasterWorkflowConcurrency(3), 3)
+  assert.equal(resolveMasterWorkflowConcurrency(12), 10)
 })
 
 test('summarizeMasterSlotResults keeps success and failure counts aligned with slot outcomes', () => {
