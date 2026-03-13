@@ -42,6 +42,19 @@ type PreviewTargetCountInput = {
   maxFailureIndex: number
 }
 
+export type PreviewSlotRuntimeStateRecord = {
+  status: 'queued'
+  message: '排队中'
+}
+
+export type MasterSlotResult<TFailure = unknown> = {
+  sequenceIndex: number
+  generated: boolean
+  cleaned: boolean
+  cleanFailed: boolean
+  failure: TFailure | null
+}
+
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
 }
@@ -101,4 +114,37 @@ export function computePreviewTargetCount(input: PreviewTargetCountInput): numbe
     : Math.max(input.generatedCount, input.expectedOutputCount || 0, input.maxFailureIndex, 1)
 
   return Math.max(baseCount, 0)
+}
+
+export function buildQueuedPreviewSlotRuntimeStates(
+  requestedCount: number
+): Record<number, PreviewSlotRuntimeStateRecord> {
+  const normalizedCount = normalizeRequestedCount(requestedCount)
+  return Object.fromEntries(
+    Array.from({ length: normalizedCount }, (_, slotIndex) => [
+      slotIndex + 1,
+      {
+        status: 'queued',
+        message: '排队中'
+      } satisfies PreviewSlotRuntimeStateRecord
+    ])
+  )
+}
+
+export function summarizeMasterSlotResults<TFailure>(
+  results: Array<MasterSlotResult<TFailure>>
+): {
+  completedCount: number
+  cleanSuccessCount: number
+  cleanFailedCount: number
+  failures: TFailure[]
+} {
+  return {
+    completedCount: results.filter((item) => item.generated).length,
+    cleanSuccessCount: results.filter((item) => item.cleaned).length,
+    cleanFailedCount: results.filter((item) => item.cleanFailed).length,
+    failures: results
+      .map((item) => item.failure)
+      .filter((item): item is TFailure => item != null)
+  }
 }

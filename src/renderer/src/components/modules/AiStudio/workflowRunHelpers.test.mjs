@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { computePreviewTargetCount, prepareWorkflowForMasterRun } from './workflowRunHelpers.ts'
+import {
+  buildQueuedPreviewSlotRuntimeStates,
+  computePreviewTargetCount,
+  prepareWorkflowForMasterRun,
+  summarizeMasterSlotResults
+} from './workflowRunHelpers.ts'
 
 test('prepareWorkflowForMasterRun synchronizes child requested count with the requested output count', () => {
   const workflow = {
@@ -59,5 +64,33 @@ test('computePreviewTargetCount does not cap previews at four when more outputs 
       maxFailureIndex: 0
     }),
     5
+  )
+})
+
+test('buildQueuedPreviewSlotRuntimeStates seeds every requested image slot as queued', () => {
+  assert.deepEqual(buildQueuedPreviewSlotRuntimeStates(3), {
+    1: { status: 'queued', message: '排队中' },
+    2: { status: 'queued', message: '排队中' },
+    3: { status: 'queued', message: '排队中' }
+  })
+})
+
+test('summarizeMasterSlotResults keeps success and failure counts aligned with slot outcomes', () => {
+  const failureA = { stageKind: 'master-generate', sequenceIndex: 2, message: '生成失败' }
+  const failureB = { stageKind: 'master-clean', sequenceIndex: 4, message: '去水印失败' }
+
+  assert.deepEqual(
+    summarizeMasterSlotResults([
+      { sequenceIndex: 1, generated: true, cleaned: true, cleanFailed: false, failure: null },
+      { sequenceIndex: 2, generated: false, cleaned: false, cleanFailed: false, failure: failureA },
+      { sequenceIndex: 3, generated: true, cleaned: true, cleanFailed: false, failure: null },
+      { sequenceIndex: 4, generated: true, cleaned: false, cleanFailed: true, failure: failureB }
+    ]),
+    {
+      completedCount: 3,
+      cleanSuccessCount: 2,
+      cleanFailedCount: 1,
+      failures: [failureA, failureB]
+    }
   )
 })
