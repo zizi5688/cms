@@ -7,7 +7,10 @@
   },
   "files": [
     "!**/.vscode/*",
+    "!{.claude,.github,.githooks,.trae,.worktrees}{,/**/*}",
     "!src/*",
+    "!{AI_Tools,build,dist,docs,outputs,python,release,scripts,skills}{,/**/*}",
+    "!{AGENTS.md,components.json,cms.sqlite,cms_engine.spec,.gitmessage.txt}",
     "!electron.vite.config.{js,ts,mjs,cjs}",
     "!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}",
     "!{.env,.env.*,.npmrc,pnpm-lock.yaml}",
