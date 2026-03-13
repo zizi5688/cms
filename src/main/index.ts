@@ -37,6 +37,7 @@ import { NoteRaceService } from './services/noteRaceService'
 import { AiStudioService } from './services/aiStudioService'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
+import { buildXhsSendKeyEvents } from './xhsInputEvents'
 
 // 防止 dev 模式下 stdout 管道断开导致未捕获 EPIPE 崩溃
 process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
@@ -2399,11 +2400,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cms.xhs.sendKey', async (event, payload: { key?: unknown }) => {
     const key = typeof payload?.key === 'string' ? payload.key : ''
-    if (key !== 'Enter') return false
+    const events = buildXhsSendKeyEvents(key)
+    if (events.length === 0) return false
     try {
-      event.sender.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
-      event.sender.sendInputEvent({ type: 'char', keyCode: '\r' })
-      event.sender.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+      for (const inputEvent of events) event.sender.sendInputEvent(inputEvent)
       return true
     } catch (error) {
       void error

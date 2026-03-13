@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, WebContents } from 'electron'
+import { app, BrowserWindow, ipcMain, Notification, WebContents } from 'electron'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import ElectronStore from 'electron-store'
@@ -7,6 +7,10 @@ import type { AccountManager } from './services/accountManager'
 import type { TaskManager } from './taskManager'
 import { QueueService } from './services/queueService'
 import { DiagnosticsService } from './services/diagnostics'
+import {
+  buildPublishNotificationPayload,
+  buildPublishWorkerWindowOptions
+} from './publisherHelpers'
 
 type ElectronStoreCtor = new <T extends Record<string, unknown> = Record<string, unknown>>() => ElectronStore<T>
 const StoreCtor = ((ElectronStore as unknown as { default?: ElectronStoreCtor }).default ??
@@ -134,6 +138,22 @@ function normalizeTask(taskData: PublisherTaskData): {
 function isLikelyLoginUrl(url: string): boolean {
   const lower = url.toLowerCase()
   return lower.includes('login') || lower.includes('passport') || lower.includes('signin')
+}
+
+function notifyPublishPhase(input: {
+  phase: 'start' | 'finish'
+  accountName?: string
+  taskTitle?: string
+  success?: boolean
+  error?: string
+}): void {
+  try {
+    if (!Notification.isSupported()) return
+    const payload = buildPublishNotificationPayload(input)
+    new Notification(payload).show()
+  } catch (error) {
+    void error
+  }
 }
 
 async function waitForPublishUiReady(webContents: WebContents, timeoutMs: number): Promise<void> {
@@ -346,24 +366,22 @@ export class PublisherService {
     }
 
     const taskId = randomUUID()
-    const worker = new BrowserWindow({
-      width: 1200,
-      height: 900,
-      show: true,
-      autoHideMenuBar: true,
-      webPreferences: {
-        partition: account.partitionKey,
-        preload: resolveWorkerPreloadPath(),
-        sandbox: false,
-        nodeIntegration: false,
-        contextIsolation: true
-      }
+    notifyPublishPhase({
+      phase: 'start',
+      accountName: account.name,
+      taskTitle: normalizedTask.title
     })
+
+    const worker = new BrowserWindow(
+      buildPublishWorkerWindowOptions({
+        partitionKey: account.partitionKey,
+        preload: resolveWorkerPreloadPath()
+      })
+    )
 
     worker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
     const diagnostics = new DiagnosticsService()
-    let didSucceed = false
     try {
       await worker.loadURL(XHS_PUBLISH_URL)
       diagnostics.attach(worker.webContents)
@@ -401,18 +419,29 @@ export class PublisherService {
 
       worker.webContents.send('publisher:task', payload)
       const automationResult = await resultPromise
-
-      didSucceed = true
+      notifyPublishPhase({
+        phase: 'finish',
+        accountName: account.name,
+        taskTitle: normalizedTask.title,
+        success: true
+      })
       return { success: true, time: automationResult.time }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       try {
         await diagnostics.saveDiagnostics({ taskId, workspacePath: resolveWorkspacePath(), errorMessage: message })
       } catch { /* 静默 */ }
+      notifyPublishPhase({
+        phase: 'finish',
+        accountName: account.name,
+        taskTitle: normalizedTask.title,
+        success: false,
+        error: message
+      })
       return { success: false, error: message }
     } finally {
       diagnostics.detach()
-      if (didSucceed && !worker.isDestroyed()) worker.close()
+      if (!worker.isDestroyed()) worker.close()
     }
   }
 
@@ -546,6 +575,11 @@ function registerAutomationLogBridge(): void {
   ipcMain.on('automation-log', (event, payload: unknown) => {
     const message = typeof payload === 'string' ? payload : payload && typeof payload === 'object' ? payload : null
     if (!message) return
+    try {
+      console.log(message)
+    } catch (error) {
+      void error
+    }
     broadcastToRenderers('automation-log', message, { excludeWebContentsId: event.sender.id })
   })
 }
