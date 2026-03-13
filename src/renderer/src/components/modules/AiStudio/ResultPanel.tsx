@@ -37,6 +37,11 @@ import {
   type PreviewTileStatus
 } from './previewSlotHelpers'
 import { resolvePreviewTileSurfaceClassNames } from './previewTileSurfaceHelpers'
+import {
+  resolveInitialVideoPreviewPath,
+  resolvePreparedVideoPreviewPath,
+  shouldFallbackToOriginalVideo
+} from './videoPreviewSourceHelpers'
 import { computePreviewTargetCount } from './workflowRunHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
@@ -822,8 +827,19 @@ function VideoLightbox({
   open: boolean
   onOpenChange: (next: boolean) => void
 }): React.JSX.Element | null {
+  const addLog = useCmsStore((store) => store.addLog)
   const workspacePath = useCmsStore((store) => store.workspacePath)
-  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+  const rawOriginalVideoPath = String(asset?.filePath ?? '').trim()
+  const rawInitialVideoPath = resolveInitialVideoPreviewPath(
+    rawOriginalVideoPath,
+    asset?.previewPath ?? null
+  )
+  const resolvedOriginalVideoSrc = rawOriginalVideoPath
+    ? resolveLocalImage(rawOriginalVideoPath, workspacePath)
+    : ''
+  const [playableVideoSrc, setPlayableVideoSrc] = useState('')
+  const [didFallbackToOriginalVideo, setDidFallbackToOriginalVideo] = useState(false)
+  const [isVideoLoaded, setIsVideoLoaded] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -836,7 +852,70 @@ function VideoLightbox({
     }
   }, [onOpenChange, open])
 
-  if (!open || !asset || !src || typeof document === 'undefined') return null
+  useEffect(() => {
+    if (!open || !asset) {
+      setPlayableVideoSrc('')
+      setDidFallbackToOriginalVideo(false)
+      setIsVideoLoaded(false)
+      return
+    }
+
+    const initialResolvedSrc = rawInitialVideoPath
+      ? resolveLocalImage(rawInitialVideoPath, workspacePath)
+      : ''
+    setPlayableVideoSrc(initialResolvedSrc)
+    setDidFallbackToOriginalVideo(false)
+    setIsVideoLoaded(false)
+
+    if (!rawOriginalVideoPath) return
+
+    let cancelled = false
+    void window.electronAPI
+      .prepareVideoPreview(rawOriginalVideoPath)
+      .then((prepared) => {
+        if (cancelled) return
+        const nextRawPath = resolvePreparedVideoPreviewPath(prepared, rawOriginalVideoPath)
+        setPlayableVideoSrc(resolveLocalImage(nextRawPath, workspacePath))
+      })
+      .catch((error) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : String(error)
+        addLog(`[AI Studio] 视频预览准备失败，回退原视频：${message}`)
+        setPlayableVideoSrc(resolvedOriginalVideoSrc)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    addLog,
+    asset,
+    open,
+    rawInitialVideoPath,
+    rawOriginalVideoPath,
+    resolvedOriginalVideoSrc,
+    workspacePath
+  ])
+
+  const handleVideoPreviewError = (): void => {
+    if (
+      shouldFallbackToOriginalVideo({
+        resolvedOriginalVideoSrc,
+        playableVideoSrc,
+        didFallbackToOriginalVideo
+      })
+    ) {
+      setDidFallbackToOriginalVideo(true)
+      setPlayableVideoSrc(resolvedOriginalVideoSrc)
+      setIsVideoLoaded(false)
+      addLog(`[AI Studio] 视频预览加载失败，已回退原视频路径。src=${playableVideoSrc}`)
+      return
+    }
+
+    addLog(`[AI Studio] 视频预览加载失败：src=${playableVideoSrc || '<empty>'}`)
+  }
+
+  if (!open || !asset || !playableVideoSrc || typeof document === 'undefined') return null
 
   return createPortal(
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/88 p-6">
@@ -855,12 +934,21 @@ function VideoLightbox({
         >
           <X className="h-5 w-5" />
         </button>
-        <video
-          src={src}
-          controls
-          autoPlay
-          className="max-h-[72vh] max-w-[72vw] rounded-3xl bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
-        />
+        <div className="relative">
+          <video
+            key={playableVideoSrc}
+            src={playableVideoSrc}
+            controls
+            preload="metadata"
+            playsInline
+            className="max-h-[72vh] max-w-[72vw] rounded-3xl bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
+            onLoadedData={() => setIsVideoLoaded(true)}
+            onError={handleVideoPreviewError}
+          />
+          {!isVideoLoaded ? (
+            <div className="pointer-events-none absolute inset-0 rounded-3xl bg-zinc-950/60" />
+          ) : null}
+        </div>
       </div>
     </div>,
     document.body

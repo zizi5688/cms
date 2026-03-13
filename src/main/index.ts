@@ -39,6 +39,18 @@ import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
 import { buildXhsSendKeyEvents } from './xhsInputEvents'
 
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'safe-file',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
+    }
+  }
+])
+
 // 防止 dev 模式下 stdout 管道断开导致未捕获 EPIPE 崩溃
 process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return
