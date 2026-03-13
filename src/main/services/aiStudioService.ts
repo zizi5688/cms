@@ -7,7 +7,11 @@ import ffmpeg from 'fluent-ffmpeg'
 import ffprobeStaticImport from 'ffprobe-static'
 
 import { resolveAiStudioProviderConfig } from './aiStudioProviderConfigHelpers'
-import { buildGeminiGenerationConfig, resolveImageSizeForModel } from './aiStudioRequestPayloadHelpers'
+import {
+  buildGeminiGenerationConfig,
+  buildImageGenerationDirectiveLines,
+  resolveImageSizeForModel
+} from './aiStudioRequestPayloadHelpers'
 import { SqliteService } from './sqliteService'
 
 export type AiStudioTemplateRecord = {
@@ -643,20 +647,18 @@ function parseDataUrl(value: string): { mimeType: string; data: string } | null 
 function buildImagePromptDirective(payload: {
   prompt: string
   aspectRatio: string
+  imageSize: string
   outputCount: number
   referenceCount: number
 }): string {
-  const lines = [normalizeText(payload.prompt)]
-  if (payload.aspectRatio) {
-    lines.push(`输出比例：${payload.aspectRatio}。`)
-  }
-  if (payload.referenceCount > 0) {
-    lines.push(
-      `第 1 张输入图为主图，后续 ${payload.referenceCount} 张为参考图，请保留主体材质、结构与关键细节。`
-    )
-  } else {
-    lines.push('请保留主体材质、结构与关键细节。')
-  }
+  const lines = [
+    normalizeText(payload.prompt),
+    ...buildImageGenerationDirectiveLines({
+      aspectRatio: payload.aspectRatio,
+      imageSize: payload.imageSize,
+      referenceCount: payload.referenceCount
+    })
+  ]
   return lines.filter(Boolean).join('\n')
 }
 
@@ -664,6 +666,7 @@ function buildChatCompletionsPayload(payload: {
   model: string
   prompt: string
   aspectRatio: string
+  imageSize: string
   outputCount: number
   urls: string[]
   referenceCount: number
@@ -679,6 +682,7 @@ function buildChatCompletionsPayload(payload: {
             text: buildImagePromptDirective({
               prompt: payload.prompt,
               aspectRatio: payload.aspectRatio,
+              imageSize: payload.imageSize,
               outputCount: payload.outputCount,
               referenceCount: payload.referenceCount
             })
@@ -708,6 +712,7 @@ function buildGeminiGenerateContentPayload(payload: {
       text: buildImagePromptDirective({
         prompt: payload.prompt,
         aspectRatio: payload.aspectRatio,
+        imageSize: payload.imageSize,
         outputCount: payload.outputCount,
         referenceCount: payload.referenceCount
       })
@@ -1643,6 +1648,7 @@ export class AiStudioService {
           model,
           prompt,
           aspectRatio,
+          imageSize,
           outputCount: task.outputCount,
           urls,
           referenceCount: Math.max(0, urls.length - 1)
