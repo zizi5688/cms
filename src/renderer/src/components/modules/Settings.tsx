@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
 import { Button } from '@renderer/components/ui/button'
@@ -24,6 +24,11 @@ function clampOpacity(value: number): number {
 function clampSizePercent(value: number): number {
   if (!Number.isFinite(value)) return 5
   return Math.min(10, Math.max(2, Math.round(value)))
+}
+
+function clampRetainDays(value: number): number {
+  if (!Number.isFinite(value)) return 7
+  return Math.max(1, Math.min(120, Math.floor(value)))
 }
 
 type DynamicWatermarkTrajectory =
@@ -104,6 +109,72 @@ function clampRange(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
+function normalizeStorageMaintenanceStartTime(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) return '02:30'
+  return text
+}
+
+function formatBytes(bytes: number): string {
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let current = value
+  let index = 0
+  while (current >= 1024 && index < units.length - 1) {
+    current /= 1024
+    index += 1
+  }
+  const precision = current >= 100 ? 0 : current >= 10 ? 1 : 2
+  return `${current.toFixed(precision)} ${units[index]}`
+}
+
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error ?? '')
+}
+
+function unwrapElectronInvokeError(message: string): string {
+  let next = String(message ?? '').trim()
+  next = next.replace(/^Error invoking remote method '[^']+':\s*/i, '')
+  next = next.replace(/^Error:\s*/i, '')
+  return next.trim()
+}
+
+function pickVolumePathFromText(text: string): string {
+  const matched = String(text ?? '').match(/\/Volumes\/[^\s'"]+/)
+  return matched ? matched[0] : ''
+}
+
+function normalizeStorageMaintenanceErrorMessage(
+  error: unknown,
+  input: { dryRun: boolean; archivePath: string }
+): string {
+  const raw = unwrapElectronInvokeError(extractErrorMessage(error))
+  if (!raw) return '存储维护执行失败，请重试。'
+  if (raw.includes('[存储维护]')) return raw
+
+  const lowered = raw.toLowerCase()
+  const looksLikePermissionIssue =
+    lowered.includes('eacces') ||
+    lowered.includes('permission denied') ||
+    lowered.includes('operation not permitted')
+  if (looksLikePermissionIssue) {
+    const volumePath = pickVolumePathFromText(raw)
+    const archivePath = input.archivePath.trim() || volumePath || '/Volumes/FeiniuDB/2026'
+    const modeText = input.dryRun ? '演练（dry-run）' : '执行（real-run）'
+    return (
+      `[存储维护] 无法访问归档目录，已取消${modeText}。\n` +
+      `归档目录：${archivePath}\n` +
+      '请按以下步骤处理：\n' +
+      '1) 在 Finder 中挂载飞牛共享（前往 -> 连接服务器）。\n' +
+      `2) 确认该目录可访问：${archivePath}\n` +
+      '3) 回到设置页后重试。'
+    )
+  }
+  return raw
+}
+
 function Settings(): React.JSX.Element {
   const config = useCmsStore((s) => s.config)
   const addLog = useCmsStore((s) => s.addLog)
@@ -119,6 +190,14 @@ function Settings(): React.JSX.Element {
   const [autoImportScanProgress, setAutoImportScanProgress] =
     useState<AutoImportScanProgress | null>(null)
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
+  const [storageMaintenanceState, setStorageMaintenanceState] =
+    useState<StorageMaintenanceState | null>(null)
+  const [isStorageMaintenanceRunningNow, setIsStorageMaintenanceRunningNow] = useState(false)
+  const [isStorageMaintenanceRollingBack, setIsStorageMaintenanceRollingBack] = useState(false)
+  const [storageMaintenanceReason, setStorageMaintenanceReason] = useState('')
+  const [storageMaintenanceRollbackRunId, setStorageMaintenanceRollbackRunId] = useState('')
+  const [lastStorageMaintenanceSummary, setLastStorageMaintenanceSummary] =
+    useState<StorageMaintenanceSummary | null>(null)
   const [workspacePath, setWorkspacePath] = useState('')
   const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>(
     'uninitialized'
@@ -128,6 +207,8 @@ function Settings(): React.JSX.Element {
   const pythonPickerRef = useRef<HTMLInputElement | null>(null)
   const scriptPickerRef = useRef<HTMLInputElement | null>(null)
   const skipFirstSaveRef = useRef(true)
+  const storageMaintenanceRunLockRef = useRef(false)
+  const storageMaintenanceRollbackLockRef = useRef(false)
   const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
 
   useEffect(() => {
@@ -216,6 +297,15 @@ function Settings(): React.JSX.Element {
             dynamicWatermarkTrajectory: normalizeDynamicWatermarkTrajectory(
               savedTools.dynamicWatermarkTrajectory
             ),
+            storageMaintenanceEnabled: savedTools.storageMaintenanceEnabled === true,
+            storageMaintenanceStartTime: normalizeStorageMaintenanceStartTime(
+              savedTools.storageMaintenanceStartTime
+            ),
+            storageMaintenanceRetainDays: clampRetainDays(
+              Number(savedTools.storageMaintenanceRetainDays)
+            ),
+            storageArchivePath:
+              typeof savedTools.storageArchivePath === 'string' ? savedTools.storageArchivePath : '',
             scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
           })
           updatePreferences({
@@ -258,6 +348,34 @@ function Settings(): React.JSX.Element {
       cancelled = true
     }
   }, [addLog, updateConfig])
+
+  const refreshStorageMaintenanceState = useCallback(async (): Promise<void> => {
+    if (typeof window.electronAPI.getStorageMaintenanceState !== 'function') return
+    try {
+      const state = await window.electronAPI.getStorageMaintenanceState()
+      setStorageMaintenanceState(state)
+      if (state?.lastRunId) {
+        setStorageMaintenanceRollbackRunId((prev) => (prev.trim() ? prev : state.lastRunId ?? ''))
+      }
+    } catch (error) {
+      const message = extractErrorMessage(error)
+      addLog(`[存储维护] 读取状态失败：${message}`)
+    }
+  }, [addLog])
+
+  useEffect(() => {
+    void refreshStorageMaintenanceState()
+  }, [refreshStorageMaintenanceState])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshStorageMaintenanceState()
+    }, 15_000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [refreshStorageMaintenanceState])
 
   const changeWorkspace = async (): Promise<void> => {
     try {
@@ -338,6 +456,12 @@ function Settings(): React.JSX.Element {
           dynamicWatermarkOpacity: clampOpacity(config.dynamicWatermarkOpacity),
           dynamicWatermarkSize: clampSizePercent(config.dynamicWatermarkSize),
           dynamicWatermarkTrajectory: selectedTrajectory,
+          storageMaintenanceEnabled: config.storageMaintenanceEnabled,
+          storageMaintenanceStartTime: normalizeStorageMaintenanceStartTime(
+            config.storageMaintenanceStartTime
+          ),
+          storageMaintenanceRetainDays: clampRetainDays(config.storageMaintenanceRetainDays),
+          storageArchivePath: config.storageArchivePath.trim(),
           scoutDashboardAutoImportDir: config.scoutDashboardAutoImportDir,
           defaultStartTime: preferences.defaultStartTime,
           defaultInterval: preferences.defaultInterval
@@ -365,6 +489,10 @@ function Settings(): React.JSX.Element {
     config.dynamicWatermarkOpacity,
     config.dynamicWatermarkSize,
     selectedTrajectory,
+    config.storageMaintenanceEnabled,
+    config.storageMaintenanceStartTime,
+    config.storageMaintenanceRetainDays,
+    config.storageArchivePath,
     config.scoutDashboardAutoImportDir,
     config.watermarkScriptPath,
     preferences.defaultInterval,
@@ -502,6 +630,25 @@ function Settings(): React.JSX.Element {
     addLog('[热度看板] 自动导入目录已清空。')
   }
 
+  const chooseStorageArchivePath = async (): Promise<void> => {
+    try {
+      const selected = await window.electronAPI.openDirectory()
+      if (!selected) return
+      updateConfig({ storageArchivePath: selected })
+      addLog(`[存储维护] 归档路径已设置：${selected}`)
+    } catch (error) {
+      const message = extractErrorMessage(error)
+      addLog(`[存储维护] 设置归档路径失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const clearStorageArchivePath = (): void => {
+    if (!config.storageArchivePath.trim()) return
+    updateConfig({ storageArchivePath: '' })
+    addLog('[存储维护] 归档路径已清空。')
+  }
+
   const scanScoutDashboardAutoImportNow = async (): Promise<void> => {
     if (isScanningAutoImport) return
 
@@ -590,6 +737,113 @@ function Settings(): React.JSX.Element {
       window.alert(message)
     } finally {
       setIsScanningAutoImport(false)
+    }
+  }
+
+  const runStorageMaintenance = async (dryRun: boolean): Promise<void> => {
+    if (
+      storageMaintenanceRunLockRef.current ||
+      storageMaintenanceRollbackLockRef.current ||
+      isStorageMaintenanceRunningNow ||
+      isStorageMaintenanceRollingBack ||
+      storageMaintenanceState?.running
+    ) {
+      return
+    }
+    if (typeof window.electronAPI.runStorageMaintenanceNow !== 'function') {
+      window.alert('当前版本未集成存储维护执行接口。')
+      return
+    }
+
+    const reason = storageMaintenanceReason.trim() || 'manual-ui'
+    if (!dryRun && !config.storageArchivePath.trim()) {
+      const accepted = window.confirm('当前未配置归档路径，实跑将执行不可回滚删除。是否继续？')
+      if (!accepted) return
+    }
+
+    storageMaintenanceRunLockRef.current = true
+    setIsStorageMaintenanceRunningNow(true)
+    try {
+      addLog(`[存储维护] 开始执行${dryRun ? ' dry-run' : ' real-run'}，reason=${reason}`)
+      const summary = await window.electronAPI.runStorageMaintenanceNow({ reason, dryRun })
+      setLastStorageMaintenanceSummary(summary)
+      setStorageMaintenanceRollbackRunId(summary.runId)
+      addLog(
+        `[存储维护] 执行完成 执行编号=${summary.runId} ` +
+          `assets=${summary.results.orphanAssetsDeleted} ` +
+          `partitions=${summary.results.orphanPartitionsDeleted} ` +
+          `temp=${summary.results.tempFilesDeleted} ` +
+          `videos=${summary.results.migratedVideos}`
+      )
+      if (summary.notes.length > 0) {
+        addLog(`[存储维护] 备注：${summary.notes.slice(0, 2).join(' | ')}`)
+      }
+      window.alert(
+        `执行完成（${dryRun ? 'dry-run' : 'real-run'}）\n` +
+          `执行编号: ${summary.runId}\n` +
+          `清理文件: ${summary.results.orphanAssetsDeleted + summary.results.tempFilesDeleted}\n` +
+          `清理分区: ${summary.results.orphanPartitionsDeleted}\n` +
+          `迁移视频: ${summary.results.migratedVideos}`
+      )
+    } catch (error) {
+      const message = normalizeStorageMaintenanceErrorMessage(error, {
+        dryRun,
+        archivePath: config.storageArchivePath
+      })
+      addLog(`[存储维护] 执行失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsStorageMaintenanceRunningNow(false)
+      storageMaintenanceRunLockRef.current = false
+      await refreshStorageMaintenanceState()
+    }
+  }
+
+  const rollbackStorageMaintenance = async (): Promise<void> => {
+    if (
+      storageMaintenanceRunLockRef.current ||
+      storageMaintenanceRollbackLockRef.current ||
+      isStorageMaintenanceRunningNow ||
+      isStorageMaintenanceRollingBack ||
+      storageMaintenanceState?.running
+    ) {
+      return
+    }
+    if (typeof window.electronAPI.rollbackStorageMaintenance !== 'function') {
+      window.alert('当前版本未集成存储维护回滚接口。')
+      return
+    }
+
+    const runId = storageMaintenanceRollbackRunId.trim()
+    if (!runId) {
+      window.alert('请输入要回滚的目标编号。')
+      return
+    }
+
+    const accepted = window.confirm(`确认回滚目标编号=${runId} ?`)
+    if (!accepted) return
+
+    storageMaintenanceRollbackLockRef.current = true
+    setIsStorageMaintenanceRollingBack(true)
+    try {
+      const result = await window.electronAPI.rollbackStorageMaintenance(runId)
+      addLog(
+        `[存储维护] 回滚完成 目标编号=${runId} restored=${result.restored} errors=${result.errors.length}`
+      )
+      if (result.errors.length > 0) {
+        addLog(`[存储维护] 回滚错误：${result.errors.slice(0, 2).join(' | ')}`)
+      }
+      window.alert(
+        `回滚完成\n目标编号: ${runId}\n恢复项: ${result.restored}\n错误数: ${result.errors.length}`
+      )
+    } catch (error) {
+      const message = unwrapElectronInvokeError(extractErrorMessage(error))
+      addLog(`[存储维护] 回滚失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsStorageMaintenanceRollingBack(false)
+      storageMaintenanceRollbackLockRef.current = false
+      await refreshStorageMaintenanceState()
     }
   }
 
@@ -824,6 +1078,172 @@ function Settings(): React.JSX.Element {
               {isInstallingAppUpdate ? '准备重启...' : '立即安装并重启'}
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>存储维护（缓存瘦身）</CardTitle>
+          <CardDescription>
+            当前阶段只恢复手动维护：支持 dry-run、实跑、飞牛归档和按执行编号回滚；不会按夜间时间自动执行。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+            自动维护配置字段仍会保留兼容：
+            {config.storageMaintenanceEnabled ? '已启用' : '未启用'} /{' '}
+            {normalizeStorageMaintenanceStartTime(config.storageMaintenanceStartTime)}，但本阶段不会自动触发。
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">保留天数</div>
+              <Input
+                type="number"
+                min={1}
+                max={120}
+                value={clampRetainDays(config.storageMaintenanceRetainDays)}
+                onChange={(e) =>
+                  updateConfig({
+                    storageMaintenanceRetainDays: clampRetainDays(Number(e.target.value))
+                  })
+                }
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">当前运行状态</div>
+              <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200">
+                {isStorageMaintenanceRunningNow || storageMaintenanceState?.running
+                  ? '运行中'
+                  : isStorageMaintenanceRollingBack
+                    ? '回滚中'
+                    : '空闲'}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">飞牛归档目录</div>
+            <Input
+              value={config.storageArchivePath || '(未设置)'}
+              readOnly
+              className={config.storageArchivePath ? '' : 'text-zinc-500 italic'}
+            />
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => void chooseStorageArchivePath()}>
+                选择目录
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={clearStorageArchivePath}
+                disabled={!config.storageArchivePath.trim()}
+              >
+                清空
+              </Button>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+            <div>自动计划时间（仅展示）：{formatDateTime(storageMaintenanceState?.nextRunAt ?? null)}</div>
+            <div>上次执行时间：{formatDateTime(storageMaintenanceState?.lastRunAt ?? null)}</div>
+            <div>上次执行编号：{storageMaintenanceState?.lastRunId ?? '--'}</div>
+            <div>锁状态：{storageMaintenanceState?.locked ? '已锁定' : '未锁定'}</div>
+            <div>锁原因：{storageMaintenanceState?.lockReason ?? '--'}</div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="flex flex-col gap-1 md:col-span-2">
+              <div className="text-xs text-zinc-400">本次执行备注</div>
+              <Input
+                value={storageMaintenanceReason}
+                onChange={(e) => setStorageMaintenanceReason(e.target.value)}
+                placeholder="例如：发布前手动清理"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button type="button" variant="outline" onClick={() => void refreshStorageMaintenanceState()}>
+                刷新状态
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void runStorageMaintenance(true)}
+              disabled={
+                isStorageMaintenanceRunningNow ||
+                isStorageMaintenanceRollingBack ||
+                storageMaintenanceState?.running
+              }
+            >
+              {isStorageMaintenanceRunningNow ? '执行中...' : '立即 dry-run'}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void runStorageMaintenance(false)}
+              disabled={
+                isStorageMaintenanceRunningNow ||
+                isStorageMaintenanceRollingBack ||
+                storageMaintenanceState?.running
+              }
+            >
+              {isStorageMaintenanceRunningNow ? '执行中...' : '立即实跑'}
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            <div className="flex flex-col gap-1 md:col-span-2">
+              <div className="text-xs text-zinc-400">回滚目标编号</div>
+              <Input
+                value={storageMaintenanceRollbackRunId}
+                onChange={(e) => setStorageMaintenanceRollbackRunId(e.target.value)}
+                placeholder="执行完成后会自动带入，也可手动填写"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void rollbackStorageMaintenance()}
+                disabled={
+                  isStorageMaintenanceRunningNow ||
+                  isStorageMaintenanceRollingBack ||
+                  storageMaintenanceState?.running
+                }
+              >
+                {isStorageMaintenanceRollingBack ? '回滚中...' : '执行回滚'}
+              </Button>
+            </div>
+          </div>
+
+          {lastStorageMaintenanceSummary ? (
+            <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-300">
+              <div>最近手动结果：执行编号={lastStorageMaintenanceSummary.runId}</div>
+              <div>
+                清理：assets {lastStorageMaintenanceSummary.results.orphanAssetsDeleted} / temp{' '}
+                {lastStorageMaintenanceSummary.results.tempFilesDeleted} / partitions{' '}
+                {lastStorageMaintenanceSummary.results.orphanPartitionsDeleted}
+              </div>
+              <div>
+                空间回收：assets{' '}
+                {formatBytes(lastStorageMaintenanceSummary.results.orphanAssetsDeletedBytes)} /
+                temp {formatBytes(lastStorageMaintenanceSummary.results.tempFilesDeletedBytes)} /
+                partitions{' '}
+                {formatBytes(lastStorageMaintenanceSummary.results.orphanPartitionsDeletedBytes)}
+              </div>
+              <div>
+                迁移视频：{lastStorageMaintenanceSummary.results.migratedVideos}（
+                {formatBytes(lastStorageMaintenanceSummary.results.migratedVideoBytes)}），跳过{' '}
+                {lastStorageMaintenanceSummary.results.skippedMigrations}
+              </div>
+              <div>
+                耗时：{Math.max(0, Math.round(lastStorageMaintenanceSummary.durationMs / 100) / 10)} s
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

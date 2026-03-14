@@ -113,6 +113,37 @@ type InstallUpdateResult = {
   state: AppUpdateState
 }
 
+type StorageMaintenanceState = {
+  enabled: boolean
+  running: boolean
+  locked: boolean
+  lockReason: string | null
+  nextRunAt: number | null
+  lastRunAt: number | null
+  lastRunId: string | null
+}
+
+type StorageMaintenanceSummary = {
+  runId: string
+  mode: 'scheduled' | 'manual'
+  startedAt: number
+  finishedAt: number
+  durationMs: number
+  results: {
+    orphanAssetsDeleted: number
+    orphanAssetsDeletedBytes: number
+    orphanPartitionsDeleted: number
+    orphanPartitionsDeletedBytes: number
+    tempFilesDeleted: number
+    tempFilesDeletedBytes: number
+    migratedVideos: number
+    migratedVideoBytes: number
+    skippedMigrations: number
+  }
+  notes: string[]
+  manifestPath: string
+}
+
 type NoteRaceSignalTone = 'positive' | 'negative' | 'neutral'
 type NoteRaceTag = '起飞' | '维稳' | '掉速' | '长尾复活' | '风险'
 
@@ -1359,6 +1390,14 @@ const electronAPI = {
     defaultInterval?: number
   }): Promise<{ success: true }> =>
     ipcRenderer.invoke('save-config', patch),
+  getStorageMaintenanceState: (): Promise<StorageMaintenanceState> =>
+    ipcRenderer.invoke('cms.storage.maintenance.state'),
+  runStorageMaintenanceNow: (payload?: { reason?: string; dryRun?: boolean }): Promise<StorageMaintenanceSummary> =>
+    ipcRenderer.invoke('cms.storage.maintenance.runNow', payload),
+  rollbackStorageMaintenance: (
+    runId: string
+  ): Promise<{ success: boolean; restored: number; errors: string[] }> =>
+    ipcRenderer.invoke('cms.storage.maintenance.rollback', { runId }),
   getFeishuConfig: (): Promise<{ appId: string; appSecret: string; baseToken: string; tableId: string } | null> =>
     ipcRenderer.invoke('get-feishu-config'),
   uploadImage: (filePath: string, appId: string, appSecret: string, baseToken: string): Promise<string> =>

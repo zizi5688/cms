@@ -136,6 +136,37 @@ declare global {
     state: AppUpdateState
   }
 
+  type StorageMaintenanceState = {
+    enabled: boolean
+    running: boolean
+    locked: boolean
+    lockReason: string | null
+    nextRunAt: number | null
+    lastRunAt: number | null
+    lastRunId: string | null
+  }
+
+  type StorageMaintenanceSummary = {
+    runId: string
+    mode: 'scheduled' | 'manual'
+    startedAt: number
+    finishedAt: number
+    durationMs: number
+    results: {
+      orphanAssetsDeleted: number
+      orphanAssetsDeletedBytes: number
+      orphanPartitionsDeleted: number
+      orphanPartitionsDeletedBytes: number
+      tempFilesDeleted: number
+      tempFilesDeletedBytes: number
+      migratedVideos: number
+      migratedVideoBytes: number
+      skippedMigrations: number
+    }
+    notes: string[]
+    manifestPath: string
+  }
+
   type SyncDouyinHotMusicResult = {
     success: boolean
     outputDir: string
@@ -1256,6 +1287,14 @@ declare global {
       defaultStartTime?: string
       defaultInterval?: number
     }) => Promise<{ success: true }>
+    getStorageMaintenanceState: () => Promise<StorageMaintenanceState>
+    runStorageMaintenanceNow: (payload?: {
+      reason?: string
+      dryRun?: boolean
+    }) => Promise<StorageMaintenanceSummary>
+    rollbackStorageMaintenance: (
+      runId: string
+    ) => Promise<{ success: boolean; restored: number; errors: string[] }>
     getFeishuConfig: () => Promise<{ appId: string; appSecret: string; baseToken: string; tableId: string } | null>
     uploadImage: (filePath: string, appId: string, appSecret: string, baseToken: string) => Promise<string>
     createRecord: (

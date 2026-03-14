@@ -30,6 +30,20 @@ export class QueueService {
 
   private constructor() {}
 
+  hasProcessingTasks(): boolean {
+    const sqlite = SqliteService.getInstance()
+    if (!sqlite.isInitialized) return false
+    try {
+      const row = sqlite.connection
+        .prepare(`SELECT COUNT(1) AS count FROM tasks WHERE status = 'processing'`)
+        .get() as { count?: unknown } | undefined
+      const count = Number(row?.count ?? 0)
+      return Number.isFinite(count) && count > 0
+    } catch {
+      return false
+    }
+  }
+
   recoverStalledTasks(timeoutMs = 300000): number {
     const sqlite = SqliteService.getInstance()
     if (!sqlite.isInitialized) return 0

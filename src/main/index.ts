@@ -37,6 +37,7 @@ import { NoteRaceService } from './services/noteRaceService'
 import { AiStudioService } from './services/aiStudioService'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
+import { StorageMaintenanceService } from './services/storageMaintenanceService'
 import { buildXhsSendKeyEvents } from './xhsInputEvents'
 
 protocol.registerSchemesAsPrivileged([
@@ -103,6 +104,7 @@ const IPC_SOURCING_LOGIN_NEEDED = 'IPC_SOURCING_LOGIN_NEEDED'
 let imageFetchProcessedCount = 0
 let mainWindow: BrowserWindow | null = null
 let sourcingLoginWindow: BrowserWindow | null = null
+let storageMaintenanceService: StorageMaintenanceService | null = null
 const safeFileRecoveredByName = new Map<string, string>()
 const DASHBOARD_AUTO_IMPORT_SCAN_INTERVAL_MS = 5_000
 const DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS = 15_000
@@ -619,6 +621,9 @@ const defaultDynamicWatermarkEnabled = false
 const defaultDynamicWatermarkOpacity = 15
 const defaultDynamicWatermarkSize = 5
 const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
+const defaultStorageMaintenanceEnabled = false
+const defaultStorageMaintenanceStartTime = '02:30'
+const defaultStorageMaintenanceRetainDays = 7
 type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
 function normalizeAiProvider(value: unknown): AiProvider {
@@ -865,6 +870,26 @@ function normalizeDynamicWatermarkTrajectory(value: unknown): DynamicWatermarkTr
     : defaultDynamicWatermarkTrajectory) as DynamicWatermarkTrajectory
 }
 
+function normalizeStorageMaintenanceEnabled(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : defaultStorageMaintenanceEnabled
+}
+
+function normalizeStorageMaintenanceStartTime(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) return defaultStorageMaintenanceStartTime
+  return text
+}
+
+function normalizeStorageMaintenanceRetainDays(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return defaultStorageMaintenanceRetainDays
+  return Math.max(1, Math.min(120, Math.floor(parsed)))
+}
+
+function normalizeStorageArchivePath(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 const configStore = new StoreCtor<{
   feishuConfig: { appId: string; appSecret: string; baseToken: string; tableId: string }
   aiProvider?: string
@@ -880,6 +905,10 @@ const configStore = new StoreCtor<{
   dynamicWatermarkOpacity?: number
   dynamicWatermarkSize?: number
   dynamicWatermarkTrajectory?: DynamicWatermarkTrajectory
+  storageMaintenanceEnabled?: boolean
+  storageMaintenanceStartTime?: string
+  storageMaintenanceRetainDays?: number
+  storageArchivePath?: string
   scoutDashboardAutoImportDir?: string
   scoutDashboardAutoImportSince?: number
   watermarkBox: { x: number; y: number; width: number; height: number }
@@ -1777,10 +1806,36 @@ app.whenReady().then(async () => {
     }
   }
 
-  registerQueueRunnerIpc({ publisherService, taskManager })
+  storageMaintenanceService = new StorageMaintenanceService({
+    getConfig: (key: string) => configStore.get(key),
+    getWorkspacePath: () => String(workspaceService.currentPath ?? '').trim(),
+    getUserDataPath: () => app.getPath('userData'),
+    getActivePartitionNames: () =>
+      accountManager
+        .listAccounts()
+        .map((item) => String(item.partitionKey ?? '').trim().replace(/^persist:/i, ''))
+        .filter(Boolean),
+    isTaskPipelineBusy: () => publisherService.isQueueRunning() || QueueService.getInstance().hasProcessingTasks(),
+    tryGetSqliteConnection: () => SqliteService.getInstance().tryGetConnection(),
+    log: (level, message) => {
+      sendLogToRenderer(level, message)
+    }
+  })
+  storageMaintenanceService.updateSchedule()
+
+  const assertStorageWritable = (action: string): void => {
+    storageMaintenanceService?.assertWritable(action)
+  }
+
+  registerQueueRunnerIpc({
+    publisherService,
+    taskManager,
+    canRun: () => !storageMaintenanceService?.isLocked()
+  })
 
   if (sqliteReady && !scheduleHeartbeatTimer) {
     scheduleHeartbeatTimer = setInterval(() => {
+      if (storageMaintenanceService?.isLocked()) return
       if (!SqliteService.getInstance().isInitialized) {
         console.warn('DB not ready, skipping task check')
         return
@@ -2132,6 +2187,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('cms.task.createBatch', async (event, payload: unknown) => {
+    assertStorageWritable('批量创建任务')
     const body =
       payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null
     const requestId = body && typeof body.requestId === 'string' ? body.requestId.trim() : ''
@@ -2308,6 +2364,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(
     'cms.task.importImages',
     async (_event, payload: { filePaths?: unknown }): Promise<string[]> => {
+      assertStorageWritable('导入任务图片')
       const rawPaths = Array.isArray(payload?.filePaths) ? payload.filePaths : []
       const filePaths = rawPaths.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
       if (filePaths.length === 0) return []
@@ -2382,6 +2439,7 @@ app.whenReady().then(async () => {
   )
 
   ipcMain.handle('publisher.publish', async (_event, payload: { accountId?: string; taskData?: unknown }) => {
+    assertStorageWritable('发布任务')
     const accountId = typeof payload?.accountId === 'string' ? payload.accountId : ''
     const taskData = (payload?.taskData ?? {}) as unknown as {
       title?: unknown
@@ -2578,6 +2636,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('cms.image.saveBase64', async (_event, payload: { dataUrl?: unknown; filename?: unknown }) => {
+    assertStorageWritable('保存封面图片')
     const dataUrl = typeof payload?.dataUrl === 'string' ? payload.dataUrl : ''
     const rawFilename = typeof payload?.filename === 'string' ? payload.filename : ''
     const safeFilename = basename(rawFilename.trim() || `cover_${Date.now()}`)
@@ -2613,6 +2672,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('media:composeVideoFromImages', async (_event, payload: unknown) => {
+    assertStorageWritable('生成视频')
     const body = (payload ?? {}) as Record<string, unknown>
     const batchIndexRaw = Number(body.batchIndex)
     const batchTotalRaw = Number(body.batchTotal)
@@ -2631,6 +2691,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('media:composeVideoBatchFromImages', async (_event, payload: unknown) => {
+    assertStorageWritable('批量生成视频')
     const body = (payload ?? {}) as Record<string, unknown>
     const batchCountRaw = Number(body.batchCount)
     const batchCount = Number.isFinite(batchCountRaw) ? Math.max(1, Math.min(20, Math.floor(batchCountRaw))) : 1
@@ -2809,6 +2870,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('media:syncDouyinHotMusic', async (_event, payload: unknown) => {
+    assertStorageWritable('同步抖音热歌')
     return syncDouyinHotMusic((payload ?? {}) as Record<string, unknown>)
   })
 
@@ -3505,6 +3567,26 @@ app.whenReady().then(async () => {
     if (storedDynamicWatermarkTrajectory !== dynamicWatermarkTrajectory) {
       configStore.set('dynamicWatermarkTrajectory', dynamicWatermarkTrajectory)
     }
+    const storedStorageMaintenanceEnabled = configStore.get('storageMaintenanceEnabled')
+    const storageMaintenanceEnabled = normalizeStorageMaintenanceEnabled(storedStorageMaintenanceEnabled)
+    if (storedStorageMaintenanceEnabled !== storageMaintenanceEnabled) {
+      configStore.set('storageMaintenanceEnabled', storageMaintenanceEnabled)
+    }
+    const storedStorageMaintenanceStartTime = configStore.get('storageMaintenanceStartTime')
+    const storageMaintenanceStartTime = normalizeStorageMaintenanceStartTime(storedStorageMaintenanceStartTime)
+    if (storedStorageMaintenanceStartTime !== storageMaintenanceStartTime) {
+      configStore.set('storageMaintenanceStartTime', storageMaintenanceStartTime)
+    }
+    const storedStorageMaintenanceRetainDays = configStore.get('storageMaintenanceRetainDays')
+    const storageMaintenanceRetainDays = normalizeStorageMaintenanceRetainDays(storedStorageMaintenanceRetainDays)
+    if (storedStorageMaintenanceRetainDays !== storageMaintenanceRetainDays) {
+      configStore.set('storageMaintenanceRetainDays', storageMaintenanceRetainDays)
+    }
+    const storedStorageArchivePath = configStore.get('storageArchivePath')
+    const storageArchivePath = normalizeStorageArchivePath(storedStorageArchivePath)
+    if (storedStorageArchivePath !== storageArchivePath) {
+      configStore.set('storageArchivePath', storageArchivePath)
+    }
     const storedAutoImportDir = configStore.get('scoutDashboardAutoImportDir')
     const scoutDashboardAutoImportDir = typeof storedAutoImportDir === 'string' ? storedAutoImportDir.trim() : ''
     if (storedAutoImportDir !== scoutDashboardAutoImportDir) {
@@ -3548,6 +3630,10 @@ app.whenReady().then(async () => {
       dynamicWatermarkOpacity,
       dynamicWatermarkSize,
       dynamicWatermarkTrajectory,
+      storageMaintenanceEnabled,
+      storageMaintenanceStartTime,
+      storageMaintenanceRetainDays,
+      storageArchivePath,
       queueConfig
     }
   })
@@ -3572,6 +3658,10 @@ app.whenReady().then(async () => {
             dynamicWatermarkOpacity?: number
             dynamicWatermarkSize?: number
             dynamicWatermarkTrajectory?: DynamicWatermarkTrajectory
+            storageMaintenanceEnabled?: boolean
+            storageMaintenanceStartTime?: string
+            storageMaintenanceRetainDays?: number
+            storageArchivePath?: string
             scoutDashboardAutoImportDir?: string
             watermarkBox?: { x: number; y: number; width: number; height: number }
             defaultStartTime?: string
@@ -3719,6 +3809,32 @@ app.whenReady().then(async () => {
           normalizeDynamicWatermarkTrajectory(patch.dynamicWatermarkTrajectory)
         )
       }
+      let shouldRefreshStorageMaintenanceState = false
+      if (typeof patch?.storageMaintenanceEnabled === 'boolean') {
+        configStore.set('storageMaintenanceEnabled', patch.storageMaintenanceEnabled)
+        shouldRefreshStorageMaintenanceState = true
+      }
+      if (typeof patch?.storageMaintenanceStartTime === 'string') {
+        configStore.set(
+          'storageMaintenanceStartTime',
+          normalizeStorageMaintenanceStartTime(patch.storageMaintenanceStartTime)
+        )
+        shouldRefreshStorageMaintenanceState = true
+      }
+      if (
+        typeof patch?.storageMaintenanceRetainDays === 'number' &&
+        Number.isFinite(patch.storageMaintenanceRetainDays)
+      ) {
+        configStore.set(
+          'storageMaintenanceRetainDays',
+          normalizeStorageMaintenanceRetainDays(patch.storageMaintenanceRetainDays)
+        )
+        shouldRefreshStorageMaintenanceState = true
+      }
+      if (typeof patch?.storageArchivePath === 'string') {
+        configStore.set('storageArchivePath', normalizeStorageArchivePath(patch.storageArchivePath))
+        shouldRefreshStorageMaintenanceState = true
+      }
       const nextScoutDashboardAutoImportDir =
         typeof patch?.scoutDashboardAutoImportDir === 'string'
           ? patch.scoutDashboardAutoImportDir.trim()
@@ -3778,9 +3894,45 @@ app.whenReady().then(async () => {
         }
         configStore.set('queueConfig', merged)
       }
+      if (shouldRefreshStorageMaintenanceState) {
+        storageMaintenanceService?.updateSchedule()
+      }
       return { success: true }
     }
   )
+
+  ipcMain.handle('cms.storage.maintenance.state', async () => {
+    return (
+      storageMaintenanceService?.getState() ?? {
+        enabled: false,
+        running: false,
+        locked: false,
+        lockReason: null,
+        nextRunAt: null,
+        lastRunAt: null,
+        lastRunId: null
+      }
+    )
+  })
+
+  ipcMain.handle('cms.storage.maintenance.runNow', async (_event, payload: unknown) => {
+    if (!storageMaintenanceService) {
+      throw new Error('[StorageMaintenance] service not initialized.')
+    }
+    const body = (payload ?? {}) as Record<string, unknown>
+    const reason = typeof body.reason === 'string' ? body.reason : ''
+    const dryRun = body.dryRun === true
+    return await storageMaintenanceService.runNow({ reason, dryRun })
+  })
+
+  ipcMain.handle('cms.storage.maintenance.rollback', async (_event, payload: unknown) => {
+    if (!storageMaintenanceService) {
+      throw new Error('[StorageMaintenance] service not initialized.')
+    }
+    const body = (payload ?? {}) as Record<string, unknown>
+    const runId = typeof body.runId === 'string' ? body.runId : ''
+    return await storageMaintenanceService.rollback(runId)
+  })
 
   ipcMain.handle(
     'feishu-upload-image',
@@ -4914,6 +5066,12 @@ app.on('before-quit', () => {
     void error
   }
   disposeScoutDashboardAutoImportWatcher = null
+  try {
+    storageMaintenanceService?.dispose()
+  } catch (error) {
+    void error
+  }
+  storageMaintenanceService = null
   app.quit()
 })
 
