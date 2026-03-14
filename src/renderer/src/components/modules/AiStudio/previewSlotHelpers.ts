@@ -6,6 +6,17 @@ export type PreviewSlotRuntimeState = {
   startedAt?: number
 }
 
+export function canRegeneratePreviewSlot(input: {
+  asset: unknown | null
+  status: PreviewTileStatus
+}): boolean {
+  if (input.status === 'loading' || input.status === 'idle') {
+    return false
+  }
+
+  return Boolean(input.asset) || input.status === 'failed'
+}
+
 export function hasActivePreviewSlotRuntimeStates(
   runtimeStates: Record<number, PreviewSlotRuntimeState> | null | undefined
 ): boolean {

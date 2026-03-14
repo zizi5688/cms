@@ -3,11 +3,14 @@ import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
 import {
+  ChevronLeft,
+  ChevronRight,
   Check,
   Clapperboard,
   Image as ImageIcon,
   ImageMinus,
   ImagePlus,
+  Minus,
   Play,
   Plus,
   RotateCcw,
@@ -32,6 +35,15 @@ import {
 } from './useAiStudioState'
 import { resolveLoadedImageBadgeLabel } from './imagePreviewBadgeHelpers'
 import {
+  IMAGE_LIGHTBOX_MIN_ZOOM,
+  clampImageLightboxZoom,
+  resolveImageLightboxStartIndex,
+  shouldCloseImageLightboxFromBackdropClick,
+  stepImageLightboxIndex,
+  stepImageLightboxZoom
+} from './imageLightboxHelpers'
+import {
+  canRegeneratePreviewSlot,
   hasActivePreviewSlotRuntimeStates,
   resolvePreviewSlotState,
   type PreviewTileStatus
@@ -58,6 +70,11 @@ type PreviewSlot = {
   status: PreviewTileStatus
   statusText: string
   detailText?: string
+}
+
+type ImageLightboxState = {
+  assets: AiStudioAssetRecord[]
+  activeAssetId: string
 }
 
 function basename(filePath: string | null | undefined): string {
@@ -177,54 +194,231 @@ async function captureVideoPoster(filePath: string): Promise<string> {
   return request
 }
 
+function resolveImageLightboxSrc(
+  asset: AiStudioAssetRecord | null | undefined,
+  workspacePath: string
+): string {
+  const sourcePath = String(asset?.filePath ?? asset?.previewPath ?? '').trim()
+  return sourcePath ? resolveLocalImage(sourcePath, workspacePath) : ''
+}
+
 function ImageLightbox({
-  asset,
+  assets,
+  activeAssetId,
   open,
   onOpenChange
 }: {
-  asset: AiStudioAssetRecord | null
+  assets: AiStudioAssetRecord[]
+  activeAssetId: string | null
   open: boolean
   onOpenChange: (next: boolean) => void
 }): React.JSX.Element | null {
   const workspacePath = useCmsStore((store) => store.workspacePath)
-  const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
+  const lightboxAssets = useMemo(
+    () =>
+      assets.filter((asset) => {
+        const sourcePath = String(asset?.filePath ?? asset?.previewPath ?? '').trim()
+        return Boolean(sourcePath)
+      }),
+    [assets]
+  )
+  const assetIds = useMemo(() => lightboxAssets.map((asset) => asset.id), [lightboxAssets])
+  const assetIdsKey = useMemo(() => assetIds.join('::'), [assetIds])
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [zoom, setZoom] = useState(IMAGE_LIGHTBOX_MIN_ZOOM)
+  const activeAsset = lightboxAssets[activeIndex] ?? null
+  const src = resolveImageLightboxSrc(activeAsset, workspacePath)
+  const hasMultipleAssets = lightboxAssets.length > 1
+  const canGoPrevious = activeIndex > 0
+  const canGoNext = activeIndex < lightboxAssets.length - 1
+  const zoomLabel = `${Math.round(zoom * 100)}%`
+
+  useEffect(() => {
+    if (!open) {
+      setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
+      return
+    }
+
+    setActiveIndex(resolveImageLightboxStartIndex(assetIds, activeAssetId))
+    setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
+  }, [activeAssetId, assetIds, assetIdsKey, open])
 
   useEffect(() => {
     if (!open) return
-    const onEsc = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onOpenChange(false)
-    }
-    document.addEventListener('keydown', onEsc)
-    return () => {
-      document.removeEventListener('keydown', onEsc)
-    }
-  }, [onOpenChange, open])
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
 
-  if (!open || !asset || !src || typeof document === 'undefined') return null
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        onOpenChange(false)
+        return
+      }
+
+      if (event.key === 'ArrowLeft') {
+        setActiveIndex((currentIndex) =>
+          stepImageLightboxIndex(currentIndex, lightboxAssets.length, 'previous')
+        )
+        setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
+        return
+      }
+
+      if (event.key === 'ArrowRight') {
+        setActiveIndex((currentIndex) =>
+          stepImageLightboxIndex(currentIndex, lightboxAssets.length, 'next')
+        )
+        setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
+        return
+      }
+
+      if (event.key === '+' || event.key === '=') {
+        setZoom((currentZoom) => stepImageLightboxZoom(currentZoom, 'in'))
+        return
+      }
+
+      if (event.key === '-') {
+        setZoom((currentZoom) => stepImageLightboxZoom(currentZoom, 'out'))
+        return
+      }
+
+      if (event.key === '0') {
+        setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [lightboxAssets.length, onOpenChange, open])
+
+  useEffect(() => {
+    if (!open || lightboxAssets.length <= 1) return
+
+    const preloadIndices = [
+      stepImageLightboxIndex(activeIndex, lightboxAssets.length, 'previous'),
+      stepImageLightboxIndex(activeIndex, lightboxAssets.length, 'next')
+    ]
+    preloadIndices.forEach((index) => {
+      if (index === activeIndex) return
+      const preloadSrc = resolveImageLightboxSrc(lightboxAssets[index], workspacePath)
+      if (!preloadSrc) return
+      const image = new Image()
+      image.src = preloadSrc
+    })
+  }, [activeIndex, lightboxAssets, open, workspacePath])
+
+  if (!open || !activeAsset || !src || typeof document === 'undefined') return null
+
+  const navigate = (direction: 'previous' | 'next'): void => {
+    setActiveIndex((currentIndex) => stepImageLightboxIndex(currentIndex, lightboxAssets.length, direction))
+    setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
+  }
 
   return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/88 p-6">
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/68 p-4 backdrop-blur-[3px] sm:p-6"
+      onClick={(event) => {
+        if (
+          shouldCloseImageLightboxFromBackdropClick({
+            target: event.target,
+            currentTarget: event.currentTarget
+          })
+        ) {
+          onOpenChange(false)
+        }
+      }}
+    >
       <button
         type="button"
-        aria-label="关闭图片预览"
         onClick={() => onOpenChange(false)}
-        className="absolute inset-0"
-      />
-      <div className="relative z-10 flex max-h-full max-w-[94vw] items-center justify-center">
-        <button
-          type="button"
-          onClick={() => onOpenChange(false)}
-          className="absolute -right-3 -top-3 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/45 text-zinc-100 backdrop-blur transition hover:bg-black/70"
-          aria-label="关闭图片预览"
-        >
-          <X className="h-5 w-5" />
-        </button>
-        <img
-          src={src}
-          alt={basename(asset.filePath)}
-          className="max-h-[46vh] max-w-[47vw] rounded-3xl object-contain shadow-[0_30px_120px_rgba(0,0,0,0.55)]"
-          draggable={false}
-        />
+        className="absolute right-4 top-4 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/38 text-zinc-100 shadow-[0_18px_50px_rgba(0,0,0,0.28)] backdrop-blur-xl transition hover:bg-black/56 sm:right-6 sm:top-6"
+        aria-label="关闭图片预览"
+      >
+        <X className="h-5 w-5" />
+      </button>
+
+      <div
+        className="relative z-10 flex max-h-full max-w-full items-center justify-center"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-black/38 px-2.5 py-2 shadow-[0_18px_50px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+          <button
+            type="button"
+            onClick={() => setZoom((currentZoom) => stepImageLightboxZoom(currentZoom, 'out'))}
+            disabled={zoom <= IMAGE_LIGHTBOX_MIN_ZOOM}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-zinc-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:text-white/35"
+            aria-label="缩小图片"
+          >
+            <Minus className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)}
+            className="min-w-[70px] rounded-full px-3 py-1.5 text-center text-[11px] font-medium tracking-[0.08em] text-white/88 transition hover:bg-white/10"
+            aria-label="重置缩放"
+          >
+            {zoomLabel}
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoom((currentZoom) => stepImageLightboxZoom(currentZoom, 'in'))}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-zinc-100 transition hover:bg-white/10"
+            aria-label="放大图片"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="relative flex items-center gap-2 sm:gap-3">
+          {hasMultipleAssets ? (
+            <button
+              type="button"
+              onClick={() => navigate('previous')}
+              disabled={!canGoPrevious}
+              className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/80 bg-black/78 text-white shadow-[0_22px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl transition hover:scale-[1.03] hover:bg-black/88 disabled:cursor-not-allowed disabled:opacity-35 sm:h-14 sm:w-14"
+              aria-label="查看上一张"
+            >
+              <ChevronLeft className="h-5 w-5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)] stroke-[2.8] sm:h-6 sm:w-6" />
+            </button>
+          ) : null}
+
+          <div
+            className="flex max-h-[82vh] max-w-[88vw] items-center justify-center overflow-hidden"
+            onWheel={(event) => {
+              event.preventDefault()
+              setZoom((currentZoom) =>
+                clampImageLightboxZoom(
+                  currentZoom + (event.deltaY < 0 ? 0.15 : -0.15)
+                )
+              )
+            }}
+          >
+            <img
+              src={src}
+              alt={basename(activeAsset.filePath)}
+              className="max-h-[82vh] max-w-[88vw] select-none rounded-[24px] object-contain shadow-[0_32px_120px_rgba(0,0,0,0.34)] transition-transform duration-200 ease-out"
+              draggable={false}
+              onDoubleClick={() => setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)}
+              style={{
+                transform: `scale(${zoom})`,
+                transformOrigin: 'center center'
+              }}
+            />
+          </div>
+
+          {hasMultipleAssets ? (
+            <button
+              type="button"
+              onClick={() => navigate('next')}
+              disabled={!canGoNext}
+              className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/80 bg-black/78 text-white shadow-[0_22px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl transition hover:scale-[1.03] hover:bg-black/88 disabled:cursor-not-allowed disabled:opacity-35 sm:h-14 sm:w-14"
+              aria-label="查看下一张"
+            >
+              <ChevronRight className="h-5 w-5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)] stroke-[2.8] sm:h-6 sm:w-6" />
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>,
     document.body
@@ -488,7 +682,7 @@ function HistoryTaskSection({
 }: {
   task: AiStudioTaskView
   state: UseAiStudioStateResult
-  onOpenAsset: (asset: AiStudioAssetRecord) => void
+  onOpenAsset: (asset: AiStudioAssetRecord, assets: AiStudioAssetRecord[]) => void
 }): React.JSX.Element {
   const addLog = useCmsStore((store) => store.addLog)
   const primaryAsset =
@@ -526,6 +720,13 @@ function HistoryTaskSection({
             getAssetSequenceIndex(right, right.sortOrder + 1) || left.sortOrder - right.sortOrder
       ),
     [task]
+  )
+  const lightboxAssets = useMemo(
+    () =>
+      generatedAssets.filter((asset) =>
+        Boolean(String(asset?.filePath ?? asset?.previewPath ?? '').trim())
+      ),
+    [generatedAssets]
   )
   const hasDispatchOutputs = generatedAssets.length > 0
   const selectedDispatchOutputCount = generatedAssets.filter((asset) => asset.selected).length
@@ -790,7 +991,10 @@ function HistoryTaskSection({
                 pooled={slot.asset?.selected}
                 style={{ width: previewTileWidth }}
                 onOpen={
-                  slot.asset ? () => onOpenAsset(slot.asset as AiStudioAssetRecord) : undefined
+                  slot.asset
+                    ? () =>
+                        onOpenAsset(slot.asset as AiStudioAssetRecord, lightboxAssets)
+                    : undefined
                 }
                 onTogglePool={
                   slot.asset
@@ -809,7 +1013,10 @@ function HistoryTaskSection({
                     : undefined
                 }
                 onRegenerate={
-                  !isRunning && (slot.asset || slot.status === 'failed')
+                  canRegeneratePreviewSlot({
+                    asset: slot.asset,
+                    status: slot.status
+                  })
                     ? () => void handleRegenerate(slot.index)
                     : undefined
                 }
@@ -827,7 +1034,7 @@ function HistoryTaskSection({
               asset={currentAiMasterAsset}
               status="ready"
               style={{ width: 'min(248px, 100%)' }}
-              onOpen={() => onOpenAsset(currentAiMasterAsset)}
+              onOpen={() => onOpenAsset(currentAiMasterAsset, [currentAiMasterAsset])}
               onGenerateVideo={() => void handleGenerateVideo(currentAiMasterAsset)}
             />
           </div>
@@ -1350,7 +1557,8 @@ function ResultPanel({
   state: UseAiStudioStateResult
   bottomSpacerHeight?: number
 }): React.JSX.Element {
-  const [lightboxAsset, setLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
+  const [videoLightboxAsset, setVideoLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
+  const [imageLightboxState, setImageLightboxState] = useState<ImageLightboxState | null>(null)
   const isVideoStudio = state.studioCapability === 'video'
   const historyTailRef = useRef<HTMLDivElement | null>(null)
   const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
@@ -1373,18 +1581,19 @@ function ResultPanel({
   if (state.historyTasks.length === 0) {
     return isVideoStudio ? (
       <VideoLightbox
-        asset={lightboxAsset}
-        open={Boolean(lightboxAsset)}
+        asset={videoLightboxAsset}
+        open={Boolean(videoLightboxAsset)}
         onOpenChange={(next) => {
-          if (!next) setLightboxAsset(null)
+          if (!next) setVideoLightboxAsset(null)
         }}
       />
     ) : (
       <ImageLightbox
-        asset={lightboxAsset}
-        open={Boolean(lightboxAsset)}
+        assets={imageLightboxState?.assets ?? []}
+        activeAssetId={imageLightboxState?.activeAssetId ?? null}
+        open={Boolean(imageLightboxState)}
         onOpenChange={(next) => {
-          if (!next) setLightboxAsset(null)
+          if (!next) setImageLightboxState(null)
         }}
       />
     )
@@ -1399,14 +1608,19 @@ function ResultPanel({
               key={task.id}
               task={task}
               state={state}
-              onOpenAsset={(asset) => setLightboxAsset(asset)}
+              onOpenAsset={(asset) => setVideoLightboxAsset(asset)}
             />
           ) : (
             <HistoryTaskSection
               key={task.id}
               task={task}
               state={state}
-              onOpenAsset={(asset) => setLightboxAsset(asset)}
+              onOpenAsset={(asset, assets) =>
+                setImageLightboxState({
+                  assets,
+                  activeAssetId: asset.id
+                })
+              }
             />
           )
         )}
@@ -1420,18 +1634,19 @@ function ResultPanel({
 
       {isVideoStudio ? (
         <VideoLightbox
-          asset={lightboxAsset}
-          open={Boolean(lightboxAsset)}
+          asset={videoLightboxAsset}
+          open={Boolean(videoLightboxAsset)}
           onOpenChange={(next) => {
-            if (!next) setLightboxAsset(null)
+            if (!next) setVideoLightboxAsset(null)
           }}
         />
       ) : (
         <ImageLightbox
-          asset={lightboxAsset}
-          open={Boolean(lightboxAsset)}
+          assets={imageLightboxState?.assets ?? []}
+          activeAssetId={imageLightboxState?.activeAssetId ?? null}
+          open={Boolean(imageLightboxState)}
           onOpenChange={(next) => {
-            if (!next) setLightboxAsset(null)
+            if (!next) setImageLightboxState(null)
           }}
         />
       )}
