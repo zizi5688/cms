@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  canRegeneratePreviewSlot,
   hasActivePreviewSlotRuntimeStates,
   resolvePreviewSlotState
 } from './previewSlotHelpers.ts'
@@ -176,4 +177,38 @@ test('hasActivePreviewSlotRuntimeStates keeps the preview running when unfinishe
 
   assert.equal(hasActivePreviewSlotRuntimeStates({}), false)
   assert.equal(hasActivePreviewSlotRuntimeStates(null), false)
+})
+
+test('canRegeneratePreviewSlot keeps regenerate available for independent ready or failed slots', () => {
+  assert.equal(
+    canRegeneratePreviewSlot({
+      asset: { id: 'asset-1' },
+      status: 'ready'
+    }),
+    true
+  )
+
+  assert.equal(
+    canRegeneratePreviewSlot({
+      asset: null,
+      status: 'failed'
+    }),
+    true
+  )
+
+  assert.equal(
+    canRegeneratePreviewSlot({
+      asset: { id: 'asset-2' },
+      status: 'loading'
+    }),
+    false
+  )
+
+  assert.equal(
+    canRegeneratePreviewSlot({
+      asset: null,
+      status: 'idle'
+    }),
+    false
+  )
 })

@@ -32,6 +32,7 @@ import {
 } from './useAiStudioState'
 import { resolveLoadedImageBadgeLabel } from './imagePreviewBadgeHelpers'
 import {
+  canRegeneratePreviewSlot,
   hasActivePreviewSlotRuntimeStates,
   resolvePreviewSlotState,
   type PreviewTileStatus
@@ -809,7 +810,10 @@ function HistoryTaskSection({
                     : undefined
                 }
                 onRegenerate={
-                  !isRunning && (slot.asset || slot.status === 'failed')
+                  canRegeneratePreviewSlot({
+                    asset: slot.asset,
+                    status: slot.status
+                  })
                     ? () => void handleRegenerate(slot.index)
                     : undefined
                 }
