@@ -23,6 +23,7 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 
 import { runWithConcurrencyLimit } from './parallelRunHelpers'
 import type { PreviewSlotRuntimeState } from './previewSlotHelpers'
+import { claimVideoRetrySlot, releaseVideoRetrySlot } from './videoPreviewActions'
 import {
   bindMasterGeneratedAssetToSlot,
   buildSkippedMasterCleanupAssets
@@ -782,6 +783,28 @@ function makeVideoFailureRecord(
   }
 }
 
+function bindVideoGeneratedAssetToSlot(
+  asset: AiStudioAssetRecord,
+  sequenceIndex: number,
+  videoMeta: Pick<AiStudioVideoMetadata, 'mode' | 'profileId'>,
+  existingAsset?: Pick<AiStudioAssetRecord, 'id' | 'sortOrder' | 'selected'> | null
+): AiStudioAssetRecord {
+  return {
+    ...asset,
+    id: existingAsset?.id ?? asset.id,
+    selected: existingAsset?.selected ?? asset.selected,
+    sortOrder: existingAsset?.sortOrder ?? Math.max(0, sequenceIndex - 1),
+    metadata: {
+      ...(asset.metadata ?? {}),
+      stage: 'video',
+      sequenceIndex,
+      outputIndex: 0,
+      videoMode: videoMeta.mode,
+      profileId: videoMeta.profileId
+    }
+  }
+}
+
 export function buildStageProgress(workflowMeta: AiStudioWorkflowMetadata): AiStudioStageProgress {
   const masterRequested = workflowMeta.masterStage.requestedCount
   const childRequested = workflowMeta.childStage.requestedCount
@@ -1237,6 +1260,7 @@ const useAiStudioState = () => {
   const interruptRequestedTaskIdsRef = useRef<Set<string>>(new Set())
   const sessionStartedAtRef = useRef(Date.now())
   const hasRecoveredAbandonedTasksRef = useRef(false)
+  const inFlightVideoRetrySlotKeysRef = useRef<Set<string>>(new Set())
   const [interruptingTaskIds, setInterruptingTaskIds] = useState<string[]>([])
   const [previewSlotRuntimeByTaskId, setPreviewSlotRuntimeByTaskId] = useState<
     Record<string, Record<number, PreviewSlotRuntimeState>>
@@ -3518,6 +3542,202 @@ const useAiStudioState = () => {
     ]
   )
 
+  const retryVideoGeneration = useCallback(
+    async (taskId: string, sequenceIndex: number) => {
+      const normalizedTaskId = String(taskId ?? '').trim()
+      const normalizedSequenceIndex = Math.max(1, Math.floor(Number(sequenceIndex) || 1))
+      if (!normalizedTaskId) return
+      if (
+        !claimVideoRetrySlot(
+          inFlightVideoRetrySlotKeysRef.current,
+          normalizedTaskId,
+          normalizedSequenceIndex
+        )
+      ) {
+        return
+      }
+
+      try {
+        const sourceTaskView =
+          taskViews.find((item) => item.id === normalizedTaskId) ??
+          (await loadLatestTaskRecord(normalizedTaskId))
+        if (!sourceTaskView || readTaskCapability(sourceTaskView) !== 'video') return
+
+        const sourceVideoMeta = readVideoMetadata(sourceTaskView)
+        const sourceProviderName = normalizeAiProviderValue(sourceTaskView.provider)
+        const sourceProviderProfile = findAiProviderProfile(providerProfiles, sourceProviderName)
+
+        if (!sourceProviderName || !sourceProviderProfile) {
+          throw new Error('[AI Studio] 请先在模型设置中创建并选择视频供应商。')
+        }
+        if (!sourceProviderProfile.apiKey.trim()) {
+          throw new Error('[AI Studio] 请先填写视频供应商 API Key。')
+        }
+        if (!String(sourceTaskView.promptExtra ?? '').trim()) {
+          throw new Error('[AI Studio] 请先输入提示词。')
+        }
+        if (!sourceVideoMeta.model.trim()) {
+          throw new Error('[AI Studio] 请先选择或保存视频模型。')
+        }
+        if (!sourceVideoMeta.submitPath.trim()) {
+          throw new Error('[AI Studio] 请先填写视频模型 API 端点。')
+        }
+        if (
+          sourceVideoMeta.mode === 'subject-reference' &&
+          !String(sourceVideoMeta.subjectReferencePath ?? '').trim()
+        ) {
+          throw new Error('[AI Studio] 请先添加主体参考图。')
+        }
+        if (
+          sourceVideoMeta.mode === 'first-last-frame' &&
+          (!String(sourceVideoMeta.firstFramePath ?? '').trim() ||
+            !String(sourceVideoMeta.lastFramePath ?? '').trim())
+        ) {
+          throw new Error('[AI Studio] 请先补齐首尾帧。')
+        }
+
+        const outputAssets = (
+          await window.api.cms.aiStudio.asset.list({
+            taskId: normalizedTaskId,
+            kind: 'output'
+          })
+        ).map(coerceAssetRecord)
+        const existingAsset =
+          outputAssets.find(
+            (asset) =>
+              asset.role === AI_STUDIO_VIDEO_OUTPUT_ROLE &&
+              readAssetSequenceIndex(asset) === normalizedSequenceIndex
+          ) ?? null
+        const hadSuccessfulOutput = Boolean(existingAsset)
+        const hadFailureBefore = sourceVideoMeta.failures.some(
+          (record) => record.sequenceIndex === normalizedSequenceIndex
+        )
+
+        clearTaskInterrupt(normalizedTaskId)
+
+        const preparedVideoMeta = readVideoMetadata(sourceTaskView)
+        preparedVideoMeta.failures = preparedVideoMeta.failures.filter(
+          (record) => record.sequenceIndex !== normalizedSequenceIndex
+        )
+        preparedVideoMeta.currentItemIndex = normalizedSequenceIndex
+        preparedVideoMeta.currentItemTotal = preparedVideoMeta.outputCount
+
+        patchPreviewSlotRuntimeState(normalizedTaskId, normalizedSequenceIndex, {
+          status: 'generating',
+          message: '结果生成中'
+        })
+
+        await updateTaskPatch(sourceTaskView.id, {
+          promptExtra: sourceTaskView.promptExtra,
+          model: preparedVideoMeta.model,
+          aspectRatio: preparedVideoMeta.aspectRatio,
+          outputCount: 1,
+          status: 'running',
+          metadata: writeVideoMetadata(sourceTaskView, preparedVideoMeta)
+        })
+        await refresh()
+
+        const workingTask = await loadLatestTaskRecord(sourceTaskView.id)
+        if (!workingTask) {
+          patchPreviewSlotRuntimeState(normalizedTaskId, normalizedSequenceIndex, null)
+          return
+        }
+
+        const workingVideoMeta = readVideoMetadata(workingTask)
+        workingVideoMeta.failures = workingVideoMeta.failures.filter(
+          (record) => record.sequenceIndex !== normalizedSequenceIndex
+        )
+        workingVideoMeta.currentItemIndex = normalizedSequenceIndex
+        workingVideoMeta.currentItemTotal = workingVideoMeta.outputCount
+
+        try {
+          const result = await executeRunToTerminal(workingTask.id)
+          const nextOutputs = (result.outputs ?? []).map(coerceAssetRecord)
+
+          if (result.status === 'succeeded' && nextOutputs.length > 0) {
+            await upsertAssetsRemote([
+              bindVideoGeneratedAssetToSlot(
+                {
+                  ...nextOutputs[0],
+                  taskId: workingTask.id
+                },
+                normalizedSequenceIndex,
+                workingVideoMeta,
+                existingAsset
+                  ? {
+                      id: existingAsset.id,
+                      sortOrder: existingAsset.sortOrder,
+                      selected: existingAsset.selected
+                    }
+                  : null
+              )
+            ])
+
+            if (!hadSuccessfulOutput) {
+              workingVideoMeta.completedCount += 1
+            }
+            if (hadFailureBefore && workingVideoMeta.failedCount > 0) {
+              workingVideoMeta.failedCount -= 1
+            }
+          } else {
+            if (!hadFailureBefore) {
+              workingVideoMeta.failedCount += 1
+            }
+            workingVideoMeta.failures.push(
+              makeVideoFailureRecord(
+                normalizedSequenceIndex,
+                result.run?.errorMessage || '视频生成失败',
+                result.run?.id
+              )
+            )
+          }
+        } catch (error) {
+          if (!hadFailureBefore) {
+            workingVideoMeta.failedCount += 1
+          }
+          workingVideoMeta.failures.push(
+            makeVideoFailureRecord(
+              normalizedSequenceIndex,
+              error instanceof Error ? error.message : String(error)
+            )
+          )
+        } finally {
+          workingVideoMeta.currentItemIndex = 0
+          workingVideoMeta.currentItemTotal = workingVideoMeta.outputCount
+
+          await updateTaskPatch(workingTask.id, {
+            status: workingVideoMeta.completedCount > 0 ? 'completed' : 'failed',
+            promptExtra: workingTask.promptExtra,
+            model: workingVideoMeta.model,
+            aspectRatio: workingVideoMeta.aspectRatio,
+            outputCount: 1,
+            metadata: writeVideoMetadata(workingTask, workingVideoMeta)
+          })
+          await refresh()
+          clearTaskInterrupt(normalizedTaskId)
+          patchPreviewSlotRuntimeState(normalizedTaskId, normalizedSequenceIndex, null)
+        }
+      } finally {
+        releaseVideoRetrySlot(
+          inFlightVideoRetrySlotKeysRef.current,
+          normalizedTaskId,
+          normalizedSequenceIndex
+        )
+      }
+    },
+    [
+      clearTaskInterrupt,
+      executeRunToTerminal,
+      loadLatestTaskRecord,
+      patchPreviewSlotRuntimeState,
+      providerProfiles,
+      refresh,
+      taskViews,
+      updateTaskPatch,
+      upsertAssetsRemote
+    ]
+  )
+
   const startMasterWorkflow = useCallback(
     async (payload?: {
       taskId?: string | null
@@ -4471,6 +4691,7 @@ const useAiStudioState = () => {
     setVideoOutputCount,
     startMasterWorkflow,
     startVideoWorkflow,
+    retryVideoGeneration,
     retryMasterCleanup,
     retryMasterGeneration,
     setCurrentAiMaster,

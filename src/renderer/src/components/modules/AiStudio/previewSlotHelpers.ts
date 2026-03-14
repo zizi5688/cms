@@ -52,6 +52,37 @@ export function resolvePreviewSlotState(input: {
   nowMs?: number
   runtimeState?: PreviewSlotRuntimeState | null
 }): { status: PreviewTileStatus; statusText: string } {
+  if (input.runtimeState) {
+    if (input.runtimeState.status === 'generating') {
+      return {
+        status: 'loading',
+        statusText: formatRuntimeStatusText(
+          input.runtimeState.message || '结果生成中',
+          input.runtimeState,
+          input.nowMs
+        )
+      }
+    }
+
+    if (input.runtimeState.status === 'cleaning') {
+      return {
+        status: 'loading',
+        statusText: formatRuntimeStatusText(
+          input.runtimeState.message || '去水印处理中',
+          input.runtimeState,
+          input.nowMs
+        )
+      }
+    }
+
+    if (input.runtimeState.status === 'failed') {
+      return {
+        status: 'failed',
+        statusText: input.runtimeState.message || '生成失败'
+      }
+    }
+  }
+
   if (input.failureMessage) {
     return {
       status: 'failed',
@@ -67,35 +98,6 @@ export function resolvePreviewSlotState(input: {
   }
 
   if (input.runtimeState) {
-    if (input.runtimeState.status === 'failed') {
-      return {
-        status: 'failed',
-        statusText: input.runtimeState.message || '生成失败'
-      }
-    }
-
-    if (input.runtimeState.status === 'cleaning') {
-      return {
-        status: 'loading',
-        statusText: formatRuntimeStatusText(
-          input.runtimeState.message || '去水印处理中',
-          input.runtimeState,
-          input.nowMs
-        )
-      }
-    }
-
-    if (input.runtimeState.status === 'generating') {
-      return {
-        status: 'loading',
-        statusText: formatRuntimeStatusText(
-          input.runtimeState.message || '结果生成中',
-          input.runtimeState,
-          input.nowMs
-        )
-      }
-    }
-
     return {
       status: 'loading',
       statusText: formatRuntimeStatusText(
