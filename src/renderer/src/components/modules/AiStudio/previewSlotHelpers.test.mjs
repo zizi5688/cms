@@ -103,6 +103,27 @@ test('resolvePreviewSlotState appends elapsed time for generating runtime states
   )
 })
 
+test('resolvePreviewSlotState lets an active rerun override stale slot content', () => {
+  assert.deepEqual(
+    resolvePreviewSlotState({
+      index: 1,
+      asset: { id: 'existing-video' },
+      failureMessage: '上一次失败',
+      isRunning: true,
+      currentLabel: '结果生成中',
+      currentItemIndex: 1,
+      runtimeState: {
+        status: 'generating',
+        message: '结果生成中'
+      }
+    }),
+    {
+      status: 'loading',
+      statusText: '结果生成中'
+    }
+  )
+})
+
 test('resolvePreviewSlotState appends elapsed time for queued runtime states', () => {
   assert.deepEqual(
     resolvePreviewSlotState({

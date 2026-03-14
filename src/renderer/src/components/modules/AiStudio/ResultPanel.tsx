@@ -42,6 +42,7 @@ import {
   resolvePreparedVideoPreviewPath,
   shouldFallbackToOriginalVideo
 } from './videoPreviewSourceHelpers'
+import { shouldShowVideoRegenerateAction } from './videoPreviewActions'
 import { computePreviewTargetCount } from './workflowRunHelpers'
 
 const MASTER_CLEAN_ROLE = 'master-clean'
@@ -983,6 +984,7 @@ function VideoPreviewTile({
   onTogglePool,
   pooled,
   onUseAsReference,
+  onRegenerate,
   referenceApplied,
   style
 }: {
@@ -995,6 +997,7 @@ function VideoPreviewTile({
   onTogglePool?: () => void
   pooled?: boolean
   onUseAsReference?: () => void
+  onRegenerate?: () => void
   referenceApplied?: boolean
   style?: React.CSSProperties
 }): React.JSX.Element {
@@ -1007,6 +1010,9 @@ function VideoPreviewTile({
   })
   const showPoolAction = Boolean(asset && onTogglePool)
   const showReferenceAction = Boolean(asset && onUseAsReference)
+  const showRegenerateAction = Boolean(
+    onRegenerate && shouldShowVideoRegenerateAction({ status, hasAsset: Boolean(asset) })
+  )
 
   useEffect(() => {
     if (!sourcePath) return
@@ -1048,7 +1054,23 @@ function VideoPreviewTile({
           </div>
         ) : null}
 
-        {src && onOpen ? (
+        {status === 'failed' ? (
+          <div className={surfaceClassNames.failedBodyClassName}>
+            <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
+            <div className="flex h-full items-center justify-center px-5">
+              <div className="flex max-w-full flex-col items-center gap-2 text-center">
+                <div className="text-sm font-medium leading-6 text-zinc-500">
+                  {statusText || '生成失败'}
+                </div>
+                {detailText ? (
+                  <div className="max-w-full break-all text-[11px] leading-5 text-zinc-400">
+                    具体原因：{detailText}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : src && onOpen ? (
           <button type="button" onClick={onOpen} className="relative block w-full text-left">
             <div className={surfaceClassNames.readyBodyClassName}>
               <video
@@ -1067,22 +1089,6 @@ function VideoPreviewTile({
               </div>
             </div>
           </button>
-        ) : status === 'failed' ? (
-          <div className={surfaceClassNames.failedBodyClassName}>
-            <div className="absolute inset-0 rounded-[28px] border border-rose-200/90" />
-            <div className="flex h-full items-center justify-center px-5">
-              <div className="flex max-w-full flex-col items-center gap-2 text-center">
-                <div className="text-sm font-medium leading-6 text-zinc-500">
-                  {statusText || '生成失败'}
-                </div>
-                {detailText ? (
-                  <div className="max-w-full break-all text-[11px] leading-5 text-zinc-400">
-                    具体原因：{detailText}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </div>
         ) : (
           <div className={surfaceClassNames.idleBodyClassName}>
             <PreviewPlaceholderStateContent
@@ -1124,6 +1130,23 @@ function VideoPreviewTile({
                 onClick={onUseAsReference!}
               />
             ) : null}
+          </div>
+        ) : null}
+
+        {showRegenerateAction ? (
+          <div
+            className={cn(
+              'absolute bottom-3 right-3 z-10 transition duration-200',
+              status === 'failed'
+                ? 'pointer-events-auto opacity-100'
+                : 'pointer-events-none opacity-0 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100'
+            )}
+          >
+            <PreviewActionButton
+              icon={<RotateCcw className="h-3.5 w-3.5" />}
+              label="重新生成"
+              onClick={onRegenerate!}
+            />
           </div>
         ) : null}
 
@@ -1198,7 +1221,6 @@ function VideoHistoryTaskSection({
       window.clearInterval(timer)
     }
   }, [isRunning])
-
   const previewSlots = useMemo(() => {
     const failureByIndex = new Map<number, AiStudioVideoFailureRecord>()
     videoMeta.failures.forEach((record) => {
@@ -1234,7 +1256,6 @@ function VideoHistoryTaskSection({
         currentItemIndex: videoMeta.currentItemIndex,
         runtimeState: previewRuntimeStates[index] ?? null
       })
-
       return {
         index,
         asset,
@@ -1252,6 +1273,16 @@ function VideoHistoryTaskSection({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 回填视频参考失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleRegenerate = async (sequenceIndex: number): Promise<void> => {
+    try {
+      await state.retryVideoGeneration(task.id, sequenceIndex)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 视频重新生成失败：${message}`)
       window.alert(message)
     }
   }
@@ -1302,6 +1333,7 @@ function VideoHistoryTaskSection({
                   ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord)
                   : undefined
               }
+              onRegenerate={() => void handleRegenerate(slot.index)}
               referenceApplied={slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false}
             />
           ))}
