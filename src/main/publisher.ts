@@ -285,6 +285,10 @@ export class PublisherService {
     this.accountManager = accountManager
   }
 
+  isQueueRunning(): boolean {
+    return this.isPublishing
+  }
+
   async syncProducts(accountId: string): Promise<XhsProductRecord[]> {
     const normalizedAccountId = accountId.trim()
     if (!normalizedAccountId) {
@@ -599,13 +603,22 @@ export async function runQueue(options: {
   })
 }
 
-export function registerQueueRunnerIpc(options: { publisherService: PublisherService; taskManager: TaskManager }): void {
-  const { publisherService, taskManager } = options
+export function registerQueueRunnerIpc(options: {
+  publisherService: PublisherService
+  taskManager: TaskManager
+  canRun?: () => boolean
+}): void {
+  const { publisherService, taskManager, canRun } = options
   const runningByAccount = new Map<string, Promise<{ processed: number; succeeded: number; failed: number }>>()
 
   registerAutomationLogBridge()
 
   ipcMain.handle('cms.queue.start', async (_event, payload: unknown) => {
+    if (typeof canRun === 'function' && !canRun()) {
+      const error = new Error('[Queue] 存储维护进行中，暂不可启动队列。')
+      ;(error as { code?: string }).code = 'STORAGE_MAINTENANCE_LOCKED'
+      throw error
+    }
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
     const accountIdFromBody = body && typeof body.accountId === 'string' ? body.accountId : ''
     const taskIdsFromBody = body && Array.isArray(body.taskIds) ? body.taskIds.filter((v): v is string => typeof v === 'string') : null
