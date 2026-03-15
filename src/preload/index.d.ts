@@ -17,7 +17,15 @@ declare global {
     name: string
     price: string
     cover: string
+    productUrl: string
     accountId: string
+  }
+
+  type CmsLinkedProductRecord = {
+    id: string
+    name: string
+    cover: string
+    productUrl: string
   }
 
   type CmsPublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
@@ -35,6 +43,7 @@ declare global {
     tags?: string[]
     productId?: string
     productName?: string
+    linkedProducts?: CmsLinkedProductRecord[]
     publishMode: 'immediate'
     transformPolicy?: 'none' | 'remix_v1'
     remixSessionId?: string
@@ -507,6 +516,7 @@ declare global {
             imagePath?: string
             productId?: string
             productName?: string
+            linkedProducts?: CmsLinkedProductRecord[]
             dryRun?: boolean
             mode?: 'immediate'
           }
@@ -1080,6 +1090,7 @@ declare global {
             tags?: string[]
             productId?: string
             productName?: string
+            linkedProducts?: CmsLinkedProductRecord[]
             publishMode?: 'immediate'
             mediaType?: 'image' | 'video'
             videoPath?: string
@@ -1107,6 +1118,7 @@ declare global {
             images?: string[]
             productId?: string
             productName?: string
+            linkedProducts?: CmsLinkedProductRecord[]
             publishMode?: 'immediate'
             status?: CmsPublishTaskStatus
             scheduledAt?: number | null
@@ -1125,6 +1137,7 @@ declare global {
               images?: string[]
               productId?: string
               productName?: string
+              linkedProducts?: CmsLinkedProductRecord[]
               status?: CmsPublishTaskStatus
               scheduledAt?: number | null
               publishedAt?: string | null

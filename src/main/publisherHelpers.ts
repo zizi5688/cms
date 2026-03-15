@@ -1,6 +1,13 @@
 export type PublishWindowPreferences = {
   partitionKey: string
   preload: string
+  showWindow?: boolean
+}
+
+export type PublishDebugState = {
+  visual: boolean
+  keepWindowOpen: boolean
+  openDevTools: boolean
 }
 
 export type PublishNotificationPhase = 'start' | 'finish'
@@ -11,6 +18,14 @@ export type PublishNotificationInput = {
   taskTitle?: string
   success?: boolean
   error?: string
+}
+
+export function shouldHidePublishWindowAfterNativeDialog(input: {
+  debugState: PublishDebugState
+  wasVisibleBeforeDialog: boolean
+}): boolean {
+  if (input.debugState.visual) return input.wasVisibleBeforeDialog === false
+  return true
 }
 
 function normalizeSingleLine(value: string | undefined, fallback: string): string {
@@ -32,6 +47,23 @@ function normalizeMultiline(value: string | undefined, fallback: string): string
   return normalized || fallback
 }
 
+function parseOptionalBool(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value
+  if (typeof value !== 'string') return null
+  const raw = value.trim().toLowerCase()
+  if (raw === '1' || raw === 'true' || raw === 'yes') return true
+  if (raw === '0' || raw === 'false' || raw === 'no') return false
+  return null
+}
+
+export function readPublishDebugState(env: NodeJS.ProcessEnv = process.env): PublishDebugState {
+  return {
+    visual: parseOptionalBool(env.CMS_PUBLISH_VISUAL) ?? false,
+    keepWindowOpen: parseOptionalBool(env.CMS_PUBLISH_KEEP_OPEN) ?? false,
+    openDevTools: parseOptionalBool(env.CMS_PUBLISH_OPEN_DEVTOOLS) ?? false
+  }
+}
+
 export function buildPublishWorkerWindowOptions(
   input: PublishWindowPreferences
 ): {
@@ -51,7 +83,7 @@ export function buildPublishWorkerWindowOptions(
   return {
     width: 1200,
     height: 900,
-    show: false,
+    show: input.showWindow === true,
     autoHideMenuBar: true,
     webPreferences: {
       partition: input.partitionKey,

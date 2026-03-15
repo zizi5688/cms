@@ -5,6 +5,7 @@ export type XhsProductRecord = {
   name: string
   price: string
   cover: string
+  productUrl: string
   accountId: string
 }
 
@@ -25,6 +26,7 @@ function normalizeProduct(value: unknown, fallbackAccountId: string): XhsProduct
     name,
     price: normalizeText(record.price),
     cover: normalizeText(record.cover),
+    productUrl: normalizeText(record.productUrl),
     accountId
   }
 }
@@ -55,10 +57,10 @@ export class ProductManager {
 
     const rows = normalizedAccountId
       ? (this.sqlite.connection
-          .prepare(`SELECT id, accountId, name, price, cover FROM products WHERE accountId = ?`)
+          .prepare(`SELECT id, accountId, name, price, cover, productUrl FROM products WHERE accountId = ?`)
           .all(normalizedAccountId) as Array<Record<string, unknown>>)
       : (this.sqlite.connection
-          .prepare(`SELECT id, accountId, name, price, cover FROM products`)
+          .prepare(`SELECT id, accountId, name, price, cover, productUrl FROM products`)
           .all() as Array<Record<string, unknown>>)
 
     return rows
@@ -68,8 +70,9 @@ export class ProductManager {
         const name = typeof row.name === 'string' ? row.name : ''
         const price = typeof row.price === 'string' ? row.price : ''
         const cover = typeof row.cover === 'string' ? row.cover : ''
+        const productUrl = typeof row.productUrl === 'string' ? row.productUrl : ''
         if (!id || !rowAccountId) return null
-        return { id, accountId: rowAccountId, name, price, cover }
+        return { id, accountId: rowAccountId, name, price, cover, productUrl }
       })
       .filter((v): v is XhsProductRecord => Boolean(v))
   }
@@ -85,12 +88,12 @@ export class ProductManager {
 
     const db = this.sqlite.connection
     const insertStmt = db.prepare(
-      `INSERT OR REPLACE INTO products (id, accountId, name, price, cover) VALUES (?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO products (id, accountId, name, price, cover, productUrl) VALUES (?, ?, ?, ?, ?, ?)`
     )
     const tx = db.transaction(() => {
       db.prepare(`DELETE FROM products`).run()
       for (const p of normalized) {
-        insertStmt.run(p.id, p.accountId, p.name, p.price, p.cover)
+        insertStmt.run(p.id, p.accountId, p.name, p.price, p.cover, p.productUrl)
       }
     })
     tx()
@@ -104,12 +107,12 @@ export class ProductManager {
 
     const db = this.sqlite.connection
     const insertStmt = db.prepare(
-      `INSERT OR REPLACE INTO products (id, accountId, name, price, cover) VALUES (?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO products (id, accountId, name, price, cover, productUrl) VALUES (?, ?, ?, ?, ?, ?)`
     )
     const tx = db.transaction(() => {
       db.prepare(`DELETE FROM products WHERE accountId = ?`).run(normalizedAccountId)
       for (const p of normalized) {
-        insertStmt.run(p.id, p.accountId, p.name, p.price, p.cover)
+        insertStmt.run(p.id, p.accountId, p.name, p.price, p.cover, p.productUrl)
       }
     })
     tx()

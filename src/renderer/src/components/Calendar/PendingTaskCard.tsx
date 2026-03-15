@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { Layers, Sparkles, Trash2, Video } from 'lucide-react'
 import { useDrag } from 'react-dnd'
 
+import { formatTaskProductSummary } from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { type UnscheduledTaskDragItem, calendarDndTypes } from '@renderer/modules/MediaMatrix/calendarDnd'
@@ -167,7 +168,12 @@ function PendingTaskCard({
         {hasTitleLengthIssue ? (
           <div className="mt-1 truncate text-[11px] text-rose-300">请先将标题改到 20 字符以内再排期</div>
         ) : null}
-        <div className="mt-1 truncate text-[11px] text-zinc-400">{task.productName || '未绑定商品'}</div>
+        <div className="mt-1 truncate text-[11px] text-zinc-400">
+          {formatTaskProductSummary({
+            linkedProducts: task.linkedProducts,
+            productName: task.productName
+          })}
+        </div>
       </div>
 
       <button

@@ -17,11 +17,16 @@ import {
 
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { CmsProductMultiSelectPanel } from '@renderer/components/ui/CmsProductMultiSelectPanel'
 import { Input } from '@renderer/components/ui/input'
 import { TaskCard } from '@renderer/components/ui/TaskCard'
 import { generateManifest, generateVideoManifest } from '@renderer/lib/cms-engine'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import {
+  buildSelectedWorkshopProducts,
+  resolveWorkshopAccountId
+} from './workshopProductSelectionHelpers'
 
 function numberOr(value: string, fallback: number): number {
   const parsed = Number(value)
@@ -143,6 +148,8 @@ const metricToneClasses: Record<WorkshopMetricTone, string> = {
   rose: 'border-rose-400/20 bg-rose-400/10 text-rose-100'
 }
 
+const CMS_PRODUCTS_SYNCED_EVENT = 'cms.products.synced'
+
 function WorkshopMetricCard({
   icon,
   label,
@@ -178,7 +185,7 @@ function DataBuilder(): React.JSX.Element {
   const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
   const [selectedAccountId, setSelectedAccountId] = useState<string>('')
   const [allProducts, setAllProducts] = useState<CmsProductRecord[]>([])
-  const [selectedProductId, setSelectedProductId] = useState<string>('')
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([])
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(() => new Set())
   const [queuedTaskIds, setQueuedTaskIds] = useState<Set<string>>(() => new Set())
   const [toastMessage, setToastMessage] = useState<string>('')
@@ -213,6 +220,8 @@ function DataBuilder(): React.JSX.Element {
   const setWorkshopImport = useCmsStore((s) => s.setWorkshopImport)
   const workspacePath = useCmsStore((s) => s.workspacePath)
   const activeModule = useCmsStore((s) => s.activeModule)
+  const preferredAccountId = useCmsStore((s) => s.preferredAccountId)
+  const setPreferredAccountId = useCmsStore((s) => s.setPreferredAccountId)
   const isWorkshopActive = activeModule === 'workshop'
 
   const importedVideoPaths = useMemo(() => {
@@ -282,6 +291,17 @@ function DataBuilder(): React.JSX.Element {
     if (!accountId) return []
     return allProducts.filter((p) => p.accountId === accountId)
   }, [allProducts, selectedAccountId])
+
+  const selectedProducts = useMemo(
+    () =>
+      buildSelectedWorkshopProducts({
+        allProducts: filteredProducts,
+        selectedProductIds
+      }),
+    [filteredProducts, selectedProductIds]
+  )
+
+  const selectedProductCount = selectedProducts.length
 
   useEffect(() => {
     let el = containerRef.current?.parentElement ?? null
@@ -733,10 +753,11 @@ function DataBuilder(): React.JSX.Element {
         if (canceled) return
         setAccounts(list)
         setSelectedAccountId((prev) => {
-          const normalizedPrev = String(prev ?? '').trim()
-          if (normalizedPrev && list.some((item) => item.id === normalizedPrev))
-            return normalizedPrev
-          return list[0]?.id || ''
+          return resolveWorkshopAccountId({
+            accounts: list,
+            currentAccountId: prev,
+            preferredAccountId
+          })
         })
       } catch (error) {
         if (canceled) return
@@ -747,7 +768,7 @@ function DataBuilder(): React.JSX.Element {
     return () => {
       canceled = true
     }
-  }, [addLog, isWorkshopActive, workspacePath])
+  }, [addLog, isWorkshopActive, preferredAccountId, workspacePath])
 
   useEffect(() => {
     if (!isWorkshopActive) return
@@ -771,8 +792,42 @@ function DataBuilder(): React.JSX.Element {
   }, [addLog, isWorkshopActive, selectedAccountId, workspacePath])
 
   useEffect(() => {
-    setSelectedProductId('')
+    setSelectedProductIds([])
   }, [selectedAccountId])
+
+  useEffect(() => {
+    const normalizedAccountId = selectedAccountId.trim()
+    if (!normalizedAccountId) return
+    setPreferredAccountId(normalizedAccountId)
+  }, [selectedAccountId, setPreferredAccountId])
+
+  useEffect(() => {
+    const availableIds = new Set(filteredProducts.map((product) => String(product.id ?? '').trim()).filter(Boolean))
+    setSelectedProductIds((prev) => prev.filter((id) => availableIds.has(String(id ?? '').trim())))
+  }, [filteredProducts])
+
+  useEffect(() => {
+    const handleProductsSynced = (event: Event): void => {
+      const detail = (event as CustomEvent<{ accountId?: unknown; products?: unknown }>).detail
+      const accountId = typeof detail?.accountId === 'string' ? detail.accountId.trim() : ''
+      if (!accountId) return
+      setPreferredAccountId(accountId)
+      setSelectedAccountId(accountId)
+
+      if (!isWorkshopActive) return
+
+      if (accountId !== selectedAccountId.trim()) return
+      const nextProducts = Array.isArray(detail?.products) ? detail.products : []
+      setAllProducts(
+        nextProducts.filter((product): product is CmsProductRecord => {
+          return Boolean(product && typeof product === 'object')
+        })
+      )
+    }
+
+    window.addEventListener(CMS_PRODUCTS_SYNCED_EVENT, handleProductsSynced)
+    return () => window.removeEventListener(CMS_PRODUCTS_SYNCED_EVENT, handleProductsSynced)
+  }, [isWorkshopActive, selectedAccountId, setPreferredAccountId])
 
   useEffect(() => {
     if (!toastMessage) return
@@ -788,7 +843,7 @@ function DataBuilder(): React.JSX.Element {
     setMaxReuse('2')
     setMinImages('3')
     setMaxImages('5')
-    setSelectedProductId('')
+    setSelectedProductIds([])
 
     setTasks([])
     setUploadTasks([])
@@ -881,8 +936,9 @@ function DataBuilder(): React.JSX.Element {
       return
     }
 
-    const productId = selectedProductId.trim()
-    const productName = productId ? (allProducts.find((p) => p.id === productId)?.name ?? '') : ''
+    const primaryProduct = selectedProducts[0]
+    const productId = primaryProduct?.id ?? ''
+    const productName = primaryProduct?.name ?? ''
 
     const selectedTasks = tasks.filter(
       (t) => selectedImageIds.has(t.id) && !queuedTaskIds.has(t.id)
@@ -930,6 +986,7 @@ function DataBuilder(): React.JSX.Element {
           content: task.body,
           productId: productId ? productId : undefined,
           productName: productName ? productName : undefined,
+          linkedProducts: selectedProducts.length > 0 ? selectedProducts : undefined,
           mediaType: task.mediaType,
           videoPath: task.videoPath,
           videoPreviewPath: task.videoPreviewPath
@@ -979,6 +1036,21 @@ function DataBuilder(): React.JSX.Element {
         })
       }, 1800)
     }
+  }
+
+  const toggleSelectedProduct = (productId: string): void => {
+    const normalizedProductId = String(productId ?? '').trim()
+    if (!normalizedProductId) return
+    setSelectedProductIds((prev) => {
+      if (prev.includes(normalizedProductId)) {
+        return prev.filter((id) => id !== normalizedProductId)
+      }
+      return [...prev, normalizedProductId]
+    })
+  }
+
+  const clearSelectedProducts = (): void => {
+    setSelectedProductIds([])
   }
 
   return (
@@ -1481,48 +1553,63 @@ function DataBuilder(): React.JSX.Element {
       ) : null}
 
       {selectedDispatchCount > 0 ? (
-        <div className="fixed bottom-6 left-1/2 z-50 w-[min(820px,calc(100vw-48px))] -translate-x-1/2 rounded-xl border border-zinc-800 bg-zinc-950/95 p-4 shadow-xl backdrop-blur">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-zinc-200">已选 {selectedDispatchCount} 项</div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-              <select
-                value={selectedAccountId}
-                onChange={(e) => setSelectedAccountId(e.target.value)}
-                disabled={isDispatching}
-                className="h-10 w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 sm:w-64"
-              >
-                {accounts.length === 0 ? <option value="">暂无账号</option> : null}
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={selectedProductId}
-                onChange={(e) => setSelectedProductId(e.target.value)}
-                disabled={isDispatching}
-                className="h-10 w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 sm:w-64"
-              >
-                <option value="">无商品链接</option>
-                {filteredProducts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <Button
-                onClick={() => void dispatchSelected()}
-                disabled={isDispatching || !selectedAccountId.trim()}
-              >
-                {isDispatching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                {isDispatching
-                  ? `派发中 ${Math.min(dispatchProgress?.processed ?? 0, dispatchProgress?.total ?? 0)}/${dispatchProgress?.total ?? 0}`
-                  : '📤 派发至队列'}
-              </Button>
+        <div className="fixed bottom-6 left-1/2 z-50 w-[min(1040px,calc(100vw-40px))] -translate-x-1/2 rounded-[28px] border border-zinc-800 bg-zinc-950/96 p-5 shadow-[0_28px_120px_-52px_rgba(0,0,0,0.78)] backdrop-blur">
+          <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="flex flex-col gap-4">
+              <div className="rounded-2xl border border-zinc-800 bg-black/25 p-3">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">派发账号</div>
+                <select
+                  value={selectedAccountId}
+                  onChange={(e) => setSelectedAccountId(e.target.value)}
+                  disabled={isDispatching}
+                  className="mt-3 h-12 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
+                >
+                  {accounts.length === 0 ? <option value="">暂无账号</option> : null}
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="rounded-2xl border border-zinc-800 bg-black/25 p-4">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">本次派发</div>
+                <div className="mt-3 flex items-end gap-2">
+                  <span className="text-3xl font-semibold tracking-tight text-zinc-50">{selectedDispatchCount}</span>
+                  <span className="pb-1 text-sm text-zinc-400">项任务</span>
+                </div>
+                <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-300">
+                  已选 {selectedProductCount} 个商品
+                </div>
+                <Button
+                  onClick={() => void dispatchSelected()}
+                  disabled={isDispatching || !selectedAccountId.trim()}
+                  className="mt-4 h-12 w-full rounded-xl"
+                >
+                  {isDispatching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  {isDispatching
+                    ? `派发中 ${Math.min(dispatchProgress?.processed ?? 0, dispatchProgress?.total ?? 0)}/${dispatchProgress?.total ?? 0}`
+                    : '派发至队列'}
+                </Button>
+              </div>
             </div>
+
+            <CmsProductMultiSelectPanel
+              title="挂车商品"
+              subtitle={selectedProductCount > 0 ? `已选 ${selectedProductCount} 个商品` : '从右侧列表勾选需要挂车的商品'}
+              products={filteredProducts}
+              selectedProductIds={selectedProductIds}
+              selectedProducts={selectedProducts}
+              workspacePath={workspacePath}
+              emptyStateMessage="当前账号暂无已同步商品，先去媒体矩阵执行一次“同步商品”。"
+              onToggleProduct={toggleSelectedProduct}
+              onClearSelected={clearSelectedProducts}
+              className="min-w-0"
+            />
+
             {dispatchProgress ? (
-              <div className="text-xs text-zinc-400">{dispatchProgress.message}</div>
+              <div className="lg:col-span-2 px-1 text-xs text-zinc-400">{dispatchProgress.message}</div>
             ) : null}
           </div>
         </div>

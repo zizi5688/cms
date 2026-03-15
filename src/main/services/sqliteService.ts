@@ -55,6 +55,7 @@ export class SqliteService {
     const hasRemixSessionId = columns.some((col) => col?.name === 'remixSessionId')
     const hasRemixSourceTaskIds = columns.some((col) => col?.name === 'remixSourceTaskIds')
     const hasRemixSeed = columns.some((col) => col?.name === 'remixSeed')
+    const hasLinkedProductsJson = columns.some((col) => col?.name === 'linkedProductsJson')
 
     if (!hasLockedAt) {
       db.exec(`ALTER TABLE tasks ADD COLUMN locked_at INTEGER;`)
@@ -74,7 +75,22 @@ export class SqliteService {
     if (!hasRemixSeed) {
       db.exec(`ALTER TABLE tasks ADD COLUMN remixSeed TEXT;`)
     }
+    if (!hasLinkedProductsJson) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN linkedProductsJson TEXT;`)
+    }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
+  }
+
+  ensureProductColumns(): void {
+    const db = this.db
+    if (!db) return
+
+    const columns = db.prepare(`PRAGMA table_info(products)`).all() as Array<{ name?: unknown }>
+    const hasProductUrl = columns.some((col) => col?.name === 'productUrl')
+
+    if (!hasProductUrl) {
+      db.exec(`ALTER TABLE products ADD COLUMN productUrl TEXT NOT NULL DEFAULT '';`)
+    }
   }
 
   ensureAiStudioSchema(): void {
@@ -205,6 +221,7 @@ export class SqliteService {
 
     const targetPath = join(resolvedWorkspacePath, 'cms.sqlite')
     if (this.db && this.dbPath === targetPath) {
+      this.ensureProductColumns()
       this.ensureQueueColumns()
       this.ensureAiStudioSchema()
       return {}
@@ -239,7 +256,8 @@ export class SqliteService {
         accountId TEXT NOT NULL,
         name TEXT NOT NULL,
         price TEXT NOT NULL,
-        cover TEXT NOT NULL
+        cover TEXT NOT NULL,
+        productUrl TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS tasks (
@@ -255,6 +273,7 @@ export class SqliteService {
         tags TEXT,
         productId TEXT,
         productName TEXT,
+        linkedProductsJson TEXT,
         publishMode TEXT NOT NULL,
         transformPolicy TEXT NOT NULL DEFAULT 'none',
         remixSessionId TEXT,
@@ -291,6 +310,7 @@ export class SqliteService {
 
     this.db = db
     this.dbPath = targetPath
+    this.ensureProductColumns()
     this.ensureQueueColumns()
     this.ensureAiStudioSchema()
 
@@ -406,8 +426,8 @@ export class SqliteService {
        VALUES (@id, @name, @partitionKey, @lastLoginTime)`
     )
     const insertProduct = db.prepare(
-      `INSERT OR IGNORE INTO products (id, accountId, name, price, cover)
-       VALUES (@id, @accountId, @name, @price, @cover)`
+      `INSERT OR IGNORE INTO products (id, accountId, name, price, cover, productUrl)
+       VALUES (@id, @accountId, @name, @price, @cover, @productUrl)`
     )
 
     const insertTask = db.prepare(
@@ -501,7 +521,7 @@ export class SqliteService {
         const price = normalizeString(p.price)
         const cover = normalizeString(p.cover)
         if (!id || !accountId || !name || !price || !cover) continue
-        const result = insertProduct.run({ id, accountId, name, price, cover })
+        const result = insertProduct.run({ id, accountId, name, price, cover, productUrl: '' })
         inserted.products += Number(result?.changes) || 0
       }
 

@@ -3,7 +3,9 @@ import test from 'node:test'
 
 import {
   buildPublishNotificationPayload,
-  buildPublishWorkerWindowOptions
+  shouldHidePublishWindowAfterNativeDialog,
+  buildPublishWorkerWindowOptions,
+  readPublishDebugState
 } from './publisherHelpers.ts'
 
 test('buildPublishWorkerWindowOptions hides the publish window and disables background throttling', () => {
@@ -19,6 +21,57 @@ test('buildPublishWorkerWindowOptions hides the publish window and disables back
   assert.equal(options.webPreferences?.backgroundThrottling, false)
   assert.equal(options.webPreferences?.partition, 'persist:xhs_demo')
   assert.equal(options.webPreferences?.preload, '/tmp/xhs-automation.js')
+})
+
+test('buildPublishWorkerWindowOptions shows the publish window when visual mode is enabled', () => {
+  const options = buildPublishWorkerWindowOptions({
+    partitionKey: 'persist:xhs_demo',
+    preload: '/tmp/xhs-automation.js',
+    showWindow: true
+  })
+
+  assert.equal(options.show, true)
+})
+
+test('readPublishDebugState reads visual debug env flags', () => {
+  const state = readPublishDebugState({
+    CMS_PUBLISH_VISUAL: 'true',
+    CMS_PUBLISH_KEEP_OPEN: '1',
+    CMS_PUBLISH_OPEN_DEVTOOLS: 'yes'
+  })
+
+  assert.deepEqual(state, {
+    visual: true,
+    keepWindowOpen: true,
+    openDevTools: true
+  })
+})
+
+test('shouldHidePublishWindowAfterNativeDialog always hides in non-visual mode', () => {
+  assert.equal(
+    shouldHidePublishWindowAfterNativeDialog({
+      debugState: { visual: false, keepWindowOpen: false, openDevTools: false },
+      wasVisibleBeforeDialog: true
+    }),
+    true
+  )
+})
+
+test('shouldHidePublishWindowAfterNativeDialog restores previous visibility in visual mode', () => {
+  assert.equal(
+    shouldHidePublishWindowAfterNativeDialog({
+      debugState: { visual: true, keepWindowOpen: false, openDevTools: false },
+      wasVisibleBeforeDialog: true
+    }),
+    false
+  )
+  assert.equal(
+    shouldHidePublishWindowAfterNativeDialog({
+      debugState: { visual: true, keepWindowOpen: false, openDevTools: false },
+      wasVisibleBeforeDialog: false
+    }),
+    true
+  )
 })
 
 test('buildPublishNotificationPayload formats the start notification with account and task title', () => {

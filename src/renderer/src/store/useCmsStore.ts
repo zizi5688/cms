@@ -114,6 +114,7 @@ export interface CmsState {
   uploadFiles: string[]
   workspacePath: string
   activeModule: ActiveModuleKey
+  preferredAccountId: string | null
   config: CmsConfig
   preferences: CmsPreferences
   selectedKeywordId: string | null
@@ -143,6 +144,7 @@ export interface CmsState {
   addFilesToUpload: (paths: string[]) => void
   setWorkspacePath: (path: string) => void
   setActiveModule: (next: ActiveModuleKey) => void
+  setPreferredAccountId: (id: string | null) => void
   setSelectedKeywordId: (id: string | null) => void
   setSelectedProductId: (id: string | null) => void
   setSelectedPublishTaskIds: (ids: string[]) => void
@@ -207,6 +209,7 @@ const useCmsStore = create<CmsState>((set) => ({
   uploadFiles: [],
   workspacePath: '',
   activeModule: 'material',
+  preferredAccountId: null,
   config: initialConfig,
   preferences: initialPreferences,
   selectedKeywordId: null,
@@ -285,6 +288,10 @@ const useCmsStore = create<CmsState>((set) => ({
     }),
   setWorkspacePath: (path) => set(() => ({ workspacePath: String(path ?? '').trim() })),
   setActiveModule: (next) => set(() => ({ activeModule: next })),
+  setPreferredAccountId: (id) =>
+    set(() => ({
+      preferredAccountId: id == null ? null : String(id).trim() || null
+    })),
   setSelectedKeywordId: (id) =>
     set(() => ({
       selectedKeywordId: id == null ? null : String(id).trim() || null

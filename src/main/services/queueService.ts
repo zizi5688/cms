@@ -1,4 +1,5 @@
 import type { PublishTask } from '../taskManager'
+import { normalizeLinkedProducts } from '../taskLinkedProductsHelpers'
 import { SqliteService } from './sqliteService'
 
 export type QueuedTask = Omit<PublishTask, 'scheduledAt'> & {
@@ -15,6 +16,17 @@ function parseJsonStringArray(value: unknown): string[] {
     const parsed: unknown = JSON.parse(text)
     if (!Array.isArray(parsed)) return []
     return parsed.map((v) => String(v ?? '').trim()).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function parseLinkedProducts(value: unknown): ReturnType<typeof normalizeLinkedProducts> {
+  if (typeof value !== 'string') return []
+  const text = value.trim()
+  if (!text) return []
+  try {
+    return normalizeLinkedProducts(JSON.parse(text) as unknown)
   } catch {
     return []
   }
@@ -149,6 +161,7 @@ export class QueueService {
     const images = parseJsonStringArray(row.images)
     const tags = parseJsonStringArray(row.tags)
     const remixSourceTaskIds = parseJsonStringArray(row.remixSourceTaskIds)
+    const linkedProducts = parseLinkedProducts(row.linkedProductsJson)
 
     const task: QueuedTask = {
       id: String(row.id ?? ''),
@@ -164,6 +177,7 @@ export class QueueService {
       tags: tags.length ? tags : undefined,
       productId: typeof row.productId === 'string' && row.productId.trim() ? String(row.productId) : undefined,
       productName: typeof row.productName === 'string' && row.productName.trim() ? String(row.productName) : undefined,
+      linkedProducts: linkedProducts.length > 0 ? linkedProducts : undefined,
       publishMode: 'immediate',
       transformPolicy: row.transformPolicy === 'remix_v1' ? 'remix_v1' : 'none',
       remixSessionId:

@@ -5,10 +5,14 @@ import { LogIn, Pencil, RefreshCw, Settings, Trash2, UserPlus, Video, X } from '
 
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { formatTaskProductSummary } from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { CalendarView } from '@renderer/modules/MediaMatrix/CalendarView'
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import { resolveWorkshopAccountId } from '../modules/workshopProductSelectionHelpers'
+
+const CMS_PRODUCTS_SYNCED_EVENT = 'cms.products.synced'
 
 function formatDateTimeMinute(value: number): string {
   const date = new Date(value)
@@ -76,6 +80,8 @@ function AutoPublishView(): React.JSX.Element {
   const workspacePath = useCmsStore((s) => s.workspacePath)
   const defaultStartTime = useCmsStore((s) => s.preferences.defaultStartTime)
   const defaultInterval = useCmsStore((s) => s.preferences.defaultInterval)
+  const preferredAccountId = useCmsStore((s) => s.preferredAccountId)
+  const setPreferredAccountId = useCmsStore((s) => s.setPreferredAccountId)
 
   const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
   const [activeAccountId, setActiveAccountId] = useState('')
@@ -141,14 +147,20 @@ function AutoPublishView(): React.JSX.Element {
     try {
       const list = await window.api.cms.account.list()
       setAccounts(list)
-      setActiveAccountId((prev) => prev || list[0]?.id || '')
+      setActiveAccountId((prev) =>
+        resolveWorkshopAccountId({
+          accounts: list,
+          currentAccountId: prev,
+          preferredAccountId
+        })
+      )
     } catch (error) {
       addLog(`[媒体矩阵] 拉取账号失败：${String(error)}`)
     } finally {
       setIsLoadingAccounts(false)
       isLoadingAccountsRef.current = false
     }
-  }, [addLog])
+  }, [addLog, preferredAccountId])
 
   const loadTasks = useCallback(
     async (accountId: string): Promise<void> => {
@@ -182,6 +194,12 @@ function AutoPublishView(): React.JSX.Element {
     setActiveStage('pending')
     setSelectedTaskIds(new Set())
   }, [activeAccountId, loadTasks])
+
+  useEffect(() => {
+    const normalizedAccountId = activeAccountId.trim()
+    if (!normalizedAccountId) return
+    setPreferredAccountId(normalizedAccountId)
+  }, [activeAccountId, setPreferredAccountId])
 
   useEffect(() => {
     return window.api.cms.task.onUpdated((task) => {
@@ -256,6 +274,12 @@ function AutoPublishView(): React.JSX.Element {
     try {
       const products = await window.api.cms.product.sync(accountId)
       addLog(`[媒体矩阵] 商品同步完成：${products.length} 个。`)
+      setPreferredAccountId(accountId)
+      window.dispatchEvent(
+        new CustomEvent(CMS_PRODUCTS_SYNCED_EVENT, {
+          detail: { accountId, products }
+        })
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`同步商品失败：${message}`)
@@ -962,7 +986,11 @@ function AutoPublishView(): React.JSX.Element {
                                   </div>
                                 ) : null}
                                 <div className="mt-0.5 truncate text-xs text-zinc-400">
-                                  {task.productName ? `商品：${task.productName}` : '商品：无'}
+                                  {`商品：${formatTaskProductSummary({
+                                    linkedProducts: task.linkedProducts,
+                                    productName: task.productName,
+                                    emptyLabel: '无'
+                                  })}`}
                                 </div>
                                 <div className="mt-0.5 truncate text-xs text-zinc-500">
                                   {task.images?.length ? `图片：${task.images.length} 张` : '图片：0 张'}
