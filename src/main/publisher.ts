@@ -9,7 +9,8 @@ import { QueueService } from './services/queueService'
 import { DiagnosticsService } from './services/diagnostics'
 import {
   buildPublishNotificationPayload,
-  buildPublishWorkerWindowOptions
+  buildPublishWorkerWindowOptions,
+  readPublishDebugState
 } from './publisherHelpers'
 
 type ElectronStoreCtor = new <T extends Record<string, unknown> = Record<string, unknown>>() => ElectronStore<T>
@@ -71,6 +72,7 @@ export type PublisherTaskData = {
   imagePath?: string
   productId?: string
   productName?: string
+  linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   dryRun?: boolean
   mode?: 'immediate'
 }
@@ -80,6 +82,7 @@ export type XhsProductRecord = {
   name: string
   price: string
   cover: string
+  productUrl: string
 }
 
 export type PublisherResult = { success: boolean; time?: string; error?: string }
@@ -94,6 +97,7 @@ type AutomationTaskPayload = {
     images: string[]
     productId?: string
     productName?: string
+    linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   }
   dryRun?: boolean
   mode?: 'immediate'
@@ -101,6 +105,7 @@ type AutomationTaskPayload = {
 
 const XHS_PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish'
 const PUBLISH_UI_READY_TIMEOUT_MS = 5_000
+const QUEUE_DRY_RUN_ENABLED = process.env.CMS_QUEUE_DRY_RUN === '1'
 
 function resolveWorkerPreloadPath(): string {
   return join(__dirname, '../preload/xhs-automation.js')
@@ -118,6 +123,7 @@ function normalizeTask(taskData: PublisherTaskData): {
   images: string[]
   productId?: string
   productName?: string
+  linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   dryRun: boolean
   mode: 'immediate'
 } {
@@ -130,9 +136,21 @@ function normalizeTask(taskData: PublisherTaskData): {
   const images = imagesFromArray.length > 0 ? imagesFromArray : imagePath ? [imagePath] : []
   const productId = typeof taskData?.productId === 'string' && taskData.productId.trim() ? taskData.productId.trim() : undefined
   const productName = typeof taskData?.productName === 'string' && taskData.productName.trim() ? taskData.productName.trim() : undefined
+  const linkedProducts = Array.isArray(taskData?.linkedProducts)
+    ? taskData.linkedProducts
+        .filter((item): item is { id: string; name: string; cover: string; productUrl: string } => {
+          return Boolean(item && typeof item === 'object' && typeof item.id === 'string' && item.id.trim())
+        })
+        .map((item) => ({
+          id: item.id.trim(),
+          name: typeof item.name === 'string' ? item.name.trim() : '',
+          cover: typeof item.cover === 'string' ? item.cover.trim() : '',
+          productUrl: typeof item.productUrl === 'string' ? item.productUrl.trim() : ''
+        }))
+    : undefined
   const dryRun = taskData?.dryRun === false ? false : true
   const mode: 'immediate' = 'immediate'
-  return { title, content, mediaType, videoPath, images, productId, productName, dryRun, mode }
+  return { title, content, mediaType, videoPath, images, productId, productName, linkedProducts, dryRun, mode }
 }
 
 function isLikelyLoginUrl(url: string): boolean {
@@ -260,7 +278,8 @@ function waitForProductSyncResult(options: {
             id,
             name,
             price: typeof record.price === 'string' ? record.price : '',
-            cover: typeof record.cover === 'string' ? record.cover : ''
+            cover: typeof record.cover === 'string' ? record.cover : '',
+            productUrl: typeof record.productUrl === 'string' ? record.productUrl : ''
           }
         })
         .filter((p): p is XhsProductRecord => Boolean(p))
@@ -376,10 +395,13 @@ export class PublisherService {
       taskTitle: normalizedTask.title
     })
 
+    const publishDebugState = readPublishDebugState()
+
     const worker = new BrowserWindow(
       buildPublishWorkerWindowOptions({
         partitionKey: account.partitionKey,
-        preload: resolveWorkerPreloadPath()
+        preload: resolveWorkerPreloadPath(),
+        showWindow: publishDebugState.visual
       })
     )
 
@@ -388,6 +410,13 @@ export class PublisherService {
     const diagnostics = new DiagnosticsService()
     try {
       await worker.loadURL(XHS_PUBLISH_URL)
+      if (publishDebugState.visual && !worker.isDestroyed()) {
+        worker.show()
+        worker.focus()
+      }
+      if (is.dev && publishDebugState.openDevTools && !worker.webContents.isDevToolsOpened()) {
+        worker.webContents.openDevTools({ mode: 'detach' })
+      }
       diagnostics.attach(worker.webContents)
 
       const currentUrl = worker.webContents.getURL()
@@ -409,7 +438,8 @@ export class PublisherService {
           videoPath: normalizedTask.videoPath,
           images: normalizedTask.images,
           productId: normalizedTask.productId,
-          productName: normalizedTask.productName
+          productName: normalizedTask.productName,
+          linkedProducts: normalizedTask.linkedProducts
         },
         dryRun: normalizedTask.dryRun,
         mode: normalizedTask.mode
@@ -445,7 +475,7 @@ export class PublisherService {
       return { success: false, error: message }
     } finally {
       diagnostics.detach()
-      if (!worker.isDestroyed()) worker.close()
+      if (!worker.isDestroyed() && !publishDebugState.keepWindowOpen) worker.close()
     }
   }
 
@@ -503,7 +533,8 @@ export class PublisherService {
           content: task.content,
           productId: task.productId,
           productName: task.productName,
-          dryRun: false,
+          linkedProducts: task.linkedProducts,
+          dryRun: QUEUE_DRY_RUN_ENABLED,
           mode: 'immediate'
         })
 

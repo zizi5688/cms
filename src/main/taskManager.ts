@@ -11,6 +11,11 @@ import { spinText } from './utils/textSpinner'
 import { mutateImage } from './services/imageMutator'
 import { applyDynamicWatermark, applyVideoWatermark } from './services/dynamicWatermark'
 import { SqliteService } from './services/sqliteService'
+import {
+  derivePrimaryProductFields,
+  normalizeLinkedProducts,
+  type LinkedTaskProduct
+} from './taskLinkedProductsHelpers'
 
 export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
 
@@ -30,6 +35,7 @@ export type PublishTask = {
   tags?: string[]
   productId?: string
   productName?: string
+  linkedProducts?: LinkedTaskProduct[]
   publishMode: PublishTaskMode
   transformPolicy: TaskTransformPolicy
   remixSessionId?: string
@@ -485,7 +491,7 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode, transformPolicy,
+          title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
@@ -506,7 +512,7 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode, transformPolicy,
+          title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
@@ -531,7 +537,7 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode, transformPolicy,
+          title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
@@ -1092,6 +1098,14 @@ export class TaskManager {
         )
       }
 
+      const linkedProducts = normalizeLinkedProducts(record.linkedProducts)
+      const primaryProduct = derivePrimaryProductFields({
+        linkedProducts,
+        fallbackProductId: typeof record.productId === 'string' ? normalizeText(record.productId) || undefined : undefined,
+        fallbackProductName:
+          typeof record.productName === 'string' ? normalizeText(record.productName) || undefined : undefined
+      })
+
       const next: PublishTask = {
         id: randomUUID(),
         accountId,
@@ -1103,8 +1117,9 @@ export class TaskManager {
         title,
         content,
         tags: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
-        productId: normalizeText(record.productId) || undefined,
-        productName: normalizeText(record.productName) || undefined,
+        productId: primaryProduct.productId,
+        productName: primaryProduct.productName,
+        linkedProducts: linkedProducts.length > 0 ? linkedProducts : undefined,
         publishMode: 'immediate',
         transformPolicy,
         remixSessionId: remixSessionId || undefined,
@@ -1130,12 +1145,12 @@ export class TaskManager {
     const insert = db.prepare(
       `INSERT INTO tasks (
         id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-        title, content, tags, productId, productName, publishMode, transformPolicy,
+        title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
         remixSessionId, remixSourceTaskIds, remixSeed,
         scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
       ) VALUES (
         @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath,
-        @title, @content, @tags, @productId, @productName, @publishMode, @transformPolicy,
+        @title, @content, @tags, @productId, @productName, @linkedProductsJson, @publishMode, @transformPolicy,
         @remixSessionId, @remixSourceTaskIds, @remixSeed,
         @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
       )`
@@ -1519,6 +1534,7 @@ export class TaskManager {
         tags=@tags,
         productId=@productId,
         productName=@productName,
+        linkedProductsJson=@linkedProductsJson,
         publishMode=@publishMode,
         scheduledAt=@scheduledAt,
         publishedAt=@publishedAt,
@@ -1585,6 +1601,7 @@ export class TaskManager {
         tags=@tags,
         productId=@productId,
         productName=@productName,
+        linkedProductsJson=@linkedProductsJson,
         publishMode=@publishMode,
         scheduledAt=@scheduledAt,
         publishedAt=@publishedAt,
@@ -1606,6 +1623,8 @@ export class TaskManager {
     const nextContent = typeof record.content === 'string' ? normalizeMultilineText(record.content) : null
     const nextProductId = typeof record.productId === 'string' ? normalizeText(record.productId) || undefined : undefined
     const nextProductName = typeof record.productName === 'string' ? normalizeText(record.productName) || undefined : undefined
+    const hasLinkedProductsPatch = Object.prototype.hasOwnProperty.call(record, 'linkedProducts')
+    const nextLinkedProducts = hasLinkedProductsPatch ? normalizeLinkedProducts(record.linkedProducts) : null
     const nextErrorMsg =
       typeof record.errorMsg === 'string'
         ? record.errorMsg
@@ -1676,14 +1695,41 @@ export class TaskManager {
     const resolvedVideoPath = nextVideoPath !== null ? nextVideoPath : task.videoPath
     const resolvedVideoPreviewPath = nextVideoPreviewPath !== null ? nextVideoPreviewPath : task.videoPreviewPath
     const resolvedMediaType = nextMediaType !== null ? nextMediaType : task.mediaType
+    const productFieldsTouched =
+      typeof record.productId === 'string' || typeof record.productName === 'string'
+
+    let resolvedLinkedProducts: LinkedTaskProduct[] | undefined
+    if (hasLinkedProductsPatch) {
+      resolvedLinkedProducts = nextLinkedProducts && nextLinkedProducts.length > 0 ? nextLinkedProducts : undefined
+    } else if (productFieldsTouched) {
+      resolvedLinkedProducts = nextProductId
+        ? [
+            {
+              id: nextProductId,
+              name: nextProductName ?? '',
+              cover: '',
+              productUrl: ''
+            }
+          ]
+        : undefined
+    } else {
+      resolvedLinkedProducts = task.linkedProducts
+    }
+
+    const primaryProduct = derivePrimaryProductFields({
+      linkedProducts: resolvedLinkedProducts ?? [],
+      fallbackProductId: typeof record.productId === 'string' ? nextProductId : task.productId,
+      fallbackProductName: typeof record.productName === 'string' ? nextProductName : task.productName
+    })
 
     return {
       ...task,
       images: nextImages !== null ? nextImages : task.images,
       title: nextTitle !== null ? nextTitle : task.title,
       content: nextContent !== null ? nextContent : task.content,
-      productId: typeof record.productId === 'string' ? nextProductId : task.productId,
-      productName: typeof record.productName === 'string' ? nextProductName : task.productName,
+      productId: primaryProduct.productId,
+      productName: primaryProduct.productName,
+      linkedProducts: resolvedLinkedProducts,
       errorMsg: nextErrorMsg !== null ? nextErrorMsg : task.errorMsg,
       errorMessage: nextErrorMsg !== null ? nextErrorMsg : task.errorMessage,
       publishMode: nextMode !== null ? nextMode : task.publishMode,
@@ -1717,6 +1763,15 @@ export class TaskManager {
     }
   }
 
+  private parseLinkedProducts(value: unknown): LinkedTaskProduct[] {
+    if (typeof value !== 'string' || !value.trim()) return []
+    try {
+      return normalizeLinkedProducts(JSON.parse(value) as unknown)
+    } catch {
+      return []
+    }
+  }
+
   private rowToTask(row: Record<string, unknown>): PublishTask {
     const id = typeof row.id === 'string' ? row.id : ''
     const accountId = typeof row.accountId === 'string' ? row.accountId : ''
@@ -1731,6 +1786,7 @@ export class TaskManager {
     const content = typeof row.content === 'string' ? row.content : ''
     const productId = typeof row.productId === 'string' && row.productId.trim() ? row.productId : undefined
     const productName = typeof row.productName === 'string' && row.productName.trim() ? row.productName : undefined
+    const linkedProducts = this.parseLinkedProducts(row.linkedProductsJson)
     const publishMode = normalizePublishMode(row.publishMode)
     const transformPolicy = normalizeTransformPolicy(row.transformPolicy)
     const remixSessionId =
@@ -1757,6 +1813,7 @@ export class TaskManager {
       tags: tags.length > 0 ? tags : undefined,
       productId,
       productName,
+      linkedProducts: linkedProducts.length > 0 ? linkedProducts : undefined,
       publishMode,
       transformPolicy,
       remixSessionId,
@@ -1785,6 +1842,8 @@ export class TaskManager {
       tags: task.tags && task.tags.length > 0 ? JSON.stringify(task.tags) : null,
       productId: task.productId ?? null,
       productName: task.productName ?? null,
+      linkedProductsJson:
+        task.linkedProducts && task.linkedProducts.length > 0 ? JSON.stringify(task.linkedProducts) : null,
       publishMode: task.publishMode,
       transformPolicy: task.transformPolicy,
       remixSessionId: task.remixSessionId ?? null,
@@ -1809,7 +1868,7 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode, transformPolicy,
+          title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
@@ -1831,7 +1890,7 @@ export class TaskManager {
       .prepare(
         `SELECT
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
-          title, content, tags, productId, productName, publishMode, transformPolicy,
+          title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks

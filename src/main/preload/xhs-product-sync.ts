@@ -276,6 +276,7 @@ type ProductRecord = {
   name: string
   price: string
   cover: string
+  productUrl: string
 }
 
 function isLeaf(el: Element): boolean {
@@ -427,7 +428,8 @@ async function scrapeProductsFromModal(modalRoot: HTMLElement): Promise<ProductR
         id,
         name: title,
         price: extractPrice(rowText, productRow),
-        cover: extractCover(productRow)
+        cover: extractCover(productRow),
+        productUrl: ''
       })
     }
 

@@ -5,6 +5,7 @@ import moment from 'moment'
 import { useDrag } from 'react-dnd'
 import { Layers, Sparkles, Video, X } from 'lucide-react'
 
+import { formatTaskProductSummary } from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 
@@ -275,7 +276,10 @@ function CalendarTaskCard({
               isPublished ? 'text-emerald-200/50' : 'text-zinc-500'
             )}
           >
-            {task.productName || '未绑定商品'}
+            {formatTaskProductSummary({
+              linkedProducts: task.linkedProducts,
+              productName: task.productName
+            })}
           </div>
         ) : null}
       </div>

@@ -8,6 +8,7 @@ import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from 'react-re
 
 import { PendingTaskCard } from '@renderer/components/Calendar/PendingTaskCard'
 import { TaskDetailModal } from '@renderer/components/TaskDetailModal'
+import { formatTaskProductSummary } from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
@@ -1029,7 +1030,10 @@ function CalendarView({
                           ) : (
                             <>
                               <div className="mt-1 text-[11px] text-zinc-400">
-                                图片 {payload.images?.length ?? 0} 张 · 商品 {payload.productName || '未绑定商品'}
+                                图片 {payload.images?.length ?? 0} 张 · 商品{' '}
+                                {formatTaskProductSummary({
+                                  productName: payload.productName
+                                })}
                               </div>
                               <div className="mt-1 text-[11px] text-zinc-500">
                                 文案来源：T {shortTaskId(payload.remixTitleSourceTaskId)} / C{' '}

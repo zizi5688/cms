@@ -1866,6 +1866,31 @@ async function selectProduct(productName: string): Promise<boolean> {
   return true
 }
 
+type NormalizedLinkedProduct = {
+  id: string
+  name: string
+}
+
+function normalizeLinkedTaskProducts(value: unknown): NormalizedLinkedProduct[] {
+  const list = Array.isArray(value) ? value : []
+  const normalized: NormalizedLinkedProduct[] = []
+  const seen = new Set<string>()
+
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const id = normalizeText(record.id)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    normalized.push({
+      id,
+      name: normalizeText(record.name)
+    })
+  }
+
+  return normalized
+}
+
 async function waitForPageReady(): Promise<void> {
   await waitFor(
     () => {
@@ -2210,84 +2235,6 @@ function findClickableAncestor(el: HTMLElement | null): HTMLElement | null {
   return clickable
 }
 
-function rectToPlain(rect: DOMRect): { top: number; left: number; width: number; height: number } {
-  return {
-    top: Math.round(rect.top),
-    left: Math.round(rect.left),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height)
-  }
-}
-
-function markDebugTarget(el: HTMLElement | null, label: string): void {
-  if (!el) return
-  try {
-    try {
-      el.scrollIntoView({ block: 'center', inline: 'nearest' })
-    } catch (error) {
-      void error
-    }
-
-    const rect = el.getBoundingClientRect()
-    const prevOutline = el.style.outline
-    const prevOutlineOffset = el.style.outlineOffset
-    const prevBoxShadow = el.style.boxShadow
-    const prevBorderRadius = el.style.borderRadius
-
-    el.style.outline = '4px solid #ff2d2d'
-    el.style.outlineOffset = '2px'
-    el.style.boxShadow = '0 0 0 2px rgba(255,45,45,0.35)'
-    el.style.borderRadius = '6px'
-
-    const overlay = document.createElement('div')
-    overlay.setAttribute('data-cms-xhs-cover-debug', '1')
-    overlay.style.position = 'fixed'
-    overlay.style.left = `${Math.max(0, rect.left - 3)}px`
-    overlay.style.top = `${Math.max(0, rect.top - 3)}px`
-    overlay.style.width = `${Math.max(14, rect.width + 6)}px`
-    overlay.style.height = `${Math.max(14, rect.height + 6)}px`
-    overlay.style.border = '3px solid #ff2d2d'
-    overlay.style.background = 'rgba(255,45,45,0.06)'
-    overlay.style.borderRadius = '8px'
-    overlay.style.pointerEvents = 'none'
-    overlay.style.zIndex = '2147483647'
-
-    const badge = document.createElement('div')
-    badge.textContent = label
-    badge.style.position = 'absolute'
-    badge.style.left = '0'
-    badge.style.top = '-24px'
-    badge.style.maxWidth = '320px'
-    badge.style.padding = '2px 6px'
-    badge.style.whiteSpace = 'nowrap'
-    badge.style.overflow = 'hidden'
-    badge.style.textOverflow = 'ellipsis'
-    badge.style.color = '#fff'
-    badge.style.background = '#ff2d2d'
-    badge.style.fontSize = '12px'
-    badge.style.fontWeight = '700'
-    badge.style.lineHeight = '18px'
-    badge.style.borderRadius = '4px'
-    overlay.appendChild(badge)
-    document.body.appendChild(overlay)
-
-    logPlain(`[封面Debug] 红框定位: ${label}`, { element: describeElement(el), rect: rectToPlain(rect) })
-    window.setTimeout(() => {
-      try {
-        el.style.outline = prevOutline
-        el.style.outlineOffset = prevOutlineOffset
-        el.style.boxShadow = prevBoxShadow
-        el.style.borderRadius = prevBorderRadius
-        overlay.remove()
-      } catch (error) {
-        void error
-      }
-    }, 2200)
-  } catch (error) {
-    void error
-  }
-}
-
 function findCoverSectionRoot(): { root: HTMLElement; anchor: HTMLElement } | null {
   const anchor =
     findLeafByTextIncludes('设置封面', document.body) ||
@@ -2398,10 +2345,6 @@ function pickFirstCoverFrameCandidate(candidates: HTMLElement[], anchorRect: DOM
   const nearBest = scored.filter((item) => item.score >= bestScore - 120)
   nearBest.sort((a, b) => (a.rect.top !== b.rect.top ? a.rect.top - b.rect.top : a.rect.left - b.rect.left))
   return nearBest[0]?.target ?? scored[0]?.target ?? null
-}
-
-function summarizeCoverCandidates(candidates: HTMLElement[]): Array<{ element: Record<string, unknown> | null; rect: { top: number; left: number; width: number; height: number } }> {
-  return candidates.slice(0, 6).map((target) => ({ element: describeElement(target), rect: rectToPlain(target.getBoundingClientRect()) }))
 }
 
 function findFirstCoverFrameUnderSettingSection(): HTMLElement | null {
@@ -2596,13 +2539,6 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       timeoutMs: Math.min(10_000, timeLeft()),
       intervalMs: 180,
       timeoutMessage: '未找到“设置封面”区域下第一个封面框。'
-    }).catch((error) => {
-      const debugCandidates = summarizeCoverCandidates(collectCoverFrameCandidates(document.body))
-      logPlain('[封面Debug] 首个封面框定位失败', {
-        error: stringifyUnknownError(error),
-        candidates: debugCandidates
-      })
-      throw error
     })
     ensureTime()
     try {
@@ -2610,7 +2546,6 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
     } catch (error) {
       void error
     }
-    markDebugTarget(firstCoverEntry, '设置封面区域第一个封面框')
     await Humanizer.sleep(120, Math.min(420, Math.max(120, timeLeft())))
     ensureTime()
 
@@ -2640,7 +2575,6 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       intervalMs: 180,
       timeoutMessage: '未找到“上传图片”按钮。'
     })
-    markDebugTarget(uploadBtn, '封面弹窗上传图片按钮')
     const beforeUploadState = snapshotCoverModalUploadState(modalRoot)
     let lastPickResult: unknown = null
     let nativePickSuccess = false
@@ -2654,11 +2588,6 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       const nativeClickOk = await ipcRenderer
         .invoke('cms.xhs.nativeClickAt', { x: point.x, y: point.y })
         .catch(() => false)
-      logPlain(`[封面] 上传按钮点击尝试 #${attempt}`, {
-        nativeClickOk,
-        point,
-        element: describeElement(uploadBtn)
-      })
 
       if (!nativeClickOk) {
         await SyncHumanizer.click(uploadBtn, `封面弹窗上传图片按钮（备用点击 #${attempt}）`)
@@ -2676,11 +2605,9 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
 
       if (pickOk) {
         nativePickSuccess = true
-        logPlain('[封面] 系统文件选择器已自动按路径完成选图。', { attempt, pickResult })
         break
       }
 
-      logPlain(`[封面] 系统选图尝试 #${attempt} 未成功，将重试一次点击。`, pickResult)
       await sleep(Math.min(380, Math.max(180, timeLeft())))
       ensureTime()
     }
@@ -2702,7 +2629,6 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
     if (!selectionReady) {
       throw new Error('系统文件选择器未确认封面已选中，已停止后续“确定”点击。')
     }
-    logPlain('[封面] 已检测到封面文件选中信号，继续点击确定。')
 
     await sleep(Math.min(900, Math.max(320, timeLeft())))
     ensureTime()
@@ -2712,7 +2638,6 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       intervalMs: 180,
       timeoutMessage: '未找到封面弹窗“确定”按钮。'
     })
-    markDebugTarget(confirmBtn, '封面弹窗确定按钮')
     await SyncHumanizer.click(confirmBtn, '封面弹窗确认按钮')
 
     await waitFor(() => (isVisible(modalRoot) ? null : true), {
@@ -2800,7 +2725,19 @@ async function addProductIfNeeded(productId: string, productName: string): Promi
   const name = String(productName ?? '').trim()
   if (!id && !name) return
 
-  if (hasProductAddedIndicator()) {
+  await addProductCore(id, name, { skipIfAlreadyAdded: true })
+}
+
+async function addProductCore(
+  productId: string,
+  productName: string,
+  options: { skipIfAlreadyAdded: boolean }
+): Promise<void> {
+  const id = String(productId ?? '').trim()
+  const name = String(productName ?? '').trim()
+  if (!id && !name) return
+
+  if (options.skipIfAlreadyAdded && hasProductAddedIndicator()) {
     logPlain('检测到已挂车标识，跳过添加商品。')
     return
   }
@@ -2833,13 +2770,38 @@ async function addProductIfNeeded(productId: string, productName: string): Promi
       return
     } catch (error) {
       if (!name) throw error
-      logPlain('按商品ID添加失败，尝试按商品名称搜索...', { error: error instanceof Error ? error.message : String(error) })
+      logPlain('按商品ID添加失败，尝试按商品名称搜索...', {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
   }
 
   if (name) {
     await selectProduct(name)
     await softCheck('selectProduct')
+  }
+}
+
+async function addProductsIfNeeded(
+  linkedProductsInput: unknown,
+  fallbackProductId: string,
+  fallbackProductName: string
+): Promise<void> {
+  const linkedProducts = normalizeLinkedTaskProducts(linkedProductsInput)
+  if (linkedProducts.length === 0) {
+    await addProductIfNeeded(fallbackProductId, fallbackProductName)
+    return
+  }
+
+  for (let index = 0; index < linkedProducts.length; index += 1) {
+    const product = linkedProducts[index]
+    if (!product) continue
+    logStep(4, `挂载商品 ${index + 1}/${linkedProducts.length}`, {
+      productId: product.id,
+      productName: product.name || undefined
+    })
+    await addProductCore(product.id, product.name, { skipIfAlreadyAdded: false })
+    await sleep(900)
   }
 }
 
@@ -2875,6 +2837,7 @@ type TaskData = {
   videoPath?: unknown
   productId?: unknown
   productName?: unknown
+  linkedProducts?: unknown
 }
 
 type PublishMode = 'immediate'
@@ -2896,6 +2859,7 @@ async function runTask(
     const content = typeof taskData?.content === 'string' ? taskData.content : ''
     const productId = typeof taskData?.productId === 'string' ? taskData.productId.trim() : ''
     const productName = typeof taskData?.productName === 'string' ? taskData.productName.trim() : ''
+    const linkedProducts = normalizeLinkedTaskProducts(taskData?.linkedProducts)
 
     if (isLikelyLoginUrl(location.href)) {
       throw new Error('未登录或登录态失效。')
@@ -2907,7 +2871,7 @@ async function runTask(
       images: images.length,
       hasTitle: !!title,
       hasContent: !!content,
-      hasProduct: !!productId || !!productName,
+      hasProduct: linkedProducts.length > 0 || !!productId || !!productName,
       dryRun,
       url: location.href
     })
@@ -2940,7 +2904,7 @@ async function runTask(
     })
 
     await runStep('自动挂车（添加商品组件）', async () => {
-      await addProductIfNeeded(productId, productName)
+      await addProductsIfNeeded(linkedProducts, productId, productName)
       await sleep(1500)
     })
 
@@ -2996,6 +2960,7 @@ async function publishVideoTask(
   const tags = normalizeTaskTags(taskData?.tags)
   const productId = typeof taskData?.productId === 'string' ? taskData.productId.trim() : ''
   const productName = typeof taskData?.productName === 'string' ? taskData.productName.trim() : ''
+  const linkedProducts = normalizeLinkedTaskProducts(taskData?.linkedProducts)
   const coverFromArray = Array.isArray(taskData?.images)
     ? (taskData.images as unknown[]).filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
     : []
@@ -3010,7 +2975,7 @@ async function publishVideoTask(
     hasTitle: !!title,
     hasContent: !!content,
     tags: tags.length,
-    hasProduct: !!productId || !!productName,
+    hasProduct: linkedProducts.length > 0 || !!productId || !!productName,
     dryRun,
     url: location.href
   })
@@ -3048,9 +3013,7 @@ async function publishVideoTask(
     }
     await dismissPotentialPopups()
 
-    if (productId || productName) {
-      await addProductIfNeeded(productId, productName)
-    }
+    await addProductsIfNeeded(linkedProducts, productId, productName)
   })
 
   void mode

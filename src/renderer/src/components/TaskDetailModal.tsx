@@ -20,6 +20,13 @@ import {
 import moment from 'moment'
 import { ImagePlus, Layers, Save, Sparkles, Trash2, Video, X } from 'lucide-react'
 
+import { buildSelectedWorkshopProducts } from '@renderer/components/modules/workshopProductSelectionHelpers'
+import { CmsProductMultiSelectPanel } from '@renderer/components/ui/CmsProductMultiSelectPanel'
+import {
+  formatTaskProductSummary,
+  mergeTaskSelectableProducts,
+  resolveTaskSelectedProductIds
+} from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { PENDING_POOL_TITLE_LIMIT, countUserVisibleChars } from '@renderer/modules/MediaMatrix/titleLengthGuard'
@@ -61,6 +68,14 @@ function toAbsoluteFilePath(rawPath: string, workspacePath?: string): string {
   return `${ws.replace(/[\\/]+$/, '')}/${normalizedRel}`
 }
 
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false
+  }
+  return true
+}
+
 function formatStatus(status: CmsPublishTaskStatus): { label: string; className: string } {
   if (status === 'published') return { label: '已发布', className: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' }
   if (status === 'processing') return { label: '处理中', className: 'border-sky-500/20 bg-sky-500/10 text-sky-300' }
@@ -87,8 +102,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
   const [draftTitle, setDraftTitle] = useState('')
   const [draftContent, setDraftContent] = useState('')
   const [draftImages, setDraftImages] = useState<string[]>([])
-  const [draftProductId, setDraftProductId] = useState('')
-  const [draftProductName, setDraftProductName] = useState('')
+  const [draftSelectedProductIds, setDraftSelectedProductIds] = useState<string[]>([])
   const [products, setProducts] = useState<CmsProductRecord[]>([])
   const initializedRef = useRef<string | null>(null)
 
@@ -100,8 +114,12 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     setDraftTitle(task.title || '')
     setDraftContent(task.content || '')
     setDraftImages(Array.isArray(task.images) ? [...task.images] : [])
-    setDraftProductId(task.productId || '')
-    setDraftProductName(task.productName || '')
+    setDraftSelectedProductIds(
+      resolveTaskSelectedProductIds({
+        linkedProducts: task.linkedProducts,
+        productId: task.productId
+      })
+    )
   }, [isOpen, task])
 
   // 重置 initializedRef 当弹窗关闭
@@ -127,18 +145,66 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     return () => { canceled = true }
   }, [isOpen, task?.accountId, isEditable, task])
 
+  const originalSelectedProductIds = useMemo(() => {
+    return resolveTaskSelectedProductIds({
+      linkedProducts: task?.linkedProducts,
+      productId: task?.productId
+    })
+  }, [task?.linkedProducts, task?.productId])
+
+  const selectableProducts = useMemo(() => {
+    if (!task) return []
+    return mergeTaskSelectableProducts({
+      accountId: task.accountId,
+      products,
+      linkedProducts: task.linkedProducts,
+      productId: task.productId,
+      productName: task.productName
+    })
+  }, [products, task])
+
+  const draftSelectedProducts = useMemo(
+    () =>
+      buildSelectedWorkshopProducts({
+        allProducts: selectableProducts,
+        selectedProductIds: draftSelectedProductIds
+      }),
+    [draftSelectedProductIds, selectableProducts]
+  )
+
+  const originalSelectedProducts = useMemo(
+    () =>
+      buildSelectedWorkshopProducts({
+        allProducts: selectableProducts,
+        selectedProductIds: originalSelectedProductIds
+      }),
+    [originalSelectedProductIds, selectableProducts]
+  )
+
+  const displaySelectedProducts = isEditable ? draftSelectedProducts : originalSelectedProducts
+  const displaySelectedProductIds = isEditable ? draftSelectedProductIds : originalSelectedProductIds
+  const displayProductOptions = isEditable ? products : originalSelectedProducts
+  const productSummaryText = useMemo(
+    () =>
+      formatTaskProductSummary({
+        linkedProducts: task?.linkedProducts,
+        productName: task?.productName
+      }),
+    [task?.linkedProducts, task?.productName]
+  )
+
   const isDirty = useMemo(() => {
     if (!task || !isEditable) return false
     if (draftTitle !== (task.title || '')) return true
     if (draftContent !== (task.content || '')) return true
-    if (draftProductId !== (task.productId || '')) return true
+    if (!areStringArraysEqual(draftSelectedProductIds, originalSelectedProductIds)) return true
     const origImages = Array.isArray(task.images) ? task.images : []
     if (draftImages.length !== origImages.length) return true
     for (let i = 0; i < draftImages.length; i++) {
       if (draftImages[i] !== origImages[i]) return true
     }
     return false
-  }, [task, isEditable, draftTitle, draftContent, draftImages, draftProductId])
+  }, [task, isEditable, draftTitle, draftContent, draftImages, draftSelectedProductIds, originalSelectedProductIds])
 
   const draftTitleCount = useMemo(() => countUserVisibleChars(draftTitle), [draftTitle])
   const hasTitleOverflow = useMemo(() => {
@@ -362,11 +428,19 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     }
   }
 
-  const handleProductChange = (e: React.ChangeEvent<HTMLSelectElement>): void => {
-    const pid = e.target.value
-    setDraftProductId(pid)
-    const matched = products.find((p) => p.id === pid)
-    setDraftProductName(matched ? matched.name : '')
+  const toggleDraftProduct = (productId: string): void => {
+    const normalizedProductId = String(productId ?? '').trim()
+    if (!normalizedProductId) return
+    setDraftSelectedProductIds((prev) => {
+      if (prev.includes(normalizedProductId)) {
+        return prev.filter((id) => id !== normalizedProductId)
+      }
+      return [...prev, normalizedProductId]
+    })
+  }
+
+  const clearDraftProducts = (): void => {
+    setDraftSelectedProductIds([])
   }
 
   const handleSave = async (): Promise<void> => {
@@ -377,12 +451,14 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     }
     setIsSaving(true)
     try {
+      const primaryProduct = draftSelectedProducts[0]
       const updates: Record<string, unknown> = {
         title: draftTitle,
         content: draftContent,
         images: draftImages,
-        productId: draftProductId,
-        productName: draftProductName
+        productId: primaryProduct?.id ?? '',
+        productName: primaryProduct?.name ?? '',
+        linkedProducts: draftSelectedProducts
       }
       const result = await window.api.cms.task.updateBatch([task.id], updates as never)
       const updated = Array.isArray(result) ? result[0] : null
@@ -640,28 +716,6 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
                   {hasSaveTitleOverflow ? (
                     <div className="text-rose-300">标题超 20，需先改标题后才能保存。</div>
                   ) : null}
-                  {/* 商品：可编辑时用下拉，只读时用文本 */}
-                  {isEditable ? (
-                    <div className="flex items-center gap-1">
-                      <span className="shrink-0">商品：</span>
-                      <select
-                        value={draftProductId}
-                        onChange={handleProductChange}
-                        className="h-7 min-w-0 flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500/50"
-                      >
-                        <option value="">无商品链接</option>
-                        {products.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : task.productName ? (
-                    <div>
-                      商品：<span className="text-zinc-200">{task.productName}</span>
-                    </div>
-                  ) : null}
                 </div>
               </div>
 
@@ -678,6 +732,32 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
                   )}
                 />
               </div>
+
+              <CmsProductMultiSelectPanel
+                title="挂车商品"
+                subtitle={
+                  isEditable
+                    ? displaySelectedProducts.length > 0
+                      ? `已选 ${displaySelectedProducts.length} 个商品`
+                      : '点击卡片选择需要挂车的商品'
+                    : productSummaryText
+                }
+                products={displayProductOptions}
+                selectedProductIds={displaySelectedProductIds}
+                selectedProducts={displaySelectedProducts}
+                workspacePath={effectiveWorkspacePath}
+                emptyStateMessage={
+                  isEditable
+                    ? '当前账号暂无已同步商品，先去媒体矩阵执行一次“同步商品”。'
+                    : '当前任务未绑定商品。'
+                }
+                onToggleProduct={isEditable ? toggleDraftProduct : undefined}
+                onClearSelected={isEditable ? clearDraftProducts : undefined}
+                interactive={isEditable}
+                showSelectedChips={isEditable}
+                variant="compact"
+                scrollClassName="max-h-[240px]"
+              />
 
               <div className="flex items-center justify-end gap-2">
                 {isEditable && isDirty ? (

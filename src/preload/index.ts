@@ -18,6 +18,7 @@ type CmsPublishTask = {
   tags?: string[]
   productId?: string
   productName?: string
+  linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   publishMode: 'immediate'
   transformPolicy?: 'none' | 'remix_v1'
   remixSessionId?: string
@@ -461,13 +462,13 @@ const api = {
     product: {
       list: (
         payload?: { accountId?: string }
-      ): Promise<Array<{ id: string; name: string; price: string; cover: string; accountId: string }>> =>
+      ): Promise<Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId: string }>> =>
         ipcRenderer.invoke('cms.product.list', payload),
       save: (
-        products: Array<{ id: string; name: string; price: string; cover: string; accountId?: string }>
-      ): Promise<Array<{ id: string; name: string; price: string; cover: string; accountId: string }>> =>
+        products: Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId?: string }>
+      ): Promise<Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId: string }>> =>
         ipcRenderer.invoke('cms.product.save', products),
-      sync: (accountId: string): Promise<Array<{ id: string; name: string; price: string; cover: string; accountId: string }>> =>
+      sync: (accountId: string): Promise<Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId: string }>> =>
         ipcRenderer.invoke('cms.product.sync', { accountId })
     },
     publisher: {
@@ -482,6 +483,7 @@ const api = {
           imagePath?: string
           productId?: string
           productName?: string
+          linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
           dryRun?: boolean
           mode?: 'immediate'
         }
@@ -529,6 +531,7 @@ const api = {
           tags?: string[]
           productId?: string
           productName?: string
+          linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
           publishMode?: 'immediate'
           mediaType?: 'image' | 'video'
           videoPath?: string
