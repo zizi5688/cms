@@ -4,6 +4,8 @@ import type * as React from 'react'
 import { Virtuoso } from 'react-virtuoso'
 
 import {
+  ChevronDown,
+  ChevronUp,
   Film,
   FolderOpen,
   Images,
@@ -21,12 +23,15 @@ import { CmsProductMultiSelectPanel } from '@renderer/components/ui/CmsProductMu
 import { Input } from '@renderer/components/ui/input'
 import { TaskCard } from '@renderer/components/ui/TaskCard'
 import { generateManifest, generateVideoManifest } from '@renderer/lib/cms-engine'
+import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import {
   buildSelectedWorkshopProducts,
   resolveWorkshopAccountId
 } from './workshopProductSelectionHelpers'
+import { shouldShowDispatchPanel } from './dispatchPanelVisibilityHelpers'
+import { resolveVideoCoverPreview } from './videoCoverPreviewHelpers'
 
 function numberOr(value: string, fallback: number): number {
   const parsed = Number(value)
@@ -201,10 +206,13 @@ function DataBuilder(): React.JSX.Element {
   const [isManualCoverEditorPreparing, setIsManualCoverEditorPreparing] = useState(false)
   const [isManualCoverEditorPlaying, setIsManualCoverEditorPlaying] = useState(false)
   const [manualCoverEditorTimeSec, setManualCoverEditorTimeSec] = useState(0)
+  const [manualCoverFallbackMap, setManualCoverFallbackMap] = useState<Record<string, string>>({})
+  const [isDispatchPanelCollapsed, setIsDispatchPanelCollapsed] = useState(false)
   const manualCoverEditorVideoRef = useRef<HTMLVideoElement | null>(null)
   const lastScannedPathRef = useRef('')
   const lastAiStudioImportKeyRef = useRef('')
   const videoCoverCacheRef = useRef<Map<string, string>>(new Map())
+  const manualCoverFallbackMapRef = useRef<Record<string, string>>({})
   const containerRef = useRef<HTMLDivElement>(null)
   const [scrollParent, setScrollParent] = useState<HTMLElement | undefined>(undefined)
 
@@ -268,6 +276,20 @@ function DataBuilder(): React.JSX.Element {
   const activeManualCoverPath = normalizedManualEditorPath
     ? (manualCoverMap[normalizedManualEditorPath] ?? '')
     : ''
+  const fallbackManualCoverPath = normalizedManualEditorPath
+    ? (manualCoverFallbackMap[normalizedManualEditorPath] ?? '')
+    : ''
+  const activeManualCoverPreview = useMemo(
+    () =>
+      resolveVideoCoverPreview({
+        manualCoverPath: activeManualCoverPath,
+        fallbackCoverPath: fallbackManualCoverPath
+      }),
+    [activeManualCoverPath, fallbackManualCoverPath]
+  )
+  const activeManualCoverPreviewSrc = activeManualCoverPreview.path
+    ? resolveLocalImage(activeManualCoverPreview.path, workspacePath)
+    : ''
   const manualCoverConfiguredCount = useMemo(() => {
     let count = 0
     for (const path of importedVideoPaths) {
@@ -302,6 +324,10 @@ function DataBuilder(): React.JSX.Element {
   )
 
   const selectedProductCount = selectedProducts.length
+
+  useEffect(() => {
+    manualCoverFallbackMapRef.current = manualCoverFallbackMap
+  }, [manualCoverFallbackMap])
 
   useEffect(() => {
     let el = containerRef.current?.parentElement ?? null
@@ -348,6 +374,7 @@ function DataBuilder(): React.JSX.Element {
     if (!isVideoMode) {
       setVideoCoverMode('auto-first-frame')
       setManualCoverMap({})
+      setManualCoverFallbackMap({})
       setVideoCoverProgress('')
       setIsSavingManualCover(false)
       setIsManualCoverEditorPreparing(false)
@@ -385,6 +412,66 @@ function DataBuilder(): React.JSX.Element {
       setVideoCoverProgress('检测到导入封面，已切换为手动封面模式。')
     }
   }, [importedCoverPath, importedVideoPaths, isVideoMode])
+
+  useEffect(() => {
+    if (!isVideoMode) return
+
+    const currentVideoPathSet = new Set(
+      importedVideoPaths.map((path) => path.trim()).filter(Boolean)
+    )
+    setManualCoverFallbackMap((prev) => {
+      const next: Record<string, string> = {}
+      for (const path of currentVideoPathSet) {
+        const saved = prev[path]
+        const cached = videoCoverCacheRef.current.get(path) ?? ''
+        const resolved = saved || cached
+        if (resolved) next[path] = resolved
+      }
+      return next
+    })
+
+    if (videoCoverMode !== 'manual') return
+
+    let canceled = false
+    void (async () => {
+      for (const videoPath of importedVideoPaths) {
+        const normalizedPath = videoPath.trim()
+        if (!normalizedPath) continue
+        if (manualCoverMap[normalizedPath]) continue
+
+        const cachedPath = videoCoverCacheRef.current.get(normalizedPath) ?? ''
+        const knownFallback = manualCoverFallbackMapRef.current[normalizedPath] ?? ''
+        if (cachedPath || knownFallback) {
+          if (cachedPath && !knownFallback) {
+            setManualCoverFallbackMap((prev) =>
+              prev[normalizedPath] === cachedPath
+                ? prev
+                : { ...prev, [normalizedPath]: cachedPath }
+            )
+          }
+          continue
+        }
+
+        try {
+          const coverPath = await captureVideoFirstFrame(normalizedPath)
+          if (canceled) return
+          videoCoverCacheRef.current.set(normalizedPath, coverPath)
+          setManualCoverFallbackMap((prev) => ({
+            ...prev,
+            [normalizedPath]: coverPath
+          }))
+        } catch (error) {
+          if (canceled) return
+          const message = error instanceof Error ? error.message : String(error)
+          addLog(`[Super CMS] 手动封面首帧预览提取失败：${fileNameFromPath(normalizedPath)}，${message}`)
+        }
+      }
+    })()
+
+    return () => {
+      canceled = true
+    }
+  }, [addLog, importedVideoPaths, isVideoMode, manualCoverMap, videoCoverMode])
 
   useEffect(() => {
     const normalizedEditorPath = manualCoverEditorVideoPath.trim()
@@ -855,6 +942,7 @@ function DataBuilder(): React.JSX.Element {
     setImageFiles([])
     setVideoCoverMode('auto-first-frame')
     setManualCoverMap({})
+    setManualCoverFallbackMap({})
     setVideoCoverProgress('')
     setIsPreparingVideoCover(false)
     setIsSavingManualCover(false)
@@ -863,6 +951,7 @@ function DataBuilder(): React.JSX.Element {
     setManualCoverEditorVideoPath('')
     setManualCoverEditorPlayablePath('')
     setManualCoverEditorTimeSec(0)
+    setIsDispatchPanelCollapsed(false)
     videoCoverCacheRef.current.clear()
   }, [setCsvContent, setDataWorkshopFolderPath, setWorkshopImport, setTasks, setUploadTasks])
 
@@ -884,6 +973,18 @@ function DataBuilder(): React.JSX.Element {
     }
     return count
   }, [queuedTaskIds, selectedImageIds, tasks])
+  const showDispatchPanel = useMemo(
+    () =>
+      shouldShowDispatchPanel({
+        selectedDispatchCount,
+        isManualCoverEditorOpen
+      }),
+    [isManualCoverEditorOpen, selectedDispatchCount]
+  )
+
+  useEffect(() => {
+    if (selectedDispatchCount === 0) setIsDispatchPanelCollapsed(false)
+  }, [selectedDispatchCount])
 
   const csvRowCount = useMemo(() => {
     return csvContent
@@ -1173,14 +1274,48 @@ function DataBuilder(): React.JSX.Element {
                           const mappedCoverPath = normalizedPath
                             ? (manualCoverMap[normalizedPath] ?? '')
                             : ''
-                          const hasCover = Boolean(mappedCoverPath)
+                          const preview = resolveVideoCoverPreview({
+                            manualCoverPath: mappedCoverPath,
+                            fallbackCoverPath: normalizedPath
+                              ? (manualCoverFallbackMap[normalizedPath] ?? '')
+                              : ''
+                          })
+                          const hasCover = preview.source === 'manual'
+                          const previewSrc = preview.path
+                            ? resolveLocalImage(preview.path, workspacePath)
+                            : ''
                           return (
                             <div
                               key={videoPath}
                               className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 px-3 py-2.5"
                             >
-                              <div className="min-w-0 flex-1 truncate text-xs text-zinc-200">
-                                {index + 1}. {fileNameFromPath(videoPath)}
+                              <div className="flex min-w-0 flex-1 items-center gap-3">
+                                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+                                  {previewSrc ? (
+                                    <img
+                                      src={previewSrc}
+                                      alt=""
+                                      loading="lazy"
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-500">
+                                      首帧读取中
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-xs text-zinc-200">
+                                    {index + 1}. {fileNameFromPath(videoPath)}
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-zinc-500">
+                                    {preview.source === 'manual'
+                                      ? '当前封面'
+                                      : preview.source === 'first-frame'
+                                        ? '当前无封面，显示首帧'
+                                        : '正在准备预览'}
+                                  </div>
+                                </div>
                               </div>
                               <Button
                                 type="button"
@@ -1387,6 +1522,14 @@ function DataBuilder(): React.JSX.Element {
                         mediaType={task.mediaType}
                         videoPath={task.videoPath}
                         note={task.log}
+                        onVideoCoverDoubleClick={
+                          task.mediaType === 'video' &&
+                          typeof task.videoPath === 'string' &&
+                          task.videoPath.trim() &&
+                          !isQueued
+                            ? () => openManualCoverEditor(task.videoPath ?? '')
+                            : undefined
+                        }
                         select={{
                           checked: isSelected,
                           disabled: !isSelectable,
@@ -1498,9 +1641,33 @@ function DataBuilder(): React.JSX.Element {
                 <div className="text-[11px] text-zinc-500 break-all">
                   预览源：{manualCoverEditorSourcePath || '准备中...'}
                 </div>
-                <div className="text-xs text-zinc-500 break-all">
-                  当前封面：
-                  {activeManualCoverPath ? fileNameFromPath(activeManualCoverPath) : '未设置'}
+                <div className="rounded-xl border border-zinc-800 bg-black/20 p-2.5">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                    {activeManualCoverPreview.source === 'manual'
+                      ? '当前封面'
+                      : activeManualCoverPreview.source === 'first-frame'
+                        ? '首帧预览'
+                        : '封面预览'}
+                  </div>
+                  <div className="mt-2 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">
+                    {activeManualCoverPreviewSrc ? (
+                      <img
+                        src={activeManualCoverPreviewSrc}
+                        alt=""
+                        loading="lazy"
+                        className="h-36 w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-36 w-full items-center justify-center text-xs text-zinc-500">
+                        首帧预览准备中...
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-2 text-xs text-zinc-500 break-all">
+                    {activeManualCoverPreview.path
+                      ? fileNameFromPath(activeManualCoverPreview.path)
+                      : '当前暂无封面图'}
+                  </div>
                 </div>
                 <Button
                   type="button"
@@ -1552,66 +1719,152 @@ function DataBuilder(): React.JSX.Element {
         </div>
       ) : null}
 
-      {selectedDispatchCount > 0 ? (
-        <div className="fixed bottom-6 left-1/2 z-50 w-[min(1040px,calc(100vw-40px))] -translate-x-1/2 rounded-[28px] border border-zinc-800 bg-zinc-950/96 p-5 shadow-[0_28px_120px_-52px_rgba(0,0,0,0.78)] backdrop-blur">
-          <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-            <div className="flex flex-col gap-4">
-              <div className="rounded-2xl border border-zinc-800 bg-black/25 p-3">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">派发账号</div>
-                <select
-                  value={selectedAccountId}
-                  onChange={(e) => setSelectedAccountId(e.target.value)}
-                  disabled={isDispatching}
-                  className="mt-3 h-12 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
-                >
-                  {accounts.length === 0 ? <option value="">暂无账号</option> : null}
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
+      {showDispatchPanel ? (
+        <div
+          className={cn(
+            'fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-[24px] border border-zinc-800 bg-zinc-950/96 shadow-[0_28px_120px_-52px_rgba(0,0,0,0.78)] backdrop-blur',
+            isDispatchPanelCollapsed
+              ? 'w-[min(760px,calc(100vw-24px))] p-3.5'
+              : 'w-[min(900px,calc(100vw-24px))] p-4'
+          )}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-zinc-300">
+              <div className="rounded-full border border-zinc-800 bg-black/25 px-3 py-1.5 text-zinc-100">
+                已选 {selectedDispatchCount} 条
               </div>
-
-              <div className="rounded-2xl border border-zinc-800 bg-black/25 p-4">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">本次派发</div>
-                <div className="mt-3 flex items-end gap-2">
-                  <span className="text-3xl font-semibold tracking-tight text-zinc-50">{selectedDispatchCount}</span>
-                  <span className="pb-1 text-sm text-zinc-400">项任务</span>
-                </div>
-                <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-300">
-                  已选 {selectedProductCount} 个商品
-                </div>
+              <div className="rounded-full border border-zinc-800 bg-black/25 px-3 py-1.5">
+                商品 {selectedProductCount}
+              </div>
+              <div className="max-w-[280px] truncate rounded-full border border-zinc-800 bg-black/25 px-3 py-1.5 text-zinc-400">
+                账号：{accounts.find((account) => account.id === selectedAccountId)?.name || '未选择'}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {isDispatchPanelCollapsed ? (
                 <Button
                   onClick={() => void dispatchSelected()}
                   disabled={isDispatching || !selectedAccountId.trim()}
-                  className="mt-4 h-12 w-full rounded-xl"
+                  className="h-10 rounded-xl px-4"
                 >
-                  {isDispatching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  {isDispatching ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
                   {isDispatching
                     ? `派发中 ${Math.min(dispatchProgress?.processed ?? 0, dispatchProgress?.total ?? 0)}/${dispatchProgress?.total ?? 0}`
-                    : '派发至队列'}
+                    : '直接派发'}
                 </Button>
-              </div>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl border-zinc-700 px-3"
+                onClick={() => setIsDispatchPanelCollapsed((prev) => !prev)}
+              >
+                {isDispatchPanelCollapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                {isDispatchPanelCollapsed ? '展开看板' : '收起看板'}
+              </Button>
             </div>
-
-            <CmsProductMultiSelectPanel
-              title="挂车商品"
-              subtitle={selectedProductCount > 0 ? `已选 ${selectedProductCount} 个商品` : '从右侧列表勾选需要挂车的商品'}
-              products={filteredProducts}
-              selectedProductIds={selectedProductIds}
-              selectedProducts={selectedProducts}
-              workspacePath={workspacePath}
-              emptyStateMessage="当前账号暂无已同步商品，先去媒体矩阵执行一次“同步商品”。"
-              onToggleProduct={toggleSelectedProduct}
-              onClearSelected={clearSelectedProducts}
-              className="min-w-0"
-            />
-
-            {dispatchProgress ? (
-              <div className="lg:col-span-2 px-1 text-xs text-zinc-400">{dispatchProgress.message}</div>
-            ) : null}
           </div>
+
+          {isDispatchPanelCollapsed ? (
+            <>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-2xl border border-zinc-800 bg-black/25 px-3 py-2.5">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">派发账号</div>
+                  <div className="mt-1 truncate text-sm text-zinc-100">
+                    {accounts.find((account) => account.id === selectedAccountId)?.name || '请选择账号'}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-zinc-800 bg-black/25 px-3 py-2.5">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">挂车商品</div>
+                  <div className="mt-1 text-sm text-zinc-100">
+                    已选 {selectedProductCount} 个商品
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-zinc-800 bg-black/25 px-3 py-2.5">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">派发状态</div>
+                  <div className="mt-1 truncate text-sm text-zinc-100">
+                    {dispatchProgress?.message || '待派发'}
+                  </div>
+                </div>
+              </div>
+              {dispatchProgress ? (
+                <div className="mt-3 px-1 text-xs text-zinc-400">{dispatchProgress.message}</div>
+              ) : null}
+            </>
+          ) : (
+            <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <div className="flex flex-col gap-3">
+                <div className="rounded-2xl border border-zinc-800 bg-black/25 p-3">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">派发账号</div>
+                  <select
+                    value={selectedAccountId}
+                    onChange={(e) => setSelectedAccountId(e.target.value)}
+                    disabled={isDispatching}
+                    className="mt-3 h-10 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
+                  >
+                    {accounts.length === 0 ? <option value="">暂无账号</option> : null}
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="rounded-2xl border border-zinc-800 bg-black/25 p-3">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">本次派发</div>
+                  <div className="mt-2 flex items-end gap-2">
+                    <span className="text-2xl font-semibold tracking-tight text-zinc-50">{selectedDispatchCount}</span>
+                    <span className="pb-0.5 text-sm text-zinc-400">项任务</span>
+                  </div>
+                  <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-300">
+                    已选 {selectedProductCount} 个商品
+                  </div>
+                  <Button
+                    onClick={() => void dispatchSelected()}
+                    disabled={isDispatching || !selectedAccountId.trim()}
+                    className="mt-3 h-10 w-full rounded-xl"
+                  >
+                    {isDispatching ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                    {isDispatching
+                      ? `派发中 ${Math.min(dispatchProgress?.processed ?? 0, dispatchProgress?.total ?? 0)}/${dispatchProgress?.total ?? 0}`
+                      : '派发至队列'}
+                  </Button>
+                </div>
+              </div>
+
+              <CmsProductMultiSelectPanel
+                title="挂车商品"
+                subtitle={
+                  selectedProductCount > 0
+                    ? `已选 ${selectedProductCount} 个商品`
+                    : '从右侧列表勾选需要挂车的商品'
+                }
+                products={filteredProducts}
+                selectedProductIds={selectedProductIds}
+                selectedProducts={selectedProducts}
+                workspacePath={workspacePath}
+                emptyStateMessage="当前账号暂无已同步商品，先去媒体矩阵执行一次“同步商品”。"
+                onToggleProduct={toggleSelectedProduct}
+                onClearSelected={clearSelectedProducts}
+                variant="compact"
+                className="min-w-0"
+                scrollClassName="max-h-[220px]"
+              />
+
+              {dispatchProgress ? (
+                <div className="lg:col-span-2 px-1 text-xs text-zinc-400">{dispatchProgress.message}</div>
+              ) : null}
+            </div>
+          )}
         </div>
       ) : null}
     </div>

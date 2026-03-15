@@ -54,16 +54,26 @@ function CmsProductMultiSelectPanel({
 
   return (
     <div className={cn('rounded-2xl border border-zinc-800/90 bg-black/30', className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-800/80 px-4 py-3">
+      <div
+        className={cn(
+          'flex items-center justify-between gap-3 border-b border-zinc-800/80',
+          isCompact ? 'px-3 py-2.5' : 'px-4 py-3'
+        )}
+      >
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">{title}</div>
-          <div className="mt-1 truncate text-sm text-zinc-200">{subtitle}</div>
+          <div className={cn('mt-1 truncate text-zinc-200', isCompact ? 'text-xs' : 'text-sm')}>
+            {subtitle}
+          </div>
         </div>
         {interactive && selectedProducts.length > 0 && onClearSelected ? (
           <button
             type="button"
             onClick={onClearSelected}
-            className="inline-flex min-h-11 items-center gap-1 rounded-xl px-2.5 text-xs text-zinc-400 transition hover:bg-zinc-900/70 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-xl text-xs text-zinc-400 transition hover:bg-zinc-900/70 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60',
+              isCompact ? 'min-h-9 px-2' : 'min-h-11 px-2.5'
+            )}
           >
             <RotateCcw className="h-3.5 w-3.5" />
             清空
@@ -71,7 +81,13 @@ function CmsProductMultiSelectPanel({
         ) : null}
       </div>
 
-      <div className={cn('overflow-auto p-3', isCompact ? 'max-h-[250px]' : 'max-h-[360px]', scrollClassName)}>
+      <div
+        className={cn(
+          'overflow-auto',
+          isCompact ? 'max-h-[250px] p-2.5' : 'max-h-[360px] p-3',
+          scrollClassName
+        )}
+      >
         {products.length === 0 ? (
           <div className="flex min-h-[160px] items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 px-4 text-center text-sm text-zinc-400">
             <div className="flex max-w-[280px] flex-col items-center gap-2">
@@ -80,12 +96,13 @@ function CmsProductMultiSelectPanel({
             </div>
           </div>
         ) : (
-          <div className="grid gap-3">
+          <div className={cn('grid', isCompact ? 'gap-2.5' : 'gap-3')}>
             {products.map((product) => {
               const isSelected = selectedProductIds.includes(product.id)
               const coverSrc = product.cover ? resolveLocalImage(product.cover, workspacePath) : ''
               const itemClasses = cn(
-                'flex w-full items-center gap-4 rounded-2xl border px-4 py-3 text-left transition',
+                'flex w-full items-center text-left transition',
+                isCompact ? 'gap-3 rounded-xl px-3 py-2.5' : 'gap-4 rounded-2xl px-4 py-3',
                 interactive
                   ? 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60'
                   : 'cursor-default',
@@ -162,7 +179,7 @@ function CmsProductMultiSelectPanel({
       </div>
 
       {showSelectedChips && selectedProducts.length > 0 ? (
-        <div className="border-t border-zinc-800 bg-black/20 px-3 py-3">
+        <div className={cn('border-t border-zinc-800 bg-black/20', isCompact ? 'px-2.5 py-2.5' : 'px-3 py-3')}>
           <div className="flex flex-wrap gap-2">
             {selectedProducts.map((product) => (
               <button
@@ -170,7 +187,8 @@ function CmsProductMultiSelectPanel({
                 type="button"
                 onClick={() => onToggleProduct?.(product.id)}
                 className={cn(
-                  'inline-flex min-h-9 items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/85 px-3 text-sm text-zinc-200 transition',
+                  'inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/85 text-zinc-200 transition',
+                  isCompact ? 'min-h-8 px-2.5 text-xs' : 'min-h-9 px-3 text-sm',
                   interactive
                     ? 'cursor-pointer hover:border-zinc-700 hover:bg-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60'
                     : 'cursor-default'
