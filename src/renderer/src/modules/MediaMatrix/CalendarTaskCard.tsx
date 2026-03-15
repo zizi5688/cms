@@ -2,14 +2,18 @@ import type * as React from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import moment from 'moment'
-import { useDrag } from 'react-dnd'
+import { useDrag, useDrop } from 'react-dnd'
 import { Layers, Sparkles, Video, X } from 'lucide-react'
 
 import { formatTaskProductSummary } from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 
-import { calendarDndTypes, type ScheduledTaskDragItem } from './calendarDnd'
+import {
+  calendarDndTypes,
+  type CalendarDragItem,
+  type ScheduledTaskDragItem
+} from './calendarDnd'
 
 type CalendarTaskCardProps = {
   task: CmsPublishTask
@@ -18,6 +22,21 @@ type CalendarTaskCardProps = {
   isSelected?: boolean
   onUnschedule: (task: CmsPublishTask) => void | Promise<void>
   onChangeScheduledAt: (task: CmsPublishTask, nextScheduledAt: number) => void | Promise<void>
+  onReorderScheduledTasks?: (
+    draggedTask: CmsPublishTask,
+    targetTask: CmsPublishTask,
+    placement: 'before' | 'after'
+  ) => void | Promise<void>
+}
+
+function getDropPlacement(
+  clientOffset: { x: number; y: number } | null,
+  element: HTMLElement | null
+): 'before' | 'after' | null {
+  if (!clientOffset || !element) return null
+  const rect = element.getBoundingClientRect()
+  if (!Number.isFinite(rect.height) || rect.height <= 0) return null
+  return clientOffset.y < rect.top + rect.height / 2 ? 'before' : 'after'
 }
 
 function CalendarTaskCard({
@@ -26,7 +45,8 @@ function CalendarTaskCard({
   compact = false,
   isSelected,
   onUnschedule,
-  onChangeScheduledAt
+  onChangeScheduledAt,
+  onReorderScheduledTasks
 }: CalendarTaskCardProps): React.JSX.Element {
   const cardRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -82,9 +102,57 @@ function CalendarTaskCard({
     [canDrag, task]
   )
 
+  const [{ canDrop, dropPlacement, isOver }, dropRef] = useDrop<
+    CalendarDragItem,
+    { handled?: boolean } | void,
+    {
+      isOver: boolean
+      canDrop: boolean
+      dropPlacement: 'before' | 'after' | null
+    }
+  >(
+    () => ({
+      accept: [calendarDndTypes.SCHEDULED_TASK],
+      canDrop: (item) => {
+        if (!onReorderScheduledTasks) return false
+        if (!item?.task || item.type !== calendarDndTypes.SCHEDULED_TASK) return false
+        if (task.status === 'published' || item.task.status === 'published') return false
+        if (item.task.id === task.id) return false
+        if (
+          typeof task.scheduledAt !== 'number' ||
+          !Number.isFinite(task.scheduledAt) ||
+          typeof item.task.scheduledAt !== 'number' ||
+          !Number.isFinite(item.task.scheduledAt)
+        ) {
+          return false
+        }
+        return moment(item.task.scheduledAt).isSame(task.scheduledAt, 'day')
+      },
+      collect: (monitor) => ({
+        isOver: monitor.isOver({ shallow: true }),
+        canDrop: monitor.canDrop(),
+        dropPlacement: getDropPlacement(
+          monitor.getClientOffset(),
+          cardRef.current
+        )
+      }),
+      drop: (item, monitor) => {
+        if (!monitor.isOver({ shallow: true })) return
+        if (item.type !== calendarDndTypes.SCHEDULED_TASK) return
+        const placement = getDropPlacement(monitor.getClientOffset(), cardRef.current)
+        if (!placement || !onReorderScheduledTasks) return
+        void onReorderScheduledTasks(item.task, task, placement)
+        return { handled: true }
+      }
+    }),
+    [onReorderScheduledTasks, task]
+  )
+
   useEffect(() => {
-    dragRef(cardRef)
-  }, [dragRef])
+    const node = cardRef.current
+    if (!node) return
+    dragRef(dropRef(node))
+  }, [dragRef, dropRef])
 
   useEffect(() => {
     if (!isEditingTime) return
@@ -178,6 +246,14 @@ function CalendarTaskCard({
       )}
       title={tooltipText}
     >
+      {isOver && canDrop && dropPlacement ? (
+        <div
+          className={cn(
+            'pointer-events-none absolute left-3 right-3 z-10 h-0.5 rounded-full bg-amber-300 shadow-[0_0_0_1px_rgba(252,211,77,0.35)]',
+            dropPlacement === 'before' ? 'top-1.5' : 'bottom-1.5'
+          )}
+        />
+      ) : null}
       <div
         className={cn(
           'relative shrink-0 overflow-hidden rounded-md bg-zinc-950',

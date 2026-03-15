@@ -11,6 +11,7 @@ import { useCmsStore } from '@renderer/store/useCmsStore'
 import { CalendarTaskCard } from './CalendarTaskCard'
 import { type CalendarDragItem, calendarDndTypes } from './calendarDnd'
 import { getTaskDisplayTime, setDateKeepingTime, withDefaultStartTime } from './calendarUtils'
+import { buildScheduledTaskReorderPatches } from './scheduledTaskReorderHelpers'
 
 type KanbanWeekViewProps = {
   tasks: CmsPublishTask[]
@@ -168,7 +169,8 @@ function DayColumn({
         isOver: monitor.isOver({ shallow: true }),
         canDrop: monitor.canDrop()
       }),
-      drop: (item) => {
+      drop: (item, monitor) => {
+        if (monitor.didDrop()) return
         if (isPast) return
         if (!item?.task) return
         if (item.type === calendarDndTypes.UNSCHEDULED_TASK) {
@@ -281,6 +283,31 @@ function DayColumn({
   const headerText = getRollingColumnHeader(date)
   const isActive = isOver && canDrop
   const isBlocked = isOver && !canDrop
+  const handleReorderScheduledTask = (
+    draggedTask: CmsPublishTask,
+    targetTask: CmsPublishTask,
+    placement: 'before' | 'after'
+  ): void => {
+    const updates = buildScheduledTaskReorderPatches({
+      tasks,
+      activeTaskId: draggedTask.id,
+      overTaskId: targetTask.id,
+      placement
+    })
+    if (updates.length === 0) return
+
+    if (typeof onBatchScheduleTasks === 'function') {
+      void onBatchScheduleTasks(updates)
+      return
+    }
+
+    for (const update of updates) {
+      const taskToUpdate = tasks.find((task) => task.id === update.id)
+      if (!taskToUpdate) continue
+      void onScheduleTask(taskToUpdate, update.scheduledAt)
+    }
+  }
+
   const handleSelect = (event: React.MouseEvent, taskId: string): void => {
     const target = event.target as HTMLElement | null
     if (target?.closest('button, input, textarea, select')) return
@@ -334,6 +361,7 @@ function DayColumn({
               isSelected={selectedTaskIds.includes(task.id)}
               onUnschedule={onUnscheduleTask}
               onChangeScheduledAt={(t, nextScheduledAt) => onScheduleTask(t, nextScheduledAt)}
+              onReorderScheduledTasks={handleReorderScheduledTask}
             />
           </div>
         ))}

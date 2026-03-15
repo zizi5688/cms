@@ -38,6 +38,7 @@ export interface TaskCardProps {
   mediaType?: 'image' | 'video'
   videoPath?: string
   note?: string
+  onVideoCoverDoubleClick?: () => void
   select?: {
     checked: boolean
     ariaLabel?: string
@@ -56,6 +57,7 @@ const TaskCard = React.memo(function TaskCard({
   mediaType,
   videoPath,
   note,
+  onVideoCoverDoubleClick,
   select,
   className
 }: TaskCardProps): React.JSX.Element {
@@ -154,7 +156,19 @@ const TaskCard = React.memo(function TaskCard({
           <div className="rounded-[24px] border border-zinc-800/80 bg-black/20 p-3">
             {isVideoTask ? (
               <>
-                <div className="relative overflow-hidden rounded-[20px] border border-zinc-800/80 bg-zinc-950/80">
+                <div
+                  className={cn(
+                    'relative overflow-hidden rounded-[20px] border border-zinc-800/80 bg-zinc-950/80',
+                    onVideoCoverDoubleClick &&
+                      'cursor-zoom-in transition hover:border-amber-400/35 hover:bg-zinc-950'
+                  )}
+                  onDoubleClick={(event) => {
+                    if (!onVideoCoverDoubleClick) return
+                    event.stopPropagation()
+                    onVideoCoverDoubleClick()
+                  }}
+                  title={onVideoCoverDoubleClick ? '双击打开封面编辑' : undefined}
+                >
                   {coverPreviewSrc ? (
                     <img
                       src={coverPreviewSrc}
