@@ -27,6 +27,10 @@ import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import {
+  buildAiStudioImageImportKey,
+  shouldSyncAiStudioImageImport
+} from './workshopImportSyncHelpers'
+import {
   buildSelectedWorkshopProducts,
   resolveWorkshopAccountId
 } from './workshopProductSelectionHelpers'
@@ -343,8 +347,16 @@ function DataBuilder(): React.JSX.Element {
 
   useEffect(() => {
     if (!isAiStudioImageImportMode || !isWorkshopActive) return
-    const importKey = importedImagePaths.join('\n')
-    if (!importKey || importKey === lastAiStudioImportKeyRef.current) return
+    const importKey = buildAiStudioImageImportKey(importedImagePaths)
+    if (
+      !shouldSyncAiStudioImageImport({
+        importedImagePaths,
+        currentImageFiles: imageFiles,
+        previousImportKey: lastAiStudioImportKeyRef.current
+      })
+    ) {
+      return
+    }
     lastAiStudioImportKeyRef.current = importKey
     lastScannedPathRef.current = `__ai_studio__${importedImagePaths.length}`
     setImageFiles(importedImagePaths)
@@ -363,6 +375,7 @@ function DataBuilder(): React.JSX.Element {
     dataWorkshopFolderPath,
     importedImageFolderPath,
     importedImagePaths,
+    imageFiles,
     isAiStudioImageImportMode,
     isWorkshopActive,
     setDataWorkshopFolderPath,
@@ -939,6 +952,7 @@ function DataBuilder(): React.JSX.Element {
     setDispatchProgress(null)
     setToastMessage('')
     lastScannedPathRef.current = ''
+    lastAiStudioImportKeyRef.current = ''
     setImageFiles([])
     setVideoCoverMode('auto-first-frame')
     setManualCoverMap({})
