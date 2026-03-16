@@ -9,6 +9,21 @@ function isHttpUrl(value: string): boolean {
   return /^https?:[/]{2}/i.test(String(value ?? '').trim())
 }
 
+function normalizeRemoteImageUrl(value: string): string {
+  const raw = String(value ?? '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    if (url.protocol === 'http:' && url.hostname.toLowerCase() === 'qimg.xiaohongshu.com') {
+      url.protocol = 'https:'
+      return url.toString()
+    }
+  } catch {
+    return raw
+  }
+  return raw
+}
+
 function isWindowsAbsolutePath(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(String(value ?? '').trim())
 }
@@ -35,7 +50,7 @@ export function resolveLocalImage(inputPath: string, workspacePath?: string): st
       return raw
     }
   }
-  if (isHttpUrl(raw)) return raw
+  if (isHttpUrl(raw)) return normalizeRemoteImageUrl(raw)
 
   const ws = String(workspacePath ?? '').trim()
   if (isAbsolutePathLike(raw)) return toSafeFileUrl(raw)
