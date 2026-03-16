@@ -12,6 +12,15 @@ import {
   buildPublishWorkerWindowOptions,
   readPublishDebugState
 } from './publisherHelpers'
+import {
+  applyPublishStageUpdate,
+  buildPublishFailureSummary,
+  completePublishSession,
+  createPublishSessionSnapshot,
+  derivePublishStageUpdate,
+  failPublishSession,
+  type PublishSessionSnapshot
+} from './publishSessionHelpers'
 
 type ElectronStoreCtor = new <T extends Record<string, unknown> = Record<string, unknown>>() => ElectronStore<T>
 const StoreCtor = ((ElectronStore as unknown as { default?: ElectronStoreCtor }).default ??
@@ -64,6 +73,7 @@ function gaussianDelay(minMs: number, maxMs: number): number {
 }
 
 export type PublisherTaskData = {
+  queueTaskId?: string
   title?: string
   content?: string
   mediaType?: 'image' | 'video'
@@ -116,6 +126,7 @@ function resolveProductSyncPreloadPath(): string {
 }
 
 function normalizeTask(taskData: PublisherTaskData): {
+  queueTaskId?: string
   title: string
   content: string
   mediaType: 'image' | 'video'
@@ -127,6 +138,7 @@ function normalizeTask(taskData: PublisherTaskData): {
   dryRun: boolean
   mode: 'immediate'
 } {
+  const queueTaskId = typeof taskData?.queueTaskId === 'string' && taskData.queueTaskId.trim() ? taskData.queueTaskId.trim() : undefined
   const title = typeof taskData?.title === 'string' ? taskData.title : ''
   const content = typeof taskData?.content === 'string' ? taskData.content : ''
   const mediaType = taskData?.mediaType === 'video' || (typeof taskData?.videoPath === 'string' && taskData.videoPath.trim()) ? 'video' : 'image'
@@ -150,7 +162,7 @@ function normalizeTask(taskData: PublisherTaskData): {
     : undefined
   const dryRun = taskData?.dryRun === false ? false : true
   const mode: 'immediate' = 'immediate'
-  return { title, content, mediaType, videoPath, images, productId, productName, linkedProducts, dryRun, mode }
+  return { queueTaskId, title, content, mediaType, videoPath, images, productId, productName, linkedProducts, dryRun, mode }
 }
 
 function isLikelyLoginUrl(url: string): boolean {
@@ -172,6 +184,19 @@ function notifyPublishPhase(input: {
   } catch (error) {
     void error
   }
+}
+
+function extractAutomationLogMessage(payload: unknown): string {
+  if (typeof payload === 'string') return payload.trim()
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>
+    return typeof record.message === 'string' ? record.message.trim() : ''
+  }
+  return ''
+}
+
+function broadcastPublishSession(snapshot: PublishSessionSnapshot): void {
+  broadcastToRenderers('publisher:session', snapshot)
 }
 
 async function waitForPublishUiReady(webContents: WebContents, timeoutMs: number): Promise<void> {
@@ -389,6 +414,15 @@ export class PublisherService {
     }
 
     const taskId = randomUUID()
+    let session = createPublishSessionSnapshot({
+      sessionId: taskId,
+      queueTaskId: normalizedTask.queueTaskId,
+      accountId: normalizedAccountId,
+      accountName: account.name,
+      taskTitle: normalizedTask.title,
+      mediaType: normalizedTask.mediaType
+    })
+    broadcastPublishSession(session)
     notifyPublishPhase({
       phase: 'start',
       accountName: account.name,
@@ -408,6 +442,16 @@ export class PublisherService {
     worker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
     const diagnostics = new DiagnosticsService()
+    const automationLogHandler = (event: Electron.IpcMainEvent, payload: unknown): void => {
+      if (event.sender.id !== worker.webContents.id) return
+      const message = extractAutomationLogMessage(payload)
+      if (!message) return
+      const stageUpdate = derivePublishStageUpdate(message, normalizedTask.mediaType)
+      if (!stageUpdate) return
+      session = applyPublishStageUpdate(session, stageUpdate)
+      broadcastPublishSession(session)
+    }
+    ipcMain.on('automation-log', automationLogHandler)
     try {
       await worker.loadURL(XHS_PUBLISH_URL)
       if (publishDebugState.visual && !worker.isDestroyed()) {
@@ -453,6 +497,11 @@ export class PublisherService {
 
       worker.webContents.send('publisher:task', payload)
       const automationResult = await resultPromise
+      if (!normalizedTask.dryRun && !automationResult.time) {
+        throw new Error('发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。')
+      }
+      session = completePublishSession(session)
+      broadcastPublishSession(session)
       notifyPublishPhase({
         phase: 'finish',
         accountName: account.name,
@@ -462,6 +511,9 @@ export class PublisherService {
       return { success: true, time: automationResult.time }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      const failure = buildPublishFailureSummary(message, normalizedTask.mediaType)
+      session = failPublishSession(session, failure)
+      broadcastPublishSession(session)
       try {
         await diagnostics.saveDiagnostics({ taskId, workspacePath: resolveWorkspacePath(), errorMessage: message })
       } catch { /* 静默 */ }
@@ -470,10 +522,11 @@ export class PublisherService {
         accountName: account.name,
         taskTitle: normalizedTask.title,
         success: false,
-        error: message
+        error: failure.userMessage
       })
-      return { success: false, error: message }
+      return { success: false, error: failure.userMessage }
     } finally {
+      ipcMain.off('automation-log', automationLogHandler)
       diagnostics.detach()
       if (!worker.isDestroyed() && !publishDebugState.keepWindowOpen) worker.close()
     }
@@ -511,7 +564,11 @@ export class PublisherService {
         if (task.mediaType === 'video' && !task.videoPath) {
           processed += 1
           failed += 1
-          queueService.failTask(task.id, '[Queue] 视频任务缺少 videoPath，已跳过执行。')
+          queueService.failTask(task.id, '视频任务缺少 videoPath，请补齐后重新排期。', {
+            returnToPendingPool: true,
+            status: 'publish_failed',
+            resetRetryCount: true
+          })
           const updated = taskManager.updateBatch([task.id], {})[0]
           if (updated) broadcastToRenderers('cms.task.updated', updated)
           task = queueService.acquireNextTask({
@@ -526,6 +583,7 @@ export class PublisherService {
         broadcastToRenderers('cms.task.updated', task)
 
         const result = await this.publishTask(task.accountId, {
+          queueTaskId: task.id,
           mediaType: task.mediaType,
           videoPath: task.videoPath,
           images: task.images,
@@ -541,7 +599,11 @@ export class PublisherService {
         if (result.success) {
           if (!result.time) {
             failed += 1
-            queueService.failTask(task.id, '发布成功但未获取到 publishedAt 时间戳。')
+            queueService.failTask(task.id, '发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。', {
+              returnToPendingPool: true,
+              status: 'publish_failed',
+              resetRetryCount: true
+            })
             const updated = taskManager.updateBatch([task.id], {})[0]
             if (updated) broadcastToRenderers('cms.task.updated', updated)
           } else {
@@ -552,7 +614,11 @@ export class PublisherService {
           }
         } else {
           failed += 1
-          queueService.failTask(task.id, result.error ?? '')
+          queueService.failTask(task.id, result.error ?? '发布失败，请检查后重新排期。', {
+            returnToPendingPool: true,
+            status: 'publish_failed',
+            resetRetryCount: true
+          })
           const updated = taskManager.updateBatch([task.id], {})[0]
           if (updated) broadcastToRenderers('cms.task.updated', updated)
         }
@@ -608,7 +674,7 @@ function registerAutomationLogBridge(): void {
   didRegisterAutomationLogBridge = true
 
   ipcMain.on('automation-log', (event, payload: unknown) => {
-    const message = typeof payload === 'string' ? payload : payload && typeof payload === 'object' ? payload : null
+    const message = extractAutomationLogMessage(payload)
     if (!message) return
     try {
       console.log(message)

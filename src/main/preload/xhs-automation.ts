@@ -2646,8 +2646,9 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       timeoutMessage: '封面弹窗未关闭。'
     }).catch(() => void 0)
   } catch (error) {
-    logPlain('[Warning] 封面设置失败，转为人工接管', { error: stringifyUnknownError(error) })
-    return
+    const message = stringifyUnknownError(error)
+    logPlain('[Error] 封面设置失败，已停止当前发布', { error: message })
+    throw new Error(message)
   }
 }
 

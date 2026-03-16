@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { LogIn, Pencil, RefreshCw, Settings, Trash2, UserPlus, Video, X } from 'lucide-react'
+import { LogIn, Minimize2, Pencil, RefreshCw, Settings, Trash2, UserPlus, Video, X } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
@@ -75,6 +75,25 @@ function filterTasksByStage(tasks: CmsPublishTask[], stage: 'pending' | 'publish
   return tasks.filter((task) => task.status !== 'published')
 }
 
+function publishStepStateText(state: CmsPublishSessionStepState): string {
+  if (state === 'done') return '已完成'
+  if (state === 'active') return '进行中'
+  if (state === 'error') return '已中止'
+  return '等待中'
+}
+
+function resolvePublishSessionHighlight(snapshot: CmsPublishSessionSnapshot | null): {
+  activeStepLabel: string
+  message: string
+} | null {
+  if (!snapshot) return null
+  const activeStep = snapshot.steps.find((step) => step.state === 'active')
+  return {
+    activeStepLabel: activeStep?.label || '发布中',
+    message: snapshot.error || snapshot.message || '任务正在执行中'
+  }
+}
+
 function AutoPublishView(): React.JSX.Element {
   const addLog = useCmsStore((s) => s.addLog)
   const workspacePath = useCmsStore((s) => s.workspacePath)
@@ -106,9 +125,14 @@ function AutoPublishView(): React.JSX.Element {
   const [singleScheduleLocal, setSingleScheduleLocal] = useState('')
   const [singleScheduleSavingTaskId, setSingleScheduleSavingTaskId] = useState('')
   const [cancelingScheduleTaskId, setCancelingScheduleTaskId] = useState('')
+  const [publishSession, setPublishSession] = useState<CmsPublishSessionSnapshot | null>(null)
+  const [publishNotice, setPublishNotice] = useState('')
+  const [isPublishSessionHidden, setIsPublishSessionHidden] = useState(false)
 
   const isLoadingAccountsRef = useRef(false)
   const isLoadingTasksRef = useRef(false)
+  const publishSessionDismissTimerRef = useRef<number | null>(null)
+  const publishSessionIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     const handler = (event: Event): void => {
@@ -138,6 +162,11 @@ function AutoPublishView(): React.JSX.Element {
   const activeAccount = useMemo(
     () => accounts.find((a) => a.id === activeAccountId) ?? null,
     [accounts, activeAccountId]
+  )
+  const activePublishQueueTaskId = publishSession?.queueTaskId?.trim() ?? ''
+  const publishSessionHighlight = useMemo(
+    () => resolvePublishSessionHighlight(publishSession),
+    [publishSession]
   )
 
   const loadAccounts = useCallback(async (): Promise<void> => {
@@ -208,6 +237,60 @@ function AutoPublishView(): React.JSX.Element {
       setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)))
     })
   }, [activeAccountId])
+
+  useEffect(() => {
+    const clearDismissTimer = (): void => {
+      if (publishSessionDismissTimerRef.current !== null) {
+        window.clearTimeout(publishSessionDismissTimerRef.current)
+        publishSessionDismissTimerRef.current = null
+      }
+    }
+
+    const unsubscribe = window.api.cms.publisher.onSession((payload) => {
+      clearDismissTimer()
+
+      if (payload.status === 'failed') {
+        publishSessionIdRef.current = null
+        setPublishSession(null)
+        setIsPublishSessionHidden(false)
+        const errorText = (payload.error || payload.message || '发布失败，请检查任务后重新排期。').trim()
+        if (errorText) {
+          setPublishNotice(`发布已停止：${errorText}`)
+          addLog(`[媒体矩阵] 发布已停止：${errorText}`)
+        }
+        return
+      }
+
+      if (publishSessionIdRef.current !== payload.sessionId) {
+        setIsPublishSessionHidden(false)
+      }
+      publishSessionIdRef.current = payload.sessionId
+      setPublishNotice('')
+      setPublishSession(payload)
+
+      if (payload.status === 'succeeded') {
+        publishSessionDismissTimerRef.current = window.setTimeout(() => {
+          publishSessionIdRef.current = publishSessionIdRef.current === payload.sessionId ? null : publishSessionIdRef.current
+          setPublishSession((current) => (current?.sessionId === payload.sessionId ? null : current))
+          setIsPublishSessionHidden((current) =>
+            publishSessionIdRef.current === null ? false : current
+          )
+          publishSessionDismissTimerRef.current = null
+        }, 1200)
+      }
+    })
+
+    return () => {
+      clearDismissTimer()
+      unsubscribe()
+    }
+  }, [addLog])
+
+  useEffect(() => {
+    if (!publishNotice) return
+    const timer = window.setTimeout(() => setPublishNotice(''), 4500)
+    return () => window.clearTimeout(timer)
+  }, [publishNotice])
 
   const toggleSelectedTask = (taskId: string): void => {
     setSelectedTaskIds((prev) => {
@@ -526,6 +609,11 @@ function AutoPublishView(): React.JSX.Element {
         <div className="text-lg font-semibold">媒体矩阵</div>
         <div className="mt-1 text-sm text-zinc-400">分发 · 队列 · 执行</div>
       </div>
+      {publishNotice ? (
+        <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+          {publishNotice}
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
         {isScheduleMode ? null : (
@@ -875,6 +963,9 @@ function AutoPublishView(): React.JSX.Element {
                       const isSelected = selectedTaskIds.has(task.id)
                       const isVideo = task.mediaType === 'video'
                       const taskErrorText = (task.errorMsg || task.errorMessage || '').trim()
+                      const isPublishingTask = task.status === 'processing' || activePublishQueueTaskId === task.id
+                      const publishTaskHint =
+                        isPublishingTask && activePublishQueueTaskId === task.id ? publishSessionHighlight : null
                       return (
                         <div
                           key={task.id}
@@ -886,9 +977,12 @@ function AutoPublishView(): React.JSX.Element {
                           tabIndex={0}
                           className={cn(
                             'flex w-full overflow-hidden gap-3 rounded-lg border p-3 text-left transition-colors',
-                            isSelected
-                              ? 'border-zinc-300 bg-zinc-900/30'
-                              : 'border-zinc-800 bg-zinc-950/40 hover:bg-zinc-900/20'
+                            isPublishingTask
+                              ? 'border-sky-500/40 bg-sky-500/10 shadow-[0_0_0_1px_rgba(56,189,248,0.12),0_0_28px_rgba(14,165,233,0.12)]'
+                              : isSelected
+                                ? 'border-zinc-300 bg-zinc-900/30'
+                                : 'border-zinc-800 bg-zinc-950/40 hover:bg-zinc-900/20',
+                            isSelected && isPublishingTask ? 'ring-1 ring-sky-300/40' : null
                           )}
                         >
                           <div className="flex shrink-0 items-center gap-2">
@@ -926,6 +1020,25 @@ function AutoPublishView(): React.JSX.Element {
                                 <div className="truncate text-sm font-bold text-zinc-100">
                                   {task.title ? task.title : '（无标题）'}
                                 </div>
+                                {isPublishingTask ? (
+                                  <div className="mt-1 flex items-center gap-2 text-[11px] text-sky-100">
+                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-400/30 bg-sky-500/15 px-2 py-0.5 font-bold">
+                                      <span className="relative flex h-2 w-2">
+                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-300 opacity-70" />
+                                        <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-300" />
+                                      </span>
+                                      执行中
+                                    </span>
+                                    <span className="truncate font-medium text-sky-200/90">
+                                      {publishTaskHint?.activeStepLabel || '后台发布中'}
+                                    </span>
+                                  </div>
+                                ) : null}
+                                {publishTaskHint?.message ? (
+                                  <div className="mt-1 truncate text-[11px] text-sky-200/75">
+                                    {publishTaskHint.message}
+                                  </div>
+                                ) : null}
                                 {task.status === 'failed' && taskErrorText && (
                                   <div className="mt-1 flex items-center gap-1.5 text-[11px] text-red-400">
                                     <span className="shrink-0 rounded bg-red-500/10 px-1 py-0.5 font-bold uppercase">
@@ -1044,6 +1157,112 @@ function AutoPublishView(): React.JSX.Element {
           </CardContent>
         </Card>
       </div>
+
+      {publishSession && !isPublishSessionHidden ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4">
+          <div className="w-full max-w-xl rounded-2xl border border-zinc-800 bg-zinc-950/95 p-5 shadow-2xl backdrop-blur">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div
+                  className={cn(
+                    'text-xs font-semibold uppercase tracking-[0.24em]',
+                    publishSession.status === 'succeeded' ? 'text-emerald-300' : 'text-sky-300'
+                  )}
+                >
+                  {publishSession.status === 'succeeded' ? '发布完成' : '发布中'}
+                </div>
+                <div className="mt-2 truncate text-lg font-semibold text-zinc-50">
+                  {publishSession.taskTitle || '（无标题）'}
+                </div>
+                <div className="mt-1 text-sm text-zinc-400">
+                  {publishSession.accountName || publishSession.accountId}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <div className="inline-flex items-center rounded-full border border-zinc-700 bg-zinc-900/70 px-3 py-1 text-xs text-zinc-300">
+                  {publishSession.mediaType === 'video' ? '视频任务' : '图文任务'}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsPublishSessionHidden(true)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900/70 text-zinc-300 transition hover:border-sky-500/40 hover:bg-sky-500/10 hover:text-sky-200"
+                  aria-label="隐藏发布进度弹窗"
+                  title="隐藏弹窗（不影响发布）"
+                >
+                  <Minimize2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-2">
+              {publishSession.steps.map((step) => {
+                const toneClass =
+                  step.state === 'done'
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                    : step.state === 'active'
+                      ? 'border-sky-500/30 bg-sky-500/10 text-sky-100'
+                      : step.state === 'error'
+                        ? 'border-rose-500/30 bg-rose-500/10 text-rose-100'
+                        : 'border-zinc-800 bg-zinc-900/50 text-zinc-400'
+                const dotClass =
+                  step.state === 'done'
+                    ? 'bg-emerald-400'
+                    : step.state === 'active'
+                      ? 'bg-sky-400'
+                      : step.state === 'error'
+                        ? 'bg-rose-400'
+                        : 'bg-zinc-600'
+
+                return (
+                  <div
+                    key={step.key}
+                    className={cn('flex items-center gap-3 rounded-xl border px-3 py-2 text-sm', toneClass)}
+                  >
+                    <div className={cn('h-2.5 w-2.5 shrink-0 rounded-full', dotClass)} />
+                    <div className="min-w-0 flex-1 truncate">{step.label}</div>
+                    <div className="shrink-0 text-xs font-medium">{publishStepStateText(step.state)}</div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-200">
+              {publishSession.error || publishSession.message}
+            </div>
+
+            <div className="mt-3 text-right text-xs text-zinc-500">
+              隐藏弹窗不会中断当前发布任务
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {publishSession && isPublishSessionHidden ? (
+        <div className="fixed bottom-4 right-4 z-50 w-[min(360px,calc(100vw-2rem))] rounded-2xl border border-zinc-800 bg-zinc-950/92 p-3 shadow-2xl backdrop-blur">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300">
+                {publishSession.status === 'succeeded' ? '发布完成' : '后台发布中'}
+              </div>
+              <div className="mt-1 truncate text-sm font-medium text-zinc-100">
+                {publishSession.taskTitle || '（无标题）'}
+              </div>
+              <div className="mt-1 truncate text-xs text-zinc-400">
+                {publishSession.error || publishSession.message}
+              </div>
+            </div>
+            <div className="shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsPublishSessionHidden(false)}
+                className="inline-flex items-center rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-100 transition hover:border-sky-400/50 hover:bg-sky-500/20"
+              >
+                展开
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {isSmartScheduleOpen ? (
         <div

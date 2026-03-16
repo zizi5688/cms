@@ -41,6 +41,32 @@ type CmsCreateBatchProgress = {
   requestId?: string
 }
 
+type CmsPublishSessionStepState = 'pending' | 'active' | 'done' | 'error'
+
+type CmsPublishSessionStepKey = 'prepare' | 'upload' | 'cover' | 'content' | 'publish'
+
+type CmsPublishSessionStep = {
+  key: CmsPublishSessionStepKey
+  label: string
+  state: CmsPublishSessionStepState
+}
+
+type CmsPublishSessionSnapshot = {
+  sessionId: string
+  queueTaskId?: string
+  accountId: string
+  accountName: string
+  taskTitle: string
+  mediaType: 'image' | 'video'
+  status: 'running' | 'succeeded' | 'failed'
+  steps: CmsPublishSessionStep[]
+  message: string
+  error?: string
+  startedAt: number
+  updatedAt: number
+  finishedAt?: number
+}
+
 type SyncDouyinHotMusicResult = {
   success: boolean
   outputDir: string
@@ -517,6 +543,16 @@ const api = {
         ipcRenderer.on('publisher:progress', handler)
         return () => {
           ipcRenderer.off('publisher:progress', handler)
+        }
+      },
+      onSession: (listener: (payload: CmsPublishSessionSnapshot) => void): (() => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+          if (!payload || typeof payload !== 'object') return
+          listener(payload as CmsPublishSessionSnapshot)
+        }
+        ipcRenderer.on('publisher:session', handler)
+        return () => {
+          ipcRenderer.off('publisher:session', handler)
         }
       }
     },
