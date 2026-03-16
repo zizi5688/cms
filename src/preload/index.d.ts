@@ -29,6 +29,28 @@ declare global {
   }
 
   type CmsPublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
+  type CmsPublishSessionStepState = 'pending' | 'active' | 'done' | 'error'
+  type CmsPublishSessionStepKey = 'prepare' | 'upload' | 'cover' | 'content' | 'publish'
+  type CmsPublishSessionStep = {
+    key: CmsPublishSessionStepKey
+    label: string
+    state: CmsPublishSessionStepState
+  }
+  type CmsPublishSessionSnapshot = {
+    sessionId: string
+    queueTaskId?: string
+    accountId: string
+    accountName: string
+    taskTitle: string
+    mediaType: 'image' | 'video'
+    status: 'running' | 'succeeded' | 'failed'
+    steps: CmsPublishSessionStep[]
+    message: string
+    error?: string
+    startedAt: number
+    updatedAt: number
+    finishedAt?: number
+  }
 
   type CmsPublishTask = {
     id: string
@@ -525,6 +547,7 @@ declare global {
         onPublishProgress: (
           listener: (payload: { accountId?: string; message?: string; progress?: number }) => void
         ) => () => void
+        onSession: (listener: (payload: CmsPublishSessionSnapshot) => void) => () => void
       }
       scout: {
         keyword: {

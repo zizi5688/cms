@@ -1,4 +1,4 @@
-import type { PublishTask } from '../taskManager'
+import type { PublishTask, PublishTaskStatus } from '../taskManager'
 import { normalizeLinkedProducts } from '../taskLinkedProductsHelpers'
 import { SqliteService } from './sqliteService'
 
@@ -221,7 +221,15 @@ export class QueueService {
       .run('published', normalizedId)
   }
 
-  failTask(id: string, errorMsg: string): void {
+  failTask(
+    id: string,
+    errorMsg: string,
+    options?: {
+      returnToPendingPool?: boolean
+      status?: Extract<PublishTaskStatus, 'failed' | 'publish_failed'>
+      resetRetryCount?: boolean
+    }
+  ): void {
     const sqlite = SqliteService.getInstance()
     if (!sqlite.isInitialized) return
     const normalizedId = String(id ?? '').trim()
@@ -229,17 +237,43 @@ export class QueueService {
 
     const normalizedError = typeof errorMsg === 'string' ? errorMsg : String(errorMsg ?? '')
 
+    if (options?.returnToPendingPool) {
+      const nextStatus = options.status === 'publish_failed' ? 'publish_failed' : 'failed'
+      sqlite.connection
+        .prepare(
+          `
+            UPDATE tasks
+            SET errorMsg = ?,
+                errorMessage = ?,
+                status = ?,
+                scheduledAt = NULL,
+                locked_at = NULL,
+                retry_count = CASE WHEN ? THEN 0 ELSE retry_count END
+            WHERE id = ?
+          `
+        )
+        .run(
+          normalizedError,
+          normalizedError,
+          nextStatus,
+          options.resetRetryCount ? 1 : 0,
+          normalizedId
+        )
+      return
+    }
+
     sqlite.connection
       .prepare(
         `
           UPDATE tasks
           SET errorMsg = ?,
+              errorMessage = ?,
               status = CASE WHEN retry_count >= 3 THEN 'failed' ELSE 'pending' END,
               scheduledAt = CASE WHEN retry_count >= 3 THEN NULL ELSE scheduledAt END,
               locked_at = NULL
           WHERE id = ?
         `
       )
-      .run(normalizedError, normalizedId)
+      .run(normalizedError, normalizedError, normalizedId)
   }
 }
