@@ -35,6 +35,8 @@ import { QueueService } from './services/queueService'
 import { ScoutService, isDashboardIntermediateTemplateSourceFile } from './services/scoutService'
 import { NoteRaceService } from './services/noteRaceService'
 import { AiStudioService } from './services/aiStudioService'
+import { normalizeCreateBatchTaskPayload } from './cmsTaskCreateBatchPayload'
+import { ensureNonEmptyProductSyncResult } from './productSyncGuards'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
 import { StorageMaintenanceService } from './services/storageMaintenanceService'
@@ -2083,7 +2085,9 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cms.product.sync', async (_event, payload: { accountId?: string }) => {
     const accountId = typeof payload?.accountId === 'string' ? payload.accountId : ''
-    const products = await publisherService.syncProducts(accountId)
+    const products = ensureNonEmptyProductSyncResult(
+      await publisherService.syncProducts(accountId)
+    )
     return productManager.saveForAccount(accountId, products)
   })
 
@@ -2094,101 +2098,7 @@ app.whenReady().then(async () => {
     const requestId = body && typeof body.requestId === 'string' ? body.requestId.trim() : ''
     const tasksPayload = Array.isArray(body?.tasks) ? body.tasks : Array.isArray(payload) ? payload : []
     return await taskManager.createBatch(
-      tasksPayload.map((task) => {
-        const record = (task ?? {}) as Record<string, unknown>
-        let images =
-          Array.isArray(record.images) && record.images.length > 0
-            ? record.images.filter((p): p is string => typeof p === 'string')
-            : []
-        const tags =
-          Array.isArray(record.tags) && record.tags.length > 0
-            ? record.tags.filter((t): t is string => typeof t === 'string')
-            : undefined
-        const explicitVideoPath = typeof record.videoPath === 'string' ? record.videoPath : ''
-        let inferredVideoPath = ''
-        if (!explicitVideoPath) {
-          const index = images.findIndex((p) => {
-            const ext = extname(String(p ?? '')).toLowerCase()
-            return ext === '.mp4' || ext === '.mov'
-          })
-          if (index >= 0) {
-            inferredVideoPath = images[index] ?? ''
-            images = images.filter((_p, i) => i !== index)
-          }
-        }
-        const videoPath = (explicitVideoPath || inferredVideoPath).trim()
-        const isRemix = record.isRemix === true
-        const videoClips = Array.isArray(record.videoClips)
-          ? Array.from(
-              new Set(
-                record.videoClips
-                  .filter((value): value is string => typeof value === 'string')
-                  .map((value) => value.trim())
-                  .filter(Boolean)
-              )
-            )
-          : undefined
-        const durationReferenceClips = Array.isArray(record.durationReferenceClips)
-          ? Array.from(
-              new Set(
-                record.durationReferenceClips
-                  .filter((value): value is string => typeof value === 'string')
-                  .map((value) => value.trim())
-                  .filter(Boolean)
-              )
-            )
-          : undefined
-        const targetDurationSecRaw = Number(record.targetDurationSec)
-        const targetDurationSec =
-          Number.isFinite(targetDurationSecRaw) && targetDurationSecRaw > 0
-            ? targetDurationSecRaw
-            : undefined
-        const bgmPath = typeof record.bgmPath === 'string' ? record.bgmPath.trim() : ''
-        const remixTitleSourceTaskId =
-          typeof record.remixTitleSourceTaskId === 'string' ? record.remixTitleSourceTaskId.trim() : ''
-        const remixContentSourceTaskId =
-          typeof record.remixContentSourceTaskId === 'string' ? record.remixContentSourceTaskId.trim() : ''
-        const mediaType =
-          record.mediaType === 'video' || Boolean(videoPath) || Boolean(videoClips && videoClips.length > 0)
-            ? 'video'
-            : 'image'
-        const transformPolicy = record.transformPolicy === 'remix_v1' ? 'remix_v1' : 'none'
-        const remixSessionId = typeof record.remixSessionId === 'string' ? record.remixSessionId.trim() : ''
-        const remixSourceTaskIds = Array.isArray(record.remixSourceTaskIds)
-          ? record.remixSourceTaskIds.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
-          : undefined
-        const remixSeed =
-          typeof record.remixSeed === 'string'
-            ? record.remixSeed.trim()
-            : Number.isFinite(record.remixSeed)
-              ? String(Math.floor(record.remixSeed as number))
-              : ''
-        return {
-          accountId: typeof record.accountId === 'string' ? record.accountId : '',
-          images,
-          imagePath: typeof record.imagePath === 'string' ? record.imagePath : '',
-          title: typeof record.title === 'string' ? record.title : '',
-          content: typeof record.content === 'string' ? record.content : '',
-          tags,
-          productId: typeof record.productId === 'string' ? record.productId : undefined,
-          productName: typeof record.productName === 'string' ? record.productName : undefined,
-          publishMode: 'immediate',
-          transformPolicy,
-          remixSessionId: remixSessionId || undefined,
-          remixSourceTaskIds,
-          remixSeed: remixSeed || undefined,
-          mediaType,
-          videoPath: videoPath || undefined,
-          videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
-          isRemix,
-          videoClips,
-          durationReferenceClips,
-          targetDurationSec,
-          bgmPath: bgmPath || undefined,
-          remixTitleSourceTaskId: remixTitleSourceTaskId || undefined,
-          remixContentSourceTaskId: remixContentSourceTaskId || undefined
-        }
-      }),
+      tasksPayload.map((task) => normalizeCreateBatchTaskPayload(task)),
       {
         requestId: requestId || undefined,
         onProgress: (progress) => {
