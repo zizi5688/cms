@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { resolveAiTaskProviderSelection } from './aiProviderProfiles.ts'
+import { buildVideoEndpointPair, resolveAiTaskProviderSelection } from './aiProviderProfiles.ts'
 
 const PROFILES = [
   {
@@ -78,4 +78,11 @@ test('resolveAiTaskProviderSelection uses the provider default model when the ta
   assert.equal(resolved.providerName, 'allapi')
   assert.equal(resolved.modelName, 'jimeng-image-3.0')
   assert.equal(resolved.endpointPath, '/v1/images/generations')
+})
+
+test('buildVideoEndpointPair keeps the Seedance submit endpoint and derives a task-id polling path', () => {
+  assert.deepEqual(buildVideoEndpointPair('/volc/v1/contents/generations/tasks'), {
+    submitPath: '/volc/v1/contents/generations/tasks',
+    queryPath: '/volc/v1/contents/generations/tasks/{task_id}'
+  })
 })

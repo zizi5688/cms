@@ -4,6 +4,7 @@ import {
   AI_VIDEO_PROFILES,
   DEFAULT_AI_VIDEO_PROFILE_ID,
   getAiVideoProfile,
+  normalizeVideoAspectRatioForModel,
   normalizeVideoDurationForModel,
   type AiStudioCapability,
   type AiStudioVideoMode,
@@ -268,9 +269,10 @@ function normalizeVideoMode(value: unknown, fallback: AiStudioVideoMode): AiStud
 
 function normalizeVideoAspectRatio(
   value: unknown,
-  fallback: AiVideoAspectRatio
+  fallback: AiVideoAspectRatio,
+  modelId?: string | null
 ): AiVideoAspectRatio {
-  return value === '16:9' || value === '9:16' || value === '1:1' ? value : fallback
+  return normalizeVideoAspectRatioForModel(value, modelId, fallback)
 }
 
 function normalizeVideoResolution(value: unknown, fallback: AiVideoResolution): AiVideoResolution {
@@ -279,7 +281,7 @@ function normalizeVideoResolution(value: unknown, fallback: AiVideoResolution): 
 
 function normalizeVideoDuration(value: unknown, fallback: AiVideoDuration): AiVideoDuration {
   const numeric = Number(value)
-  return numeric === 8 ? 8 : numeric === 5 ? 5 : fallback
+  return numeric === 8 ? 8 : numeric === 5 ? 5 : numeric === 4 ? 4 : fallback
 }
 
 function normalizePositiveInteger(value: unknown, fallback: number, max?: number): number {
@@ -387,7 +389,7 @@ export function readVideoMetadata(
       typeof record.lastFramePath === 'string' && record.lastFramePath.trim()
         ? record.lastFramePath.trim()
         : null,
-    aspectRatio: normalizeVideoAspectRatio(record.aspectRatio, base.aspectRatio),
+    aspectRatio: normalizeVideoAspectRatio(record.aspectRatio, base.aspectRatio, model),
     resolution: normalizeVideoResolution(record.resolution, base.resolution),
     duration: normalizeVideoDurationForModel(
       normalizeVideoDuration(record.duration, base.duration),
@@ -1874,7 +1876,8 @@ const useAiStudioState = () => {
         lastFramePath: String(mergedVideoMeta.lastFramePath ?? '').trim() || null,
         aspectRatio: normalizeVideoAspectRatio(
           mergedVideoMeta.aspectRatio,
-          profile.defaultAspectRatio
+          profile.defaultAspectRatio,
+          String(mergedVideoMeta.model ?? '').trim() || providerSelection.modelName || profile.modelId
         ),
         resolution: normalizeVideoResolution(mergedVideoMeta.resolution, profile.defaultResolution),
         duration: normalizeVideoDurationForModel(
@@ -2166,6 +2169,16 @@ const useAiStudioState = () => {
       nextVideoMeta.model = providerSelection.modelName
       nextVideoMeta.submitPath = providerSelection.submitPath
       nextVideoMeta.queryPath = providerSelection.queryPath
+      nextVideoMeta.aspectRatio = normalizeVideoAspectRatio(
+        nextVideoMeta.aspectRatio,
+        nextVideoMeta.aspectRatio,
+        nextVideoMeta.model
+      )
+      nextVideoMeta.duration = normalizeVideoDurationForModel(
+        nextVideoMeta.duration,
+        nextVideoMeta.model,
+        nextVideoMeta.duration
+      )
       await syncVideoTaskInputs(task, nextVideoMeta, {
         provider: providerSelection.providerName || normalizeAiProviderValue(value)
       })
@@ -2185,6 +2198,16 @@ const useAiStudioState = () => {
       nextVideoMeta.model = providerSelection.modelName
       nextVideoMeta.submitPath = providerSelection.submitPath
       nextVideoMeta.queryPath = providerSelection.queryPath
+      nextVideoMeta.aspectRatio = normalizeVideoAspectRatio(
+        nextVideoMeta.aspectRatio,
+        nextVideoMeta.aspectRatio,
+        nextVideoMeta.model
+      )
+      nextVideoMeta.duration = normalizeVideoDurationForModel(
+        nextVideoMeta.duration,
+        nextVideoMeta.model,
+        nextVideoMeta.duration
+      )
       await syncVideoTaskInputs(task, nextVideoMeta, {
         provider: providerSelection.providerName || normalizeAiProviderValue(payload.provider) || task.provider
       })
@@ -2235,7 +2258,11 @@ const useAiStudioState = () => {
     async (value: AiVideoAspectRatio) => {
       const task = await ensureVideoDraftTask()
       const nextVideoMeta = readVideoMetadata(task)
-      nextVideoMeta.aspectRatio = value
+      nextVideoMeta.aspectRatio = normalizeVideoAspectRatio(
+        value,
+        nextVideoMeta.aspectRatio,
+        nextVideoMeta.model
+      )
       await syncVideoTaskInputs(task, nextVideoMeta)
     },
     [ensureVideoDraftTask, syncVideoTaskInputs]

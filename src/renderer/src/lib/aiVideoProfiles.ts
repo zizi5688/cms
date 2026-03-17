@@ -2,9 +2,9 @@ export type AiStudioCapability = 'image' | 'video'
 
 export type AiStudioVideoMode = 'subject-reference' | 'first-last-frame'
 export type AiVideoAdapterKind = 'allapi-unified'
-export type AiVideoAspectRatio = '16:9' | '9:16' | '1:1'
+export type AiVideoAspectRatio = '16:9' | '9:16' | '1:1' | 'adaptive'
 export type AiVideoResolution = '720p' | '1080p'
-export type AiVideoDuration = 5 | 8
+export type AiVideoDuration = 4 | 5 | 8
 
 export type AiVideoProfile = {
   id: string
@@ -86,7 +86,35 @@ export function isFixedEightSecondVideoModel(modelId?: string | null): boolean {
   return normalized.startsWith('veo3') || normalized.startsWith('veo-3')
 }
 
+export function isSeedanceVideoModel(modelId?: string | null): boolean {
+  const normalized = normalizeVideoModelName(modelId)
+  return normalized.includes('seedance')
+}
+
+export function getAllowedVideoAspectRatios(modelId?: string | null): AiVideoAspectRatio[] {
+  if (isSeedanceVideoModel(modelId)) {
+    return ['adaptive', '16:9', '9:16', '1:1']
+  }
+  return ['16:9', '9:16', '1:1']
+}
+
+export function normalizeVideoAspectRatioForModel(
+  value: unknown,
+  modelId: string | null | undefined,
+  fallback: AiVideoAspectRatio
+): AiVideoAspectRatio {
+  const normalized =
+    value === '16:9' || value === '9:16' || value === '1:1' || value === 'adaptive'
+      ? value
+      : fallback
+  const allowed = getAllowedVideoAspectRatios(modelId)
+  if (allowed.includes(normalized)) return normalized
+  if (allowed.includes(fallback)) return fallback
+  return allowed[0] ?? '9:16'
+}
+
 export function getAllowedVideoDurations(modelId?: string | null): AiVideoDuration[] {
+  if (isSeedanceVideoModel(modelId)) return [4]
   return isFixedEightSecondVideoModel(modelId) ? [8] : [5, 8]
 }
 
