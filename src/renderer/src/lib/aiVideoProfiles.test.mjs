@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  getAllowedVideoAspectRatios,
   getAllowedVideoDurations,
   isFixedEightSecondVideoModel,
+  normalizeVideoAspectRatioForModel,
   normalizeVideoDurationForModel
 } from './aiVideoProfiles.ts'
 
@@ -22,4 +24,12 @@ test('normalizeVideoDurationForModel clamps unsupported veo durations to 8 secon
   assert.equal(normalizeVideoDurationForModel(5, 'veo3.1-fast-components', 5), 8)
   assert.equal(normalizeVideoDurationForModel(8, 'veo3.1-fast-components', 5), 8)
   assert.equal(normalizeVideoDurationForModel(5, 'jimeng-video-3.0', 8), 5)
+})
+
+test('seedance models expose 4-second duration and adaptive ratio defaults', () => {
+  assert.deepEqual(getAllowedVideoDurations('seedance-1-5-pro'), [4])
+  assert.deepEqual(getAllowedVideoAspectRatios('seedance-1-5-pro'), ['adaptive', '16:9', '9:16', '1:1'])
+  assert.equal(normalizeVideoDurationForModel(5, 'seedance-1-5-pro', 5), 4)
+  assert.equal(normalizeVideoAspectRatioForModel('9:16', 'seedance-1-5-pro', 'adaptive'), '9:16')
+  assert.equal(normalizeVideoAspectRatioForModel('bad', 'seedance-1-5-pro', '9:16'), '9:16')
 })

@@ -15,8 +15,10 @@ import {
 import { readWorkflowSourceDescriptor } from './aiStudioWorkflowSourceHelpers'
 import { resolveAiStudioProviderConfig } from './aiStudioProviderConfigHelpers'
 import {
+  buildSeedanceVideoTaskPayload,
   buildGeminiGenerationConfig,
   buildImageGenerationDirectiveLines,
+  isSeedanceVideoModel as isSeedanceRequestModel,
   resolveImageSizeForModel
 } from './aiStudioRequestPayloadHelpers'
 import { SqliteService } from './sqliteService'
@@ -427,6 +429,19 @@ function normalizeVideoCreateAspectRatio(
   return normalizedModel.startsWith('veo3') ? normalizedAspectRatio : null
 }
 
+function resolveSeedanceVideoRatio(aspectRatio: string): 'adaptive' | '16:9' | '9:16' | '1:1' {
+  const normalizedAspectRatio = normalizeText(aspectRatio)
+  if (
+    normalizedAspectRatio === 'adaptive' ||
+    normalizedAspectRatio === '16:9' ||
+    normalizedAspectRatio === '9:16' ||
+    normalizedAspectRatio === '1:1'
+  ) {
+    return normalizedAspectRatio
+  }
+  return 'adaptive'
+}
+
 function normalizeVideoCreateInputPaths(model: string, inputPaths: string[]): string[] {
   const normalizedModel = normalizeText(model).toLowerCase()
 
@@ -450,6 +465,14 @@ function isVideoCreatePath(apiPath: string): boolean {
   return (
     /(?:^|\/)v1\/video\/create(?:$|\?)/.test(normalized) ||
     /(?:^|\/)video\/create(?:$|\?)/.test(normalized)
+  )
+}
+
+function isVolcContentGenerationTasksPath(apiPath: string): boolean {
+  const normalized = normalizeText(apiPath).toLowerCase()
+  return (
+    /(?:^|\/)volc\/v1\/contents\/generations\/tasks(?:\/\{task_id\})?(?:$|\?)/.test(normalized) ||
+    /(?:^|\/)contents\/generations\/tasks(?:\/\{task_id\})?(?:$|\?)/.test(normalized)
   )
 }
 
@@ -478,6 +501,49 @@ function buildProviderUrl(baseUrl: string, apiPath: string): string {
     return `${normalizedBase}${safePath.slice(3)}`
   }
   return `${normalizedBase}${safePath}`
+}
+
+function resolveProviderPathTemplate(apiPath: string, payload: Record<string, unknown>): {
+  apiPath: string
+  payload: Record<string, unknown>
+} {
+  const normalizedPath = normalizeText(apiPath)
+  if (!normalizedPath.includes('{')) {
+    return { apiPath: normalizedPath, payload }
+  }
+
+  const remainingPayload = { ...payload }
+  let resolvedPath = normalizedPath
+  const tokens = Array.from(normalizedPath.matchAll(/\{([a-z0-9_]+)\}/gi))
+
+  for (const [, rawToken = ''] of tokens) {
+    const token = rawToken.toLowerCase()
+    const candidateValue =
+      token === 'task_id'
+        ? normalizeNullableText(
+            remainingPayload.task_id ?? remainingPayload.taskId ?? remainingPayload.id
+          )
+        : normalizeNullableText(remainingPayload[token])
+
+    if (!candidateValue) {
+      throw new Error(`[AI Studio] AI 服务路径参数 ${token} 不能为空。`)
+    }
+
+    resolvedPath = resolvedPath.replace(`{${rawToken}}`, encodeURIComponent(candidateValue))
+
+    if (token === 'task_id') {
+      delete remainingPayload.task_id
+      delete remainingPayload.taskId
+      delete remainingPayload.id
+    } else {
+      delete remainingPayload[token]
+    }
+  }
+
+  return {
+    apiPath: resolvedPath,
+    payload: remainingPayload
+  }
 }
 
 function normalizeAspectRatio(value: unknown): string {
@@ -1498,10 +1564,13 @@ export class AiStudioService {
       init.signal = abortController.signal
     }
 
-    let requestUrl = buildProviderUrl(config.baseUrl, apiPath)
+    const resolvedRequest = resolveProviderPathTemplate(apiPath, payload)
+    const resolvedApiPath = resolvedRequest.apiPath
+    const resolvedPayload = resolvedRequest.payload
+    let requestUrl = buildProviderUrl(config.baseUrl, resolvedApiPath)
     if (method === 'GET') {
       const searchUrl = new URL(requestUrl)
-      Object.entries(payload).forEach(([key, value]) => {
+      Object.entries(resolvedPayload).forEach(([key, value]) => {
         if (value === null || value === undefined) return
         if (Array.isArray(value)) {
           value.forEach((item) => {
@@ -1515,7 +1584,7 @@ export class AiStudioService {
       requestUrl = searchUrl.toString()
     } else if (method !== 'HEAD' && method !== 'OPTIONS') {
       headers['Content-Type'] = 'application/json'
-      init.body = JSON.stringify(payload)
+      init.body = JSON.stringify(resolvedPayload)
     }
 
     const debugContext = options?.debugContext ?? null
@@ -1529,7 +1598,7 @@ export class AiStudioService {
       await debugLogger?.(`${options?.debugLogKind ?? 'request'}.provider.request`, {
         ...debugContext,
         method,
-        apiPath,
+        apiPath: resolvedApiPath,
         requestUrl,
         providerConfig: {
           provider: config.provider,
@@ -1538,7 +1607,7 @@ export class AiStudioService {
           defaultImageModel: config.defaultImageModel,
           apiKeyPresent: Boolean(config.apiKey)
         },
-        payload
+        payload: resolvedPayload
       })
     }
 
@@ -1555,7 +1624,7 @@ export class AiStudioService {
         await debugLogger?.(`${options?.debugLogKind ?? 'request'}.provider.fetch_error`, {
           ...debugContext,
           method,
-          apiPath,
+          apiPath: resolvedApiPath,
           requestUrl,
           timeoutMs,
           error: normalizedError
@@ -1582,7 +1651,7 @@ export class AiStudioService {
       await debugLogger?.(`${options?.debugLogKind ?? 'request'}.provider.response`, {
         ...debugContext,
         method,
-        apiPath,
+        apiPath: resolvedApiPath,
         requestUrl,
         timeoutMs,
         statusCode,
@@ -1608,8 +1677,9 @@ export class AiStudioService {
         normalizeAiStudioProviderFailureMessage({
           statusCode,
           payload: parsedPayload,
-          fallback: `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${apiPath}）。`
-        }) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${apiPath}）。`
+          fallback: `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${resolvedApiPath}）。`
+        }) ??
+        `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${resolvedApiPath}）。`
       )
     }
 
@@ -1767,29 +1837,41 @@ export class AiStudioService {
     const images = await Promise.all(inputPaths.map((filePath) => filePathToDataUrl(filePath)))
     const submitPath = normalizeText(videoMeta.submitPath) || AI_VIDEO_CREATE_PATH
     const queryPath = normalizeText(videoMeta.queryPath) || AI_VIDEO_QUERY_PATH
+    const usesSeedanceProtocol =
+      isVolcContentGenerationTasksPath(submitPath) || isSeedanceRequestModel(model)
     const aspectRatio = normalizeVideoCreateAspectRatio(model, videoMeta.aspectRatio)
+    const seedanceRatio = resolveSeedanceVideoRatio(videoMeta.aspectRatio)
     const shouldTranslatePrompt = containsCjkText(prompt)
     const disableAudio = isVeo3VideoModel(model)
     const effectivePrompt = buildVideoWhiteNoisePrompt(prompt)
     const requestedResolution = normalizeVideoResolutionRequest(videoMeta.resolution)
     const requestedSize = toAllApiVideoSize(requestedResolution)
     const shouldEnableUpsample = requestedResolution === '1080p'
-    const requestPayload: Record<string, unknown> = {
-      model,
-      prompt: effectivePrompt,
-      images,
-      duration: videoMeta.duration,
-      size: requestedSize,
-      resolution: requestedResolution,
-      watermark: false,
-      enhance_prompt: false,
-      translate: shouldTranslatePrompt,
-      enable_upsample: shouldEnableUpsample
-    }
-    if (aspectRatio) {
+    const requestPayload: Record<string, unknown> = usesSeedanceProtocol
+      ? buildSeedanceVideoTaskPayload({
+          model,
+          prompt: effectivePrompt,
+          mode: videoMeta.mode,
+          imageUrls: images,
+          aspectRatio: seedanceRatio,
+          duration: videoMeta.duration
+        })
+      : {
+          model,
+          prompt: effectivePrompt,
+          images,
+          duration: videoMeta.duration,
+          size: requestedSize,
+          resolution: requestedResolution,
+          watermark: false,
+          enhance_prompt: false,
+          translate: shouldTranslatePrompt,
+          enable_upsample: shouldEnableUpsample
+        }
+    if (!usesSeedanceProtocol && aspectRatio) {
       requestPayload.aspect_ratio = aspectRatio
     }
-    if (disableAudio) {
+    if (!usesSeedanceProtocol && disableAudio) {
       requestPayload.generate_audio = false
     }
 
@@ -1799,16 +1881,20 @@ export class AiStudioService {
       effectivePrompt,
       endpointPath: submitPath,
       queryPath,
-      protocol: 'allapi-video-unified',
+      protocol: usesSeedanceProtocol ? 'seedance-volc-content-generation' : 'allapi-video-unified',
       mode: videoMeta.mode,
-      aspectRatio: videoMeta.aspectRatio,
-      resolution: requestedResolution,
-      size: requestedSize,
+      aspectRatio: usesSeedanceProtocol ? seedanceRatio : videoMeta.aspectRatio,
       duration: videoMeta.duration,
-      translate: shouldTranslatePrompt,
-      enhancePrompt: false,
-      enableUpsample: shouldEnableUpsample,
-      disableAudio,
+      ...(usesSeedanceProtocol
+        ? { watermark: false }
+        : {
+            resolution: requestedResolution,
+            size: requestedSize,
+            translate: shouldTranslatePrompt,
+            enhancePrompt: false,
+            enableUpsample: shouldEnableUpsample,
+            disableAudio
+          }),
       outputCount: videoMeta.outputCount,
       inputCount: inputPaths.length,
       sourceFiles: inputPaths.map((filePath) => basename(filePath))
@@ -2034,6 +2120,7 @@ export class AiStudioService {
     const isCustomEndpoint = Boolean(config.endpointPath)
     const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(connectionApiPath)
     const looksLikeChatCompletions = isChatCompletionsPath(connectionApiPath)
+    const looksLikeSeedanceTaskEndpoint = isVolcContentGenerationTasksPath(connectionApiPath)
     const looksLikeVideoCreateEndpoint = isCustomEndpoint && isVideoCreatePath(connectionApiPath)
 
     const probePayload = looksLikeChatCompletions
@@ -2048,6 +2135,15 @@ export class AiStudioService {
             contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
             generationConfig: { responseModalities: ['TEXT'] }
           }
+        : looksLikeSeedanceTaskEndpoint
+          ? buildSeedanceVideoTaskPayload({
+              model: config.defaultImageModel || 'seedance-1-5-pro',
+              prompt: 'ping',
+              mode: 'subject-reference',
+              imageUrls: [],
+              aspectRatio: 'adaptive',
+              duration: 4
+            })
         : looksLikeVideoCreateEndpoint
           ? {
               model: config.defaultImageModel || 'veo3.1-fast',
@@ -2065,6 +2161,12 @@ export class AiStudioService {
       probePayload,
       looksLikeChatCompletions || looksLikeGeminiGenerateContent
         ? { providerConfig: config }
+        : looksLikeSeedanceTaskEndpoint
+          ? {
+              method: 'POST',
+              allowStatusCodes: [400, 422],
+              providerConfig: config
+            }
         : looksLikeVideoCreateEndpoint
           ? { method: 'POST', providerConfig: config }
           : isCustomEndpoint

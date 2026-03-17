@@ -16,7 +16,7 @@ import {
 
 import { Button } from '@renderer/components/ui/button'
 import geminiLogo from '@renderer/assets/ai-model-logos/gemini.svg'
-import { getAllowedVideoDurations } from '@renderer/lib/aiVideoProfiles'
+import { getAllowedVideoAspectRatios, getAllowedVideoDurations } from '@renderer/lib/aiVideoProfiles'
 import {
   buildAiConfigPatch,
   findAiModelProfile,
@@ -44,6 +44,7 @@ const VIDEO_MODE_OPTIONS = [
   { value: 'first-last-frame', label: '首尾帧' }
 ] as const
 const VIDEO_ASPECT_RATIO_OPTIONS = [
+  { value: 'adaptive', label: '自适应' },
   { value: '9:16', label: '竖版 9:16' },
   { value: '16:9', label: '横版 16:9' },
   { value: '1:1', label: '方图 1:1' }
@@ -53,6 +54,7 @@ const VIDEO_RESOLUTION_OPTIONS = [
   { value: '1080p', label: '1080p' }
 ] as const
 const VIDEO_DURATION_OPTIONS = [
+  { value: 4, label: '4 秒' },
   { value: 5, label: '5 秒' },
   { value: 8, label: '8 秒' }
 ] as const
@@ -1649,6 +1651,13 @@ function ControlPanel({
   )
   const currentImageModel = currentImageSelection.modelName || DEFAULT_GRSAI_IMAGE_MODEL
   const currentVideoMeta = state.videoMeta
+  const availableVideoAspectRatioOptions = useMemo(
+    () =>
+      VIDEO_ASPECT_RATIO_OPTIONS.filter((option) =>
+        getAllowedVideoAspectRatios(currentVideoMeta.model).includes(option.value)
+      ),
+    [currentVideoMeta.model]
+  )
   const availableVideoDurationOptions = useMemo(
     () =>
       VIDEO_DURATION_OPTIONS.filter((option) =>
@@ -1823,7 +1832,7 @@ function ControlPanel({
                 onChange={(event) => void state.setVideoAspectRatio(event.target.value as never)}
                 className={fieldClass}
               >
-                {VIDEO_ASPECT_RATIO_OPTIONS.map((option) => (
+                {availableVideoAspectRatioOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>

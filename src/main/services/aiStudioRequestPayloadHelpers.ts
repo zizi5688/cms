@@ -4,9 +4,16 @@ const MODEL_IMAGE_SIZE_MAP: Record<string, string> = {
   'nano-banana-pro-4k-vip': '4K'
 }
 
+type SeedanceVideoMode = 'subject-reference' | 'first-last-frame'
+
 export function resolveImageSizeForModel(model: string): string {
   const normalized = String(model ?? '').trim().toLowerCase()
   return MODEL_IMAGE_SIZE_MAP[normalized] ?? DEFAULT_IMAGE_SIZE
+}
+
+export function isSeedanceVideoModel(model: string): boolean {
+  const normalized = String(model ?? '').trim().toLowerCase()
+  return normalized.includes('seedance')
 }
 
 export function buildImageGenerationDirectiveLines(payload: {
@@ -58,4 +65,69 @@ export function buildGeminiGenerationConfig(payload: {
     responseModalities: ['TEXT', 'IMAGE'],
     ...(buildGeminiImageConfig(payload) ? { imageConfig: buildGeminiImageConfig(payload) } : {})
   }
+}
+
+export function buildSeedanceVideoTaskPayload(payload: {
+  model: string
+  prompt: string
+  mode: SeedanceVideoMode
+  imageUrls: string[]
+  aspectRatio?: string | null
+  duration?: number | null
+  watermark?: boolean | null
+}): Record<string, unknown> {
+  const content: Array<Record<string, unknown>> = []
+  const prompt = String(payload.prompt ?? '').trim()
+  if (prompt) {
+    content.push({
+      type: 'text',
+      text: prompt
+    })
+  }
+
+  if (payload.mode === 'first-last-frame') {
+    const [firstFrameUrl = '', lastFrameUrl = ''] = payload.imageUrls
+    if (firstFrameUrl) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: firstFrameUrl },
+        role: 'first_frame'
+      })
+    }
+    if (lastFrameUrl) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: lastFrameUrl },
+        role: 'last_frame'
+      })
+    }
+  } else {
+    payload.imageUrls
+      .map((url) => String(url ?? '').trim())
+      .filter(Boolean)
+      .forEach((url) => {
+        content.push({
+          type: 'image_url',
+          image_url: { url }
+        })
+      })
+  }
+
+  const requestPayload: Record<string, unknown> = {
+    model: String(payload.model ?? '').trim(),
+    content,
+    watermark: payload.watermark ?? false
+  }
+
+  const aspectRatio = String(payload.aspectRatio ?? '').trim()
+  if (aspectRatio) {
+    requestPayload.ratio = aspectRatio
+  }
+
+  const duration = Number(payload.duration)
+  if (Number.isFinite(duration) && duration > 0) {
+    requestPayload.duration = Math.floor(duration)
+  }
+
+  return requestPayload
 }

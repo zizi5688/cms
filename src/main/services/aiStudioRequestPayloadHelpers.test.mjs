@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  buildSeedanceVideoTaskPayload,
   buildImageGenerationDirectiveLines,
   buildGeminiGenerationConfig,
   buildGeminiImageConfig,
+  isSeedanceVideoModel,
   resolveImageSizeForModel
 } from './aiStudioRequestPayloadHelpers.ts'
 
@@ -42,6 +44,69 @@ test('resolveImageSizeForModel preserves explicit 4K overrides for mapped models
   assert.equal(resolveImageSizeForModel('nano-banana-pro-4k-vip'), '4K')
 })
 
+test('isSeedanceVideoModel recognizes both plain and doubao Seedance identifiers', () => {
+  assert.equal(isSeedanceVideoModel('seedance-1-5-pro'), true)
+  assert.equal(isSeedanceVideoModel('doubao-seedance-1-5-pro-250928'), true)
+  assert.equal(isSeedanceVideoModel('jimeng-video-3.0'), false)
+})
+
+test('buildSeedanceVideoTaskPayload maps a subject reference image into content items', () => {
+  assert.deepEqual(
+    buildSeedanceVideoTaskPayload({
+      model: 'seedance-1-5-pro',
+      prompt: '让模特转身看向镜头',
+      mode: 'subject-reference',
+      imageUrls: ['data:image/png;base64,AAA'],
+      aspectRatio: 'adaptive',
+      duration: 4
+    }),
+    {
+      model: 'seedance-1-5-pro',
+      content: [
+        { type: 'text', text: '让模特转身看向镜头' },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,AAA' }
+        }
+      ],
+      ratio: 'adaptive',
+      duration: 4,
+      watermark: false
+    }
+  )
+})
+
+test('buildSeedanceVideoTaskPayload assigns first and last frame roles', () => {
+  assert.deepEqual(
+    buildSeedanceVideoTaskPayload({
+      model: 'doubao-seedance-1-5-pro-250928',
+      prompt: '镜头推进后停在桌面产品特写',
+      mode: 'first-last-frame',
+      imageUrls: ['data:image/png;base64,FIRST', 'data:image/png;base64,LAST'],
+      aspectRatio: '16:9',
+      duration: 4
+    }),
+    {
+      model: 'doubao-seedance-1-5-pro-250928',
+      content: [
+        { type: 'text', text: '镜头推进后停在桌面产品特写' },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,FIRST' },
+          role: 'first_frame'
+        },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,LAST' },
+          role: 'last_frame'
+        }
+      ],
+      ratio: '16:9',
+      duration: 4,
+      watermark: false
+    }
+  )
+})
 
 test('buildGeminiGenerationConfig nests imageConfig under generationConfig', () => {
   assert.deepEqual(

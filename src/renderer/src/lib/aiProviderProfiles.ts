@@ -146,6 +146,12 @@ export function buildVideoEndpointPair(endpointPath: unknown): {
   queryPath: string
 } {
   const submitPath = normalizeAiEndpointPath(endpointPath) || '/v1/video/create'
+  if (/\/volc\/v1\/contents\/generations\/tasks(?:$|\?.*$)/i.test(submitPath)) {
+    return {
+      submitPath,
+      queryPath: `${submitPath.replace(/\/+$/, '')}/{task_id}`
+    }
+  }
   if (/\/create(?:\?.*)?$/i.test(submitPath)) {
     return {
       submitPath,
