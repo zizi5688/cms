@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Check,
   Clapperboard,
+  FolderOpen,
   Image as ImageIcon,
   ImageMinus,
   ImagePlus,
@@ -42,6 +43,7 @@ import {
   stepImageLightboxIndex,
   stepImageLightboxZoom
 } from './imageLightboxHelpers'
+import { resolveThreadSourceFolderPath } from './threadInteractionHelpers'
 import {
   canRegeneratePreviewSlot,
   hasActivePreviewSlotRuntimeStates,
@@ -82,6 +84,10 @@ function basename(filePath: string | null | undefined): string {
   if (!normalized) return '未命名文件'
   const parts = normalized.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? normalized
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 function buildExcerpt(promptDraft: string): string {
@@ -425,25 +431,60 @@ function ImageLightbox({
   )
 }
 
-function ThreadThumb({ asset }: { asset: AiStudioAssetRecord }): React.JSX.Element {
+function ThreadReferenceThumb({
+  asset,
+  referenceApplied,
+  onUseAsReference
+}: {
+  asset: AiStudioAssetRecord
+  referenceApplied?: boolean
+  onUseAsReference?: (() => void) | null
+}): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
 
   return (
-    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl bg-transparent">
-      {src ? (
-        <img
-          src={src}
-          alt={basename(asset.filePath)}
-          className="h-full w-full object-cover"
-          draggable={false}
-          loading="lazy"
-        />
-      ) : (
-        <div className="flex h-full items-center justify-center text-zinc-400">
-          <Sparkles className="h-4 w-4" />
+    <div className="group/thumb relative h-14 w-14 shrink-0 overflow-visible transition-[width,height] duration-300 ease-out hover:h-24 hover:w-24 focus-within:h-24 focus-within:w-24">
+      <div
+        className={cn(
+          'relative h-full w-full overflow-hidden rounded-2xl bg-transparent',
+          referenceApplied && 'ring-2 ring-inset ring-zinc-900/35'
+        )}
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={basename(asset.filePath)}
+            className="h-full w-full object-cover"
+            draggable={false}
+            loading="lazy"
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-zinc-400">
+            <Sparkles className="h-4 w-4" />
+          </div>
+        )}
+      </div>
+
+      {onUseAsReference ? (
+        <div
+          className="pointer-events-none absolute right-1.5 top-1.5 z-10 opacity-0 transition duration-200 group-hover/thumb:pointer-events-auto group-hover/thumb:opacity-100 group-focus-within/thumb:pointer-events-auto group-focus-within/thumb:opacity-100"
+        >
+          <PreviewActionButton
+            icon={
+              referenceApplied ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <ImagePlus className="h-3.5 w-3.5" />
+              )
+            }
+            label="再次参考"
+            active={referenceApplied}
+            size="compact"
+            onClick={onUseAsReference}
+          />
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -452,13 +493,18 @@ function PreviewActionButton({
   icon,
   label,
   active,
-  onClick
+  onClick,
+  expanded = false,
+  size = 'default'
 }: {
   icon: React.ReactNode
   label: string
   active?: boolean
   onClick: () => void
+  expanded?: boolean
+  size?: 'default' | 'compact'
 }): React.JSX.Element {
+  const isCompact = size === 'compact'
   return (
     <button
       type="button"
@@ -467,18 +513,74 @@ function PreviewActionButton({
         onClick()
       }}
       className={cn(
-        'group/action inline-flex h-8 items-center overflow-hidden rounded-full border shadow-[0_8px_20px_rgba(15,23,42,0.12)] transition-all duration-200',
+        'group/action inline-flex items-center overflow-hidden rounded-full border shadow-[0_8px_20px_rgba(15,23,42,0.12)] transition-all duration-200',
+        isCompact ? 'h-7' : 'h-8',
         active
           ? 'border-zinc-950 bg-zinc-950 text-white hover:bg-zinc-800'
           : 'border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-zinc-50'
       )}
     >
-      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center">{icon}</span>
-      <span className="max-w-0 overflow-hidden whitespace-nowrap pr-0 text-[11px] font-medium opacity-0 transition-all duration-200 group-hover/action:max-w-[112px] group-hover/action:pr-2.5 group-hover/action:opacity-100">
+      <span
+        className={cn(
+          'inline-flex shrink-0 items-center justify-center',
+          isCompact ? 'h-7 w-7' : 'h-8 w-8'
+        )}
+      >
+        {icon}
+      </span>
+      <span
+        className={cn(
+          'overflow-hidden whitespace-nowrap text-[11px] font-medium transition-all duration-200',
+          expanded
+            ? 'max-w-[112px] pr-2.5 opacity-100'
+            : 'max-w-0 pr-0 opacity-0 group-hover/action:max-w-[112px] group-hover/action:pr-2.5 group-hover/action:opacity-100'
+        )}
+      >
         {label}
       </span>
     </button>
   )
+}
+
+function InlineThreadActionButton({
+  icon,
+  label,
+  onClick
+}: {
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="ml-2 inline-flex h-7 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 align-middle text-[11px] font-medium text-zinc-600 shadow-[0_8px_20px_rgba(15,23,42,0.06)] transition hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap"
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  )
+}
+
+async function openThreadSourceFolder(
+  folderPath: string | null,
+  addLog: (message: string) => void
+): Promise<void> {
+  try {
+    const normalized = normalizeText(folderPath)
+    if (!normalized) {
+      throw new Error('未找到可打开的来源目录。')
+    }
+    const result = await window.electronAPI.shellOpenPath(normalized)
+    if (!result?.success) {
+      throw new Error(result?.error ?? '未知错误')
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    addLog(`[AI Studio] 打开来源目录失败：${message}`)
+    window.alert(`打开来源目录失败：${message}`)
+  }
 }
 
 function PreviewPlaceholderStateContent({
@@ -763,6 +865,18 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
+  const threadSourceFolderPath = useMemo(() => {
+    const latestOutputFilePath =
+      generatedAssets.find((asset) => normalizeText(asset.filePath))?.filePath ??
+      currentAiMasterAsset?.filePath ??
+      task.outputAssets.find((asset) => normalizeText(asset.filePath))?.filePath ??
+      null
+
+    return resolveThreadSourceFolderPath({
+      latestOutputFilePath,
+      sourceFolderPath: task.sourceFolderPath
+    })
+  }, [currentAiMasterAsset?.filePath, generatedAssets, task.outputAssets, task.sourceFolderPath])
 
   useEffect(() => {
     if (!isRunning) {
@@ -910,12 +1024,22 @@ function HistoryTaskSection({
         <div className="flex min-w-0 items-start gap-4">
           <div className="flex gap-2">
             {threadAssets.slice(0, 4).map((asset) => (
-              <ThreadThumb key={asset.id} asset={asset} />
+              <ThreadReferenceThumb
+                key={asset.id}
+                asset={asset}
+                referenceApplied={currentReferencePaths.has(asset.filePath)}
+                onUseAsReference={() => void handleUseAsReference(asset)}
+              />
             ))}
           </div>
           <div className="flex min-w-0 flex-1 items-start justify-between gap-3 pt-1">
             <div className="min-w-0 text-[15px] font-medium leading-7 text-zinc-900">
-              {promptExcerpt}
+              <span>{promptExcerpt}</span>
+              <InlineThreadActionButton
+                icon={<FolderOpen className="h-3.5 w-3.5" />}
+                label="打开文件夹"
+                onClick={() => void openThreadSourceFolder(threadSourceFolderPath, addLog)}
+              />
             </div>
             {hasDispatchOutputs ? (
               <button
@@ -942,12 +1066,22 @@ function HistoryTaskSection({
       <div className="flex min-w-0 items-start gap-4">
         <div className="flex gap-2">
           {threadAssets.slice(0, 4).map((asset) => (
-            <ThreadThumb key={asset.id} asset={asset} />
+            <ThreadReferenceThumb
+              key={asset.id}
+              asset={asset}
+              referenceApplied={currentReferencePaths.has(asset.filePath)}
+              onUseAsReference={() => void handleUseAsReference(asset)}
+            />
           ))}
         </div>
         <div className="flex min-w-0 flex-1 items-start justify-between gap-3 pt-1">
           <div className="min-w-0 text-[15px] font-medium leading-7 text-zinc-900">
-            {promptExcerpt}
+            <span>{promptExcerpt}</span>
+            <InlineThreadActionButton
+              icon={<FolderOpen className="h-3.5 w-3.5" />}
+              label="打开文件夹"
+              onClick={() => void openThreadSourceFolder(threadSourceFolderPath, addLog)}
+            />
           </div>
           {hasDispatchOutputs ? (
             <button
@@ -1413,6 +1547,17 @@ function VideoHistoryTaskSection({
   const isRunning =
     task.status === 'running' || hasActivePreviewSlotRuntimeStates(previewRuntimeStates)
   const [previewNowMs, setPreviewNowMs] = useState(() => Date.now())
+  const threadSourceFolderPath = useMemo(() => {
+    const latestOutputFilePath =
+      generatedAssets.find((asset) => normalizeText(asset.filePath))?.filePath ??
+      task.outputAssets.find((asset) => normalizeText(asset.filePath))?.filePath ??
+      null
+
+    return resolveThreadSourceFolderPath({
+      latestOutputFilePath,
+      sourceFolderPath: task.sourceFolderPath
+    })
+  }, [generatedAssets, task.outputAssets, task.sourceFolderPath])
 
   useEffect(() => {
     if (!isRunning) {
@@ -1499,12 +1644,22 @@ function VideoHistoryTaskSection({
       <div className="flex min-w-0 items-start gap-4">
         <div className="flex gap-2">
           {task.inputAssets.slice(0, 2).map((asset) => (
-            <ThreadThumb key={asset.id} asset={asset} />
+            <ThreadReferenceThumb
+              key={asset.id}
+              asset={asset}
+              referenceApplied={currentReferencePaths.has(asset.filePath)}
+              onUseAsReference={() => void handleUseAsReference(asset)}
+            />
           ))}
         </div>
         <div className="min-w-0 pt-1">
           <div className="text-[15px] font-medium leading-7 text-zinc-900">
             <span>{promptExcerpt}</span>
+            <InlineThreadActionButton
+              icon={<FolderOpen className="h-3.5 w-3.5" />}
+              label="打开文件夹"
+              onClick={() => void openThreadSourceFolder(threadSourceFolderPath, addLog)}
+            />
             <span className="ml-2 inline-flex h-7 items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 align-middle text-[11px] font-medium text-zinc-500 whitespace-nowrap">
               {videoMeta.mode === 'first-last-frame' ? '首尾帧' : '主体参考'}
             </span>

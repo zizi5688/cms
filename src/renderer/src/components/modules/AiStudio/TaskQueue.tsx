@@ -21,6 +21,7 @@ import {
   resolveQuickInsertClickOutcome
 } from './quickInsertActionHelpers'
 import { resolveQuickInsertPanelPosition } from './quickInsertPopoverPositionHelpers'
+import { extractPastedImageCandidates } from './threadInteractionHelpers'
 
 type ElectronPathFile = File & { path?: string }
 
@@ -69,6 +70,24 @@ function getDroppedImagePaths(files: FileList | File[]): string[] {
       (filePath): filePath is string =>
         typeof filePath === 'string' && isSupportedImagePath(filePath)
     )
+}
+
+function readBlobAsDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => {
+      reject(reader.error ?? new Error('读取剪贴板图片失败。'))
+    }
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result.trim() : ''
+      if (!result) {
+        reject(new Error('读取剪贴板图片失败。'))
+        return
+      }
+      resolve(result)
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 function ImageLightbox({
@@ -938,6 +957,7 @@ function TaskQueue({
   const addLog = useCmsStore((store) => store.addLog)
   const [previewAsset, setPreviewAsset] = useState<AiStudioAssetRecord | null>(null)
   const [isPickingImages, setIsPickingImages] = useState(false)
+  const [isPastingImages, setIsPastingImages] = useState(false)
   const [isDragActive, setIsDragActive] = useState(false)
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false)
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null)
@@ -969,6 +989,7 @@ function TaskQueue({
   const lastFrameAsset =
     state.activeInputAssets.find((asset) => asset.filePath === videoMeta.lastFramePath) ?? null
   const canAddMore = inputAssets.length < MAX_AI_STUDIO_REFERENCE_IMAGES
+  const isImportingImages = isPickingImages || isPastingImages
   const promptComposerMinHeight = isVideoStudio
     ? videoMeta.mode === 'first-last-frame'
       ? 148
@@ -1099,7 +1120,7 @@ function TaskQueue({
   }
 
   const pickInputImages = async (): Promise<void> => {
-    if (isPickingImages || !canAddMore) return
+    if (isImportingImages || !canAddMore) return
     try {
       setIsPickingImages(true)
       const filePaths = await pickLocalImages(true)
@@ -1115,7 +1136,7 @@ function TaskQueue({
   }
 
   const pickVideoInput = async (slot: 'subject' | 'first' | 'last'): Promise<void> => {
-    if (isPickingImages) return
+    if (isImportingImages) return
     try {
       setIsPickingImages(true)
       const filePaths = await pickLocalImages(false)
@@ -1184,6 +1205,70 @@ function TaskQueue({
     }
   }
 
+  const handlePromptPaste = async (
+    event: React.ClipboardEvent<HTMLTextAreaElement>
+  ): Promise<void> => {
+    const pasted = extractPastedImageCandidates({
+      clipboardFiles: Array.from(event.clipboardData.files ?? []),
+      clipboardItems: Array.from(event.clipboardData.items ?? []),
+      getPathForFile: (file) => fileSystemPathFromFile(file as File),
+      nowMs: Date.now()
+    })
+
+    if (pasted.filePaths.length === 0 && pasted.blobFiles.length === 0) return
+
+    event.preventDefault()
+    if (isImportingImages) return
+
+    try {
+      setIsPastingImages(true)
+      const persistedPaths: string[] = []
+      for (const [index, entry] of pasted.blobFiles.entries()) {
+        const dataUrl = await readBlobAsDataUrl(entry.file as Blob)
+        const savedPath = await window.api.cms.image.saveBase64({
+          dataUrl,
+          filename: entry.filename || `ai-studio-paste-${Date.now()}-${index + 1}.png`
+        })
+        const normalized = String(savedPath ?? '').trim()
+        if (!normalized) {
+          throw new Error('剪贴板图片保存失败。')
+        }
+        persistedPaths.push(normalized)
+      }
+
+      const filePaths = [...pasted.filePaths, ...persistedPaths]
+      if (!isVideoStudio) {
+        await addInputImages(filePaths)
+        return
+      }
+
+      if (videoMeta.mode === 'subject-reference') {
+        await state.setVideoSubjectReference(filePaths[0] ?? null)
+        if (filePaths.length > 1) {
+          window.alert('主体参考模式只会使用第 1 张粘贴图片，其余图片已忽略。')
+        }
+        return
+      }
+
+      const [firstFramePath, lastFramePath] = filePaths
+      if (firstFramePath) {
+        await state.setVideoFirstFrame(firstFramePath)
+      }
+      if (lastFramePath) {
+        await state.setVideoLastFrame(lastFramePath)
+      }
+      if (filePaths.length > 2) {
+        window.alert('首尾帧模式最多接收 2 张粘贴图片，已忽略其余图片。')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 粘贴参考图失败：${message}`)
+      window.alert(`粘贴参考图失败：${message}`)
+    } finally {
+      setIsPastingImages(false)
+    }
+  }
+
   return (
     <>
       <div
@@ -1211,7 +1296,7 @@ function TaskQueue({
                   <VideoInputCard
                     title="主体参考"
                     asset={subjectAsset}
-                    disabled={isPickingImages}
+                    disabled={isImportingImages}
                     onUpload={() => void pickVideoInput('subject')}
                     onPreview={(asset) => setPreviewAsset(asset)}
                     onRemove={() => void state.setVideoSubjectReference(null)}
@@ -1221,7 +1306,7 @@ function TaskQueue({
                     <VideoInputCard
                       title="首帧"
                       asset={firstFrameAsset}
-                      disabled={isPickingImages}
+                      disabled={isImportingImages}
                       onUpload={() => void pickVideoInput('first')}
                       onPreview={(asset) => setPreviewAsset(asset)}
                       onRemove={() => void state.setVideoFirstFrame(null)}
@@ -1237,7 +1322,7 @@ function TaskQueue({
                     <VideoInputCard
                       title="尾帧"
                       asset={lastFrameAsset}
-                      disabled={isPickingImages}
+                      disabled={isImportingImages}
                       onUpload={() => void pickVideoInput('last')}
                       onPreview={(asset) => setPreviewAsset(asset)}
                       onRemove={() => void state.setVideoLastFrame(null)}
@@ -1249,7 +1334,7 @@ function TaskQueue({
               <ReferenceStackCard
                 assets={inputAssets}
                 canAddMore={canAddMore}
-                disabled={isPickingImages}
+                disabled={isImportingImages}
                 onUpload={() => void pickInputImages()}
                 onPreview={(asset) => setPreviewAsset(asset)}
                 onRemoveFront={(asset) => void handleRemoveAsset(asset)}
@@ -1257,7 +1342,7 @@ function TaskQueue({
             ) : (
               <EmptyReferenceCard
                 onUpload={() => void pickInputImages()}
-                disabled={isPickingImages}
+                disabled={isImportingImages}
               />
             )}
 
@@ -1274,6 +1359,7 @@ function TaskQueue({
             <Textarea
               value={promptDraft}
               onChange={(event) => onPromptChange(event.target.value)}
+              onPaste={(event) => void handlePromptPaste(event)}
               placeholder={
                 isVideoStudio
                   ? '描述镜头运动、节奏、主体动作和氛围，例如：主体轻微转身，镜头缓慢推近，背景光影流动。'
