@@ -81,16 +81,49 @@ export class SqliteService {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
   }
 
-  ensureProductColumns(): void {
+  ensureProductSchema(): void {
     const db = this.db
     if (!db) return
 
-    const columns = db.prepare(`PRAGMA table_info(products)`).all() as Array<{ name?: unknown }>
-    const hasProductUrl = columns.some((col) => col?.name === 'productUrl')
+    const columns = db.prepare(`PRAGMA table_info(products)`).all() as Array<{ name?: unknown; pk?: unknown }>
+    if (columns.length === 0) return
+
+    let hasProductUrl = columns.some((col) => col?.name === 'productUrl')
+    const accountIdPrimaryKey = columns.find((col) => col?.name === 'accountId')
+    const idPrimaryKey = columns.find((col) => col?.name === 'id')
+    const hasCompositePrimaryKey = accountIdPrimaryKey?.pk === 1 && idPrimaryKey?.pk === 2
+
+    if (!hasCompositePrimaryKey) {
+      const selectProductUrl = hasProductUrl ? 'COALESCE(productUrl, \'\')' : `''`
+      const migrateLegacyProducts = db.transaction(() => {
+        db.exec(`ALTER TABLE products RENAME TO products_legacy;`)
+        db.exec(`
+          CREATE TABLE products (
+            accountId TEXT NOT NULL,
+            id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            price TEXT NOT NULL,
+            cover TEXT NOT NULL,
+            productUrl TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (accountId, id)
+          );
+        `)
+        db.exec(`
+          INSERT INTO products (accountId, id, name, price, cover, productUrl)
+          SELECT accountId, id, name, price, cover, ${selectProductUrl}
+          FROM products_legacy;
+        `)
+        db.exec(`DROP TABLE products_legacy;`)
+      })
+      migrateLegacyProducts()
+      hasProductUrl = true
+    }
 
     if (!hasProductUrl) {
       db.exec(`ALTER TABLE products ADD COLUMN productUrl TEXT NOT NULL DEFAULT '';`)
     }
+
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_products_accountId ON products (accountId);`)
   }
 
   ensureAiStudioSchema(): void {
@@ -221,7 +254,7 @@ export class SqliteService {
 
     const targetPath = join(resolvedWorkspacePath, 'cms.sqlite')
     if (this.db && this.dbPath === targetPath) {
-      this.ensureProductColumns()
+      this.ensureProductSchema()
       this.ensureQueueColumns()
       this.ensureAiStudioSchema()
       return {}
@@ -252,12 +285,13 @@ export class SqliteService {
       );
 
       CREATE TABLE IF NOT EXISTS products (
-        id TEXT PRIMARY KEY,
         accountId TEXT NOT NULL,
+        id TEXT NOT NULL,
         name TEXT NOT NULL,
         price TEXT NOT NULL,
         cover TEXT NOT NULL,
-        productUrl TEXT NOT NULL DEFAULT ''
+        productUrl TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (accountId, id)
       );
 
       CREATE TABLE IF NOT EXISTS tasks (
@@ -310,7 +344,7 @@ export class SqliteService {
 
     this.db = db
     this.dbPath = targetPath
-    this.ensureProductColumns()
+    this.ensureProductSchema()
     this.ensureQueueColumns()
     this.ensureAiStudioSchema()
 
