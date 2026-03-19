@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   buildPastedImageFilename,
   extractPastedImageCandidates,
+  isThreadThumbnailReferenceApplied,
+  pruneAppliedThreadThumbnailAssetIds,
   resolveThreadSourceFolderPath
 } from './threadInteractionHelpers.ts'
 
@@ -89,4 +91,42 @@ test('extractPastedImageCandidates gives clipboard blob files a unique filename 
   assert.deepEqual(result.filePaths, [])
   assert.equal(result.blobFiles.length, 1)
   assert.equal(result.blobFiles[0]?.filename, 'Screenshot-1710000000000-1.jpeg')
+})
+
+test('isThreadThumbnailReferenceApplied only marks the explicitly applied thumbnail when file paths are shared', () => {
+  const currentReferencePaths = new Set(['/tmp/shared-reference.png'])
+  const appliedAssetIds = new Set(['asset-last-thread'])
+
+  assert.equal(
+    isThreadThumbnailReferenceApplied({
+      assetId: 'asset-last-thread',
+      filePath: '/tmp/shared-reference.png',
+      appliedAssetIds,
+      currentReferencePaths
+    }),
+    true
+  )
+
+  assert.equal(
+    isThreadThumbnailReferenceApplied({
+      assetId: 'asset-earlier-thread',
+      filePath: '/tmp/shared-reference.png',
+      appliedAssetIds,
+      currentReferencePaths
+    }),
+    false
+  )
+})
+
+test('pruneAppliedThreadThumbnailAssetIds drops stale thumbnail ids when their file path is no longer referenced', () => {
+  const pruned = pruneAppliedThreadThumbnailAssetIds({
+    assets: [
+      { id: 'asset-a', filePath: '/tmp/reference-a.png' },
+      { id: 'asset-b', filePath: '/tmp/reference-b.png' }
+    ],
+    appliedAssetIds: new Set(['asset-a', 'asset-b']),
+    currentReferencePaths: new Set(['/tmp/reference-b.png'])
+  })
+
+  assert.deepEqual(Array.from(pruned).sort(), ['asset-b'])
 })

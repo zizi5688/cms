@@ -3,6 +3,11 @@ type ClipboardFileLike = {
   name?: string | null
 }
 
+type ThreadThumbnailAssetLike = {
+  id?: string | null
+  filePath?: string | null
+}
+
 type ClipboardItemLike = {
   type?: string | null
   getAsFile?: (() => ClipboardFileLike | null) | null
@@ -78,6 +83,39 @@ function splitFilename(filename: string): { baseName: string; extension: string 
     baseName: normalizeText(match?.[1] ?? ''),
     extension: normalizeText(match?.[2] ?? '')
   }
+}
+
+export function isThreadThumbnailReferenceApplied(input: {
+  assetId?: string | null
+  filePath?: string | null
+  appliedAssetIds?: ReadonlySet<string> | null
+  currentReferencePaths?: ReadonlySet<string> | null
+}): boolean {
+  const assetId = normalizeText(input.assetId)
+  const filePath = normalizePathLike(input.filePath)
+  if (!assetId || !filePath) return false
+
+  return Boolean(input.appliedAssetIds?.has(assetId) && input.currentReferencePaths?.has(filePath))
+}
+
+export function pruneAppliedThreadThumbnailAssetIds(input: {
+  assets?: ThreadThumbnailAssetLike[] | null
+  appliedAssetIds?: ReadonlySet<string> | null
+  currentReferencePaths?: ReadonlySet<string> | null
+}): Set<string> {
+  const next = new Set<string>()
+  const assets = Array.isArray(input.assets) ? input.assets : []
+
+  assets.forEach((asset) => {
+    const assetId = normalizeText(asset?.id)
+    const filePath = normalizePathLike(asset?.filePath)
+    if (!assetId || !filePath) return
+    if (!input.appliedAssetIds?.has(assetId)) return
+    if (!input.currentReferencePaths?.has(filePath)) return
+    next.add(assetId)
+  })
+
+  return next
 }
 
 export function resolveThreadSourceFolderPath(input: {

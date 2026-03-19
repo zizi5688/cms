@@ -43,7 +43,11 @@ import {
   stepImageLightboxIndex,
   stepImageLightboxZoom
 } from './imageLightboxHelpers'
-import { resolveThreadSourceFolderPath } from './threadInteractionHelpers'
+import {
+  isThreadThumbnailReferenceApplied,
+  pruneAppliedThreadThumbnailAssetIds,
+  resolveThreadSourceFolderPath
+} from './threadInteractionHelpers'
 import {
   canRegeneratePreviewSlot,
   hasActivePreviewSlotRuntimeStates,
@@ -118,6 +122,64 @@ function getAssetSequenceIndex(asset: AiStudioAssetRecord, fallbackIndex: number
 
 function normalizeOverlayText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function areStringSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false
+  for (const value of left) {
+    if (!right.has(value)) return false
+  }
+  return true
+}
+
+function useThreadThumbnailAppliedState({
+  assets,
+  currentReferencePaths
+}: {
+  assets: AiStudioAssetRecord[]
+  currentReferencePaths: ReadonlySet<string>
+}): {
+  isReferenceApplied: (asset: AiStudioAssetRecord) => boolean
+  markReferenceApplied: (assetId: string) => void
+} {
+  const [appliedAssetIds, setAppliedAssetIds] = useState<Set<string>>(() => new Set())
+
+  useEffect(() => {
+    setAppliedAssetIds((current) => {
+      const next = pruneAppliedThreadThumbnailAssetIds({
+        assets,
+        appliedAssetIds: current,
+        currentReferencePaths
+      })
+
+      return areStringSetsEqual(current, next) ? current : next
+    })
+  }, [assets, currentReferencePaths])
+
+  const markReferenceApplied = (assetId: string): void => {
+    const normalizedAssetId = normalizeText(assetId)
+    if (!normalizedAssetId) return
+
+    setAppliedAssetIds((current) => {
+      if (current.has(normalizedAssetId)) return current
+      const next = new Set(current)
+      next.add(normalizedAssetId)
+      return next
+    })
+  }
+
+  const isReferenceApplied = (asset: AiStudioAssetRecord): boolean =>
+    isThreadThumbnailReferenceApplied({
+      assetId: asset.id,
+      filePath: asset.filePath,
+      appliedAssetIds,
+      currentReferencePaths
+    })
+
+  return {
+    isReferenceApplied,
+    markReferenceApplied
+  }
 }
 
 function buildResolutionLabelFromDimensions(width: number, height: number): string {
@@ -865,6 +927,11 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
+  const visibleThreadAssets = useMemo(() => threadAssets.slice(0, 4), [threadAssets])
+  const { isReferenceApplied, markReferenceApplied } = useThreadThumbnailAppliedState({
+    assets: visibleThreadAssets,
+    currentReferencePaths
+  })
   const threadSourceFolderPath = useMemo(() => {
     const latestOutputFilePath =
       generatedAssets.find((asset) => normalizeText(asset.filePath))?.filePath ??
@@ -967,6 +1034,7 @@ function HistoryTaskSection({
   const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
     try {
       await state.useDispatchOutputAsReference(asset.filePath)
+      markReferenceApplied(asset.id)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 添加参考图失败：${message}`)
@@ -1022,12 +1090,12 @@ function HistoryTaskSection({
     return (
       <section className="flex min-w-0 flex-col gap-4">
         <div className="flex min-w-0 items-start gap-4">
-          <div className="flex gap-2">
-            {threadAssets.slice(0, 4).map((asset) => (
+        <div className="flex gap-2">
+            {visibleThreadAssets.map((asset) => (
               <ThreadReferenceThumb
                 key={asset.id}
                 asset={asset}
-                referenceApplied={currentReferencePaths.has(asset.filePath)}
+                referenceApplied={isReferenceApplied(asset)}
                 onUseAsReference={() => void handleUseAsReference(asset)}
               />
             ))}
@@ -1065,11 +1133,11 @@ function HistoryTaskSection({
     <section className="flex min-w-0 flex-col gap-4">
       <div className="flex min-w-0 items-start gap-4">
         <div className="flex gap-2">
-          {threadAssets.slice(0, 4).map((asset) => (
+          {visibleThreadAssets.map((asset) => (
             <ThreadReferenceThumb
               key={asset.id}
               asset={asset}
-              referenceApplied={currentReferencePaths.has(asset.filePath)}
+              referenceApplied={isReferenceApplied(asset)}
               onUseAsReference={() => void handleUseAsReference(asset)}
             />
           ))}
@@ -1543,6 +1611,11 @@ function VideoHistoryTaskSection({
       state.videoMeta.subjectReferencePath
     ]
   )
+  const visibleThreadAssets = useMemo(() => task.inputAssets.slice(0, 2), [task.inputAssets])
+  const { isReferenceApplied, markReferenceApplied } = useThreadThumbnailAppliedState({
+    assets: visibleThreadAssets,
+    currentReferencePaths
+  })
   const previewRuntimeStates = state.previewSlotRuntimeByTaskId[task.id] ?? {}
   const isRunning =
     task.status === 'running' || hasActivePreviewSlotRuntimeStates(previewRuntimeStates)
@@ -1622,6 +1695,7 @@ function VideoHistoryTaskSection({
   const handleUseAsReference = async (asset: AiStudioAssetRecord): Promise<void> => {
     try {
       await state.useOutputAsVideoReference(asset.filePath)
+      markReferenceApplied(asset.id)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 回填视频参考失败：${message}`)
@@ -1643,11 +1717,11 @@ function VideoHistoryTaskSection({
     <section className="flex min-w-0 flex-col gap-4">
       <div className="flex min-w-0 items-start gap-4">
         <div className="flex gap-2">
-          {task.inputAssets.slice(0, 2).map((asset) => (
+          {visibleThreadAssets.map((asset) => (
             <ThreadReferenceThumb
               key={asset.id}
               asset={asset}
-              referenceApplied={currentReferencePaths.has(asset.filePath)}
+              referenceApplied={isReferenceApplied(asset)}
               onUseAsReference={() => void handleUseAsReference(asset)}
             />
           ))}
