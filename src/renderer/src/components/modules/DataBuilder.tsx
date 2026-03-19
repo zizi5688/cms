@@ -34,7 +34,15 @@ import {
   buildSelectedWorkshopProducts,
   resolveWorkshopAccountId
 } from './workshopProductSelectionHelpers'
+import {
+  applyBatchCoverPathsToVideoTasks,
+  sortCoverImagePathsByNaturalFilename
+} from './videoBatchCoverHelpers'
 import { shouldShowDispatchPanel } from './dispatchPanelVisibilityHelpers'
+import {
+  replaceVideoTaskCoverById,
+  restoreVideoTaskCoverById
+} from './videoTaskCoverSyncHelpers'
 import { resolveVideoCoverPreview } from './videoCoverPreviewHelpers'
 
 function numberOr(value: string, fallback: number): number {
@@ -141,6 +149,16 @@ function formatTimeLabel(seconds: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
 }
 
+function buildUploadTasksFromPreviewTasks(
+  tasks: Array<{ title: string; body: string; assignedImages: string[]; mediaType?: 'image' | 'video' }>
+): Array<{ title: string; body: string; images: string[] }> {
+  return tasks.map((task) => ({
+    title: task.title,
+    body: task.body,
+    images: task.mediaType === 'video' ? [] : task.assignedImages
+  }))
+}
+
 type WorkshopMetricTone = 'amber' | 'emerald' | 'sky' | 'rose'
 
 interface WorkshopMetricCardProps {
@@ -198,25 +216,20 @@ function DataBuilder(): React.JSX.Element {
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(() => new Set())
   const [queuedTaskIds, setQueuedTaskIds] = useState<Set<string>>(() => new Set())
   const [toastMessage, setToastMessage] = useState<string>('')
-  const [videoCoverMode, setVideoCoverMode] = useState<'auto-first-frame' | 'manual'>(
-    'auto-first-frame'
-  )
-  const [manualCoverMap, setManualCoverMap] = useState<Record<string, string>>({})
   const [isPreparingVideoCover, setIsPreparingVideoCover] = useState(false)
   const [isSavingManualCover, setIsSavingManualCover] = useState(false)
   const [videoCoverProgress, setVideoCoverProgress] = useState('')
-  const [manualCoverEditorVideoPath, setManualCoverEditorVideoPath] = useState('')
+  const [videoTaskFallbackCoverMap, setVideoTaskFallbackCoverMap] = useState<Record<string, string>>({})
+  const [manualCoverEditorTaskId, setManualCoverEditorTaskId] = useState('')
   const [manualCoverEditorPlayablePath, setManualCoverEditorPlayablePath] = useState('')
   const [isManualCoverEditorPreparing, setIsManualCoverEditorPreparing] = useState(false)
   const [isManualCoverEditorPlaying, setIsManualCoverEditorPlaying] = useState(false)
   const [manualCoverEditorTimeSec, setManualCoverEditorTimeSec] = useState(0)
-  const [manualCoverFallbackMap, setManualCoverFallbackMap] = useState<Record<string, string>>({})
   const [isDispatchPanelCollapsed, setIsDispatchPanelCollapsed] = useState(false)
   const manualCoverEditorVideoRef = useRef<HTMLVideoElement | null>(null)
   const lastScannedPathRef = useRef('')
   const lastAiStudioImportKeyRef = useRef('')
   const videoCoverCacheRef = useRef<Map<string, string>>(new Map())
-  const manualCoverFallbackMapRef = useRef<Record<string, string>>({})
   const containerRef = useRef<HTMLDivElement>(null)
   const [scrollParent, setScrollParent] = useState<HTMLElement | undefined>(undefined)
 
@@ -265,23 +278,31 @@ function DataBuilder(): React.JSX.Element {
     return firstImagePath ? dirNameFromPath(firstImagePath).trim() : ''
   }, [importedImagePaths])
 
-  const importedCoverPath = useMemo(() => {
-    if (workshopImport?.type !== 'video') return ''
-    return String(workshopImport.coverPath ?? '').trim()
-  }, [workshopImport])
-
   const isVideoMode = importedVideoPaths.length > 0
   const isAiStudioImageImportMode = importedImagePaths.length > 0
-  const isManualCoverEditorOpen = Boolean(manualCoverEditorVideoPath.trim())
-  const normalizedManualEditorPath = manualCoverEditorVideoPath.trim()
+  const videoPreviewTasks = useMemo(
+    () =>
+      tasks.filter(
+        (task) =>
+          task.mediaType === 'video' &&
+          typeof task.videoPath === 'string' &&
+          task.videoPath.trim().length > 0
+      ),
+    [tasks]
+  )
+  const isManualCoverEditorOpen = Boolean(manualCoverEditorTaskId.trim())
+  const normalizedManualEditorTaskId = manualCoverEditorTaskId.trim()
+  const activeManualCoverTask = useMemo(
+    () => videoPreviewTasks.find((task) => task.id === normalizedManualEditorTaskId) ?? null,
+    [normalizedManualEditorTaskId, videoPreviewTasks]
+  )
+  const normalizedManualEditorPath = String(activeManualCoverTask?.videoPath ?? '').trim()
   const normalizedManualEditorPlayablePath = manualCoverEditorPlayablePath.trim()
   const manualCoverEditorSourcePath =
     normalizedManualEditorPlayablePath || normalizedManualEditorPath
-  const activeManualCoverPath = normalizedManualEditorPath
-    ? (manualCoverMap[normalizedManualEditorPath] ?? '')
-    : ''
-  const fallbackManualCoverPath = normalizedManualEditorPath
-    ? (manualCoverFallbackMap[normalizedManualEditorPath] ?? '')
+  const activeManualCoverPath = String(activeManualCoverTask?.assignedImages?.[0] ?? '').trim()
+  const fallbackManualCoverPath = normalizedManualEditorTaskId
+    ? (videoTaskFallbackCoverMap[normalizedManualEditorTaskId] ?? '')
     : ''
   const activeManualCoverPreview = useMemo(
     () =>
@@ -294,14 +315,6 @@ function DataBuilder(): React.JSX.Element {
   const activeManualCoverPreviewSrc = activeManualCoverPreview.path
     ? resolveLocalImage(activeManualCoverPreview.path, workspacePath)
     : ''
-  const manualCoverConfiguredCount = useMemo(() => {
-    let count = 0
-    for (const path of importedVideoPaths) {
-      const normalizedPath = path.trim()
-      if (normalizedPath && manualCoverMap[normalizedPath]) count += 1
-    }
-    return count
-  }, [importedVideoPaths, manualCoverMap])
 
   const constraints = useMemo(() => {
     return {
@@ -328,10 +341,6 @@ function DataBuilder(): React.JSX.Element {
   )
 
   const selectedProductCount = selectedProducts.length
-
-  useEffect(() => {
-    manualCoverFallbackMapRef.current = manualCoverFallbackMap
-  }, [manualCoverFallbackMap])
 
   useEffect(() => {
     let el = containerRef.current?.parentElement ?? null
@@ -366,6 +375,8 @@ function DataBuilder(): React.JSX.Element {
     setQueuedTaskIds(new Set())
     setDispatchProgress(null)
     setToastMessage('')
+    setVideoTaskFallbackCoverMap({})
+    setManualCoverEditorTaskId('')
     if (importedImageFolderPath && dataWorkshopFolderPath.trim() !== importedImageFolderPath) {
       setDataWorkshopFolderPath(importedImageFolderPath)
     }
@@ -385,14 +396,12 @@ function DataBuilder(): React.JSX.Element {
 
   useEffect(() => {
     if (!isVideoMode) {
-      setVideoCoverMode('auto-first-frame')
-      setManualCoverMap({})
-      setManualCoverFallbackMap({})
+      setVideoTaskFallbackCoverMap({})
       setVideoCoverProgress('')
       setIsSavingManualCover(false)
       setIsManualCoverEditorPreparing(false)
       setIsManualCoverEditorPlaying(false)
-      setManualCoverEditorVideoPath('')
+      setManualCoverEditorTaskId('')
       setManualCoverEditorPlayablePath('')
       setManualCoverEditorTimeSec(0)
       videoCoverCacheRef.current.clear()
@@ -406,104 +415,49 @@ function DataBuilder(): React.JSX.Element {
     for (const key of cache.keys()) {
       if (!currentVideoPathSet.has(key)) cache.delete(key)
     }
-
-    setManualCoverMap((prev) => {
-      const next: Record<string, string> = {}
-      for (const path of currentVideoPathSet) {
-        const saved = prev[path]
-        if (typeof saved === 'string' && saved.trim()) next[path] = saved
-      }
-      if (importedCoverPath) {
-        const firstVideoPath = importedVideoPaths[0]?.trim()
-        if (firstVideoPath && !next[firstVideoPath]) next[firstVideoPath] = importedCoverPath
-      }
-      return next
-    })
-
-    if (importedCoverPath) {
-      setVideoCoverMode('manual')
-      setVideoCoverProgress('检测到导入封面，已切换为手动封面模式。')
-    }
-  }, [importedCoverPath, importedVideoPaths, isVideoMode])
+  }, [importedVideoPaths, isVideoMode])
 
   useEffect(() => {
-    if (!isVideoMode) return
-
-    const currentVideoPathSet = new Set(
-      importedVideoPaths.map((path) => path.trim()).filter(Boolean)
-    )
-    setManualCoverFallbackMap((prev) => {
+    const currentTaskIds = new Set(videoPreviewTasks.map((task) => task.id))
+    setVideoTaskFallbackCoverMap((prev) => {
       const next: Record<string, string> = {}
-      for (const path of currentVideoPathSet) {
-        const saved = prev[path]
-        const cached = videoCoverCacheRef.current.get(path) ?? ''
-        const resolved = saved || cached
-        if (resolved) next[path] = resolved
+      let changed = false
+      for (const task of videoPreviewTasks) {
+        const taskId = String(task.id ?? '').trim()
+        if (!taskId) continue
+        const saved = prev[taskId]
+        if (saved) next[taskId] = saved
       }
-      return next
-    })
-
-    if (videoCoverMode !== 'manual') return
-
-    let canceled = false
-    void (async () => {
-      for (const videoPath of importedVideoPaths) {
-        const normalizedPath = videoPath.trim()
-        if (!normalizedPath) continue
-        if (manualCoverMap[normalizedPath]) continue
-
-        const cachedPath = videoCoverCacheRef.current.get(normalizedPath) ?? ''
-        const knownFallback = manualCoverFallbackMapRef.current[normalizedPath] ?? ''
-        if (cachedPath || knownFallback) {
-          if (cachedPath && !knownFallback) {
-            setManualCoverFallbackMap((prev) =>
-              prev[normalizedPath] === cachedPath
-                ? prev
-                : { ...prev, [normalizedPath]: cachedPath }
-            )
+      const prevKeys = Object.keys(prev)
+      if (prevKeys.length !== Object.keys(next).length) changed = true
+      if (!changed) {
+        for (const key of prevKeys) {
+          if (prev[key] !== next[key]) {
+            changed = true
+            break
           }
-          continue
-        }
-
-        try {
-          const coverPath = await captureVideoFirstFrame(normalizedPath)
-          if (canceled) return
-          videoCoverCacheRef.current.set(normalizedPath, coverPath)
-          setManualCoverFallbackMap((prev) => ({
-            ...prev,
-            [normalizedPath]: coverPath
-          }))
-        } catch (error) {
-          if (canceled) return
-          const message = error instanceof Error ? error.message : String(error)
-          addLog(`[Super CMS] 手动封面首帧预览提取失败：${fileNameFromPath(normalizedPath)}，${message}`)
         }
       }
-    })()
+      return changed ? next : prev
+    })
 
-    return () => {
-      canceled = true
-    }
-  }, [addLog, importedVideoPaths, isVideoMode, manualCoverMap, videoCoverMode])
+    const normalizedTaskId = manualCoverEditorTaskId.trim()
+    if (!normalizedTaskId) return
+    if (currentTaskIds.has(normalizedTaskId)) return
+    setManualCoverEditorTaskId('')
+    setManualCoverEditorPlayablePath('')
+    setManualCoverEditorTimeSec(0)
+    setIsManualCoverEditorPlaying(false)
+  }, [manualCoverEditorTaskId, videoPreviewTasks])
 
   useEffect(() => {
-    const normalizedEditorPath = manualCoverEditorVideoPath.trim()
-    if (!normalizedEditorPath) {
+    const normalizedEditorPath = String(activeManualCoverTask?.videoPath ?? '').trim()
+    if (!manualCoverEditorTaskId.trim() || !normalizedEditorPath) {
       setIsManualCoverEditorPreparing(false)
       setIsManualCoverEditorPlaying(false)
       setManualCoverEditorPlayablePath('')
       return
     }
-    if (importedVideoPaths.some((path) => path.trim() === normalizedEditorPath)) return
-    setManualCoverEditorVideoPath('')
-    setManualCoverEditorPlayablePath('')
-    setManualCoverEditorTimeSec(0)
-    setIsManualCoverEditorPlaying(false)
-  }, [importedVideoPaths, manualCoverEditorVideoPath])
-
-  useEffect(() => {
-    const normalizedEditorPath = manualCoverEditorVideoPath.trim()
-    if (!normalizedEditorPath) return
 
     let canceled = false
     setIsManualCoverEditorPreparing(true)
@@ -536,7 +490,7 @@ function DataBuilder(): React.JSX.Element {
     return () => {
       canceled = true
     }
-  }, [addLog, manualCoverEditorVideoPath])
+  }, [activeManualCoverTask, addLog, manualCoverEditorTaskId])
 
   const prepareAutoCoverMap = useCallback(
     async (videoPaths: string[]): Promise<Map<string, string>> => {
@@ -621,12 +575,21 @@ function DataBuilder(): React.JSX.Element {
     }
   }
 
-  const openManualCoverEditor = (videoPath: string): void => {
-    const normalizedPath = String(videoPath ?? '').trim()
-    if (!normalizedPath) return
+  const commitPreviewTasks = useCallback(
+    (nextTasks: typeof tasks): void => {
+      setTasks(nextTasks)
+      setUploadTasks(buildUploadTasksFromPreviewTasks(nextTasks))
+    },
+    [setTasks, setUploadTasks]
+  )
+
+  const openManualCoverEditor = (taskId: string): void => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    if (!normalizedTaskId) return
     if (isGenerating || isPreparingVideoCover || isSavingManualCover) return
+    if (!videoPreviewTasks.some((task) => task.id === normalizedTaskId)) return
     setIsManualCoverEditorPlaying(false)
-    setManualCoverEditorVideoPath(normalizedPath)
+    setManualCoverEditorTaskId(normalizedTaskId)
     setManualCoverEditorTimeSec(0)
   }
 
@@ -639,41 +602,14 @@ function DataBuilder(): React.JSX.Element {
     }
     setIsManualCoverEditorPlaying(false)
     setIsManualCoverEditorPreparing(false)
-    setManualCoverEditorVideoPath('')
+    setManualCoverEditorTaskId('')
     setManualCoverEditorPlayablePath('')
     setManualCoverEditorTimeSec(0)
   }
 
-  const setManualCoverForVideo = useCallback(
-    (videoPath: string, coverPath: string): void => {
-      const normalizedVideoPath = String(videoPath ?? '').trim()
-      const normalizedCoverPath = String(coverPath ?? '').trim()
-      if (!normalizedVideoPath) return
-
-      let configuredCount = 0
-      setManualCoverMap((prev) => {
-        const next: Record<string, string> = { ...prev }
-        if (normalizedCoverPath) next[normalizedVideoPath] = normalizedCoverPath
-        else delete next[normalizedVideoPath]
-
-        configuredCount = 0
-        for (const path of importedVideoPaths) {
-          const normalizedPath = path.trim()
-          if (normalizedPath && next[normalizedPath]) configuredCount += 1
-        }
-        return next
-      })
-
-      setVideoCoverProgress(
-        `手动模式：已设置 ${configuredCount}/${importedVideoPaths.length} 条视频封面。`
-      )
-    },
-    [importedVideoPaths]
-  )
-
   const handleUploadManualCover = async (): Promise<void> => {
-    const targetVideoPath = manualCoverEditorVideoPath.trim()
-    if (!targetVideoPath || isSavingManualCover || isGenerating || isPreparingVideoCover) return
+    const targetTaskId = manualCoverEditorTaskId.trim()
+    if (!targetTaskId || isSavingManualCover || isGenerating || isPreparingVideoCover) return
     try {
       const result = await window.electronAPI.openMediaFiles({ accept: 'image' })
       const selectedPath = extractOriginalPathFromMediaResult(result)
@@ -682,9 +618,10 @@ function DataBuilder(): React.JSX.Element {
         window.alert('请选择图片文件作为封面。')
         return
       }
-      setManualCoverForVideo(targetVideoPath, selectedPath)
-      setVideoCoverMode('manual')
-      addLog(`[Super CMS] 已设置手动封面：${fileNameFromPath(targetVideoPath)} -> ${selectedPath}`)
+      const synced = replaceVideoTaskCoverById(tasks, targetTaskId, selectedPath)
+      if (!synced.changed) return
+      commitPreviewTasks(synced.tasks)
+      addLog(`[Super CMS] 已设置手动封面：${fileNameFromPath(normalizedManualEditorPath)} -> ${selectedPath}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[Super CMS] 上传手动封面失败：${message}`)
@@ -693,8 +630,8 @@ function DataBuilder(): React.JSX.Element {
   }
 
   const handleCaptureManualCover = async (): Promise<void> => {
-    const targetVideoPath = manualCoverEditorVideoPath.trim()
-    if (!targetVideoPath || isSavingManualCover || isGenerating || isPreparingVideoCover) return
+    const targetTaskId = manualCoverEditorTaskId.trim()
+    if (!targetTaskId || isSavingManualCover || isGenerating || isPreparingVideoCover) return
     const video = manualCoverEditorVideoRef.current
     if (!video) {
       window.alert('视频预览尚未准备好，请稍后再试。')
@@ -709,9 +646,10 @@ function DataBuilder(): React.JSX.Element {
     setIsSavingManualCover(true)
     try {
       const savedPath = await saveFrameFromVideoElement(video)
-      setManualCoverForVideo(targetVideoPath, savedPath)
-      setVideoCoverMode('manual')
-      addLog(`[Super CMS] 已截取封面：${fileNameFromPath(targetVideoPath)} -> ${savedPath}`)
+      const synced = replaceVideoTaskCoverById(tasks, targetTaskId, savedPath)
+      if (!synced.changed) return
+      commitPreviewTasks(synced.tasks)
+      addLog(`[Super CMS] 已截取封面：${fileNameFromPath(normalizedManualEditorPath)} -> ${savedPath}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[Super CMS] 截取手动封面失败：${message}`)
@@ -722,10 +660,53 @@ function DataBuilder(): React.JSX.Element {
   }
 
   const handleClearManualCover = (): void => {
-    const targetVideoPath = manualCoverEditorVideoPath.trim()
-    if (!targetVideoPath || isSavingManualCover) return
-    setManualCoverForVideo(targetVideoPath, '')
-    addLog(`[Super CMS] 已清除手动封面：${fileNameFromPath(targetVideoPath)}`)
+    const targetTaskId = manualCoverEditorTaskId.trim()
+    if (!targetTaskId || isSavingManualCover) return
+    const fallbackCoverPath = videoTaskFallbackCoverMap[targetTaskId] ?? ''
+    const restored = restoreVideoTaskCoverById(tasks, targetTaskId, fallbackCoverPath)
+    if (!restored.changed) return
+    commitPreviewTasks(restored.tasks)
+    addLog(`[Super CMS] 已恢复默认封面：${fileNameFromPath(normalizedManualEditorPath)}`)
+  }
+
+  const handleApplyBatchCoverFolder = async (): Promise<void> => {
+    if (isGenerating || isPreparingVideoCover || isSavingManualCover) return
+    if (videoPreviewTasks.length === 0) {
+      window.alert('请先生成视频预览，再批量设置封面。')
+      return
+    }
+
+    try {
+      const selectedFolder = await window.electronAPI.openDirectory()
+      if (!selectedFolder) return
+
+      const sortedCoverPaths = sortCoverImagePathsByNaturalFilename(
+        await window.electronAPI.scanDirectory(selectedFolder)
+      )
+      if (sortedCoverPaths.length === 0) {
+        addLog(`[Super CMS] 批量设置封面失败：${selectedFolder} 中未找到可用图片。`)
+        window.alert('所选文件夹中未找到可用图片。')
+        return
+      }
+
+      const applied = applyBatchCoverPathsToVideoTasks(tasks, sortedCoverPaths)
+      if (applied.changed) {
+        commitPreviewTasks(applied.tasks)
+      }
+
+      const previewCount = videoPreviewTasks.length
+      const keptFirstFrameCount = Math.max(previewCount - applied.appliedCount, 0)
+      const ignoredCoverCount = Math.max(sortedCoverPaths.length - previewCount, 0)
+      const progressParts = [`已覆盖 ${applied.appliedCount}/${previewCount} 条预览`]
+      if (keptFirstFrameCount > 0) progressParts.push(`保留首帧 ${keptFirstFrameCount} 条`)
+      if (ignoredCoverCount > 0) progressParts.push(`忽略多余图片 ${ignoredCoverCount} 张`)
+      setVideoCoverProgress(`批量封面：${progressParts.join('，')}`)
+      addLog(`[Super CMS] 已批量设置封面：${selectedFolder}，${progressParts.join('，')}。`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[Super CMS] 批量设置封面失败：${message}`)
+      window.alert(`批量设置封面失败：${message}`)
+    }
   }
 
   const handleToggleManualEditorPlayback = async (): Promise<void> => {
@@ -755,63 +736,46 @@ function DataBuilder(): React.JSX.Element {
 
             if (videoTasks.length === 0) return videoTasks
 
-            if (videoCoverMode === 'manual') {
-              if (manualCoverConfiguredCount === 0) {
-                addLog('[Super CMS] 手动封面模式未设置封面图，本次预览将显示“未设置封面图”。')
-              }
-              setVideoCoverProgress(
-                `手动模式：已设置 ${manualCoverConfiguredCount}/${importedVideoPaths.length} 条视频封面。`
-              )
-              return videoTasks.map((task) => ({
-                ...task,
-                assignedImages: (() => {
-                  const normalizedVideoPath = String(task.videoPath ?? '').trim()
-                  const mappedCoverPath = normalizedVideoPath
-                    ? (manualCoverMap[normalizedVideoPath] ?? '')
-                    : ''
-                  return mappedCoverPath ? [mappedCoverPath] : []
-                })()
-              }))
-            }
-
             setIsPreparingVideoCover(true)
             const coverMap = await prepareAutoCoverMap(importedVideoPaths)
             const successCount = coverMap.size
-            setVideoCoverProgress(
-              `自动首帧模式：已提取 ${successCount}/${importedVideoPaths.length} 条视频封面。`
-            )
+            setVideoCoverProgress(`默认首帧：已提取 ${successCount}/${importedVideoPaths.length} 条视频封面。`)
             if (successCount === 0) {
               addLog(
-                '[Super CMS] 自动首帧封面提取失败，本次预览仍会生成，但任务将显示“未设置封面图”。'
+                '[Super CMS] 默认首帧封面提取失败，本次预览仍会生成，但任务将显示“未设置封面图”。'
               )
             }
 
-            return videoTasks.map((task) => {
+            const nextFallbackMap: Record<string, string> = {}
+            const nextTasks = videoTasks.map((task) => {
               const normalizedVideoPath = String(task.videoPath ?? '').trim()
               const coverPath = normalizedVideoPath ? (coverMap.get(normalizedVideoPath) ?? '') : ''
+              if (coverPath) nextFallbackMap[task.id] = coverPath
               return {
                 ...task,
                 assignedImages: coverPath ? [coverPath] : []
               }
             })
+            setVideoTaskFallbackCoverMap(nextFallbackMap)
+            setManualCoverEditorTaskId('')
+            return nextTasks
           })()
         : generateManifest(csvContent, imageFiles, {
             ...constraints,
             bestEffort: true
           })
+      if (!isVideoMode) {
+        setVideoTaskFallbackCoverMap({})
+        setManualCoverEditorTaskId('')
+      }
       setTasks(next)
-      setUploadTasks(
-        next.map((task) => ({
-          title: task.title,
-          body: task.body,
-          images: task.mediaType === 'video' ? [] : task.assignedImages
-        }))
-      )
+      setUploadTasks(buildUploadTasksFromPreviewTasks(next))
       addLog(`[Super CMS] 生成预览完成：共 ${next.length} 组。`)
     } catch (error) {
       addLog(`[Super CMS] 生成失败：${error instanceof Error ? error.message : String(error)}`)
       setTasks([])
       setUploadTasks([])
+      setVideoTaskFallbackCoverMap({})
     } finally {
       setIsPreparingVideoCover(false)
       setIsGenerating(false)
@@ -954,15 +918,13 @@ function DataBuilder(): React.JSX.Element {
     lastScannedPathRef.current = ''
     lastAiStudioImportKeyRef.current = ''
     setImageFiles([])
-    setVideoCoverMode('auto-first-frame')
-    setManualCoverMap({})
-    setManualCoverFallbackMap({})
+    setVideoTaskFallbackCoverMap({})
     setVideoCoverProgress('')
     setIsPreparingVideoCover(false)
     setIsSavingManualCover(false)
     setIsManualCoverEditorPreparing(false)
     setIsManualCoverEditorPlaying(false)
-    setManualCoverEditorVideoPath('')
+    setManualCoverEditorTaskId('')
     setManualCoverEditorPlayablePath('')
     setManualCoverEditorTimeSec(0)
     setIsDispatchPanelCollapsed(false)
@@ -1237,70 +1199,45 @@ function DataBuilder(): React.JSX.Element {
               <div className="rounded-[24px] border border-zinc-800/80 bg-black/20 p-4">
                 {isVideoMode ? (
                   <div className="flex flex-col gap-3">
-                    <div className="text-sm text-zinc-100">视频素材</div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm text-zinc-100">视频封面管理</div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 rounded-full border-zinc-700 px-3 text-xs"
+                        onClick={() => void handleApplyBatchCoverFolder()}
+                        disabled={isBuilderBusy || videoPreviewTasks.length === 0}
+                      >
+                        批量设置封面
+                      </Button>
+                    </div>
                     <div className="rounded-[20px] border border-zinc-800/80 bg-zinc-950/80 px-4 py-3 text-sm text-zinc-100">
                       {fileNameFromPath(importedVideoPath)}
                       {importedVideoPaths.length > 1 ? ` 等 ${importedVideoPaths.length}` : ''}
                     </div>
-                    <div className="grid gap-2">
-                      <label
-                        className={cn(
-                          'flex items-center gap-3 rounded-2xl border px-3 py-3 text-sm',
-                          videoCoverMode === 'auto-first-frame'
-                            ? 'border-amber-400/30 bg-amber-400/10 text-zinc-100'
-                            : 'border-zinc-800/80 bg-black/10 text-zinc-300'
-                        )}
-                      >
-                        <input
-                          type="radio"
-                          name="video-cover-mode"
-                          checked={videoCoverMode === 'auto-first-frame'}
-                          onChange={() => setVideoCoverMode('auto-first-frame')}
-                          disabled={isBuilderBusy}
-                          className="h-4 w-4"
-                        />
-                        自动首帧
-                      </label>
-                      <label
-                        className={cn(
-                          'flex items-center gap-3 rounded-2xl border px-3 py-3 text-sm',
-                          videoCoverMode === 'manual'
-                            ? 'border-amber-400/30 bg-amber-400/10 text-zinc-100'
-                            : 'border-zinc-800/80 bg-black/10 text-zinc-300'
-                        )}
-                      >
-                        <input
-                          type="radio"
-                          name="video-cover-mode"
-                          checked={videoCoverMode === 'manual'}
-                          onChange={() => setVideoCoverMode('manual')}
-                          disabled={isBuilderBusy}
-                          className="h-4 w-4"
-                        />
-                        手动封面
-                      </label>
+                    <div className="rounded-[20px] border border-zinc-800/80 bg-black/10 px-4 py-3 text-xs leading-6 text-zinc-400">
+                      生成预览时会默认批量提取首帧作为封面。预览生成后，你可以逐条修改，也可以从文件夹按文件名自然排序批量覆盖。
                     </div>
-
-                    {videoCoverMode === 'manual' ? (
-                      <div className="max-h-56 space-y-2 overflow-y-auto rounded-[20px] border border-zinc-800/80 bg-black/20 p-2">
-                        {importedVideoPaths.map((videoPath, index) => {
-                          const normalizedPath = videoPath.trim()
-                          const mappedCoverPath = normalizedPath
-                            ? (manualCoverMap[normalizedPath] ?? '')
-                            : ''
+                    <div className="max-h-56 space-y-2 overflow-y-auto rounded-[20px] border border-zinc-800/80 bg-black/20 p-2">
+                      {videoPreviewTasks.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/60 px-3 py-6 text-center text-xs text-zinc-500">
+                          先点击“生成预览”，这里会直接显示每条预览的当前封面列表。
+                        </div>
+                      ) : (
+                        videoPreviewTasks.map((task, index) => {
+                          const currentCoverPath = String(task.assignedImages?.[0] ?? '').trim()
+                          const fallbackCoverPath = videoTaskFallbackCoverMap[task.id] ?? ''
                           const preview = resolveVideoCoverPreview({
-                            manualCoverPath: mappedCoverPath,
-                            fallbackCoverPath: normalizedPath
-                              ? (manualCoverFallbackMap[normalizedPath] ?? '')
-                              : ''
+                            manualCoverPath: currentCoverPath,
+                            fallbackCoverPath
                           })
-                          const hasCover = preview.source === 'manual'
                           const previewSrc = preview.path
                             ? resolveLocalImage(preview.path, workspacePath)
                             : ''
+                          const hasOverride = currentCoverPath && currentCoverPath !== fallbackCoverPath
                           return (
                             <div
-                              key={videoPath}
+                              key={task.id}
                               className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 px-3 py-2.5"
                             >
                               <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1314,20 +1251,22 @@ function DataBuilder(): React.JSX.Element {
                                     />
                                   ) : (
                                     <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-500">
-                                      首帧读取中
+                                      暂无封面
                                     </div>
                                   )}
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate text-xs text-zinc-200">
-                                    {index + 1}. {fileNameFromPath(videoPath)}
+                                    {index + 1}. {fileNameFromPath(String(task.videoPath ?? ''))}
                                   </div>
                                   <div className="mt-1 text-[11px] text-zinc-500">
-                                    {preview.source === 'manual'
-                                      ? '当前封面'
-                                      : preview.source === 'first-frame'
-                                        ? '当前无封面，显示首帧'
-                                        : '正在准备预览'}
+                                    {hasOverride
+                                      ? '当前为手动覆盖封面'
+                                      : preview.source === 'manual'
+                                        ? '当前封面'
+                                        : preview.source === 'first-frame'
+                                          ? '当前使用默认首帧'
+                                          : '当前暂无封面图'}
                                   </div>
                                 </div>
                               </div>
@@ -1335,19 +1274,19 @@ function DataBuilder(): React.JSX.Element {
                                 type="button"
                                 variant="outline"
                                 className="h-8 rounded-full border-zinc-700 px-3 text-xs"
-                                onClick={() => openManualCoverEditor(videoPath)}
+                                onClick={() => openManualCoverEditor(task.id)}
                                 disabled={isBuilderBusy}
                               >
-                                {hasCover ? '修改' : '设置'}
+                                {preview.path ? '修改' : '设置'}
                               </Button>
                             </div>
                           )
-                        })}
-                      </div>
-                    ) : null}
+                        })
+                      )}
+                    </div>
 
-                    {isPreparingVideoCover ? (
-                      <div className="text-xs text-zinc-500">{videoCoverProgress || '处理中'}</div>
+                    {videoCoverProgress ? (
+                      <div className="text-xs text-zinc-500">{videoCoverProgress}</div>
                     ) : null}
                   </div>
                 ) : (
@@ -1541,7 +1480,7 @@ function DataBuilder(): React.JSX.Element {
                           typeof task.videoPath === 'string' &&
                           task.videoPath.trim() &&
                           !isQueued
-                            ? () => openManualCoverEditor(task.videoPath ?? '')
+                            ? () => openManualCoverEditor(task.id)
                             : undefined
                         }
                         select={{
@@ -1581,7 +1520,7 @@ function DataBuilder(): React.JSX.Element {
               <div className="min-w-0">
                 <div className="text-sm text-zinc-200">视频封面编辑</div>
                 <div className="mt-1 truncate text-xs text-zinc-500">
-                  {normalizedManualEditorPath}
+                  {normalizedManualEditorPath || '未找到预览视频'}
                 </div>
               </div>
               <Button
@@ -1652,6 +1591,9 @@ function DataBuilder(): React.JSX.Element {
                 <div className="text-xs text-zinc-400">
                   当前视频：{fileNameFromPath(normalizedManualEditorPath)}
                 </div>
+                <div className="text-[11px] text-zinc-500">
+                  当前预览：{activeManualCoverTask ? activeManualCoverTask.title || activeManualCoverTask.id : '未找到'}
+                </div>
                 <div className="text-[11px] text-zinc-500 break-all">
                   预览源：{manualCoverEditorSourcePath || '准备中...'}
                 </div>
@@ -1717,9 +1659,13 @@ function DataBuilder(): React.JSX.Element {
                   type="button"
                   variant="outline"
                   onClick={handleClearManualCover}
-                  disabled={isSavingManualCover || !activeManualCoverPath}
+                  disabled={
+                    isSavingManualCover ||
+                    !activeManualCoverPath ||
+                    activeManualCoverPath === fallbackManualCoverPath
+                  }
                 >
-                  清除本视频封面
+                  恢复默认首帧
                 </Button>
               </div>
             </div>
