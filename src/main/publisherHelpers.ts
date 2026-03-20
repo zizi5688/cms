@@ -64,6 +64,33 @@ export function readPublishDebugState(env: NodeJS.ProcessEnv = process.env): Pub
   }
 }
 
+export function runWithTimeout<T>(work: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  const resolvedTimeoutMs = Math.max(1, Math.floor(timeoutMs))
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new Error(timeoutMessage))
+    }, resolvedTimeoutMs)
+
+    work.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
 export function buildPublishWorkerWindowOptions(
   input: PublishWindowPreferences
 ): {
