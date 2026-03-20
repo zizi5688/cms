@@ -10,7 +10,8 @@ import { DiagnosticsService } from './services/diagnostics'
 import {
   buildPublishNotificationPayload,
   buildPublishWorkerWindowOptions,
-  readPublishDebugState
+  readPublishDebugState,
+  runWithTimeout
 } from './publisherHelpers'
 import {
   applyPublishStageUpdate,
@@ -115,6 +116,7 @@ type AutomationTaskPayload = {
 
 const XHS_PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish'
 const PUBLISH_UI_READY_TIMEOUT_MS = 5_000
+const PUBLISH_PAGE_LOAD_TIMEOUT_MS = 60_000
 const QUEUE_DRY_RUN_ENABLED = process.env.CMS_QUEUE_DRY_RUN === '1'
 
 function resolveWorkerPreloadPath(): string {
@@ -363,7 +365,7 @@ export class PublisherService {
 
     let didSucceed = false
     try {
-      await worker.loadURL(XHS_PUBLISH_URL)
+      await runWithTimeout(worker.loadURL(XHS_PUBLISH_URL), PUBLISH_PAGE_LOAD_TIMEOUT_MS, '[XHS] Publish page load timeout.')
 
       const currentUrl = worker.webContents.getURL()
       if (!currentUrl) {
@@ -453,7 +455,7 @@ export class PublisherService {
     }
     ipcMain.on('automation-log', automationLogHandler)
     try {
-      await worker.loadURL(XHS_PUBLISH_URL)
+      await runWithTimeout(worker.loadURL(XHS_PUBLISH_URL), PUBLISH_PAGE_LOAD_TIMEOUT_MS, '[XHS] Publish page load timeout.')
       if (publishDebugState.visual && !worker.isDestroyed()) {
         worker.show()
         worker.focus()

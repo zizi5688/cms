@@ -5,7 +5,8 @@ import {
   buildPublishNotificationPayload,
   shouldHidePublishWindowAfterNativeDialog,
   buildPublishWorkerWindowOptions,
-  readPublishDebugState
+  readPublishDebugState,
+  runWithTimeout
 } from './publisherHelpers.ts'
 
 test('buildPublishWorkerWindowOptions hides the publish window and disables background throttling', () => {
@@ -104,4 +105,18 @@ test('buildPublishNotificationPayload formats the finish notification for succes
   assert.equal(success.body, '春季奶油风卧室布置')
   assert.equal(failed.title, '执行失败：账号A')
   assert.equal(failed.body, '春季奶油风卧室布置\n网络超时')
+})
+
+test('runWithTimeout rejects hung work with the provided timeout message', async () => {
+  await assert.rejects(
+    () => runWithTimeout(new Promise(() => {}), 20, '[XHS] Publish page load timeout.'),
+    /Publish page load timeout/
+  )
+})
+
+test('runWithTimeout preserves the original rejection when work fails before timeout', async () => {
+  await assert.rejects(
+    () => runWithTimeout(Promise.reject(new Error('boom')), 200, '[XHS] Publish page load timeout.'),
+    /boom/
+  )
 })
