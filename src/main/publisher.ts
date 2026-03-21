@@ -22,6 +22,7 @@ import {
   failPublishSession,
   type PublishSessionSnapshot
 } from './publishSessionHelpers'
+import { createPublishQueueScheduler, type PublishQueueRunResult } from './publishQueueScheduler'
 
 type ElectronStoreCtor = new <T extends Record<string, unknown> = Record<string, unknown>>() => ElectronStore<T>
 const StoreCtor = ((ElectronStore as unknown as { default?: ElectronStoreCtor }).default ??
@@ -325,14 +326,22 @@ function waitForProductSyncResult(options: {
 
 export class PublisherService {
   private accountManager: AccountManager
-  private isPublishing = false
+  private queueScheduler: {
+    enqueue: (options: {
+      taskManager: TaskManager
+      accountId?: string
+      taskIds?: string[]
+    }) => Promise<PublishQueueRunResult>
+    isBusy: () => boolean
+  }
 
   constructor(accountManager: AccountManager) {
     this.accountManager = accountManager
+    this.queueScheduler = createPublishQueueScheduler((options) => this.runQueueInternal(options))
   }
 
   isQueueRunning(): boolean {
-    return this.isPublishing
+    return this.queueScheduler.isBusy()
   }
 
   async syncProducts(accountId: string): Promise<XhsProductRecord[]> {
@@ -538,116 +547,118 @@ export class PublisherService {
     taskManager: TaskManager
     accountId?: string
     taskIds?: string[]
-  }): Promise<{ processed: number; succeeded: number; failed: number }> {
-    if (this.isPublishing) return { processed: 0, succeeded: 0, failed: 0 }
-    this.isPublishing = true
-    try {
-      const taskManager = options.taskManager
-      const queueService = QueueService.getInstance()
-      const queueConfig = resolveQueueConfig()
+  }): Promise<PublishQueueRunResult> {
+    return this.queueScheduler.enqueue(options)
+  }
 
-      let processed = 0
-      let succeeded = 0
-      let failed = 0
-      let consecutiveTasks = 0
+  private async runQueueInternal(options: {
+    taskManager: TaskManager
+    accountId?: string
+    taskIds?: string[]
+  }): Promise<PublishQueueRunResult> {
+    const taskManager = options.taskManager
+    const queueService = QueueService.getInstance()
+    const queueConfig = resolveQueueConfig()
 
-      let task = queueService.acquireNextTask({
-        accountId: typeof options.accountId === 'string' ? options.accountId : undefined,
-        taskIds: Array.isArray(options.taskIds) ? options.taskIds : undefined
-      })
+    let processed = 0
+    let succeeded = 0
+    let failed = 0
+    let consecutiveTasks = 0
 
-      while (task) {
-        // 每日限额检查
-        if (queueConfig.dailyLimitPerAccount > 0 && processed >= queueConfig.dailyLimitPerAccount) {
-          console.log(`[Queue] Daily limit reached (${queueConfig.dailyLimitPerAccount}), stopping.`)
-          break
-        }
+    let task = queueService.acquireNextTask({
+      accountId: typeof options.accountId === 'string' ? options.accountId : undefined,
+      taskIds: Array.isArray(options.taskIds) ? options.taskIds : undefined
+    })
 
-        if (task.mediaType === 'video' && !task.videoPath) {
-          processed += 1
-          failed += 1
-          queueService.failTask(task.id, '视频任务缺少 videoPath，请补齐后重新排期。', {
-            returnToPendingPool: true,
-            status: 'publish_failed',
-            resetRetryCount: true
-          })
-          const updated = taskManager.updateBatch([task.id], {})[0]
-          if (updated) broadcastToRenderers('cms.task.updated', updated)
-          task = queueService.acquireNextTask({
-            accountId: typeof options.accountId === 'string' ? options.accountId : undefined,
-            taskIds: Array.isArray(options.taskIds) ? options.taskIds : undefined
-          })
-          continue
-        }
+    while (task) {
+      // 每日限额检查
+      if (queueConfig.dailyLimitPerAccount > 0 && processed >= queueConfig.dailyLimitPerAccount) {
+        console.log(`[Queue] Daily limit reached (${queueConfig.dailyLimitPerAccount}), stopping.`)
+        break
+      }
 
+      if (task.mediaType === 'video' && !task.videoPath) {
         processed += 1
-        consecutiveTasks += 1
-        broadcastToRenderers('cms.task.updated', task)
-
-        const result = await this.publishTask(task.accountId, {
-          queueTaskId: task.id,
-          mediaType: task.mediaType,
-          videoPath: task.videoPath,
-          images: task.images,
-          title: task.title,
-          content: task.content,
-          productId: task.productId,
-          productName: task.productName,
-          linkedProducts: task.linkedProducts,
-          dryRun: QUEUE_DRY_RUN_ENABLED,
-          mode: 'immediate'
+        failed += 1
+        queueService.failTask(task.id, '视频任务缺少 videoPath，请补齐后重新排期。', {
+          returnToPendingPool: true,
+          status: 'publish_failed',
+          resetRetryCount: true
         })
-
-        if (result.success) {
-          if (!result.time) {
-            failed += 1
-            queueService.failTask(task.id, '发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。', {
-              returnToPendingPool: true,
-              status: 'publish_failed',
-              resetRetryCount: true
-            })
-            const updated = taskManager.updateBatch([task.id], {})[0]
-            if (updated) broadcastToRenderers('cms.task.updated', updated)
-          } else {
-            succeeded += 1
-            queueService.completeTask(task.id)
-            const updated = taskManager.updateBatch([task.id], { publishedAt: result.time, errorMsg: '', scheduledAt: null })[0]
-            if (updated) broadcastToRenderers('cms.task.updated', updated)
-          }
-        } else {
-          failed += 1
-          queueService.failTask(task.id, result.error ?? '发布失败，请检查后重新排期。', {
-            returnToPendingPool: true,
-            status: 'publish_failed',
-            resetRetryCount: true
-          })
-          const updated = taskManager.updateBatch([task.id], {})[0]
-          if (updated) broadcastToRenderers('cms.task.updated', updated)
-        }
-
-        // 冷却：每 N 个任务后休息
-        if (queueConfig.cooldownAfterNTasks > 0 && consecutiveTasks >= queueConfig.cooldownAfterNTasks) {
-          const cooldownMs = gaussianDelay(queueConfig.cooldownDurationMs * 0.8, queueConfig.cooldownDurationMs * 1.2)
-          console.log(`[Queue] Cooldown after ${consecutiveTasks} tasks: resting ${Math.round(cooldownMs / 1000)}s...`)
-          await sleep(cooldownMs)
-          consecutiveTasks = 0
-        } else {
-          // 任务间高斯随机间隔
-          const delayMs = gaussianDelay(queueConfig.taskIntervalMinMs, queueConfig.taskIntervalMaxMs)
-          console.log(`[Queue] Next task in ${Math.round(delayMs / 1000)}s...`)
-          await sleep(delayMs)
-        }
-
+        const updated = taskManager.updateBatch([task.id], {})[0]
+        if (updated) broadcastToRenderers('cms.task.updated', updated)
         task = queueService.acquireNextTask({
           accountId: typeof options.accountId === 'string' ? options.accountId : undefined,
           taskIds: Array.isArray(options.taskIds) ? options.taskIds : undefined
         })
+        continue
       }
 
-      return { processed, succeeded, failed }
-    } finally {
-      this.isPublishing = false
+      processed += 1
+      consecutiveTasks += 1
+      broadcastToRenderers('cms.task.updated', task)
+
+      const result = await this.publishTask(task.accountId, {
+        queueTaskId: task.id,
+        mediaType: task.mediaType,
+        videoPath: task.videoPath,
+        images: task.images,
+        title: task.title,
+        content: task.content,
+        productId: task.productId,
+        productName: task.productName,
+        linkedProducts: task.linkedProducts,
+        dryRun: QUEUE_DRY_RUN_ENABLED,
+        mode: 'immediate'
+      })
+
+      if (result.success) {
+        if (!result.time) {
+          failed += 1
+          queueService.failTask(task.id, '发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。', {
+            returnToPendingPool: true,
+            status: 'publish_failed',
+            resetRetryCount: true
+          })
+          const updated = taskManager.updateBatch([task.id], {})[0]
+          if (updated) broadcastToRenderers('cms.task.updated', updated)
+        } else {
+          succeeded += 1
+          queueService.completeTask(task.id)
+          const updated = taskManager.updateBatch([task.id], { publishedAt: result.time, errorMsg: '', scheduledAt: null })[0]
+          if (updated) broadcastToRenderers('cms.task.updated', updated)
+        }
+      } else {
+        failed += 1
+        queueService.failTask(task.id, result.error ?? '发布失败，请检查后重新排期。', {
+          returnToPendingPool: true,
+          status: 'publish_failed',
+          resetRetryCount: true
+        })
+        const updated = taskManager.updateBatch([task.id], {})[0]
+        if (updated) broadcastToRenderers('cms.task.updated', updated)
+      }
+
+      // 冷却：每 N 个任务后休息
+      if (queueConfig.cooldownAfterNTasks > 0 && consecutiveTasks >= queueConfig.cooldownAfterNTasks) {
+        const cooldownMs = gaussianDelay(queueConfig.cooldownDurationMs * 0.8, queueConfig.cooldownDurationMs * 1.2)
+        console.log(`[Queue] Cooldown after ${consecutiveTasks} tasks: resting ${Math.round(cooldownMs / 1000)}s...`)
+        await sleep(cooldownMs)
+        consecutiveTasks = 0
+      } else {
+        // 任务间高斯随机间隔
+        const delayMs = gaussianDelay(queueConfig.taskIntervalMinMs, queueConfig.taskIntervalMaxMs)
+        console.log(`[Queue] Next task in ${Math.round(delayMs / 1000)}s...`)
+        await sleep(delayMs)
+      }
+
+      task = queueService.acquireNextTask({
+        accountId: typeof options.accountId === 'string' ? options.accountId : undefined,
+        taskIds: Array.isArray(options.taskIds) ? options.taskIds : undefined
+      })
     }
+
+    return { processed, succeeded, failed }
   }
 }
 
