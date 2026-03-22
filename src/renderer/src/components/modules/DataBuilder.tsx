@@ -270,6 +270,10 @@ function DataBuilder(): React.JSX.Element {
   }, [workshopImport])
 
   const importedVideoPath = useMemo(() => importedVideoPaths[0] ?? '', [importedVideoPaths])
+  const importedManualCoverPath = useMemo(() => {
+    if (workshopImport?.type !== 'video') return ''
+    return typeof workshopImport.coverPath === 'string' ? workshopImport.coverPath.trim() : ''
+  }, [workshopImport])
 
   const importedImageFolderPath = useMemo(() => {
     const commonFolder = commonDirFromPaths(importedImagePaths)
@@ -750,10 +754,19 @@ function DataBuilder(): React.JSX.Element {
             const nextTasks = videoTasks.map((task) => {
               const normalizedVideoPath = String(task.videoPath ?? '').trim()
               const coverPath = normalizedVideoPath ? (coverMap.get(normalizedVideoPath) ?? '') : ''
+              const shouldUseImportedManualCover =
+                Boolean(importedManualCoverPath) &&
+                (importedVideoPaths.length === 1 || normalizedVideoPath === importedVideoPath)
+              const videoCoverMode = shouldUseImportedManualCover ? ('manual' as const) : ('auto' as const)
               if (coverPath) nextFallbackMap[task.id] = coverPath
               return {
                 ...task,
-                assignedImages: coverPath ? [coverPath] : []
+                assignedImages: shouldUseImportedManualCover
+                  ? [importedManualCoverPath]
+                  : coverPath
+                    ? [coverPath]
+                    : [],
+                videoCoverMode
               }
             })
             setVideoTaskFallbackCoverMap(nextFallbackMap)
@@ -1066,7 +1079,8 @@ function DataBuilder(): React.JSX.Element {
           linkedProducts: selectedProducts.length > 0 ? selectedProducts : undefined,
           mediaType: task.mediaType,
           videoPath: task.videoPath,
-          videoPreviewPath: task.videoPreviewPath
+          videoPreviewPath: task.videoPreviewPath,
+          videoCoverMode: task.videoCoverMode
         })),
         { requestId }
       )
@@ -1227,6 +1241,7 @@ function DataBuilder(): React.JSX.Element {
                         videoPreviewTasks.map((task, index) => {
                           const currentCoverPath = String(task.assignedImages?.[0] ?? '').trim()
                           const fallbackCoverPath = videoTaskFallbackCoverMap[task.id] ?? ''
+                          const isManualCoverMode = task.videoCoverMode === 'manual'
                           const preview = resolveVideoCoverPreview({
                             manualCoverPath: currentCoverPath,
                             fallbackCoverPath
@@ -1234,7 +1249,6 @@ function DataBuilder(): React.JSX.Element {
                           const previewSrc = preview.path
                             ? resolveLocalImage(preview.path, workspacePath)
                             : ''
-                          const hasOverride = currentCoverPath && currentCoverPath !== fallbackCoverPath
                           return (
                             <div
                               key={task.id}
@@ -1260,8 +1274,8 @@ function DataBuilder(): React.JSX.Element {
                                     {index + 1}. {fileNameFromPath(String(task.videoPath ?? ''))}
                                   </div>
                                   <div className="mt-1 text-[11px] text-zinc-500">
-                                    {hasOverride
-                                      ? '当前为手动覆盖封面'
+                                    {isManualCoverMode
+                                      ? '当前为手动封面'
                                       : preview.source === 'manual'
                                         ? '当前封面'
                                         : preview.source === 'first-frame'

@@ -97,9 +97,14 @@ test('derivePublishLiveMessage converts helper logs into concise live status tex
     '[15:55:20] [小红书助手] [步骤 4] 挂载商品 1/3',
     'video'
   )
+  const autoCoverSkip = derivePublishLiveMessage(
+    '[15:55:22] [小红书助手] 使用默认首帧，跳过手动设置封面',
+    'video'
+  )
 
   assert.equal(loadingProducts, '正在打开添加商品弹窗')
   assert.equal(productProgress, '正在填写文案/挂车（挂载商品 1/3）')
+  assert.equal(autoCoverSkip, '正在设置封面（默认首帧，跳过手动设置封面）')
 })
 
 test('updatePublishSessionMessage refreshes the current message without mutating steps', () => {

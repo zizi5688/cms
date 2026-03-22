@@ -12,6 +12,7 @@ type CmsPublishTask = {
   mediaType: 'image' | 'video'
   videoPath?: string
   videoPreviewPath?: string
+  videoCoverMode?: 'auto' | 'manual'
   images: string[]
   title: string
   content: string
@@ -505,6 +506,7 @@ const api = {
           content?: string
           mediaType?: 'image' | 'video'
           videoPath?: string
+          videoCoverMode?: 'auto' | 'manual'
           images?: string[]
           imagePath?: string
           productId?: string
@@ -572,6 +574,7 @@ const api = {
           mediaType?: 'image' | 'video'
           videoPath?: string
           videoPreviewPath?: string
+          videoCoverMode?: 'auto' | 'manual'
           isRemix?: boolean
           videoClips?: string[]
           durationReferenceClips?: string[]

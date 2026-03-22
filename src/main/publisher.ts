@@ -79,6 +79,7 @@ export type PublisherTaskData = {
   content?: string
   mediaType?: 'image' | 'video'
   videoPath?: string
+  videoCoverMode?: 'auto' | 'manual'
   images?: string[]
   imagePath?: string
   productId?: string
@@ -105,6 +106,7 @@ type AutomationTaskPayload = {
     content: string
     mediaType?: 'image' | 'video'
     videoPath?: string
+    videoCoverMode?: 'auto' | 'manual'
     images: string[]
     productId?: string
     productName?: string
@@ -127,12 +129,17 @@ function resolveProductSyncPreloadPath(): string {
   return join(__dirname, '../preload/xhs-product-sync.js')
 }
 
+function normalizeVideoCoverMode(value: unknown): 'auto' | 'manual' {
+  return value === 'auto' ? 'auto' : 'manual'
+}
+
 function normalizeTask(taskData: PublisherTaskData): {
   queueTaskId?: string
   title: string
   content: string
   mediaType: 'image' | 'video'
   videoPath?: string
+  videoCoverMode?: 'auto' | 'manual'
   images: string[]
   productId?: string
   productName?: string
@@ -145,6 +152,7 @@ function normalizeTask(taskData: PublisherTaskData): {
   const content = typeof taskData?.content === 'string' ? taskData.content : ''
   const mediaType = taskData?.mediaType === 'video' || (typeof taskData?.videoPath === 'string' && taskData.videoPath.trim()) ? 'video' : 'image'
   const videoPath = typeof taskData?.videoPath === 'string' && taskData.videoPath.trim() ? taskData.videoPath.trim() : undefined
+  const videoCoverMode = mediaType === 'video' ? normalizeVideoCoverMode(taskData?.videoCoverMode) : undefined
   const imagesFromArray = Array.isArray(taskData?.images) ? taskData.images.filter((p) => typeof p === 'string') : []
   const imagePath = typeof taskData?.imagePath === 'string' ? taskData.imagePath : ''
   const images = imagesFromArray.length > 0 ? imagesFromArray : imagePath ? [imagePath] : []
@@ -164,7 +172,7 @@ function normalizeTask(taskData: PublisherTaskData): {
     : undefined
   const dryRun = taskData?.dryRun === false ? false : true
   const mode: 'immediate' = 'immediate'
-  return { queueTaskId, title, content, mediaType, videoPath, images, productId, productName, linkedProducts, dryRun, mode }
+  return { queueTaskId, title, content, mediaType, videoPath, videoCoverMode, images, productId, productName, linkedProducts, dryRun, mode }
 }
 
 function isLikelyLoginUrl(url: string): boolean {
@@ -482,6 +490,7 @@ export class PublisherService {
           content: normalizedTask.content,
           mediaType: normalizedTask.mediaType,
           videoPath: normalizedTask.videoPath,
+          videoCoverMode: normalizedTask.videoCoverMode,
           images: normalizedTask.images,
           productId: normalizedTask.productId,
           productName: normalizedTask.productName,
@@ -588,6 +597,7 @@ export class PublisherService {
           queueTaskId: task.id,
           mediaType: task.mediaType,
           videoPath: task.videoPath,
+          videoCoverMode: task.videoCoverMode,
           images: task.images,
           title: task.title,
           content: task.content,

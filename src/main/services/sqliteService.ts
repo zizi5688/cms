@@ -56,6 +56,7 @@ export class SqliteService {
     const hasRemixSourceTaskIds = columns.some((col) => col?.name === 'remixSourceTaskIds')
     const hasRemixSeed = columns.some((col) => col?.name === 'remixSeed')
     const hasLinkedProductsJson = columns.some((col) => col?.name === 'linkedProductsJson')
+    const hasVideoCoverMode = columns.some((col) => col?.name === 'videoCoverMode')
 
     if (!hasLockedAt) {
       db.exec(`ALTER TABLE tasks ADD COLUMN locked_at INTEGER;`)
@@ -77,6 +78,9 @@ export class SqliteService {
     }
     if (!hasLinkedProductsJson) {
       db.exec(`ALTER TABLE tasks ADD COLUMN linkedProductsJson TEXT;`)
+    }
+    if (!hasVideoCoverMode) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN videoCoverMode TEXT NOT NULL DEFAULT 'manual';`)
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
   }
@@ -302,6 +306,7 @@ export class SqliteService {
         images TEXT NOT NULL DEFAULT '[]',
         videoPath TEXT,
         videoPreviewPath TEXT,
+        videoCoverMode TEXT NOT NULL DEFAULT 'manual',
         title TEXT NOT NULL,
         content TEXT NOT NULL,
         tags TEXT,
@@ -466,26 +471,27 @@ export class SqliteService {
 
     const insertTask = db.prepare(
       `INSERT OR IGNORE INTO tasks (
-        id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+        id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
         title, content, tags, productId, productName, publishMode, transformPolicy,
         remixSessionId, remixSourceTaskIds, remixSeed,
         scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
       ) VALUES (
-        @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath,
+        @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath, @videoCoverMode,
         @title, @content, @tags, @productId, @productName, @publishMode, @transformPolicy,
         @remixSessionId, @remixSourceTaskIds, @remixSeed,
         @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
       )`
     )
     const selectTask = db.prepare(
-      `SELECT id, accountId, scheduledAt, images, videoPath, videoPreviewPath FROM tasks WHERE id = ?`
+      `SELECT id, accountId, scheduledAt, images, videoPath, videoPreviewPath, videoCoverMode FROM tasks WHERE id = ?`
     )
     const patchTask = db.prepare(
       `UPDATE tasks SET
         scheduledAt = COALESCE(@scheduledAt, scheduledAt),
         images = CASE WHEN images IS NULL OR images = '' OR images = '[]' THEN @images ELSE images END,
         videoPath = COALESCE(videoPath, @videoPath),
-        videoPreviewPath = COALESCE(videoPreviewPath, @videoPreviewPath)
+        videoPreviewPath = COALESCE(videoPreviewPath, @videoPreviewPath),
+        videoCoverMode = COALESCE(videoCoverMode, @videoCoverMode)
       WHERE id = @id`
     )
 
@@ -580,6 +586,11 @@ export class SqliteService {
           if (raw === 'video' || raw === 'image') return raw
           return videoPath ? 'video' : 'image'
         })()
+        const videoCoverMode = mediaType === 'video'
+          ? normalizeString(t.videoCoverMode) === 'auto'
+            ? 'auto'
+            : 'manual'
+          : 'manual'
         const publishMode = (() => {
           const raw = normalizeString(t.publishMode)
           void raw
@@ -629,6 +640,7 @@ export class SqliteService {
             images: toJsonText(imagesArray),
             videoPath,
             videoPreviewPath,
+            videoCoverMode,
             title: normalizeString(t.title),
             content: normalizeString(t.content),
             tags: tagsArray ? toJsonText(tagsArray) : null,
@@ -658,6 +670,7 @@ export class SqliteService {
           images: toJsonText(imagesArray),
           videoPath,
           videoPreviewPath,
+          videoCoverMode,
           title: normalizeString(t.title),
           content: normalizeString(t.content),
           tags: tagsArray ? toJsonText(tagsArray) : null,
@@ -682,7 +695,8 @@ export class SqliteService {
             scheduledAt,
             images: toJsonText(imagesArray),
             videoPath,
-            videoPreviewPath
+            videoPreviewPath,
+            videoCoverMode
           })
         }
       }

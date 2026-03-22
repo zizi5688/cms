@@ -2257,6 +2257,7 @@ app.whenReady().then(async () => {
       content?: unknown
       mediaType?: unknown
       videoPath?: unknown
+      videoCoverMode?: unknown
       images?: unknown
       imagePath?: unknown
       productId?: unknown
@@ -2271,6 +2272,7 @@ app.whenReady().then(async () => {
       content: typeof taskData.content === 'string' ? taskData.content : undefined,
       mediaType: taskData.mediaType === 'video' ? 'video' : taskData.mediaType === 'image' ? 'image' : undefined,
       videoPath: typeof taskData.videoPath === 'string' ? taskData.videoPath : undefined,
+      videoCoverMode: taskData.videoCoverMode === 'auto' ? 'auto' : taskData.videoCoverMode === 'manual' ? 'manual' : undefined,
       images: Array.isArray(taskData.images) ? taskData.images.filter((p): p is string => typeof p === 'string') : undefined,
       imagePath: typeof taskData.imagePath === 'string' ? taskData.imagePath : undefined,
       productId: typeof taskData.productId === 'string' ? taskData.productId : undefined,

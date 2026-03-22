@@ -102,6 +102,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
   const [draftTitle, setDraftTitle] = useState('')
   const [draftContent, setDraftContent] = useState('')
   const [draftImages, setDraftImages] = useState<string[]>([])
+  const [draftVideoCoverMode, setDraftVideoCoverMode] = useState<'auto' | 'manual'>('manual')
   const [draftSelectedProductIds, setDraftSelectedProductIds] = useState<string[]>([])
   const [products, setProducts] = useState<CmsProductRecord[]>([])
   const initializedRef = useRef<string | null>(null)
@@ -114,6 +115,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     setDraftTitle(task.title || '')
     setDraftContent(task.content || '')
     setDraftImages(Array.isArray(task.images) ? [...task.images] : [])
+    setDraftVideoCoverMode(task.videoCoverMode === 'auto' ? 'auto' : 'manual')
     setDraftSelectedProductIds(
       resolveTaskSelectedProductIds({
         linkedProducts: task.linkedProducts,
@@ -197,6 +199,9 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
     if (!task || !isEditable) return false
     if (draftTitle !== (task.title || '')) return true
     if (draftContent !== (task.content || '')) return true
+    if (task.mediaType === 'video' && draftVideoCoverMode !== (task.videoCoverMode === 'auto' ? 'auto' : 'manual')) {
+      return true
+    }
     if (!areStringArraysEqual(draftSelectedProductIds, originalSelectedProductIds)) return true
     const origImages = Array.isArray(task.images) ? task.images : []
     if (draftImages.length !== origImages.length) return true
@@ -204,7 +209,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
       if (draftImages[i] !== origImages[i]) return true
     }
     return false
-  }, [task, isEditable, draftTitle, draftContent, draftImages, draftSelectedProductIds, originalSelectedProductIds])
+  }, [task, isEditable, draftTitle, draftContent, draftImages, draftSelectedProductIds, draftVideoCoverMode, originalSelectedProductIds])
 
   const draftTitleCount = useMemo(() => countUserVisibleChars(draftTitle), [draftTitle])
   const hasTitleOverflow = useMemo(() => {
@@ -419,6 +424,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
         next[0] = nextCover
         return next
       })
+      setDraftVideoCoverMode('manual')
       setActiveIndex(0)
       setMainLoaded(false)
       setThumbLoaded(new Set())
@@ -456,6 +462,7 @@ function TaskDetailModal({ isOpen, onClose, task, workspacePath, onTaskUpdated }
         title: draftTitle,
         content: draftContent,
         images: draftImages,
+        ...(task.mediaType === 'video' ? { videoCoverMode: draftVideoCoverMode } : {}),
         productId: primaryProduct?.id ?? '',
         productName: primaryProduct?.name ?? '',
         linkedProducts: draftSelectedProducts

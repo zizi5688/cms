@@ -1,6 +1,7 @@
 type VideoTaskLike = {
   assignedImages: string[]
   mediaType?: 'image' | 'video'
+  videoCoverMode?: 'auto' | 'manual'
 }
 
 function compareNaturalByFilename(left: string, right: string): number {
@@ -39,7 +40,8 @@ export function applyBatchCoverPathsToVideoTasks<T extends VideoTaskLike>(
     changed = true
     return {
       ...task,
-      assignedImages: nextImages
+      assignedImages: nextImages,
+      videoCoverMode: 'manual'
     }
   })
 
