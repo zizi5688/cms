@@ -2,6 +2,7 @@ import { constants, existsSync } from 'fs'
 import { access, copyFile, mkdir, readFile, rename, writeFile } from 'fs/promises'
 import { randomUUID } from 'crypto'
 import { join, resolve } from 'path'
+import { normalizeVideoCoverModeForDb } from '../taskVideoCoverMode'
 
 export class SqliteService {
   private static instance: SqliteService | null = null
@@ -82,6 +83,11 @@ export class SqliteService {
     if (!hasVideoCoverMode) {
       db.exec(`ALTER TABLE tasks ADD COLUMN videoCoverMode TEXT NOT NULL DEFAULT 'manual';`)
     }
+    db.exec(`
+      UPDATE tasks
+      SET videoCoverMode = 'auto'
+      WHERE videoCoverMode IS NULL OR TRIM(videoCoverMode) = '' OR videoCoverMode NOT IN ('auto', 'manual');
+    `)
     db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remixSessionId ON tasks (remixSessionId);`)
   }
 
@@ -586,11 +592,7 @@ export class SqliteService {
           if (raw === 'video' || raw === 'image') return raw
           return videoPath ? 'video' : 'image'
         })()
-        const videoCoverMode = mediaType === 'video'
-          ? normalizeString(t.videoCoverMode) === 'auto'
-            ? 'auto'
-            : 'manual'
-          : 'manual'
+        const videoCoverMode = normalizeVideoCoverModeForDb(t.videoCoverMode)
         const publishMode = (() => {
           const raw = normalizeString(t.publishMode)
           void raw

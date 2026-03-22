@@ -4,6 +4,7 @@ import {
   normalizeLinkedProducts,
   type LinkedTaskProduct
 } from './taskLinkedProductsHelpers.ts'
+import { normalizeVideoCoverMode } from './taskVideoCoverMode.ts'
 
 export type NormalizedCreateBatchTaskPayload = {
   accountId: string
@@ -44,10 +45,6 @@ function uniqueTrimmedStringList(value: unknown): string[] | undefined {
     )
   )
   return normalized.length > 0 ? normalized : undefined
-}
-
-function normalizeVideoCoverMode(value: unknown): 'auto' | 'manual' {
-  return value === 'auto' ? 'auto' : 'manual'
 }
 
 export function normalizeCreateBatchTaskPayload(task: unknown): NormalizedCreateBatchTaskPayload {
@@ -121,7 +118,7 @@ export function normalizeCreateBatchTaskPayload(task: unknown): NormalizedCreate
     mediaType,
     videoPath: videoPath || undefined,
     videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
-    videoCoverMode: mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode) : undefined,
+    videoCoverMode: mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode, 'auto') : undefined,
     isRemix,
     videoClips,
     durationReferenceClips,

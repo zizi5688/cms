@@ -2957,7 +2957,7 @@ async function publishVideoTask(
 ): Promise<PublishTaskResult> {
   const mediaType = typeof taskData?.mediaType === 'string' ? String(taskData.mediaType).trim() : ''
   const videoPath = typeof taskData?.videoPath === 'string' ? String(taskData.videoPath).trim() : ''
-  const videoCoverMode = taskData?.videoCoverMode === 'auto' ? 'auto' : 'manual'
+  const videoCoverMode = taskData?.videoCoverMode === 'manual' ? 'manual' : 'auto'
   const title = typeof taskData?.title === 'string' ? taskData.title : ''
   const content = typeof taskData?.content === 'string' ? taskData.content : ''
   const tags = normalizeTaskTags(taskData?.tags)

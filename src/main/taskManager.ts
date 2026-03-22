@@ -16,6 +16,7 @@ import {
   normalizeLinkedProducts,
   type LinkedTaskProduct
 } from './taskLinkedProductsHelpers'
+import { normalizeVideoCoverMode, normalizeVideoCoverModeForDb } from './taskVideoCoverMode'
 
 export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
 
@@ -134,10 +135,6 @@ function normalizeTransformPolicy(value: unknown): TaskTransformPolicy {
 
 function normalizeMediaType(value: unknown): 'image' | 'video' {
   return value === 'video' ? 'video' : 'image'
-}
-
-function normalizeVideoCoverMode(value: unknown): VideoCoverMode {
-  return value === 'auto' ? 'auto' : 'manual'
 }
 
 function isHttpUrl(value: string): boolean {
@@ -1718,7 +1715,7 @@ export class TaskManager {
       resolvedMediaType === 'video'
         ? nextVideoCoverMode !== null
           ? nextVideoCoverMode
-          : task.videoCoverMode ?? 'manual'
+          : task.videoCoverMode ?? 'auto'
         : undefined
     const productFieldsTouched =
       typeof record.productId === 'string' || typeof record.productName === 'string'
@@ -1865,7 +1862,7 @@ export class TaskManager {
       images: JSON.stringify(Array.isArray(task.images) ? task.images : []),
       videoPath: task.videoPath ?? null,
       videoPreviewPath: task.videoPreviewPath ?? null,
-      videoCoverMode: task.videoCoverMode ?? (task.mediaType === 'video' ? 'manual' : null),
+      videoCoverMode: normalizeVideoCoverModeForDb(task.videoCoverMode),
       title: task.title,
       content: task.content,
       tags: task.tags && task.tags.length > 0 ? JSON.stringify(task.tags) : null,
