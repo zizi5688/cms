@@ -43,6 +43,10 @@ import {
   replaceVideoTaskCoverById,
   restoreVideoTaskCoverById
 } from './videoTaskCoverSyncHelpers'
+import {
+  buildDuplicateVideoCoverWarningMessage,
+  findDuplicateVideoCoverAssignments
+} from './videoDispatchCoverGuard'
 import { resolveVideoCoverPreview } from './videoCoverPreviewHelpers'
 
 function numberOr(value: string, fallback: number): number {
@@ -1021,6 +1025,15 @@ function DataBuilder(): React.JSX.Element {
       (t) => selectedImageIds.has(t.id) && !queuedTaskIds.has(t.id)
     )
     if (selectedTasks.length === 0) return
+
+    const duplicateVideoCoverAssignments = findDuplicateVideoCoverAssignments(selectedTasks)
+    if (duplicateVideoCoverAssignments.length > 0) {
+      addLog(
+        `[Super CMS] 已拦截派发：检测到 ${duplicateVideoCoverAssignments.length} 组不同视频复用同一封面。`
+      )
+      window.alert(buildDuplicateVideoCoverWarningMessage(duplicateVideoCoverAssignments))
+      return
+    }
 
     const requestId =
       typeof globalThis.crypto?.randomUUID === 'function'
