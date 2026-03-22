@@ -23,6 +23,7 @@ import {
   type PublishSessionSnapshot
 } from './publishSessionHelpers'
 import { createPublishQueueScheduler, type PublishQueueRunResult } from './publishQueueScheduler'
+import { normalizeVideoCoverMode } from './taskVideoCoverMode'
 
 type ElectronStoreCtor = new <T extends Record<string, unknown> = Record<string, unknown>>() => ElectronStore<T>
 const StoreCtor = ((ElectronStore as unknown as { default?: ElectronStoreCtor }).default ??
@@ -130,10 +131,6 @@ function resolveProductSyncPreloadPath(): string {
   return join(__dirname, '../preload/xhs-product-sync.js')
 }
 
-function normalizeVideoCoverMode(value: unknown): 'auto' | 'manual' {
-  return value === 'auto' ? 'auto' : 'manual'
-}
-
 function normalizeTask(taskData: PublisherTaskData): {
   queueTaskId?: string
   title: string
@@ -153,7 +150,7 @@ function normalizeTask(taskData: PublisherTaskData): {
   const content = typeof taskData?.content === 'string' ? taskData.content : ''
   const mediaType = taskData?.mediaType === 'video' || (typeof taskData?.videoPath === 'string' && taskData.videoPath.trim()) ? 'video' : 'image'
   const videoPath = typeof taskData?.videoPath === 'string' && taskData.videoPath.trim() ? taskData.videoPath.trim() : undefined
-  const videoCoverMode = mediaType === 'video' ? normalizeVideoCoverMode(taskData?.videoCoverMode) : undefined
+  const videoCoverMode = mediaType === 'video' ? normalizeVideoCoverMode(taskData?.videoCoverMode, 'auto') : undefined
   const imagesFromArray = Array.isArray(taskData?.images) ? taskData.images.filter((p) => typeof p === 'string') : []
   const imagePath = typeof taskData?.imagePath === 'string' ? taskData.imagePath : ''
   const images = imagesFromArray.length > 0 ? imagesFromArray : imagePath ? [imagePath] : []

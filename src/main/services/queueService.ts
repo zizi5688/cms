@@ -171,7 +171,8 @@ export class QueueService {
       videoPath: typeof row.videoPath === 'string' && row.videoPath.trim() ? String(row.videoPath) : undefined,
       videoPreviewPath:
         typeof row.videoPreviewPath === 'string' && row.videoPreviewPath.trim() ? String(row.videoPreviewPath) : undefined,
-      videoCoverMode: row.mediaType === 'video' && row.videoCoverMode === 'auto' ? 'auto' : 'manual',
+      videoCoverMode:
+        row.mediaType === 'video' ? (row.videoCoverMode === 'manual' ? 'manual' : 'auto') : undefined,
       images,
       title: String(row.title ?? ''),
       content: String(row.content ?? ''),
