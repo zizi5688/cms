@@ -26,3 +26,31 @@ test('normalizeCreateBatchTaskPayload keeps linked products for task creation', 
   assert.equal(normalized.productId, 'primary-product')
   assert.equal(normalized.productName, '主商品')
 })
+
+test('normalizeCreateBatchTaskPayload defaults missing videoCoverMode to manual for compatibility', () => {
+  const normalized = normalizeCreateBatchTaskPayload({
+    accountId: 'account-1',
+    mediaType: 'video',
+    videoPath: '/videos/demo.mp4',
+    images: ['/covers/first-frame.jpg'],
+    title: '视频标题',
+    content: '视频正文'
+  })
+
+  assert.equal(normalized.mediaType, 'video')
+  assert.equal(normalized.videoCoverMode, 'manual')
+})
+
+test('normalizeCreateBatchTaskPayload keeps explicit videoCoverMode when provided', () => {
+  const normalized = normalizeCreateBatchTaskPayload({
+    accountId: 'account-1',
+    mediaType: 'video',
+    videoPath: '/videos/demo.mp4',
+    images: ['/covers/manual.jpg'],
+    videoCoverMode: 'auto',
+    title: '视频标题',
+    content: '视频正文'
+  })
+
+  assert.equal(normalized.videoCoverMode, 'auto')
+})

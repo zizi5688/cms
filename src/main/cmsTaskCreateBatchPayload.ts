@@ -23,6 +23,7 @@ export type NormalizedCreateBatchTaskPayload = {
   mediaType: 'image' | 'video'
   videoPath?: string
   videoPreviewPath?: string
+  videoCoverMode?: 'auto' | 'manual'
   isRemix: boolean
   videoClips?: string[]
   durationReferenceClips?: string[]
@@ -43,6 +44,10 @@ function uniqueTrimmedStringList(value: unknown): string[] | undefined {
     )
   )
   return normalized.length > 0 ? normalized : undefined
+}
+
+function normalizeVideoCoverMode(value: unknown): 'auto' | 'manual' {
+  return value === 'auto' ? 'auto' : 'manual'
 }
 
 export function normalizeCreateBatchTaskPayload(task: unknown): NormalizedCreateBatchTaskPayload {
@@ -116,6 +121,7 @@ export function normalizeCreateBatchTaskPayload(task: unknown): NormalizedCreate
     mediaType,
     videoPath: videoPath || undefined,
     videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
+    videoCoverMode: mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode) : undefined,
     isRemix,
     videoClips,
     durationReferenceClips,

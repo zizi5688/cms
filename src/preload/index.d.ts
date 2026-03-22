@@ -59,6 +59,7 @@ declare global {
     mediaType: 'image' | 'video'
     videoPath?: string
     videoPreviewPath?: string
+    videoCoverMode?: 'auto' | 'manual'
     images: string[]
     title: string
     content: string
@@ -534,6 +535,7 @@ declare global {
             content?: string
             mediaType?: 'image' | 'video'
             videoPath?: string
+            videoCoverMode?: 'auto' | 'manual'
             images?: string[]
             imagePath?: string
             productId?: string
@@ -1118,6 +1120,7 @@ declare global {
             mediaType?: 'image' | 'video'
             videoPath?: string
             videoPreviewPath?: string
+            videoCoverMode?: 'auto' | 'manual'
             isRemix?: boolean
             videoClips?: string[]
             durationReferenceClips?: string[]
@@ -1139,6 +1142,7 @@ declare global {
             title?: string
             content?: string
             images?: string[]
+            videoCoverMode?: 'auto' | 'manual'
             productId?: string
             productName?: string
             linkedProducts?: CmsLinkedProductRecord[]
@@ -1158,6 +1162,7 @@ declare global {
               title?: string
               content?: string
               images?: string[]
+              videoCoverMode?: 'auto' | 'manual'
               productId?: string
               productName?: string
               linkedProducts?: CmsLinkedProductRecord[]

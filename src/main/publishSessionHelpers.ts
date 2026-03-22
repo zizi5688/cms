@@ -289,6 +289,10 @@ export function derivePublishLiveMessage(
     { pattern: /^商品添加流程结束/, resolve: () => '已完成一个挂车商品' },
     { pattern: /^准备点击：首个封面框/, resolve: () => '正在打开封面编辑' },
     { pattern: /^准备点击：封面弹窗确认按钮/, resolve: () => '正在确认封面' },
+    {
+      pattern: /^使用默认首帧，跳过手动设置封面/,
+      resolve: () => buildStageDetailMessage(mediaType, 'cover', '默认首帧，跳过手动设置封面')
+    },
     { pattern: /^正在点击发布按钮/, resolve: () => '正在提交发布' }
   ]
 

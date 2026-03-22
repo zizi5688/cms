@@ -34,6 +34,7 @@ export interface Task {
   mediaType?: 'image' | 'video'
   videoPath?: string
   videoPreviewPath?: string
+  videoCoverMode?: 'auto' | 'manual'
   status: TaskStatus
   log: string
 }

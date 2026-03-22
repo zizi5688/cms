@@ -21,6 +21,7 @@ export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_f
 
 export type PublishTaskMode = 'immediate'
 export type TaskTransformPolicy = 'none' | 'remix_v1'
+export type VideoCoverMode = 'auto' | 'manual'
 
 export type PublishTask = {
   id: string
@@ -29,6 +30,7 @@ export type PublishTask = {
   mediaType: 'image' | 'video'
   videoPath?: string
   videoPreviewPath?: string
+  videoCoverMode?: VideoCoverMode
   images: string[]
   title: string
   content: string
@@ -132,6 +134,10 @@ function normalizeTransformPolicy(value: unknown): TaskTransformPolicy {
 
 function normalizeMediaType(value: unknown): 'image' | 'video' {
   return value === 'video' ? 'video' : 'image'
+}
+
+function normalizeVideoCoverMode(value: unknown): VideoCoverMode {
+  return value === 'auto' ? 'auto' : 'manual'
 }
 
 function isHttpUrl(value: string): boolean {
@@ -490,7 +496,7 @@ export class TaskManager {
     const rows = db
       .prepare(
         `SELECT
-          id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+          id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
@@ -511,7 +517,7 @@ export class TaskManager {
     const rows = db
       .prepare(
         `SELECT
-          id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+          id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
@@ -536,7 +542,7 @@ export class TaskManager {
     const rows = db
       .prepare(
         `SELECT
-          id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+          id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
@@ -559,6 +565,7 @@ export class TaskManager {
       tags?: string[]
       mediaType?: 'image' | 'video'
       videoPath?: string
+      videoCoverMode?: VideoCoverMode
       isRemix?: boolean
       videoClips?: string[]
       durationReferenceClips?: string[]
@@ -1060,6 +1067,7 @@ export class TaskManager {
       }
 
       const mediaType: 'image' | 'video' = wantsVideo ? 'video' : 'image'
+      const videoCoverMode = mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode) : undefined
       if (mediaType === 'image' && images.length === 0) continue
       if (mediaType === 'video' && !videoPath) continue
       if (mediaType === 'video' && remixCoverPath && !images.includes(remixCoverPath)) {
@@ -1113,6 +1121,7 @@ export class TaskManager {
         mediaType,
         videoPath,
         videoPreviewPath: typeof record.videoPreviewPath === 'string' ? normalizeText(record.videoPreviewPath) || undefined : undefined,
+        videoCoverMode,
         images,
         title,
         content,
@@ -1144,12 +1153,12 @@ export class TaskManager {
     }
     const insert = db.prepare(
       `INSERT INTO tasks (
-        id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+        id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
         title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
         remixSessionId, remixSourceTaskIds, remixSeed,
         scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
       ) VALUES (
-        @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath,
+        @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath, @videoCoverMode,
         @title, @content, @tags, @productId, @productName, @linkedProductsJson, @publishMode, @transformPolicy,
         @remixSessionId, @remixSourceTaskIds, @remixSeed,
         @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
@@ -1529,6 +1538,7 @@ export class TaskManager {
         images=@images,
         videoPath=@videoPath,
         videoPreviewPath=@videoPreviewPath,
+        videoCoverMode=@videoCoverMode,
         title=@title,
         content=@content,
         tags=@tags,
@@ -1596,6 +1606,7 @@ export class TaskManager {
         images=@images,
         videoPath=@videoPath,
         videoPreviewPath=@videoPreviewPath,
+        videoCoverMode=@videoCoverMode,
         title=@title,
         content=@content,
         tags=@tags,
@@ -1662,6 +1673,14 @@ export class TaskManager {
             ? undefined
             : null
         : null
+    const nextVideoCoverMode =
+      'videoCoverMode' in record
+        ? typeof record.videoCoverMode === 'string'
+          ? normalizeVideoCoverMode(record.videoCoverMode)
+          : record.videoCoverMode === null
+            ? undefined
+            : null
+        : null
 
     let nextPublishedAt: string | null | undefined = undefined
     if ('publishedAt' in record) {
@@ -1695,6 +1714,12 @@ export class TaskManager {
     const resolvedVideoPath = nextVideoPath !== null ? nextVideoPath : task.videoPath
     const resolvedVideoPreviewPath = nextVideoPreviewPath !== null ? nextVideoPreviewPath : task.videoPreviewPath
     const resolvedMediaType = nextMediaType !== null ? nextMediaType : task.mediaType
+    const resolvedVideoCoverMode =
+      resolvedMediaType === 'video'
+        ? nextVideoCoverMode !== null
+          ? nextVideoCoverMode
+          : task.videoCoverMode ?? 'manual'
+        : undefined
     const productFieldsTouched =
       typeof record.productId === 'string' || typeof record.productName === 'string'
 
@@ -1739,7 +1764,8 @@ export class TaskManager {
       publishedAt: resolvedPublishedAt,
       mediaType: resolvedMediaType === 'video' && !resolvedVideoPath ? 'image' : resolvedMediaType,
       videoPath: resolvedMediaType === 'video' ? resolvedVideoPath : undefined,
-      videoPreviewPath: resolvedMediaType === 'video' ? resolvedVideoPreviewPath : undefined
+      videoPreviewPath: resolvedMediaType === 'video' ? resolvedVideoPreviewPath : undefined,
+      videoCoverMode: resolvedMediaType === 'video' && resolvedVideoPath ? resolvedVideoCoverMode : undefined
     }
   }
 
@@ -1782,6 +1808,7 @@ export class TaskManager {
     const videoPath = typeof row.videoPath === 'string' && row.videoPath.trim() ? row.videoPath : undefined
     const videoPreviewPath =
       typeof row.videoPreviewPath === 'string' && row.videoPreviewPath.trim() ? row.videoPreviewPath : undefined
+    const videoCoverMode = normalizeVideoCoverMode(row.videoCoverMode)
     const title = typeof row.title === 'string' ? row.title : ''
     const content = typeof row.content === 'string' ? row.content : ''
     const productId = typeof row.productId === 'string' && row.productId.trim() ? row.productId : undefined
@@ -1807,6 +1834,7 @@ export class TaskManager {
       mediaType: mediaType === 'video' && !videoPath ? 'image' : mediaType,
       videoPath: mediaType === 'video' ? videoPath : undefined,
       videoPreviewPath: mediaType === 'video' ? videoPreviewPath : undefined,
+      videoCoverMode: mediaType === 'video' && videoPath ? videoCoverMode : undefined,
       images,
       title,
       content,
@@ -1837,6 +1865,7 @@ export class TaskManager {
       images: JSON.stringify(Array.isArray(task.images) ? task.images : []),
       videoPath: task.videoPath ?? null,
       videoPreviewPath: task.videoPreviewPath ?? null,
+      videoCoverMode: task.videoCoverMode ?? (task.mediaType === 'video' ? 'manual' : null),
       title: task.title,
       content: task.content,
       tags: task.tags && task.tags.length > 0 ? JSON.stringify(task.tags) : null,
@@ -1867,7 +1896,7 @@ export class TaskManager {
     const row = db
       .prepare(
         `SELECT
-          id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+          id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
@@ -1889,7 +1918,7 @@ export class TaskManager {
     const rows = db
       .prepare(
         `SELECT
-          id, accountId, status, mediaType, images, videoPath, videoPreviewPath,
+          id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
           scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw

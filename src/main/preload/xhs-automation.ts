@@ -2836,6 +2836,7 @@ type TaskData = {
   imagePath?: unknown
   mediaType?: unknown
   videoPath?: unknown
+  videoCoverMode?: unknown
   productId?: unknown
   productName?: unknown
   linkedProducts?: unknown
@@ -2956,6 +2957,7 @@ async function publishVideoTask(
 ): Promise<PublishTaskResult> {
   const mediaType = typeof taskData?.mediaType === 'string' ? String(taskData.mediaType).trim() : ''
   const videoPath = typeof taskData?.videoPath === 'string' ? String(taskData.videoPath).trim() : ''
+  const videoCoverMode = taskData?.videoCoverMode === 'auto' ? 'auto' : 'manual'
   const title = typeof taskData?.title === 'string' ? taskData.title : ''
   const content = typeof taskData?.content === 'string' ? taskData.content : ''
   const tags = normalizeTaskTags(taskData?.tags)
@@ -2972,7 +2974,8 @@ async function publishVideoTask(
   logStep(0, '开始执行视频发布任务', {
     mediaType: mediaType || 'video',
     hasVideo: Boolean(videoPath),
-    hasCover: coverFromArray.length > 0,
+    videoCoverMode,
+    hasCover: videoCoverMode === 'manual' && coverFromArray.length > 0,
     hasTitle: !!title,
     hasContent: !!content,
     tags: tags.length,
@@ -2992,8 +2995,12 @@ async function publishVideoTask(
   })
 
   await runStep('上传视频封面（先封面后文案）', async () => {
+    if (videoCoverMode === 'auto') {
+      logPlain('使用默认首帧，跳过手动设置封面')
+      return
+    }
     if (coverFromArray.length === 0) {
-      logPlain('未提供封面路径，跳过设置封面。')
+      logPlain('未提供手动封面路径，跳过设置封面。')
       return
     }
     await setVideoCover(coverFromArray[0]!)

@@ -3,6 +3,7 @@ type VideoTaskLike = {
   assignedImages: string[]
   mediaType?: 'image' | 'video'
   videoPath?: string
+  videoCoverMode?: 'auto' | 'manual'
 }
 
 function normalizePath(value: string | null | undefined): string {
@@ -17,7 +18,8 @@ function sameImages(left: string[], right: string[]): boolean {
 function updateVideoTaskImagesById<T extends VideoTaskLike>(
   tasks: T[],
   taskId: string,
-  nextImages: string[]
+  nextImages: string[],
+  videoCoverMode: 'auto' | 'manual'
 ): { tasks: T[]; changed: boolean } {
   const normalizedTaskId = normalizePath(taskId)
   if (!normalizedTaskId) return { tasks, changed: false }
@@ -32,7 +34,8 @@ function updateVideoTaskImagesById<T extends VideoTaskLike>(
     changed = true
     return {
       ...task,
-      assignedImages: nextImages
+      assignedImages: nextImages,
+      videoCoverMode
     }
   })
 
@@ -46,7 +49,7 @@ export function replaceVideoTaskCoverById<T extends VideoTaskLike>(
 ): { tasks: T[]; changed: boolean } {
   const normalizedCoverPath = normalizePath(coverPath)
   if (!normalizedCoverPath) return { tasks, changed: false }
-  return updateVideoTaskImagesById(tasks, taskId, [normalizedCoverPath])
+  return updateVideoTaskImagesById(tasks, taskId, [normalizedCoverPath], 'manual')
 }
 
 export function restoreVideoTaskCoverById<T extends VideoTaskLike>(
@@ -55,5 +58,5 @@ export function restoreVideoTaskCoverById<T extends VideoTaskLike>(
   fallbackCoverPath: string
 ): { tasks: T[]; changed: boolean } {
   const normalizedFallback = normalizePath(fallbackCoverPath)
-  return updateVideoTaskImagesById(tasks, taskId, normalizedFallback ? [normalizedFallback] : [])
+  return updateVideoTaskImagesById(tasks, taskId, normalizedFallback ? [normalizedFallback] : [], 'auto')
 }

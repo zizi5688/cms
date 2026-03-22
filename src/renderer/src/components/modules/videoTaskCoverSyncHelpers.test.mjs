@@ -13,6 +13,7 @@ test('replaceVideoTaskCoverById updates only the targeted preview task', () => {
       title: 'A',
       body: 'body-a',
       assignedImages: ['/covers/old-a.jpg'],
+      videoCoverMode: 'auto',
       mediaType: 'video',
       videoPath: '/videos/a.mp4',
       status: 'idle',
@@ -23,6 +24,7 @@ test('replaceVideoTaskCoverById updates only the targeted preview task', () => {
       title: 'B',
       body: 'body-b',
       assignedImages: ['/covers/old-b.jpg'],
+      videoCoverMode: 'auto',
       mediaType: 'video',
       videoPath: '/videos/b.mp4',
       status: 'idle',
@@ -34,8 +36,8 @@ test('replaceVideoTaskCoverById updates only the targeted preview task', () => {
 
   assert.equal(result.changed, true)
   assert.deepEqual(
-    result.tasks.map((task) => task.assignedImages),
-    [['/covers/old-a.jpg'], ['/covers/manual-b.jpg']]
+    result.tasks.map((task) => [task.assignedImages, task.videoCoverMode]),
+    [[['/covers/old-a.jpg'], 'auto'], [['/covers/manual-b.jpg'], 'manual']]
   )
 })
 
@@ -46,6 +48,7 @@ test('replaceVideoTaskCoverById does not update sibling preview tasks that share
       title: 'A',
       body: 'body-a',
       assignedImages: [],
+      videoCoverMode: 'auto',
       mediaType: 'video',
       videoPath: '/videos/shared.mp4',
       status: 'idle',
@@ -56,6 +59,7 @@ test('replaceVideoTaskCoverById does not update sibling preview tasks that share
       title: 'B',
       body: 'body-b',
       assignedImages: [],
+      videoCoverMode: 'auto',
       mediaType: 'video',
       videoPath: '/videos/shared.mp4',
       status: 'idle',
@@ -67,8 +71,8 @@ test('replaceVideoTaskCoverById does not update sibling preview tasks that share
 
   assert.equal(result.changed, true)
   assert.deepEqual(
-    result.tasks.map((task) => task.assignedImages),
-    [[], ['/covers/shared-manual.jpg']]
+    result.tasks.map((task) => [task.assignedImages, task.videoCoverMode]),
+    [[[], 'auto'], [['/covers/shared-manual.jpg'], 'manual']]
   )
 })
 
@@ -79,6 +83,7 @@ test('restoreVideoTaskCoverById falls back to the stored first-frame cover for t
       title: 'Video',
       body: 'body-video',
       assignedImages: ['/covers/manual.jpg'],
+      videoCoverMode: 'manual',
       mediaType: 'video',
       videoPath: '/videos/video.mp4',
       status: 'idle',
@@ -90,4 +95,5 @@ test('restoreVideoTaskCoverById falls back to the stored first-frame cover for t
 
   assert.equal(result.changed, true)
   assert.deepEqual(result.tasks[0]?.assignedImages, ['/covers/first-frame.jpg'])
+  assert.equal(result.tasks[0]?.videoCoverMode, 'auto')
 })
