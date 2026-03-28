@@ -3786,9 +3786,6 @@ const useAiStudioState = () => {
       if (!sourceProviderSelection.apiKey.trim()) {
         throw new Error('[AI Studio] 请先填写图片供应商 API Key。')
       }
-      if (!sourceTask.primaryImagePath) {
-        throw new Error('[AI Studio] 请先添加参考图。')
-      }
 
       const sourceWorkflow = readWorkflowMetadata(sourceTask)
       const effectivePromptText =

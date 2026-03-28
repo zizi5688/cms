@@ -1729,9 +1729,6 @@ function ControlPanel({
         return
       }
 
-      if (!state.primaryImagePath) {
-        throw new Error('请先添加参考图。')
-      }
       const normalizedRequestedCount = parseOutputCountDraft(imageOutputCountDraft, {
         fieldLabel: '输出张数',
         min: 1

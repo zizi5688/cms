@@ -11,6 +11,10 @@ export function resolveImageSizeForModel(model: string): string {
   return MODEL_IMAGE_SIZE_MAP[normalized] ?? DEFAULT_IMAGE_SIZE
 }
 
+export function isGeminiGenerateContentPath(apiPath: string): boolean {
+  return /:generatecontent(?:$|[?#])/i.test(String(apiPath ?? '').trim())
+}
+
 export function isSeedanceVideoModel(model: string): boolean {
   const normalized = String(model ?? '').trim().toLowerCase()
   return normalized.includes('seedance')
