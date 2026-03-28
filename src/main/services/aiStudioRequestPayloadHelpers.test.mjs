@@ -6,6 +6,7 @@ import {
   buildImageGenerationDirectiveLines,
   buildGeminiGenerationConfig,
   buildGeminiImageConfig,
+  isGeminiGenerateContentPath,
   isSeedanceVideoModel,
   resolveImageSizeForModel
 } from './aiStudioRequestPayloadHelpers.ts'
@@ -119,4 +120,17 @@ test('buildGeminiGenerationConfig nests imageConfig under generationConfig', () 
       }
     }
   )
+})
+
+test('isGeminiGenerateContentPath recognizes Gemini native generateContent endpoints', () => {
+  assert.equal(
+    isGeminiGenerateContentPath('/v1beta/models/gemini-3-pro-image-preview:generateContent'),
+    true
+  )
+  assert.equal(
+    isGeminiGenerateContentPath('/v1beta/models/gemini-2.5-flash-image:generateContent?key=demo'),
+    true
+  )
+  assert.equal(isGeminiGenerateContentPath('/v1/chat/completions'), false)
+  assert.equal(isGeminiGenerateContentPath('/v1/draw/nano-banana'), false)
 })

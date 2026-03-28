@@ -18,6 +18,7 @@ import {
   buildSeedanceVideoTaskPayload,
   buildGeminiGenerationConfig,
   buildImageGenerationDirectiveLines,
+  isGeminiGenerateContentPath,
   isSeedanceVideoModel as isSeedanceRequestModel,
   resolveImageSizeForModel
 } from './aiStudioRequestPayloadHelpers'
@@ -700,10 +701,6 @@ function extractRemoteTaskId(
     (options?.allowTopLevelId === false ? null : normalizeNullableText(payload.id)) ??
     null
   )
-}
-
-function isGeminiGenerateContentPath(apiPath: string): boolean {
-  return /:generatecontent(?:$|[?#])/i.test(normalizeText(apiPath))
 }
 
 function isChatCompletionsPath(apiPath: string): boolean {
@@ -1731,10 +1728,6 @@ export class AiStudioService {
       primaryImagePath = currentAiMasterAsset.filePath
     }
 
-    if (!primaryImagePath) {
-      throw new Error('[AI Studio] 请先设置主图后再开始生成。')
-    }
-
     const config = this.getProviderConfig(task)
     const template = this.getTemplateById(task.templateId)
     const prompt = resolvePrompt(task, template)
@@ -1742,17 +1735,17 @@ export class AiStudioService {
       task.model,
       config.defaultImageModel || DEFAULT_IMAGE_MODEL
     )
+    const endpointPath = config.endpointPath || GRSAI_DRAW_PATH
     const sourceImagePaths = uniqueNormalizedPaths([
       primaryImagePath,
       ...workflowSource.sourceReferenceImagePaths
     ])
-    if (sourceImagePaths.length === 0) {
-      throw new Error('[AI Studio] 至少需要一张输入图片。')
+    if (sourceImagePaths.length === 0 && !isGeminiGenerateContentPath(endpointPath)) {
+      throw new Error('[AI Studio] 当前模型至少需要一张输入图片，请先添加主图或参考图。')
     }
 
     const urls = await Promise.all(sourceImagePaths.map((filePath) => filePathToDataUrl(filePath)))
     const aspectRatio = normalizeAspectRatio(task.aspectRatio)
-    const endpointPath = config.endpointPath || GRSAI_DRAW_PATH
     const imageSize = resolveImageSizeForModel(model)
 
     const requestPayload = isChatCompletionsPath(endpointPath)
