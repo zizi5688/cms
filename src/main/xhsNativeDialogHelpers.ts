@@ -30,10 +30,14 @@ type AppleScriptRunResult = {
 
 async function runAppleScript(options: {
   lines: string[]
+  args?: string[]
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
 }): Promise<AppleScriptRunResult> {
   const args = options.lines.flatMap((line) => ['-e', line])
+  if ((options.args?.length ?? 0) > 0) {
+    args.push('--', ...options.args!.map((value) => String(value)))
+  }
 
   return new Promise<AppleScriptRunResult>((resolvePromise) => {
     const child = spawn('osascript', args, {
@@ -76,30 +80,15 @@ async function runAppleScript(options: {
 
 export function buildMacNativeDialogAppleScriptLines(): string[] {
   return [
-    'on containsTargetFileName(targetContainer, targetFileName)',
-    '  try',
-    '    set uiItems to entire contents of targetContainer',
-    '  on error',
-    '    return false',
-    '  end try',
-    '  repeat with uiItem in uiItems',
-    '    try',
-    '      if (name of uiItem as text) is targetFileName then return true',
-    '    end try',
-    '    try',
-    '      if (value of uiItem as text) is targetFileName then return true',
-    '    end try',
-    '    try',
-    '      if (description of uiItem as text) is targetFileName then return true',
-    '    end try',
-    '  end repeat',
-    '  return false',
-    'end containsTargetFileName',
-    'set targetPidText to system attribute "CMS_XHS_DIALOG_PID"',
-    'set targetPath to system attribute "CMS_XHS_DIALOG_FILE_PATH"',
+    'on run argv',
+    'set targetPidText to item 1 of argv',
+    'set targetPath to item 2 of argv',
     'if targetPidText is "" then error "missing-target-pid"',
     'set targetPid to targetPidText as integer',
-    'set targetFileName to do shell script "basename " & quoted form of targetPath',
+    'set priorTextItemDelimiters to AppleScript\'s text item delimiters',
+    'set AppleScript\'s text item delimiters to "/"',
+    'set targetFileName to last text item of targetPath',
+    'set AppleScript\'s text item delimiters to priorTextItemDelimiters',
     'set priorClipboardText to ""',
     'set hadPriorClipboard to false',
     'try',
@@ -174,13 +163,6 @@ export function buildMacNativeDialogAppleScriptLines(): string[] {
     '        set selectedFileNameVerified to true',
     '        exit repeat',
     '      end if',
-    '      try',
-    '        if my containsTargetFileName(window 1, targetFileName) then',
-    '          set selectedFileNameValue to targetFileName',
-    '          set selectedFileNameVerified to true',
-    '          exit repeat',
-    '        end if',
-    '      end try',
     '      delay 0.1',
     '    end repeat',
     '    if selectedFileNameVerified is false then error "selected-file-name-mismatch"',
@@ -230,7 +212,8 @@ export function buildMacNativeDialogAppleScriptLines(): string[] {
     '    if didClickOpen is false then key code 36',
     '  end tell',
     'end tell',
-    'if hadPriorClipboard then set the clipboard to priorClipboardText'
+    'if hadPriorClipboard then set the clipboard to priorClipboardText',
+    'end run'
   ]
 }
 
@@ -356,10 +339,7 @@ export async function pickFileInMacNativeDialog(input: {
   if (!processId) return { ok: false, reason: 'missing-process-id' }
   const result = await runAppleScript({
     lines: buildMacNativeDialogAppleScriptLines(),
-    env: {
-      CMS_XHS_DIALOG_PID: String(processId),
-      CMS_XHS_DIALOG_FILE_PATH: normalizedPath
-    },
+    args: [String(processId), normalizedPath],
     timeoutMs: 12_000
   })
 

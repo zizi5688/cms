@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { buildMacNativeDialogAppleScriptLines, restoreWindowAfterNativeDialog } from './xhsNativeDialogHelpers.ts'
@@ -6,10 +10,13 @@ import { buildMacNativeDialogAppleScriptLines, restoreWindowAfterNativeDialog } 
 test('buildMacNativeDialogAppleScriptLines targets the owning process by pid instead of an arbitrary frontmost process', () => {
   const script = buildMacNativeDialogAppleScriptLines().join('\n')
 
-  assert.match(script, /set targetPidText to system attribute "CMS_XHS_DIALOG_PID"/)
+  assert.match(script, /on run argv/)
+  assert.match(script, /set targetPidText to item 1 of argv/)
+  assert.match(script, /set targetPath to item 2 of argv/)
   assert.match(script, /set targetPid to targetPidText as integer/)
   assert.match(script, /first application process whose unix id is targetPid/)
   assert.doesNotMatch(script, /first process whose frontmost is true/)
+  assert.doesNotMatch(script, /system attribute/)
   assert.doesNotMatch(script, /tell application targetAppName to activate/)
 })
 
@@ -35,9 +42,31 @@ test('buildMacNativeDialogAppleScriptLines verifies the selected file name befor
   const script = buildMacNativeDialogAppleScriptLines().join('\n')
 
   assert.match(script, /selected-file-name-mismatch/)
-  assert.match(script, /set targetFileName to do shell script "basename/)
+  assert.match(script, /set priorTextItemDelimiters to AppleScript's text item delimiters/)
+  assert.match(script, /set targetFileName to last text item of targetPath/)
   assert.match(script, /set selectedFileNameVerified to false/)
   assert.match(script, /selectedFileNameValue is targetFileName/)
+})
+
+test('buildMacNativeDialogAppleScriptLines compiles as valid AppleScript on macOS', () => {
+  if (process.platform !== 'darwin') return
+
+  const dir = mkdtempSync(join(tmpdir(), 'xhs-native-dialog-'))
+  const sourcePath = join(dir, 'picker.applescript')
+  const compiledPath = join(dir, 'picker.scpt')
+  writeFileSync(sourcePath, `${buildMacNativeDialogAppleScriptLines().join('\n')}\n`, 'utf8')
+
+  const result = spawnSync('/usr/bin/osacompile', ['-o', compiledPath, sourcePath], {
+    encoding: 'utf8'
+  })
+
+  rmSync(dir, { recursive: true, force: true })
+
+  assert.equal(
+    result.status,
+    0,
+    `AppleScript should compile, got status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+  )
 })
 
 function createMockWindow(options = {}) {
