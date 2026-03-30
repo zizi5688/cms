@@ -22,6 +22,24 @@ test('buildMacNativeDialogAppleScriptLines waits for the chooser and restores cl
   assert.match(script, /if hadPriorClipboard then set the clipboard to priorClipboardText/)
 })
 
+test('buildMacNativeDialogAppleScriptLines verifies the go-to-folder input matches the target path before continuing', () => {
+  const script = buildMacNativeDialogAppleScriptLines().join('\n')
+
+  assert.match(script, /go-to-folder-path-mismatch/)
+  assert.match(script, /set typedPathVerified to false/)
+  assert.match(script, /set typedPathValue to value of text field 1/)
+  assert.match(script, /if typedPathValue is targetPath then/)
+})
+
+test('buildMacNativeDialogAppleScriptLines verifies the selected file name before clicking open', () => {
+  const script = buildMacNativeDialogAppleScriptLines().join('\n')
+
+  assert.match(script, /selected-file-name-mismatch/)
+  assert.match(script, /set targetFileName to do shell script "basename/)
+  assert.match(script, /set selectedFileNameVerified to false/)
+  assert.match(script, /selectedFileNameValue is targetFileName/)
+})
+
 function createMockWindow(options = {}) {
   let visible = options.visible ?? true
   let focused = options.focused ?? true
