@@ -30,14 +30,10 @@ type AppleScriptRunResult = {
 
 async function runAppleScript(options: {
   lines: string[]
-  args?: string[]
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
 }): Promise<AppleScriptRunResult> {
   const args = options.lines.flatMap((line) => ['-e', line])
-  if ((options.args?.length ?? 0) > 0) {
-    args.push('--', ...options.args!.map((value) => String(value)))
-  }
 
   return new Promise<AppleScriptRunResult>((resolvePromise) => {
     const child = spawn('osascript', args, {
@@ -80,15 +76,10 @@ async function runAppleScript(options: {
 
 export function buildMacNativeDialogAppleScriptLines(): string[] {
   return [
-    'on run argv',
-    'set targetPidText to item 1 of argv',
-    'set targetPath to item 2 of argv',
+    'set targetPidText to system attribute "CMS_XHS_DIALOG_PID"',
+    'set targetPath to system attribute "CMS_XHS_DIALOG_FILE_PATH"',
     'if targetPidText is "" then error "missing-target-pid"',
     'set targetPid to targetPidText as integer',
-    'set priorTextItemDelimiters to AppleScript\'s text item delimiters',
-    'set AppleScript\'s text item delimiters to "/"',
-    'set targetFileName to last text item of targetPath',
-    'set AppleScript\'s text item delimiters to priorTextItemDelimiters',
     'set priorClipboardText to ""',
     'set hadPriorClipboard to false',
     'try',
@@ -121,59 +112,13 @@ export function buildMacNativeDialogAppleScriptLines(): string[] {
     '    if chooserReady is false then error "chooser-not-ready"',
     '    keystroke "g" using {command down, shift down}',
     '    delay 0.35',
-    '    keystroke "a" using {command down}',
-    '    delay 0.08',
-    '    key code 51',
-    '    delay 0.08',
     '    keystroke "v" using {command down}',
     '    delay 0.25',
-    '    set typedPathVerified to false',
-    '    repeat 25 times',
-    '      set typedPathValue to ""',
-    '      try',
-    '        set typedPathValue to value of text field 1 of sheet 1 of sheet 1 of window 1',
-    '      end try',
-    '      if typedPathValue is "" then',
-    '        try',
-    '          set typedPathValue to value of text field 1 of sheet 1 of window 1',
-    '        end try',
-    '      end if',
-    '      if typedPathValue is "" then',
-    '        try',
-    '          set typedPathValue to value of text field 1 of window 1',
-    '        end try',
-    '      end if',
-    '      if typedPathValue is targetPath then',
-    '        set typedPathVerified to true',
-    '        exit repeat',
-    '      end if',
-    '      delay 0.1',
-    '    end repeat',
-    '    if typedPathVerified is false then error "go-to-folder-path-mismatch"',
     '    key code 36',
     '    delay 0.55',
-    '    set selectedFileNameVerified to false',
-    '    repeat 25 times',
-    '      set selectedFileNameValue to ""',
-    '      try',
-    '        set selectedFileNameValue to value of text field 1 of sheet 1 of window 1',
-    '      end try',
-    '      if selectedFileNameValue is "" then',
-    '        try',
-    '          set selectedFileNameValue to value of text field 1 of window 1',
-    '        end try',
-    '      end if',
-    '      if selectedFileNameValue is targetFileName then',
-    '        set selectedFileNameVerified to true',
-    '        exit repeat',
-    '      end if',
-    '      delay 0.1',
-    '    end repeat',
-    '    if selectedFileNameVerified is false then error "selected-file-name-mismatch"',
-    '    delay 3',
     '    set didClickOpen to false',
     '    repeat 20 times',
-      '      try',
+    '      try',
     '        if exists button "打开" of sheet 1 of window 1 then',
     '          if enabled of button "打开" of sheet 1 of window 1 then',
     '            click button "打开" of sheet 1 of window 1',
@@ -217,8 +162,7 @@ export function buildMacNativeDialogAppleScriptLines(): string[] {
     '    if didClickOpen is false then key code 36',
     '  end tell',
     'end tell',
-    'if hadPriorClipboard then set the clipboard to priorClipboardText',
-    'end run'
+    'if hadPriorClipboard then set the clipboard to priorClipboardText'
   ]
 }
 
@@ -344,8 +288,11 @@ export async function pickFileInMacNativeDialog(input: {
   if (!processId) return { ok: false, reason: 'missing-process-id' }
   const result = await runAppleScript({
     lines: buildMacNativeDialogAppleScriptLines(),
-    args: [String(processId), normalizedPath],
-    timeoutMs: 12_000
+    env: {
+      CMS_XHS_DIALOG_PID: String(processId),
+      CMS_XHS_DIALOG_FILE_PATH: normalizedPath
+    },
+    timeoutMs: 8_000
   })
 
   if (result.ok) return { ok: true }

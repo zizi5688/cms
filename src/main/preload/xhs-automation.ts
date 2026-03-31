@@ -2469,6 +2469,55 @@ function getElementCenterPoint(target: HTMLElement): { x: number; y: number } {
   }
 }
 
+type CoverModalUploadSnapshot = {
+  text: string
+  imageSources: string[]
+  selectedFileCount: number
+  fileValues: string[]
+}
+
+function normalizeImageSrcForCompare(src: string): string {
+  const raw = String(src ?? '').trim()
+  if (!raw) return ''
+  return raw.replace(/[?#].*$/, '')
+}
+
+function snapshotCoverModalUploadState(modalRoot: HTMLElement): CoverModalUploadSnapshot {
+  const text = normalizeText(modalRoot.innerText || modalRoot.textContent || '').toLowerCase()
+  const imageSources = Array.from(modalRoot.querySelectorAll('img'))
+    .filter((el): el is HTMLImageElement => el instanceof HTMLImageElement)
+    .map((img) => normalizeImageSrcForCompare(String(img.currentSrc || img.src || '')))
+    .filter(Boolean)
+    .slice(0, 40)
+  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(
+    (el): el is HTMLInputElement => el instanceof HTMLInputElement
+  )
+  const selectedFileCount = fileInputs.reduce((sum, input) => sum + (input.files?.length ?? 0), 0)
+  const fileValues = fileInputs
+    .map((input) => String(input.value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .slice(0, 20)
+  return { text, imageSources, selectedFileCount, fileValues }
+}
+
+function hasCoverSelectionSignal(modalRoot: HTMLElement, coverAbsPath: string, baseline: CoverModalUploadSnapshot): boolean {
+  const now = snapshotCoverModalUploadState(modalRoot)
+  const coverBase = path.basename(coverAbsPath).toLowerCase()
+  const coverStem = coverBase.includes('.') ? coverBase.slice(0, coverBase.lastIndexOf('.')) : coverBase
+
+  if (now.selectedFileCount > baseline.selectedFileCount) return true
+  if (coverBase && now.fileValues.some((v) => v.includes(coverBase))) return true
+  if (coverBase && now.text.includes(coverBase)) return true
+  if (coverStem && coverStem.length >= 6 && now.text.includes(coverStem)) return true
+
+  const imageChanged = now.imageSources.join('|') !== baseline.imageSources.join('|')
+  const textChanged = now.text !== baseline.text
+  const uploadWords = ['上传中', '处理中', '已上传', '上传成功', '重新上传', '替换', '更换']
+  if (uploadWords.some((w) => now.text.includes(w)) && (imageChanged || textChanged)) return true
+
+  return false
+}
+
 async function setVideoCover(coverImagePath: string): Promise<void> {
   const coverPath = String(coverImagePath ?? '').trim()
   if (!coverPath) return
@@ -2526,6 +2575,7 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       intervalMs: 180,
       timeoutMessage: '未找到“上传图片”按钮。'
     })
+    const beforeUploadState = snapshotCoverModalUploadState(modalRoot)
     let lastPickResult: unknown = null
     let nativePickSuccess = false
 
@@ -2568,11 +2618,23 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       )
     }
 
+    const selectionReady = await waitFor(
+      () => (hasCoverSelectionSignal(modalRoot, resolvedCoverPath, beforeUploadState) ? true : null),
+      {
+        timeoutMs: Math.min(7_000, timeLeft()),
+        intervalMs: 180,
+        timeoutMessage: '系统文件选择器未确认选中封面文件，停止点击确定。'
+      }
+    ).catch(() => null)
+    if (!selectionReady) {
+      throw new Error('系统文件选择器未确认封面已选中，已停止后续“确定”点击。')
+    }
+
     await sleep(Math.min(900, Math.max(320, timeLeft())))
     ensureTime()
 
     const confirmBtn = await waitFor(() => findCoverModalConfirmButton(modalRoot) || findConfirmButtonInScope(modalRoot) || null, {
-      timeoutMs: Math.min(9_000, timeLeft()),
+      timeoutMs: Math.min(6_000, timeLeft()),
       intervalMs: 180,
       timeoutMessage: '未找到封面弹窗“确定”按钮。'
     })
