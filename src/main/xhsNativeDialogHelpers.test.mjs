@@ -33,6 +33,8 @@ test('buildMacNativeDialogAppleScriptLines verifies the go-to-folder input match
   const script = buildMacNativeDialogAppleScriptLines().join('\n')
 
   assert.match(script, /go-to-folder-path-mismatch/)
+  assert.match(script, /keystroke "a" using \{command down\}/)
+  assert.match(script, /key code 51/)
   assert.match(script, /set typedPathVerified to false/)
   assert.match(script, /set typedPathValue to value of text field 1/)
   assert.match(script, /if typedPathValue is targetPath then/)
@@ -46,6 +48,7 @@ test('buildMacNativeDialogAppleScriptLines verifies the selected file name befor
   assert.match(script, /set targetFileName to last text item of targetPath/)
   assert.match(script, /set selectedFileNameVerified to false/)
   assert.match(script, /selectedFileNameValue is targetFileName/)
+  assert.match(script, /if selectedFileNameVerified is false then error "selected-file-name-mismatch"\ndelay 3|if selectedFileNameVerified is false then error "selected-file-name-mismatch"\n    delay 3/)
 })
 
 test('buildMacNativeDialogAppleScriptLines compiles as valid AppleScript on macOS', () => {
