@@ -1064,7 +1064,7 @@ export class TaskManager {
       }
 
       const mediaType: 'image' | 'video' = wantsVideo ? 'video' : 'image'
-      const videoCoverMode = mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode) : undefined
+      const videoCoverMode = normalizeVideoCoverMode(record.videoCoverMode)
       if (mediaType === 'image' && images.length === 0) continue
       if (mediaType === 'video' && !videoPath) continue
       if (mediaType === 'video' && remixCoverPath && !images.includes(remixCoverPath)) {

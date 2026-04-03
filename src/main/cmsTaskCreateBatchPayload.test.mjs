@@ -41,6 +41,19 @@ test('normalizeCreateBatchTaskPayload defaults missing videoCoverMode to auto fo
   assert.equal(normalized.videoCoverMode, 'auto')
 })
 
+test('normalizeCreateBatchTaskPayload keeps manual videoCoverMode for image tasks to satisfy storage schema', () => {
+  const normalized = normalizeCreateBatchTaskPayload({
+    accountId: 'account-1',
+    mediaType: 'image',
+    images: ['/images/demo.jpg'],
+    title: '图文标题',
+    content: '图文正文'
+  })
+
+  assert.equal(normalized.mediaType, 'image')
+  assert.equal(normalized.videoCoverMode, 'manual')
+})
+
 test('normalizeCreateBatchTaskPayload keeps explicit videoCoverMode when provided', () => {
   const normalized = normalizeCreateBatchTaskPayload({
     accountId: 'account-1',

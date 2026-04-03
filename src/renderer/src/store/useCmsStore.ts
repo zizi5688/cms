@@ -17,7 +17,7 @@ export type WorkshopImport = {
   path: string | null
   paths?: string[]
   coverPath?: string
-  source: 'imagelab' | 'ai-studio' | null
+  source: 'imagelab' | 'ai-studio' | 'ai-studio-note' | null
 }
 
 export type MaterialImport = {
@@ -26,11 +26,22 @@ export type MaterialImport = {
   target: 'image' | 'video' | null
 }
 
+export interface CmsLinkedProductRecord {
+  id: string
+  name: string
+  cover: string
+  productUrl: string
+}
+
 export interface Task {
   id: string
   title: string
   body: string
   assignedImages: string[]
+  accountId?: string
+  productId?: string
+  productName?: string
+  linkedProducts?: CmsLinkedProductRecord[]
   mediaType?: 'image' | 'video'
   videoPath?: string
   videoPreviewPath?: string
