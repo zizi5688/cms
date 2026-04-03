@@ -30,6 +30,16 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
 }
 
+const NOTE_SIDEBAR_DEFAULTS = {
+  mode: 'image-note' as NoteSidebarMode,
+  phase: 'editing' as NoteSidebarPhase,
+  csvDraft: '',
+  groupCountDraft: '1',
+  minImagesDraft: '3',
+  maxImagesDraft: '5',
+  maxReuseDraft: '1'
+}
+
 function AiStudioCanvas({
   state,
   initialPromptDraft,
@@ -157,16 +167,29 @@ function AiStudio(): React.JSX.Element {
   const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
   const setSelectedPublishTaskIds = useCmsStore((store) => store.setSelectedPublishTaskIds)
   const [noteSidebarOpen, setNoteSidebarOpen] = useState(false)
-  const [noteSidebarMode, setNoteSidebarMode] = useState<NoteSidebarMode>('image-note')
-  const [noteSidebarPhase, setNoteSidebarPhase] = useState<NoteSidebarPhase>('editing')
-  const [noteCsvDraft, setNoteCsvDraft] = useState('')
-  const [noteGroupCountDraft, setNoteGroupCountDraft] = useState('1')
-  const [noteMinImagesDraft, setNoteMinImagesDraft] = useState('3')
-  const [noteMaxImagesDraft, setNoteMaxImagesDraft] = useState('5')
-  const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState('1')
+  const [noteSidebarMode, setNoteSidebarMode] = useState<NoteSidebarMode>(NOTE_SIDEBAR_DEFAULTS.mode)
+  const [noteSidebarPhase, setNoteSidebarPhase] = useState<NoteSidebarPhase>(NOTE_SIDEBAR_DEFAULTS.phase)
+  const [noteCsvDraft, setNoteCsvDraft] = useState(NOTE_SIDEBAR_DEFAULTS.csvDraft)
+  const [noteGroupCountDraft, setNoteGroupCountDraft] = useState(NOTE_SIDEBAR_DEFAULTS.groupCountDraft)
+  const [noteMinImagesDraft, setNoteMinImagesDraft] = useState(NOTE_SIDEBAR_DEFAULTS.minImagesDraft)
+  const [noteMaxImagesDraft, setNoteMaxImagesDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
+  const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
   const [notePreviewTasks, setNotePreviewTasks] = useState<Task[]>([])
   const [isGeneratingNotePreview, setIsGeneratingNotePreview] = useState(false)
   const [noteUploadedMaterialPaths, setNoteUploadedMaterialPaths] = useState<string[]>([])
+
+  const resetNoteSidebarState = (): void => {
+    setNoteSidebarOpen(false)
+    setNoteSidebarMode(NOTE_SIDEBAR_DEFAULTS.mode)
+    setNoteSidebarPhase(NOTE_SIDEBAR_DEFAULTS.phase)
+    setNoteCsvDraft(NOTE_SIDEBAR_DEFAULTS.csvDraft)
+    setNoteGroupCountDraft(NOTE_SIDEBAR_DEFAULTS.groupCountDraft)
+    setNoteMinImagesDraft(NOTE_SIDEBAR_DEFAULTS.minImagesDraft)
+    setNoteMaxImagesDraft(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
+    setNoteMaxReuseDraft(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
+    setNotePreviewTasks([])
+    setNoteUploadedMaterialPaths([])
+  }
 
   const noteMaterials = useMemo(() => {
     const now = Date.now()
@@ -301,7 +324,7 @@ function AiStudio(): React.JSX.Element {
       }
       setSelectedPublishTaskIds(created.map((task) => String(task.id ?? '').trim()).filter(Boolean))
       setActiveModule('autopublish')
-      setNoteSidebarOpen(false)
+      resetNoteSidebarState()
       addLog(`[AI Studio] 已将 ${created.length} 组图文笔记直接派发到媒体矩阵队列。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

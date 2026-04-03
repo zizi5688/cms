@@ -121,7 +121,7 @@ export function normalizeCreateBatchTaskPayload(task: unknown): NormalizedCreate
     mediaType,
     videoPath: videoPath || undefined,
     videoPreviewPath: typeof record.videoPreviewPath === 'string' ? record.videoPreviewPath : undefined,
-    videoCoverMode: mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode) : undefined,
+    videoCoverMode: normalizeVideoCoverMode(record.videoCoverMode),
     isRemix,
     videoClips,
     durationReferenceClips,

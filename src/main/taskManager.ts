@@ -1067,7 +1067,7 @@ export class TaskManager {
       }
 
       const mediaType: 'image' | 'video' = wantsVideo ? 'video' : 'image'
-      const videoCoverMode = mediaType === 'video' ? normalizeVideoCoverMode(record.videoCoverMode) : undefined
+      const videoCoverMode = normalizeVideoCoverMode(record.videoCoverMode)
       if (mediaType === 'image' && images.length === 0) continue
       if (mediaType === 'video' && !videoPath) continue
       if (mediaType === 'video' && remixCoverPath && !images.includes(remixCoverPath)) {
@@ -1865,7 +1865,7 @@ export class TaskManager {
       images: JSON.stringify(Array.isArray(task.images) ? task.images : []),
       videoPath: task.videoPath ?? null,
       videoPreviewPath: task.videoPreviewPath ?? null,
-      videoCoverMode: task.videoCoverMode ?? (task.mediaType === 'video' ? 'manual' : null),
+      videoCoverMode: task.videoCoverMode ?? 'manual',
       title: task.title,
       content: task.content,
       tags: task.tags && task.tags.length > 0 ? JSON.stringify(task.tags) : null,

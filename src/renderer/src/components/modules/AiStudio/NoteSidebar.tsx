@@ -149,7 +149,7 @@ function deriveNoteBoundProductSummary(task: Task): {
     }
     return {
       primaryText: firstName,
-      suffixText: `...等 ${normalizedNames.length} 个商品`
+      suffixText: `等 ${normalizedNames.length} 个商品`
     }
   }
 
@@ -216,11 +216,11 @@ function MaterialTile({
       <button
         type="button"
         onClick={() => onRemove(asset)}
-        className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 opacity-0 shadow-[0_8px_18px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-900 group-hover/material:opacity-100"
+        className="absolute right-1.5 top-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 opacity-0 shadow-[0_6px_14px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-900 group-hover/material:opacity-100"
         aria-label="移出创作中心"
         title="移出创作中心"
       >
-        <X className="h-3.5 w-3.5" />
+        <X className="h-2.5 w-2.5" />
       </button>
     </div>
   )
@@ -276,19 +276,26 @@ function EmptyMaterialStrip({
       }}
       onDrop={handleDrop}
       className={cn(
-        'flex w-full flex-col items-center justify-center gap-3 border transition',
+        'flex w-full flex-col items-center justify-center gap-4 px-2 py-5 text-center transition',
         dragging
-          ? 'border-zinc-300 bg-zinc-50'
-          : 'border-dashed border-zinc-200 bg-zinc-50/60 hover:border-zinc-300 hover:bg-zinc-50'
+          ? 'bg-zinc-50/80'
+          : 'bg-transparent hover:bg-zinc-50/30'
       )}
     >
-      <div className="flex aspect-[4/5] w-[150px] max-w-full items-center justify-center border border-zinc-200 bg-white">
-        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-zinc-50 text-zinc-500">
+      <div
+        className={cn(
+          'flex aspect-[4/5] w-[150px] max-w-full items-center justify-center rounded-[28px] border border-dashed bg-white transition',
+          dragging
+            ? 'border-zinc-300 shadow-[0_14px_32px_rgba(15,23,42,0.06)]'
+            : 'border-zinc-200 shadow-[0_10px_26px_rgba(15,23,42,0.035)]'
+        )}
+      >
+        <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-zinc-200/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92))] text-zinc-400 shadow-[0_8px_18px_rgba(15,23,42,0.03)]">
           <Upload className="h-4 w-4" />
         </div>
       </div>
-      <div className="pb-4 text-center">
-        <div className="text-[12px] font-medium text-zinc-700">点击上传或拖入素材</div>
+      <div className="pb-2 text-center">
+        <div className="text-[12px] font-medium tracking-[0.01em] text-zinc-700">点击上传或拖入素材</div>
         <div className="mt-1 text-[11px] text-zinc-400">支持 jpg / png / webp / heic</div>
       </div>
     </button>
@@ -375,8 +382,8 @@ function PreviewNoteCard({
           </button>
         </div>
 
-        <div className="flex min-h-[120px] min-w-0 flex-col text-left">
-          <div className="flex min-w-0 flex-col items-start gap-2.5">
+        <div className="flex h-[120px] min-w-0 flex-col text-left">
+          <div className="flex min-w-0 shrink-0 flex-col items-start gap-2">
             {editingField === 'title' ? (
               <Input
                 autoFocus
@@ -403,7 +410,9 @@ function PreviewNoteCard({
                 <span className="line-clamp-2 break-all">{task.title.trim() || '未命名笔记'}</span>
               </button>
             )}
+          </div>
 
+          <div className="min-h-0 flex-1 pt-1">
             {editingField === 'body' ? (
               <Textarea
                 autoFocus
@@ -419,22 +428,24 @@ function PreviewNoteCard({
                     setEditingField(null)
                   }
                 }}
-                className="min-h-[96px] w-full resize-none rounded-none border-zinc-200 bg-white px-2 py-2 text-[12px] leading-6 text-zinc-600 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+                className="h-full min-h-0 w-full resize-none rounded-none border-zinc-200 bg-white px-2 py-2 text-[12px] leading-6 text-zinc-600 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
               />
             ) : (
-              <button
-                type="button"
-                onClick={() => openEditor('body')}
-                className="w-full text-left transition hover:text-zinc-700"
-              >
-                <div className="whitespace-pre-wrap break-words text-[12px] leading-[1.7] text-zinc-500">
-                  {task.body.trim() || '点击这里编辑正文'}
-                </div>
-              </button>
+              <div className="h-full overflow-y-auto pr-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                <button
+                  type="button"
+                  onClick={() => openEditor('body')}
+                  className="block w-full text-left align-top transition hover:text-zinc-700"
+                >
+                  <div className="whitespace-pre-wrap break-words text-[12px] leading-[1.7] text-zinc-500">
+                    {task.body.trim() || '点击这里编辑正文'}
+                  </div>
+                </button>
+              </div>
             )}
           </div>
 
-          <div className="mt-auto pt-2 text-[10px] leading-4 tracking-[0.01em] text-zinc-400">
+          <div className="mt-auto shrink-0 pt-2 text-[10px] leading-4 tracking-[0.01em] text-zinc-400">
             {productSummary.suffixText ? (
               <div className="flex min-w-0 items-baseline gap-0.5 whitespace-nowrap">
                 <span className="min-w-0 truncate">{productSummary.primaryText}</span>
@@ -1041,7 +1052,7 @@ function NoteSidebar({
         {isImageMode ? (
           <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
             {phase === 'editing' ? (
-              <div className="border-t border-zinc-200 pt-4">
+              <div className="pt-4">
                 {materials.length > 0 ? (
                   <div className="grid grid-cols-4 gap-3">
                     {materials.map((asset) => (
@@ -1112,7 +1123,7 @@ function NoteSidebar({
               {phase === 'editing' ? (
                 <div className="space-y-2">
                   <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
-                  <div className="border border-zinc-200 bg-white px-3 py-3">
+                  <div className="rounded-[5px] border border-zinc-200 bg-white px-3 py-3">
                     <Textarea
                       value={csvDraft}
                       onChange={(event) => onCsvChange(event.target.value)}
