@@ -26,11 +26,22 @@ export type MaterialImport = {
   target: 'image' | 'video' | null
 }
 
+export interface CmsLinkedProductRecord {
+  id: string
+  name: string
+  cover: string
+  productUrl: string
+}
+
 export interface Task {
   id: string
   title: string
   body: string
   assignedImages: string[]
+  accountId?: string
+  productId?: string
+  productName?: string
+  linkedProducts?: CmsLinkedProductRecord[]
   mediaType?: 'image' | 'video'
   videoPath?: string
   videoPreviewPath?: string

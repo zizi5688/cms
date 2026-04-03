@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type * as React from 'react'
 
 import {
@@ -16,7 +16,12 @@ import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
+import { resolveTaskSelectedProductIds } from '@renderer/lib/cmsTaskProductHelpers'
 import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
+import {
+  buildSelectedWorkshopProducts,
+  resolveWorkshopAccountId
+} from '@renderer/components/modules/workshopProductSelectionHelpers'
 
 import type { AiStudioAssetRecord } from './useAiStudioState'
 
@@ -354,6 +359,202 @@ function PreviewNoteCard({
   )
 }
 
+function DispatchSettingsModal({
+  isOpen,
+  selectedTaskCount,
+  accounts,
+  selectedAccountId,
+  products,
+  selectedProductIds,
+  onAccountChange,
+  onToggleProduct,
+  onClearProducts,
+  onClose,
+  onApply
+}: {
+  isOpen: boolean
+  selectedTaskCount: number
+  accounts: CmsAccountRecord[]
+  selectedAccountId: string
+  products: CmsProductRecord[]
+  selectedProductIds: string[]
+  onAccountChange: (value: string) => void
+  onToggleProduct: (productId: string) => void
+  onClearProducts: () => void
+  onClose: () => void
+  onApply: () => void
+}): React.JSX.Element | null {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const selectedProducts = useMemo(
+    () =>
+      buildSelectedWorkshopProducts({
+        allProducts: products,
+        selectedProductIds
+      }),
+    [products, selectedProductIds]
+  )
+
+  if (!isOpen) return null
+
+  return (
+    <div className="pointer-events-auto fixed inset-0 z-[90] flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),rgba(244,244,245,0.94))] px-5 py-8">
+      <button type="button" aria-label="关闭分发设置" className="absolute inset-0" onClick={onClose} />
+      <div className="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-[min(920px,calc(100vw-3rem))] flex-col bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,252,0.98))] shadow-[0_28px_90px_rgba(15,23,42,0.12),0_0_0_1px_rgba(148,163,184,0.12)]">
+        <div className="flex items-start justify-between gap-4 px-5 py-4">
+          <div>
+            <div className="text-[14px] font-medium tracking-[0.02em] text-zinc-900">分发设置</div>
+            <div className="mt-1 text-[11px] tracking-[0.04em] text-zinc-400">
+              为已选 {selectedTaskCount} 条笔记绑定账号与商品
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-8 w-8 items-center justify-center border border-zinc-200 bg-white text-zinc-500 shadow-[0_8px_18px_rgba(56,189,248,0.08)] transition hover:border-sky-200 hover:text-zinc-900"
+            aria-label="关闭分发设置"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-4 px-5 pb-5 lg:grid-cols-[240px_minmax(0,1fr)]">
+          <div className="flex flex-col gap-4">
+            <div className="border border-zinc-200/90 bg-white px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.025)]">
+              <div className="text-[10px] tracking-[0.08em] text-zinc-400">派发账号</div>
+              <select
+                value={selectedAccountId}
+                onChange={(event) => onAccountChange(event.target.value)}
+                className="mt-3 h-10 w-full border border-zinc-200 bg-white px-3 text-[13px] text-zinc-800 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
+              >
+                {accounts.length === 0 ? <option value="">暂无账号</option> : null}
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="border border-zinc-200/90 bg-white px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.025)]">
+              <div className="text-[10px] tracking-[0.08em] text-zinc-400">本次绑定</div>
+              <div className="mt-3 flex items-end gap-2">
+                <span className="text-[28px] font-semibold tracking-[-0.03em] text-zinc-900">
+                  {selectedTaskCount}
+                </span>
+                <span className="pb-1 text-[12px] text-zinc-400">条笔记</span>
+              </div>
+              <div className="mt-3 border border-zinc-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(240,249,255,0.65))] px-3 py-2 text-[12px] text-zinc-600 shadow-[0_10px_24px_rgba(56,189,248,0.05)]">
+                已选 {selectedProducts.length} 个商品
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onClose}
+                  className="h-8 flex-1 rounded-none border-zinc-200 bg-white px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  onClick={onApply}
+                  className="h-8 flex-1 rounded-none border border-sky-100 bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(240,249,255,0.95))] px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-800 shadow-[0_12px_28px_rgba(56,189,248,0.08)] transition hover:border-sky-200 hover:text-zinc-950 hover:shadow-[0_16px_34px_rgba(56,189,248,0.12)]"
+                >
+                  应用到已选笔记
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-0 border border-zinc-200/90 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.025)]">
+            <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <div>
+                <div className="text-[10px] tracking-[0.08em] text-zinc-400">挂车商品</div>
+                <div className="mt-1 text-[12px] text-zinc-500">
+                  {selectedProducts.length > 0
+                    ? `已选 ${selectedProducts.length} 个商品`
+                    : '选择后会应用到当前选中的笔记'}
+                </div>
+              </div>
+              {selectedProducts.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={onClearProducts}
+                  className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                >
+                  清空
+                </button>
+              ) : null}
+            </div>
+
+            <div className="min-h-0 max-h-[420px] overflow-y-auto px-3 pb-3 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              {products.length > 0 ? (
+                <div className="space-y-2">
+                  {products.map((product) => {
+                    const isSelected = selectedProductIds.includes(product.id)
+                    const previewSrc = product.cover
+                      ? resolveLocalImage(product.cover, workspacePath)
+                      : ''
+
+                    return (
+                      <button
+                        key={product.id}
+                        type="button"
+                        onClick={() => onToggleProduct(product.id)}
+                        className={cn(
+                          'flex w-full items-center gap-3 border px-3 py-3 text-left transition',
+                          isSelected
+                            ? 'border-sky-200 bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(240,249,255,0.82))] shadow-[0_10px_24px_rgba(56,189,248,0.08)]'
+                            : 'border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-[0_10px_22px_rgba(15,23,42,0.03)]'
+                        )}
+                      >
+                        <div className="flex h-[68px] w-[68px] shrink-0 items-center justify-center overflow-hidden border border-zinc-200 bg-zinc-50">
+                          {previewSrc ? (
+                            <img
+                              src={previewSrc}
+                              alt={product.name}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <ImageIcon className="h-4 w-4 text-zinc-300" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="line-clamp-2 text-[13px] font-medium leading-5 text-zinc-800">
+                            {product.name || product.id}
+                          </div>
+                          <div className="mt-2 text-[12px] text-zinc-400">
+                            {product.price || '未设置价格'}
+                          </div>
+                        </div>
+                        <div
+                          className={cn(
+                            'inline-flex h-6 w-6 shrink-0 items-center justify-center border transition',
+                            isSelected
+                              ? 'border-zinc-950 bg-zinc-950 text-white'
+                              : 'border-zinc-200 bg-white text-transparent'
+                          )}
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="flex min-h-[260px] items-center justify-center border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center text-[12px] text-zinc-400">
+                  {selectedAccountId ? '当前账号暂无已同步商品' : '请先选择账号'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PreviewEditorModal({
   task,
   onClose,
@@ -525,9 +726,17 @@ function NoteSidebar({
 }: NoteSidebarProps): React.JSX.Element {
   const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
   const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
+  const [isDispatchSettingsOpen, setIsDispatchSettingsOpen] = useState(false)
+  const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
+  const [products, setProducts] = useState<CmsProductRecord[]>([])
+  const [dispatchAccountIdDraft, setDispatchAccountIdDraft] = useState('')
+  const [dispatchProductIdsDraft, setDispatchProductIdsDraft] = useState<string[]>([])
+  const preferredAccountId = useCmsStore((store) => store.preferredAccountId)
+  const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
   const isImageMode = mode === 'image-note'
   const showPreview = isImageMode && phase === 'preview'
   const previewTaskIds = previewTasks.map((task) => task.id)
+  const previewTaskIdsKey = previewTaskIds.join('::')
   const allPreviewSelected =
     previewTaskIds.length > 0 && previewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
   const activePreviewTask =
@@ -538,13 +747,75 @@ function NoteSidebar({
   useEffect(() => {
     if (!showPreview) {
       setSelectedPreviewTaskIds([])
+      setIsDispatchSettingsOpen(false)
       return
     }
 
     setSelectedPreviewTaskIds((current) =>
       current.filter((taskId) => previewTaskIds.includes(taskId))
     )
-  }, [previewTaskIds, showPreview])
+  }, [previewTaskIdsKey, showPreview])
+
+  useEffect(() => {
+    if (!showPreview || !isDispatchSettingsOpen) return
+    let canceled = false
+    const loadAccounts = async (): Promise<void> => {
+      try {
+        const list = await window.api.cms.account.list()
+        if (canceled) return
+        setAccounts(list)
+        setDispatchAccountIdDraft((current) =>
+          resolveWorkshopAccountId({
+            accounts: list,
+            currentAccountId: current,
+            preferredAccountId
+          })
+        )
+      } catch {
+        if (canceled) return
+        setAccounts([])
+      }
+    }
+    void loadAccounts()
+    return () => {
+      canceled = true
+    }
+  }, [isDispatchSettingsOpen, preferredAccountId, showPreview])
+
+  useEffect(() => {
+    if (!showPreview || !isDispatchSettingsOpen) return
+    let canceled = false
+    const loadProducts = async (): Promise<void> => {
+      try {
+        const accountId = dispatchAccountIdDraft.trim()
+        if (!accountId) {
+          setProducts([])
+          return
+        }
+        const list = await window.api.cms.product.list({ accountId })
+        if (canceled) return
+        setProducts(list)
+      } catch {
+        if (canceled) return
+        setProducts([])
+      }
+    }
+    void loadProducts()
+    return () => {
+      canceled = true
+    }
+  }, [dispatchAccountIdDraft, isDispatchSettingsOpen, showPreview])
+
+  useEffect(() => {
+    if (!dispatchAccountIdDraft.trim()) {
+      setDispatchProductIdsDraft([])
+      return
+    }
+    const availableIds = new Set(products.map((product) => String(product.id ?? '').trim()).filter(Boolean))
+    setDispatchProductIdsDraft((current) =>
+      current.filter((productId) => availableIds.has(String(productId ?? '').trim()))
+    )
+  }, [dispatchAccountIdDraft, products])
 
   if (!isOpen) {
     return (
@@ -573,6 +844,53 @@ function NoteSidebar({
     onPreviewTasksChange(
       previewTasks.map((task) => (task.id === taskId ? { ...task, ...patch } : task))
     )
+  }
+
+  const openDispatchSettings = (): void => {
+    if (selectedPreviewTaskIds.length === 0) {
+      window.alert('请先选中至少一条笔记。')
+      return
+    }
+
+    const selectedTasks = previewTasks.filter((task) => selectedPreviewTaskIds.includes(task.id))
+    const bindingSource = selectedTasks.find((task) => String(task.accountId ?? '').trim()) ?? selectedTasks[0]
+    const nextAccountId = String(bindingSource?.accountId ?? '').trim()
+    const nextProductIds = resolveTaskSelectedProductIds({
+      linkedProducts: bindingSource?.linkedProducts,
+      productId: bindingSource?.productId
+    })
+
+    setDispatchAccountIdDraft(nextAccountId)
+    setDispatchProductIdsDraft(nextProductIds)
+    setIsDispatchSettingsOpen(true)
+  }
+
+  const applyDispatchSettings = (): void => {
+    const normalizedAccountId = dispatchAccountIdDraft.trim()
+    const selectedProducts = buildSelectedWorkshopProducts({
+      allProducts: products,
+      selectedProductIds: dispatchProductIdsDraft
+    })
+    const primaryProduct = selectedProducts[0]
+
+    if (normalizedAccountId) {
+      setPreferredAccountId(normalizedAccountId)
+    }
+
+    onPreviewTasksChange(
+      previewTasks.map((task) =>
+        selectedPreviewTaskIds.includes(task.id)
+          ? {
+              ...task,
+              accountId: normalizedAccountId || undefined,
+              productId: primaryProduct?.id ?? undefined,
+              productName: primaryProduct?.name ?? undefined,
+              linkedProducts: selectedProducts.length > 0 ? selectedProducts : undefined
+            }
+          : task
+      )
+    )
+    setIsDispatchSettingsOpen(false)
   }
 
   return (
@@ -624,15 +942,24 @@ function NoteSidebar({
                 <div className="space-y-3 py-2">
                   <div className="flex items-center justify-between px-3">
                     <div className="text-[11px] tracking-[0.04em] text-zinc-400">生成预览</div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedPreviewTaskIds(allPreviewSelected ? [] : previewTaskIds)
-                      }}
-                      className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
-                    >
-                      {allPreviewSelected ? '取消全选' : '全选'}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={openDispatchSettings}
+                        className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                      >
+                        分发设置
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedPreviewTaskIds(allPreviewSelected ? [] : previewTaskIds)
+                        }}
+                        className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                      >
+                        {allPreviewSelected ? '取消全选' : '全选'}
+                      </button>
+                    </div>
                   </div>
                   {previewTasks.map((task) => (
                     <PreviewNoteCard
@@ -747,6 +1074,29 @@ function NoteSidebar({
           onImagesChange={(nextImages) => updatePreviewTaskImages(activePreviewTask.id, nextImages)}
         />
       ) : null}
+
+      <DispatchSettingsModal
+        isOpen={isDispatchSettingsOpen}
+        selectedTaskCount={selectedPreviewTaskIds.length}
+        accounts={accounts}
+        selectedAccountId={dispatchAccountIdDraft}
+        products={products}
+        selectedProductIds={dispatchProductIdsDraft}
+        onAccountChange={(value) => {
+          setDispatchAccountIdDraft(value)
+          setDispatchProductIdsDraft([])
+        }}
+        onToggleProduct={(productId) => {
+          setDispatchProductIdsDraft((current) =>
+            current.includes(productId)
+              ? current.filter((currentId) => currentId !== productId)
+              : [...current, productId]
+          )
+        }}
+        onClearProducts={() => setDispatchProductIdsDraft([])}
+        onClose={() => setIsDispatchSettingsOpen(false)}
+        onApply={applyDispatchSettings}
+      />
     </div>
   )
 }

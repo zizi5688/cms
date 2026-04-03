@@ -26,6 +26,7 @@ import { generateManifest, generateVideoManifest } from '@renderer/lib/cms-engin
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import { resolveTaskSelectedProductIds } from '@renderer/lib/cmsTaskProductHelpers'
 import {
   buildAiStudioImageImportKey,
   shouldSyncAiStudioImageImport
@@ -116,6 +117,43 @@ function isImageFile(filePath: string): boolean {
     normalized.endsWith('.webp') ||
     normalized.endsWith('.heic')
   )
+}
+
+function deriveImportedNoteDispatchPreset(tasks: Array<{
+  accountId?: string
+  productId?: string
+  linkedProducts?: Array<{ id?: string }>
+}>): {
+  accountId: string
+  productIds: string[]
+} | null {
+  const sourceTasks = Array.isArray(tasks) ? tasks : []
+  if (sourceTasks.length === 0) return null
+
+  const firstAccountId = String(sourceTasks[0]?.accountId ?? '').trim()
+  if (!firstAccountId) return null
+  if (sourceTasks.some((task) => String(task?.accountId ?? '').trim() !== firstAccountId)) {
+    return null
+  }
+
+  const firstProductIds = resolveTaskSelectedProductIds({
+    linkedProducts: sourceTasks[0]?.linkedProducts,
+    productId: sourceTasks[0]?.productId
+  })
+
+  const hasSameProducts = sourceTasks.every((task) => {
+    const nextIds = resolveTaskSelectedProductIds({
+      linkedProducts: task?.linkedProducts,
+      productId: task?.productId
+    })
+    if (nextIds.length !== firstProductIds.length) return false
+    return nextIds.every((id, index) => id === firstProductIds[index])
+  })
+
+  return {
+    accountId: firstAccountId,
+    productIds: hasSameProducts ? firstProductIds : []
+  }
 }
 
 async function saveFrameFromVideoElement(video: HTMLVideoElement): Promise<string> {
@@ -232,6 +270,7 @@ function DataBuilder(): React.JSX.Element {
   const videoCoverCacheRef = useRef<Map<string, string>>(new Map())
   const containerRef = useRef<HTMLDivElement>(null)
   const [scrollParent, setScrollParent] = useState<HTMLElement | undefined>(undefined)
+  const lastAiStudioNoteBindingKeyRef = useRef('')
 
   const tasks = useCmsStore((s) => s.tasks)
   const addLog = useCmsStore((s) => s.addLog)
@@ -366,6 +405,9 @@ function DataBuilder(): React.JSX.Element {
   useEffect(() => {
     if (!isAiStudioImageImportMode || !isWorkshopActive) return
     const preserveExistingPreview = workshopImport?.source === 'ai-studio-note'
+    const importedDispatchPreset = preserveExistingPreview
+      ? deriveImportedNoteDispatchPreset(tasks)
+      : null
     const importKey = buildAiStudioImageImportKey(importedImagePaths)
     if (
       !shouldSyncAiStudioImageImport({
@@ -382,6 +424,9 @@ function DataBuilder(): React.JSX.Element {
     if (!preserveExistingPreview) {
       setTasks([])
       setUploadTasks([])
+    } else if (importedDispatchPreset) {
+      setSelectedAccountId(importedDispatchPreset.accountId)
+      setSelectedProductIds(importedDispatchPreset.productIds)
     }
     setSelectedImageIds(new Set())
     setQueuedTaskIds(new Set())
@@ -398,6 +443,7 @@ function DataBuilder(): React.JSX.Element {
     dataWorkshopFolderPath,
     importedImageFolderPath,
     importedImagePaths,
+    tasks,
     imageFiles,
     isAiStudioImageImportMode,
     isWorkshopActive,
@@ -406,6 +452,39 @@ function DataBuilder(): React.JSX.Element {
     setTasks,
     setUploadTasks
   ])
+
+  useEffect(() => {
+    if (!isWorkshopActive || workshopImport?.source !== 'ai-studio-note') return
+    if (tasks.length === 0) return
+
+    const normalizedTaskIds = tasks.map((task) => String(task.id ?? '').trim()).filter(Boolean)
+    const bindingSource = tasks.find((task) => String(task.accountId ?? '').trim()) ?? tasks[0]
+    if (!bindingSource) return
+
+    const bindingKey = [
+      normalizedTaskIds.join(','),
+      String(bindingSource.accountId ?? '').trim(),
+      resolveTaskSelectedProductIds({
+        linkedProducts: bindingSource.linkedProducts,
+        productId: bindingSource.productId
+      }).join(',')
+    ].join('::')
+
+    if (!bindingKey || bindingKey === lastAiStudioNoteBindingKeyRef.current) return
+    lastAiStudioNoteBindingKeyRef.current = bindingKey
+
+    const nextAccountId = String(bindingSource.accountId ?? '').trim()
+    if (nextAccountId) {
+      setSelectedAccountId(nextAccountId)
+      setPreferredAccountId(nextAccountId)
+    }
+
+    const nextSelectedProductIds = resolveTaskSelectedProductIds({
+      linkedProducts: bindingSource.linkedProducts,
+      productId: bindingSource.productId
+    })
+    setSelectedProductIds(nextSelectedProductIds)
+  }, [isWorkshopActive, setPreferredAccountId, tasks, workshopImport?.source])
 
   useEffect(() => {
     if (!isVideoMode) {
