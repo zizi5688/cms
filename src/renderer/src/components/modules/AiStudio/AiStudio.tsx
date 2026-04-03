@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { Images, ImageIcon, Video } from 'lucide-react'
+import { ImageIcon, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
 import { generateManifest } from '@renderer/lib/cms-engine'
@@ -9,7 +9,11 @@ import { cn } from '@renderer/lib/utils'
 import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
 
 import { BatchPickCanvas } from './BatchPickCanvas'
-import { buildBatchPickAssets } from './batchPickHelpers'
+import {
+  buildBatchPickAssets,
+  pruneBatchPickSelection,
+  resolveUsedBatchPickAssetIds
+} from './batchPickHelpers'
 import { ControlPanel } from './ControlPanel'
 import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './NoteSidebar'
 import { ResultPanel } from './ResultPanel'
@@ -47,28 +51,24 @@ function AiStudioCanvas({
   initialPromptDraft,
   noteSidebar,
   isSidebarOpen,
-  noteSidebarMode,
-  noteSidebarPhase,
   canvasMode,
   batchPickAssets,
   selectedBatchPickAssetIds,
+  usedBatchPickAssetIds,
   onToggleBatchPickAsset,
   onChangeBatchPickSelection,
-  onOpenBatchPick,
   onCloseBatchPick
 }: {
   state: ReturnType<typeof useAiStudioState>
   initialPromptDraft: string
   noteSidebar: React.JSX.Element
   isSidebarOpen: boolean
-  noteSidebarMode: NoteSidebarMode
-  noteSidebarPhase: NoteSidebarPhase
   canvasMode: NoteCanvasMode
   batchPickAssets: ReturnType<typeof buildBatchPickAssets>
   selectedBatchPickAssetIds: string[]
+  usedBatchPickAssetIds: string[]
   onToggleBatchPickAsset: (assetId: string) => void
   onChangeBatchPickSelection: (nextAssetIds: string[]) => void
-  onOpenBatchPick: () => void
   onCloseBatchPick: () => void
 }): React.JSX.Element {
   const [promptDraft, setPromptDraft] = useState(initialPromptDraft)
@@ -119,6 +119,7 @@ function AiStudioCanvas({
         <BatchPickCanvas
           assets={batchPickAssets}
           selectedAssetIds={selectedBatchPickAssetIds}
+          usedAssetIds={usedBatchPickAssetIds}
           onToggleAsset={onToggleBatchPickAsset}
           onSelectionChange={onChangeBatchPickSelection}
           onExit={onCloseBatchPick}
@@ -130,22 +131,6 @@ function AiStudioCanvas({
         </div>
       )}
 
-      {isSidebarOpen &&
-      noteSidebarMode === 'image-note' &&
-      noteSidebarPhase === 'editing' &&
-      canvasMode === 'result' ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex justify-center">
-          <button
-            type="button"
-            onClick={onOpenBatchPick}
-            className="pointer-events-auto inline-flex h-8 items-center gap-2 border border-zinc-200 bg-white px-3 text-[11px] font-medium tracking-[0.04em] text-zinc-700 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:border-zinc-300 hover:text-zinc-950 hover:shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
-          >
-            <Images className="h-3.5 w-3.5" />
-            批量选图
-          </button>
-        </div>
-      ) : null}
-
       {!isSidebarOpen ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5 pt-2">
           <div
@@ -154,7 +139,7 @@ function AiStudioCanvas({
           >
             <div
               className={cn(
-                'inline-flex items-center self-start rounded-[18px] border border-black/8 p-1 shadow-[0_8px_18px_rgba(15,23,42,0.04)]',
+                'inline-flex items-center self-start rounded-[18px] border border-zinc-200/65 p-1 shadow-[0_8px_18px_rgba(15,23,42,0.04)]',
                 AI_STUDIO_CANVAS_SURFACE_CLASS
               )}
             >
@@ -164,8 +149,8 @@ function AiStudioCanvas({
                 className={cn(
                   'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
                   state.studioCapability === 'image'
-                    ? 'border-zinc-950 bg-zinc-950 text-white'
-                    : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+                    ? 'border-transparent bg-zinc-900 text-white'
+                    : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:text-zinc-900'
                 )}
               >
                 <ImageIcon className="h-4 w-4" />
@@ -177,8 +162,8 @@ function AiStudioCanvas({
                 className={cn(
                   'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
                   state.studioCapability === 'video'
-                    ? 'border-zinc-950 bg-zinc-950 text-white'
-                    : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+                    ? 'border-transparent bg-zinc-900 text-white'
+                    : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:text-zinc-900'
                 )}
               >
                 <Video className="h-4 w-4" />
@@ -188,12 +173,12 @@ function AiStudioCanvas({
 
             <div
               className={cn(
-                'rounded-[28px] border border-black/8 px-3.5 pt-2.5 pb-3 shadow-[0_10px_28px_rgba(15,23,42,0.05)]',
+                'rounded-[28px] border border-zinc-200/65 px-3.5 pt-2.5 pb-3 shadow-[0_10px_28px_rgba(15,23,42,0.05)]',
                 AI_STUDIO_CANVAS_SURFACE_CLASS
               )}
             >
               <TaskQueue state={state} promptDraft={promptDraft} onPromptChange={setPromptDraft} />
-              <div className="relative z-30 mt-2.5 pt-2.5 before:absolute before:left-4 before:right-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-black/8 before:to-transparent">
+              <div className="relative z-30 mt-2.5 pt-2.5 before:absolute before:left-4 before:right-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-zinc-200/65 before:to-transparent">
                 <ControlPanel
                   state={state}
                   promptDraft={promptDraft}
@@ -276,6 +261,10 @@ function AiStudio(): React.JSX.Element {
     () => buildBatchPickAssets(state.historyTasks),
     [state.historyTasks]
   )
+  const usedBatchPickAssetIds = useMemo(
+    () => resolveUsedBatchPickAssetIds(batchPickAssets, noteMaterials),
+    [batchPickAssets, noteMaterials]
+  )
 
   const handleToggleBatchPickAsset = useCallback((assetId: string): void => {
     setSelectedBatchPickAssetIds((current) =>
@@ -304,11 +293,15 @@ function AiStudio(): React.JSX.Element {
   }, [noteSidebarMode, noteSidebarOpen, noteSidebarPhase])
 
   useEffect(() => {
-    const availableIds = new Set(batchPickAssets.map((asset) => asset.id))
+    const availableAssetIds = batchPickAssets.map((asset) => asset.id)
     setSelectedBatchPickAssetIds((current) =>
-      current.filter((assetId) => availableIds.has(assetId))
+      pruneBatchPickSelection({
+        selectedAssetIds: current,
+        availableAssetIds,
+        usedAssetIds: usedBatchPickAssetIds
+      })
     )
-  }, [batchPickAssets])
+  }, [batchPickAssets, usedBatchPickAssetIds])
 
   const handleGenerateNotePreview = async (): Promise<void> => {
     const materialPaths = Array.from(
@@ -430,6 +423,7 @@ function AiStudio(): React.JSX.Element {
       isOpen={noteSidebarOpen}
       mode={noteSidebarMode}
       phase={noteSidebarPhase}
+      canvasMode={noteCanvasMode}
       materials={noteMaterials}
       csvDraft={noteCsvDraft}
       groupCountDraft={noteGroupCountDraft}
@@ -475,6 +469,7 @@ function AiStudio(): React.JSX.Element {
         }
         void state.toggleDispatchOutputPoolForTask(asset.taskId, asset.id)
       }}
+      onOpenBatchPick={handleOpenBatchPick}
     />
   )
 
@@ -485,14 +480,12 @@ function AiStudio(): React.JSX.Element {
       initialPromptDraft={readPromptSeed(state)}
       noteSidebar={noteSidebarNode}
       isSidebarOpen={noteSidebarOpen}
-      noteSidebarMode={noteSidebarMode}
-      noteSidebarPhase={noteSidebarPhase}
       canvasMode={noteCanvasMode}
       batchPickAssets={batchPickAssets}
       selectedBatchPickAssetIds={selectedBatchPickAssetIds}
+      usedBatchPickAssetIds={usedBatchPickAssetIds}
       onToggleBatchPickAsset={handleToggleBatchPickAsset}
       onChangeBatchPickSelection={handleChangeBatchPickSelection}
-      onOpenBatchPick={handleOpenBatchPick}
       onCloseBatchPick={handleCloseBatchPick}
     />
   )

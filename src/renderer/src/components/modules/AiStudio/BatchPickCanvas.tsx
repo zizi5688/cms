@@ -11,6 +11,7 @@ import {
   AI_STUDIO_NOTE_MATERIAL_DRAG_MIME,
   buildNoteMaterialDragPayload
 } from './noteMaterialDragPayload'
+import { buildSelectableBatchPickAssetIds } from './batchPickHelpers'
 import type { AiStudioAssetRecord } from './useAiStudioState'
 
 function uniqueStrings(values: string[]): string[] {
@@ -38,12 +39,14 @@ const BatchPickTile = memo(function BatchPickTile({
   asset,
   workspacePath,
   isSelected,
+  isUsed,
   dragPayload,
   onToggleAsset
 }: {
   asset: AiStudioAssetRecord
   workspacePath: string
   isSelected: boolean
+  isUsed: boolean
   dragPayload: string
   onToggleAsset: (assetId: string) => void
 }): React.JSX.Element {
@@ -57,10 +60,14 @@ const BatchPickTile = memo(function BatchPickTile({
       type="button"
       data-batch-pick-tile="true"
       data-batch-pick-asset-id={asset.id}
-      draggable={Boolean(dragPayload)}
-      onClick={() => onToggleAsset(asset.id)}
+      data-batch-pick-used={isUsed ? 'true' : 'false'}
+      draggable={Boolean(dragPayload) && !isUsed}
+      onClick={() => {
+        if (isUsed) return
+        onToggleAsset(asset.id)
+      }}
       onDragStart={(event) => {
-        if (!dragPayload) {
+        if (!dragPayload || isUsed) {
           event.preventDefault()
           return
         }
@@ -68,10 +75,12 @@ const BatchPickTile = memo(function BatchPickTile({
         event.dataTransfer.setData(AI_STUDIO_NOTE_MATERIAL_DRAG_MIME, dragPayload)
       }}
       className={cn(
-        'group relative overflow-hidden rounded-[20px] border bg-white text-left transition-transform duration-150 ease-out',
+        'group relative overflow-hidden rounded-[8px] border bg-transparent text-left transition-transform duration-150 ease-out',
         isSelected
-          ? 'border-sky-500 shadow-[0_18px_42px_rgba(14,165,233,0.18)]'
-          : 'border-zinc-200/90 shadow-[0_8px_22px_rgba(15,23,42,0.04)] hover:-translate-y-[1px] hover:border-zinc-300 hover:shadow-[0_16px_34px_rgba(15,23,42,0.08)]'
+          ? 'border-sky-500/85 shadow-[0_0_0_2px_rgba(96,165,250,0.78),0_12px_30px_rgba(15,23,42,0.10)]'
+          : isUsed
+            ? 'cursor-default border-transparent shadow-none'
+            : 'border-transparent shadow-none hover:-translate-y-[1px] hover:shadow-[0_16px_34px_rgba(15,23,42,0.05)]'
       )}
       style={{ contain: 'layout paint style' }}
     >
@@ -90,27 +99,29 @@ const BatchPickTile = memo(function BatchPickTile({
 
       <div
         className={cn(
-          'pointer-events-none absolute inset-0 rounded-[20px] transition',
+          'pointer-events-none absolute inset-0 rounded-[8px] bg-gradient-to-t from-black/44 via-transparent to-transparent transition',
           isSelected
-            ? 'bg-sky-500/16 ring-[3px] ring-inset ring-sky-500 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.9)]'
-            : 'bg-transparent'
+            ? 'bg-gradient-to-t from-sky-500/14 via-transparent to-transparent ring-[2.5px] ring-inset ring-sky-400/90 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.82)]'
+            : isUsed
+              ? 'bg-gradient-to-t from-black/54 via-black/6 to-transparent'
+              : 'bg-gradient-to-t from-black/32 via-transparent to-transparent'
         )}
       />
 
-      <div
-        className={cn(
-          'absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border shadow-[0_10px_24px_rgba(15,23,42,0.16)] transition',
-          isSelected
-            ? 'border-sky-500 bg-sky-500 text-white'
-            : 'border-white/92 bg-white/96 text-transparent backdrop-blur-[4px] group-hover:text-zinc-300'
-        )}
-      >
-        <Check className="h-4 w-4" />
-      </div>
+      {!isUsed ? (
+        <div
+          className={cn(
+            'absolute right-2 top-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-white bg-[rgba(255,255,255,0.06)] shadow-[0_6px_18px_rgba(15,23,42,0.10)] backdrop-blur-[8px] transition',
+            isSelected ? 'text-white' : 'text-transparent group-hover:text-white/80'
+          )}
+        >
+          <Check className="h-3 w-3" strokeWidth={2.1} />
+        </div>
+      ) : null}
 
-      {isSelected ? (
-        <div className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center rounded-full border border-sky-500/70 bg-white/92 px-2.5 py-1 text-[10px] font-semibold tracking-[0.08em] text-sky-700 shadow-[0_8px_18px_rgba(14,165,233,0.12)]">
-          已选中
+      {isUsed ? (
+        <div className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center rounded-full border border-white bg-[rgba(15,23,42,0.18)] px-2.5 py-1 text-[10px] font-semibold tracking-[0.08em] text-white shadow-[0_8px_18px_rgba(15,23,42,0.08)] backdrop-blur-[10px]">
+          已使用
         </div>
       ) : null}
     </button>
@@ -120,6 +131,7 @@ const BatchPickTile = memo(function BatchPickTile({
 function BatchPickCanvas({
   assets,
   selectedAssetIds,
+  usedAssetIds,
   onToggleAsset,
   onSelectionChange,
   onExit,
@@ -127,6 +139,7 @@ function BatchPickCanvas({
 }: {
   assets: AiStudioAssetRecord[]
   selectedAssetIds: string[]
+  usedAssetIds: string[]
   onToggleAsset: (assetId: string) => void
   onSelectionChange: (nextAssetIds: string[]) => void
   onExit: () => void
@@ -134,14 +147,21 @@ function BatchPickCanvas({
 }): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const selectedSet = useMemo(() => new Set(selectedAssetIds), [selectedAssetIds])
+  const usedSet = useMemo(() => new Set(usedAssetIds), [usedAssetIds])
+  const selectableAssetIds = useMemo(
+    () => buildSelectableBatchPickAssetIds({ assets, usedAssetIds }),
+    [assets, usedAssetIds]
+  )
+  const allSelectableSelected =
+    selectableAssetIds.length > 0 && selectableAssetIds.every((assetId) => selectedSet.has(assetId))
   const selectedDragPaths = useMemo(
     () =>
       uniqueStrings(
         assets
-          .filter((asset) => selectedSet.has(asset.id))
+          .filter((asset) => selectedSet.has(asset.id) && !usedSet.has(asset.id))
           .map((asset) => String(asset.filePath ?? '').trim())
       ),
-    [assets, selectedSet]
+    [assets, selectedSet, usedSet]
   )
   const selectedDragPayload = useMemo(
     () => (selectedDragPaths.length > 0 ? buildNoteMaterialDragPayload(selectedDragPaths) : ''),
@@ -175,7 +195,7 @@ function BatchPickCanvas({
       }
     : null
   const reservedCanvasInset = reservedSidebarWidth > 0 ? reservedSidebarWidth + 28 : 0
-  const canvasColumnStyle =
+  const assetLaneStyle =
     reservedCanvasInset > 0 ? { maxWidth: `calc(100% - ${reservedCanvasInset}px)` } : undefined
   const handleTileToggle = useCallback(
     (assetId: string): void => {
@@ -191,7 +211,7 @@ function BatchPickCanvas({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-6 pb-6 pt-6">
-      <div className="flex min-h-0 flex-1 flex-col" style={canvasColumnStyle}>
+      <div className="flex min-h-0 flex-1 flex-col">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <div className="text-[14px] font-medium tracking-[0.03em] text-zinc-800">批量选图</div>
@@ -202,17 +222,37 @@ function BatchPickCanvas({
           <button
             type="button"
             onClick={onExit}
-            className="inline-flex h-8 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 text-[11px] font-medium tracking-[0.03em] text-zinc-600 transition hover:border-zinc-300 hover:text-zinc-900"
+            className="inline-flex h-8 items-center gap-2 rounded-full border border-zinc-200/70 bg-white/84 px-3 text-[11px] font-medium tracking-[0.03em] text-zinc-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] backdrop-blur-[10px] transition hover:border-zinc-200 hover:bg-white hover:text-zinc-900"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             返回结果
           </button>
         </div>
 
-        <div className="mb-4 flex items-center justify-between">
-          <div className="text-[11px] tracking-[0.05em] text-zinc-400">线程图片池</div>
-          <div className="text-[11px] tracking-[0.05em] text-zinc-400">
-            已选 {selectedAssetIds.length} / {assets.length}
+        <div
+          className="mb-4 flex shrink-0 items-center justify-between px-1 pt-1"
+          style={assetLaneStyle}
+        >
+          <div className="text-[11px] tracking-[0.05em] text-zinc-400">图片池</div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                onSelectionChange(allSelectableSelected ? [] : selectableAssetIds)
+              }}
+              disabled={selectableAssetIds.length === 0}
+              className={cn(
+                'inline-flex h-6 items-center rounded-full border px-2.5 text-[10px] font-medium tracking-[0.05em] shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] backdrop-blur-[8px] transition',
+                selectableAssetIds.length > 0
+                  ? 'border-zinc-200/70 bg-white/84 text-zinc-500 hover:border-zinc-200 hover:bg-white hover:text-zinc-900'
+                  : 'cursor-not-allowed border-zinc-200/55 bg-white/65 text-zinc-300'
+              )}
+            >
+              {allSelectableSelected ? '取消全选' : '全选'}
+            </button>
+            <div className="text-[11px] tracking-[0.05em] text-zinc-400">
+              已选 {selectedAssetIds.length} / {assets.length}
+            </div>
           </div>
         </div>
 
@@ -226,7 +266,11 @@ function BatchPickCanvas({
             const target = event.target as HTMLElement | null
             const tileElement =
               target?.closest<HTMLElement>('[data-batch-pick-tile="true"]') ?? null
+            const interactiveElement =
+              target?.closest<HTMLElement>('button,a,input,textarea,select,[role="button"]') ?? null
+            if (interactiveElement && !tileElement) return
             const targetAssetId = String(tileElement?.dataset.batchPickAssetId ?? '').trim() || null
+            if (targetAssetId && usedSet.has(targetAssetId)) return
             if (targetAssetId && selectedSet.has(targetAssetId)) return
 
             event.preventDefault()
@@ -288,7 +332,7 @@ function BatchPickCanvas({
               }
 
               const nextSelectedIds = tileLayoutRef.current
-                .filter((tile) => intersectRectangles(selectionRect, tile))
+                .filter((tile) => !usedSet.has(tile.id) && intersectRectangles(selectionRect, tile))
                 .map((tile) => tile.id)
 
               if (areStringArraysEqual(lastEmittedSelectionRef.current, nextSelectedIds)) return
@@ -314,36 +358,38 @@ function BatchPickCanvas({
             window.addEventListener('pointermove', handlePointerMove)
             window.addEventListener('pointerup', handlePointerUp)
           }}
-          className="relative min-h-0 flex-1 overflow-hidden rounded-[28px] border border-zinc-200/80 bg-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.75),0_14px_40px_rgba(15,23,42,0.05)]"
+          className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-transparent [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
           style={{ overscrollBehavior: 'contain' }}
         >
-          <div className="h-full overflow-x-hidden overflow-y-auto p-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-            <div
-              className="grid content-start gap-4 pb-6"
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))' }}
-            >
-              {assets.map((asset) => (
-                <div
-                  key={asset.id}
-                  ref={(node) => {
-                    tileRefs.current[asset.id] = node
-                  }}
-                >
-                  <BatchPickTile
-                    asset={asset}
-                    workspacePath={workspacePath}
-                    isSelected={selectedSet.has(asset.id)}
-                    dragPayload={selectedSet.has(asset.id) ? selectedDragPayload : ''}
-                    onToggleAsset={handleTileToggle}
-                  />
-                </div>
-              ))}
-            </div>
+          <div
+            className="grid content-start gap-4 pb-6"
+            style={{
+              ...(assetLaneStyle ?? {}),
+              gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))'
+            }}
+          >
+            {assets.map((asset) => (
+              <div
+                key={asset.id}
+                ref={(node) => {
+                  tileRefs.current[asset.id] = node
+                }}
+              >
+                <BatchPickTile
+                  asset={asset}
+                  workspacePath={workspacePath}
+                  isSelected={selectedSet.has(asset.id)}
+                  isUsed={usedSet.has(asset.id)}
+                  dragPayload={selectedSet.has(asset.id) ? selectedDragPayload : ''}
+                  onToggleAsset={handleTileToggle}
+                />
+              </div>
+            ))}
           </div>
 
           {selectionOverlayStyle ? (
             <div
-              className="pointer-events-none absolute rounded-[16px] border-2 border-sky-500/85 bg-sky-400/14 shadow-[0_0_0_1px_rgba(186,230,253,0.4),0_16px_40px_rgba(14,165,233,0.12)]"
+              className="pointer-events-none absolute z-20 rounded-[10px] border border-sky-400/85 bg-[rgba(56,189,248,0.24)] shadow-[0_0_0_1px_rgba(186,230,253,0.55),0_16px_40px_rgba(14,165,233,0.14)] backdrop-blur-[1px]"
               style={selectionOverlayStyle}
             />
           ) : null}

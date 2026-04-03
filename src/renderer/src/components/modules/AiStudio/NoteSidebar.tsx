@@ -38,6 +38,7 @@ type NoteSidebarProps = {
   isOpen: boolean
   mode: NoteSidebarMode
   phase: NoteSidebarPhase
+  canvasMode?: 'result' | 'batch-pick'
   materials: AiStudioAssetRecord[]
   csvDraft: string
   groupCountDraft: string
@@ -59,6 +60,7 @@ type NoteSidebarProps = {
   onDispatch: (selectedTaskIds: string[]) => void
   onAddMaterials: (paths: string[]) => void
   onRemoveMaterial: (asset: AiStudioAssetRecord) => void
+  onOpenBatchPick?: () => void
 }
 
 type NoteSidebarAccountRecord = {
@@ -195,10 +197,10 @@ function IconButton({
       title={label}
       onClick={onClick}
       className={cn(
-        'inline-flex h-10 w-10 items-center justify-center rounded-full border transition',
+        'inline-flex h-10 w-10 items-center justify-center rounded-full border backdrop-blur-[10px] transition',
         active
-          ? 'border-zinc-950 bg-zinc-950 text-white shadow-[0_10px_30px_rgba(15,23,42,0.14)]'
-          : 'border-zinc-200 bg-white text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+          ? 'border-white/70 bg-zinc-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.12)]'
+          : 'border-zinc-200/70 bg-white/78 text-zinc-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)] hover:border-zinc-200 hover:bg-white/92 hover:text-zinc-900'
       )}
     >
       {icon}
@@ -217,7 +219,7 @@ function MaterialTile({
   const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
 
   return (
-    <div className="group/material relative">
+    <div className="group/material relative overflow-hidden rounded-[12px] border border-zinc-200/65 bg-white/78 shadow-[0_10px_28px_rgba(15,23,42,0.035)] backdrop-blur-[8px]">
       {src ? (
         <img
           src={src}
@@ -233,7 +235,7 @@ function MaterialTile({
       <button
         type="button"
         onClick={() => onRemove(asset)}
-        className="absolute right-1.5 top-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 opacity-0 shadow-[0_6px_14px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-900 group-hover/material:opacity-100"
+        className="absolute right-1.5 top-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-200/70 bg-white/94 text-zinc-500 opacity-0 shadow-[0_6px_14px_rgba(15,23,42,0.06)] backdrop-blur-[8px] transition hover:border-zinc-200 hover:text-zinc-900 group-hover/material:opacity-100"
         aria-label="移出创作中心"
         title="移出创作中心"
       >
@@ -289,19 +291,19 @@ function EmptyMaterialStrip({
       }}
       onDrop={handleDrop}
       className={cn(
-        'flex w-full flex-col items-center justify-center gap-4 px-2 py-5 text-center transition',
-        dragging ? 'bg-zinc-50/80' : 'bg-transparent hover:bg-zinc-50/30'
+        'flex w-full flex-col items-center justify-center gap-4 rounded-[18px] px-2 py-5 text-center transition',
+        dragging ? 'bg-sky-50/78' : 'bg-transparent hover:bg-zinc-50/45'
       )}
     >
       <div
         className={cn(
-          'flex aspect-[4/5] w-[150px] max-w-full items-center justify-center rounded-[28px] border border-dashed bg-white transition',
+          'flex aspect-[4/5] w-[150px] max-w-full items-center justify-center rounded-[18px] border border-dashed bg-white/84 backdrop-blur-[8px] transition',
           dragging
-            ? 'border-zinc-300 shadow-[0_14px_32px_rgba(15,23,42,0.06)]'
-            : 'border-zinc-200 shadow-[0_10px_26px_rgba(15,23,42,0.035)]'
+            ? 'border-sky-300 shadow-[0_14px_32px_rgba(56,189,248,0.10)]'
+            : 'border-zinc-200/80 shadow-[0_10px_26px_rgba(15,23,42,0.035)]'
         )}
       >
-        <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-zinc-200/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92))] text-zinc-400 shadow-[0_8px_18px_rgba(15,23,42,0.03)]">
+        <div className="flex h-11 w-11 items-center justify-center rounded-[14px] border border-zinc-200/80 bg-white/88 text-zinc-400 shadow-[0_8px_18px_rgba(15,23,42,0.03)] backdrop-blur-[8px]">
           <Upload className="h-4 w-4" />
         </div>
       </div>
@@ -353,7 +355,7 @@ function MaterialStrip({
         if (paths.length > 0) onAddMaterials(paths)
       }}
       className={cn(
-        'rounded-[20px] transition',
+        'rounded-[18px] transition',
         dragging
           ? 'bg-sky-50/70 ring-1 ring-sky-200 shadow-[0_14px_30px_rgba(56,189,248,0.08)]'
           : 'bg-transparent'
@@ -901,6 +903,7 @@ function NoteSidebar({
   isOpen,
   mode,
   phase,
+  canvasMode = 'result',
   materials,
   csvDraft,
   groupCountDraft,
@@ -921,7 +924,8 @@ function NoteSidebar({
   onPreviewTasksChange,
   onDispatch,
   onAddMaterials,
-  onRemoveMaterial
+  onRemoveMaterial,
+  onOpenBatchPick
 }: NoteSidebarProps): React.JSX.Element {
   const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
   const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
@@ -1104,7 +1108,7 @@ function NoteSidebar({
 
   return (
     <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
-      <aside className="pointer-events-auto flex h-full w-full flex-col border-l border-zinc-200 bg-[linear-gradient(180deg,rgb(255,255,255),rgb(248,250,252))] shadow-[-18px_0_48px_rgba(15,23,42,0.08)]">
+      <aside className="pointer-events-auto flex h-full w-full flex-col border-l border-zinc-200/55 bg-[linear-gradient(180deg,rgba(255,255,255,0.97),rgba(249,250,251,0.94))] shadow-[-18px_0_48px_rgba(15,23,42,0.05)] backdrop-blur-[18px]">
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
           <div className="text-[14px] font-medium tracking-[0.02em] text-zinc-800">创作中心</div>
           <div className="flex items-center gap-2">
@@ -1132,17 +1136,29 @@ function NoteSidebar({
 
         {isImageMode ? (
           <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-            {phase === 'editing' ? (
-              <div className="pt-4">
-                <MaterialStrip
-                  materials={materials}
-                  onAddMaterials={onAddMaterials}
-                  onRemove={onRemoveMaterial}
-                />
-              </div>
-            ) : null}
+            <div className="min-h-0 flex-1 overflow-y-auto pt-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              {phase === 'editing' ? (
+                <div className="pb-4">
+                  <MaterialStrip
+                    materials={materials}
+                    onAddMaterials={onAddMaterials}
+                    onRemove={onRemoveMaterial}
+                  />
+                  {isImageMode && canvasMode === 'result' && onOpenBatchPick ? (
+                    <div className="flex justify-center pb-6 pt-3">
+                      <button
+                        type="button"
+                        onClick={onOpenBatchPick}
+                        className="inline-flex h-8 items-center gap-2 rounded-full border border-zinc-200/70 bg-white/86 px-3 text-[11px] font-medium tracking-[0.04em] text-zinc-700 shadow-[0_14px_30px_rgba(15,23,42,0.05)] backdrop-blur-[10px] transition hover:border-zinc-200 hover:bg-white hover:text-zinc-950 hover:shadow-[0_18px_36px_rgba(15,23,42,0.07)]"
+                      >
+                        <ImageIcon className="h-3.5 w-3.5" />
+                        图池选图
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
-            <div className="min-h-0 flex-1 overflow-y-auto pt-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
               {showPreview ? (
                 <div className="space-y-3 py-2">
                   <div className="flex items-center justify-between px-3">
@@ -1189,18 +1205,18 @@ function NoteSidebar({
                     />
                   ))}
                 </div>
-              ) : (
+              ) : phase !== 'editing' ? (
                 <div className="flex h-full min-h-[180px] items-end justify-center">
                   <div className="text-[12px] text-zinc-300"> </div>
                 </div>
-              )}
+              ) : null}
             </div>
 
-            <div className="mt-auto p-0">
+            <div className="mt-1 shrink-0 bg-transparent px-1 pt-1">
               {phase === 'editing' ? (
                 <div className="space-y-2">
                   <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
-                  <div className="rounded-[5px] border border-zinc-200 bg-white px-3 py-3">
+                  <div className="rounded-[22px] border border-zinc-200/65 bg-white/88 px-4 py-3 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
                     <Textarea
                       value={csvDraft}
                       onChange={(event) => onCsvChange(event.target.value)}
@@ -1208,7 +1224,7 @@ function NoteSidebar({
                       className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
                     />
 
-                    <div className="mt-3 space-y-2 border-t border-zinc-100 pt-3">
+                    <div className="mt-3 space-y-2 pt-2">
                       <div className="grid grid-cols-[0.9fr_1.45fr_0.9fr_auto] items-end gap-2">
                         <LabeledMiniField label="组数">
                           <CapsuleInput
@@ -1243,7 +1259,7 @@ function NoteSidebar({
                           type="button"
                           onClick={onGenerate}
                           disabled={isGenerating}
-                          className="h-6 rounded-none border border-zinc-200 bg-zinc-50 px-3 text-[11px] font-medium text-zinc-700 shadow-none transition hover:bg-zinc-100 hover:text-zinc-950 disabled:opacity-60"
+                          className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:opacity-60"
                         >
                           {isGenerating ? '生成中' : '生成笔记'}
                         </Button>
@@ -1252,7 +1268,7 @@ function NoteSidebar({
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2 pt-3">
+                <div className="grid grid-cols-2 gap-2 pb-1 pt-1">
                   <Button
                     type="button"
                     variant="outline"
@@ -1260,14 +1276,14 @@ function NoteSidebar({
                       setActivePreviewTaskId(null)
                       onRegenerate()
                     }}
-                    className="h-7 rounded-none border border-zinc-200/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(246,248,250,0.92))] px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-700 shadow-[0_10px_24px_rgba(15,23,42,0.03)] transition hover:border-sky-200 hover:text-zinc-950 hover:shadow-[0_14px_28px_rgba(56,189,248,0.08)]"
+                    className="h-8 rounded-full border border-zinc-200/70 bg-white/88 px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-700 shadow-[0_10px_24px_rgba(15,23,42,0.03)] transition hover:border-zinc-200 hover:text-zinc-950"
                   >
                     重新生成
                   </Button>
                   <Button
                     type="button"
                     onClick={() => onDispatch(selectedPreviewTaskIds)}
-                    className="h-7 rounded-none border border-sky-100 bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(240,249,255,0.95))] px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-800 shadow-[0_12px_28px_rgba(56,189,248,0.08)] transition hover:border-sky-200 hover:text-zinc-950 hover:shadow-[0_16px_34px_rgba(56,189,248,0.12)]"
+                    className="h-8 rounded-full border border-transparent bg-zinc-900 px-3 text-[11px] font-medium tracking-[0.02em] text-white shadow-[0_12px_26px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800"
                   >
                     派发到发布工作台
                   </Button>
