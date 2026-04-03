@@ -13,7 +13,6 @@ import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './Note
 import { ResultPanel } from './ResultPanel'
 import { TaskQueue } from './TaskQueue'
 import {
-  buildUploadTasksFromNotePreviewTasks,
   normalizeNoteSidebarConstraints
 } from './noteSidebarHelpers'
 import { useAiStudioState } from './useAiStudioState'
@@ -154,11 +153,9 @@ function AiStudioCanvas({
 function AiStudio(): React.JSX.Element {
   const state = useAiStudioState()
   const addLog = useCmsStore((store) => store.addLog)
-  const setTasks = useCmsStore((store) => store.setTasks)
-  const setUploadTasks = useCmsStore((store) => store.setUploadTasks)
-  const setCsvContent = useCmsStore((store) => store.setCsvContent)
-  const setWorkshopImport = useCmsStore((store) => store.setWorkshopImport)
   const setActiveModule = useCmsStore((store) => store.setActiveModule)
+  const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
+  const setSelectedPublishTaskIds = useCmsStore((store) => store.setSelectedPublishTaskIds)
   const [noteSidebarOpen, setNoteSidebarOpen] = useState(false)
   const [noteSidebarMode, setNoteSidebarMode] = useState<NoteSidebarMode>('image-note')
   const [noteSidebarPhase, setNoteSidebarPhase] = useState<NoteSidebarPhase>('editing')
@@ -240,33 +237,79 @@ function AiStudio(): React.JSX.Element {
     }
   }
 
-  const handleDispatchNotePreview = (selectedTaskIds: string[]): void => {
+  const handleDispatchNotePreview = async (selectedTaskIds: string[]): Promise<void> => {
     const tasksToDispatch =
       selectedTaskIds.length > 0
         ? notePreviewTasks.filter((task) => selectedTaskIds.includes(task.id))
         : notePreviewTasks
 
     if (tasksToDispatch.length === 0) return
-    const previewImagePaths = Array.from(
-      new Set(
-        tasksToDispatch.flatMap((task) =>
-          task.assignedImages.map((filePath) => String(filePath ?? '').trim()).filter(Boolean)
-        )
+    const tasksMissingAccount = tasksToDispatch.filter(
+      (task) => !String(task.accountId ?? '').trim()
+    )
+    if (tasksMissingAccount.length > 0) {
+      window.alert('请先为选中的笔记完成分发设置并选择账号。')
+      return
+    }
+
+    const requestId =
+      typeof globalThis.crypto?.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+    let unbindProgress = (): void => {
+      void 0
+    }
+
+    try {
+      unbindProgress = window.api.cms.task.onCreateBatchProgress((payload) => {
+        if (!payload) return
+        if (payload.requestId !== requestId) return
+        const processed = typeof payload.processed === 'number' ? payload.processed : 0
+        const total = typeof payload.total === 'number' ? payload.total : tasksToDispatch.length
+        const created = typeof payload.created === 'number' ? payload.created : 0
+        const message =
+          typeof payload.message === 'string'
+            ? payload.message
+            : `派发处理中（${processed}/${total}）`
+        addLog(`[AI Studio] ${message}，已创建 ${created} 条。`)
+      })
+
+      const created = await window.api.cms.task.createBatch(
+        tasksToDispatch.map((task) => ({
+          accountId: String(task.accountId ?? '').trim(),
+          images: task.assignedImages,
+          title: task.title,
+          content: task.body,
+          productId: String(task.productId ?? '').trim() || undefined,
+          productName: String(task.productName ?? '').trim() || undefined,
+          linkedProducts:
+            Array.isArray(task.linkedProducts) && task.linkedProducts.length > 0
+              ? task.linkedProducts
+              : undefined,
+          mediaType: task.mediaType,
+          videoPath: task.videoPath,
+          videoPreviewPath: task.videoPreviewPath,
+          videoCoverMode: task.videoCoverMode
+        })),
+        { requestId }
       )
-    )
-    setCsvContent(noteCsvDraft)
-    setTasks(tasksToDispatch)
-    setUploadTasks(buildUploadTasksFromNotePreviewTasks(tasksToDispatch))
-    setWorkshopImport(
-      'image',
-      previewImagePaths[0] ?? null,
-      null,
-      previewImagePaths,
-      'ai-studio-note'
-    )
-    setActiveModule('workshop')
-    setNoteSidebarOpen(false)
-    addLog(`[AI Studio] 已将 ${tasksToDispatch.length} 组图文笔记预览发送到数据工坊。`)
+
+      const firstAccountId = String(created[0]?.accountId ?? tasksToDispatch[0]?.accountId ?? '').trim()
+      if (firstAccountId) {
+        setPreferredAccountId(firstAccountId)
+      }
+      setSelectedPublishTaskIds(created.map((task) => String(task.id ?? '').trim()).filter(Boolean))
+      setActiveModule('autopublish')
+      setNoteSidebarOpen(false)
+      addLog(`[AI Studio] 已将 ${created.length} 组图文笔记直接派发到媒体矩阵队列。`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 图文笔记派发失败：${message}`)
+      window.alert(message)
+    } finally {
+      unbindProgress()
+    }
   }
 
   const noteSidebarNode = (
@@ -300,7 +343,9 @@ function AiStudio(): React.JSX.Element {
       onPreviewTasksChange={(tasks) => {
         setNotePreviewTasks(tasks)
       }}
-      onDispatch={handleDispatchNotePreview}
+      onDispatch={(selectedIds) => {
+        void handleDispatchNotePreview(selectedIds)
+      }}
       onAddMaterials={(paths) => {
         setNoteUploadedMaterialPaths((current) => uniqueStrings([...current, ...paths]))
       }}

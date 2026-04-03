@@ -6,6 +6,8 @@ import {
   ChevronLeft,
   Clapperboard,
   Image as ImageIcon,
+  Loader2,
+  PackageSearch,
   Upload,
   Video,
   X
@@ -55,6 +57,21 @@ type NoteSidebarProps = {
   onRemoveMaterial: (asset: AiStudioAssetRecord) => void
 }
 
+type NoteSidebarAccountRecord = {
+  id: string
+  name: string
+  status?: string
+}
+
+type NoteSidebarProductRecord = {
+  id: string
+  name: string
+  cover: string
+  price: string
+  productUrl: string
+  accountId: string
+}
+
 function isSupportedImagePath(filePath: string): boolean {
   return /\.(jpg|jpeg|png|webp|heic)$/i.test(String(filePath ?? '').trim())
 }
@@ -81,6 +98,66 @@ function reorderItems<T>(items: T[], fromIndex: number, toIndex: number): T[] {
   const [moved] = next.splice(fromIndex, 1)
   next.splice(toIndex, 0, moved)
   return next
+}
+
+function deriveSelectedDispatchBinding(tasks: Task[]): {
+  accountId: string
+  productIds: string[]
+} {
+  const selectedTasks = Array.isArray(tasks) ? tasks : []
+  if (selectedTasks.length === 0) {
+    return { accountId: '', productIds: [] }
+  }
+
+  const firstAccountId = String(selectedTasks[0]?.accountId ?? '').trim()
+  const allAccountIdsSame =
+    firstAccountId.length > 0 &&
+    selectedTasks.every((task) => String(task.accountId ?? '').trim() === firstAccountId)
+
+  const firstProductIds = resolveTaskSelectedProductIds({
+    linkedProducts: selectedTasks[0]?.linkedProducts,
+    productId: selectedTasks[0]?.productId
+  })
+  const allProductIdsSame = selectedTasks.every((task) => {
+    const nextIds = resolveTaskSelectedProductIds({
+      linkedProducts: task?.linkedProducts,
+      productId: task?.productId
+    })
+    if (nextIds.length !== firstProductIds.length) return false
+    return nextIds.every((id, index) => id === firstProductIds[index])
+  })
+
+  return {
+    accountId: allAccountIdsSame ? firstAccountId : '',
+    productIds: allProductIdsSame ? firstProductIds : []
+  }
+}
+
+function deriveNoteBoundProductSummary(task: Task): {
+  primaryText: string
+  suffixText: string
+} {
+  const linkedProducts = Array.isArray(task.linkedProducts) ? task.linkedProducts : []
+  const normalizedNames = linkedProducts
+    .map((product) => String(product?.name ?? '').trim())
+    .filter(Boolean)
+
+  if (normalizedNames.length > 0) {
+    const firstName = normalizedNames[0] ?? ''
+    if (normalizedNames.length === 1) {
+      return { primaryText: firstName, suffixText: '' }
+    }
+    return {
+      primaryText: firstName,
+      suffixText: `...等 ${normalizedNames.length} 个商品`
+    }
+  }
+
+  const fallbackName = String(task.productName ?? '').trim()
+  return {
+    primaryText: fallbackName || '未绑定商品',
+    suffixText: ''
+  }
 }
 
 function IconButton({
@@ -235,6 +312,7 @@ function PreviewNoteCard({
   const imagePaths = task.assignedImages.filter(Boolean)
   const coverPath = imagePaths[0] ?? ''
   const coverSrc = resolveLocalImage(coverPath, workspacePath)
+  const productSummary = deriveNoteBoundProductSummary(task)
   const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
   const [draftValue, setDraftValue] = useState('')
 
@@ -256,8 +334,8 @@ function PreviewNoteCard({
 
   return (
     <article className="px-3 py-2">
-      <div className="grid grid-cols-[96px_minmax(0,1fr)] items-start gap-4">
-        <div className="relative">
+      <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-4">
+        <div className="relative self-start">
           <button
             type="button"
             onClick={onOpen}
@@ -297,62 +375,75 @@ function PreviewNoteCard({
           </button>
         </div>
 
-        <div className="flex min-w-0 flex-col items-start gap-2 text-left">
-          {editingField === 'title' ? (
-            <Input
-              autoFocus
-              value={draftValue}
-              onChange={(event) => setDraftValue(event.target.value)}
-              onBlur={commitEditor}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  commitEditor()
-                }
-                if (event.key === 'Escape') {
-                  setEditingField(null)
-                }
-              }}
-              className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => openEditor('title')}
-              className="max-w-full text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
-            >
-              <span className="line-clamp-2 break-all">{task.title.trim() || '未命名笔记'}</span>
-            </button>
-          )}
+        <div className="flex min-h-[120px] min-w-0 flex-col text-left">
+          <div className="flex min-w-0 flex-col items-start gap-2.5">
+            {editingField === 'title' ? (
+              <Input
+                autoFocus
+                value={draftValue}
+                onChange={(event) => setDraftValue(event.target.value)}
+                onBlur={commitEditor}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    commitEditor()
+                  }
+                  if (event.key === 'Escape') {
+                    setEditingField(null)
+                  }
+                }}
+                className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => openEditor('title')}
+                className="max-w-full text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
+              >
+                <span className="line-clamp-2 break-all">{task.title.trim() || '未命名笔记'}</span>
+              </button>
+            )}
 
-          {editingField === 'body' ? (
-            <Textarea
-              autoFocus
-              value={draftValue}
-              onChange={(event) => setDraftValue(event.target.value)}
-              onBlur={commitEditor}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                  event.preventDefault()
-                  commitEditor()
-                }
-                if (event.key === 'Escape') {
-                  setEditingField(null)
-                }
-              }}
-              className="min-h-[96px] w-full resize-none rounded-none border-zinc-200 bg-white px-2 py-2 text-[12px] leading-6 text-zinc-600 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => openEditor('body')}
-              className="w-full text-left transition hover:text-zinc-700"
-            >
-              <div className="whitespace-pre-wrap break-words text-[12px] leading-6 text-zinc-500">
-                {task.body.trim() || '点击这里编辑正文'}
+            {editingField === 'body' ? (
+              <Textarea
+                autoFocus
+                value={draftValue}
+                onChange={(event) => setDraftValue(event.target.value)}
+                onBlur={commitEditor}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                    event.preventDefault()
+                    commitEditor()
+                  }
+                  if (event.key === 'Escape') {
+                    setEditingField(null)
+                  }
+                }}
+                className="min-h-[96px] w-full resize-none rounded-none border-zinc-200 bg-white px-2 py-2 text-[12px] leading-6 text-zinc-600 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => openEditor('body')}
+                className="w-full text-left transition hover:text-zinc-700"
+              >
+                <div className="whitespace-pre-wrap break-words text-[12px] leading-[1.7] text-zinc-500">
+                  {task.body.trim() || '点击这里编辑正文'}
+                </div>
+              </button>
+            )}
+          </div>
+
+          <div className="mt-auto pt-2 text-[10px] leading-4 tracking-[0.01em] text-zinc-400">
+            {productSummary.suffixText ? (
+              <div className="flex min-w-0 items-baseline gap-0.5 whitespace-nowrap">
+                <span className="min-w-0 truncate">{productSummary.primaryText}</span>
+                <span className="shrink-0">{productSummary.suffixText}</span>
               </div>
-            </button>
-          )}
+            ) : (
+              <span className="block truncate">{productSummary.primaryText}</span>
+            )}
+          </div>
         </div>
       </div>
     </article>
@@ -362,6 +453,8 @@ function PreviewNoteCard({
 function DispatchSettingsModal({
   isOpen,
   selectedTaskCount,
+  isLoadingAccounts,
+  isLoadingProducts,
   accounts,
   selectedAccountId,
   products,
@@ -374,9 +467,11 @@ function DispatchSettingsModal({
 }: {
   isOpen: boolean
   selectedTaskCount: number
-  accounts: CmsAccountRecord[]
+  isLoadingAccounts: boolean
+  isLoadingProducts: boolean
+  accounts: NoteSidebarAccountRecord[]
   selectedAccountId: string
-  products: CmsProductRecord[]
+  products: NoteSidebarProductRecord[]
   selectedProductIds: string[]
   onAccountChange: (value: string) => void
   onToggleProduct: (productId: string) => void
@@ -421,18 +516,25 @@ function DispatchSettingsModal({
           <div className="flex flex-col gap-4">
             <div className="border border-zinc-200/90 bg-white px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.025)]">
               <div className="text-[10px] tracking-[0.08em] text-zinc-400">派发账号</div>
-              <select
-                value={selectedAccountId}
-                onChange={(event) => onAccountChange(event.target.value)}
-                className="mt-3 h-10 w-full border border-zinc-200 bg-white px-3 text-[13px] text-zinc-800 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
-              >
-                {accounts.length === 0 ? <option value="">暂无账号</option> : null}
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                  </option>
-                ))}
-              </select>
+              {isLoadingAccounts ? (
+                <div className="mt-3 flex h-10 items-center gap-2 border border-zinc-200 bg-white px-3 text-[12px] text-zinc-400">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  正在读取账号
+                </div>
+              ) : (
+                <select
+                  value={selectedAccountId}
+                  onChange={(event) => onAccountChange(event.target.value)}
+                  className="mt-3 h-10 w-full border border-zinc-200 bg-white px-3 text-[13px] text-zinc-800 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
+                >
+                  {accounts.length === 0 ? <option value="">暂无账号</option> : null}
+                  {accounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="border border-zinc-200/90 bg-white px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.025)]">
@@ -488,7 +590,14 @@ function DispatchSettingsModal({
             </div>
 
             <div className="min-h-0 max-h-[420px] overflow-y-auto px-3 pb-3 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-              {products.length > 0 ? (
+              {isLoadingProducts ? (
+                <div className="flex min-h-[260px] items-center justify-center border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center text-[12px] text-zinc-400">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    正在读取商品
+                  </div>
+                </div>
+              ) : products.length > 0 ? (
                 <div className="space-y-2">
                   {products.map((product) => {
                     const isSelected = selectedProductIds.includes(product.id)
@@ -544,7 +653,10 @@ function DispatchSettingsModal({
                 </div>
               ) : (
                 <div className="flex min-h-[260px] items-center justify-center border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center text-[12px] text-zinc-400">
-                  {selectedAccountId ? '当前账号暂无已同步商品' : '请先选择账号'}
+                  <div className="flex max-w-[220px] flex-col items-center gap-2">
+                    <PackageSearch className="h-4 w-4 text-zinc-300" />
+                    <span>{selectedAccountId ? '当前账号暂无已同步商品' : '请先选择账号'}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -727,8 +839,10 @@ function NoteSidebar({
   const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
   const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
   const [isDispatchSettingsOpen, setIsDispatchSettingsOpen] = useState(false)
-  const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
-  const [products, setProducts] = useState<CmsProductRecord[]>([])
+  const [accounts, setAccounts] = useState<NoteSidebarAccountRecord[]>([])
+  const [products, setProducts] = useState<NoteSidebarProductRecord[]>([])
+  const [isLoadingDispatchAccounts, setIsLoadingDispatchAccounts] = useState(false)
+  const [isLoadingDispatchProducts, setIsLoadingDispatchProducts] = useState(false)
   const [dispatchAccountIdDraft, setDispatchAccountIdDraft] = useState('')
   const [dispatchProductIdsDraft, setDispatchProductIdsDraft] = useState<string[]>([])
   const preferredAccountId = useCmsStore((store) => store.preferredAccountId)
@@ -760,8 +874,9 @@ function NoteSidebar({
     if (!showPreview || !isDispatchSettingsOpen) return
     let canceled = false
     const loadAccounts = async (): Promise<void> => {
+      setIsLoadingDispatchAccounts(true)
       try {
-        const list = await window.api.cms.account.list()
+        const list = (await window.api.cms.account.list()) as NoteSidebarAccountRecord[]
         if (canceled) return
         setAccounts(list)
         setDispatchAccountIdDraft((current) =>
@@ -774,6 +889,8 @@ function NoteSidebar({
       } catch {
         if (canceled) return
         setAccounts([])
+      } finally {
+        if (!canceled) setIsLoadingDispatchAccounts(false)
       }
     }
     void loadAccounts()
@@ -790,14 +907,18 @@ function NoteSidebar({
         const accountId = dispatchAccountIdDraft.trim()
         if (!accountId) {
           setProducts([])
+          setIsLoadingDispatchProducts(false)
           return
         }
-        const list = await window.api.cms.product.list({ accountId })
+        setIsLoadingDispatchProducts(true)
+        const list = (await window.api.cms.product.list({ accountId })) as NoteSidebarProductRecord[]
         if (canceled) return
         setProducts(list)
       } catch {
         if (canceled) return
         setProducts([])
+      } finally {
+        if (!canceled) setIsLoadingDispatchProducts(false)
       }
     }
     void loadProducts()
@@ -811,6 +932,7 @@ function NoteSidebar({
       setDispatchProductIdsDraft([])
       return
     }
+    if (products.length === 0) return
     const availableIds = new Set(products.map((product) => String(product.id ?? '').trim()).filter(Boolean))
     setDispatchProductIdsDraft((current) =>
       current.filter((productId) => availableIds.has(String(productId ?? '').trim()))
@@ -853,15 +975,10 @@ function NoteSidebar({
     }
 
     const selectedTasks = previewTasks.filter((task) => selectedPreviewTaskIds.includes(task.id))
-    const bindingSource = selectedTasks.find((task) => String(task.accountId ?? '').trim()) ?? selectedTasks[0]
-    const nextAccountId = String(bindingSource?.accountId ?? '').trim()
-    const nextProductIds = resolveTaskSelectedProductIds({
-      linkedProducts: bindingSource?.linkedProducts,
-      productId: bindingSource?.productId
-    })
+    const preset = deriveSelectedDispatchBinding(selectedTasks)
 
-    setDispatchAccountIdDraft(nextAccountId)
-    setDispatchProductIdsDraft(nextProductIds)
+    setDispatchAccountIdDraft(preset.accountId)
+    setDispatchProductIdsDraft(preset.productIds)
     setIsDispatchSettingsOpen(true)
   }
 
@@ -946,7 +1063,13 @@ function NoteSidebar({
                       <button
                         type="button"
                         onClick={openDispatchSettings}
-                        className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                        disabled={selectedPreviewTaskIds.length === 0}
+                        className={cn(
+                          'inline-flex items-center gap-1 text-[11px] tracking-[0.04em] transition',
+                          selectedPreviewTaskIds.length > 0
+                            ? 'text-zinc-400 hover:text-zinc-700'
+                            : 'cursor-not-allowed text-zinc-300'
+                        )}
                       >
                         分发设置
                       </button>
@@ -1078,6 +1201,8 @@ function NoteSidebar({
       <DispatchSettingsModal
         isOpen={isDispatchSettingsOpen}
         selectedTaskCount={selectedPreviewTaskIds.length}
+        isLoadingAccounts={isLoadingDispatchAccounts}
+        isLoadingProducts={isLoadingDispatchProducts}
         accounts={accounts}
         selectedAccountId={dispatchAccountIdDraft}
         products={products}
