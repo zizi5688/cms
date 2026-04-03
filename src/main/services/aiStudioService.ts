@@ -6,6 +6,7 @@ import { basename, extname, join, resolve } from 'path'
 import ffmpeg from 'fluent-ffmpeg'
 import ffprobeStaticImport from 'ffprobe-static'
 
+import { prepareGeminiInlineImageFromPath } from './aiStudioGeminiInlineImageHelpers'
 import {
   AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS,
   normalizeAiStudioProviderFailureMessage,
@@ -1744,9 +1745,16 @@ export class AiStudioService {
       throw new Error('[AI Studio] 当前模型至少需要一张输入图片，请先添加主图或参考图。')
     }
 
-    const urls = await Promise.all(sourceImagePaths.map((filePath) => filePathToDataUrl(filePath)))
     const aspectRatio = normalizeAspectRatio(task.aspectRatio)
     const imageSize = resolveImageSizeForModel(model)
+    const usesGeminiGenerateContent = isGeminiGenerateContentPath(endpointPath)
+    const urls = await Promise.all(
+      sourceImagePaths.map((filePath) =>
+        usesGeminiGenerateContent
+          ? prepareGeminiInlineImageFromPath(filePath).then((result) => result.dataUrl)
+          : filePathToDataUrl(filePath)
+      )
+    )
 
     const requestPayload = isChatCompletionsPath(endpointPath)
       ? buildChatCompletionsPayload({
@@ -1758,7 +1766,7 @@ export class AiStudioService {
           urls,
           referenceCount: Math.max(0, urls.length - 1)
         })
-      : isGeminiGenerateContentPath(endpointPath)
+      : usesGeminiGenerateContent
         ? buildGeminiGenerateContentPayload({
             prompt,
             aspectRatio,
@@ -1780,7 +1788,7 @@ export class AiStudioService {
 
     const protocol = isChatCompletionsPath(endpointPath)
       ? 'chat-completions'
-      : isGeminiGenerateContentPath(endpointPath)
+      : usesGeminiGenerateContent
         ? 'gemini-generate-content'
         : 'grsai-compatible'
 
