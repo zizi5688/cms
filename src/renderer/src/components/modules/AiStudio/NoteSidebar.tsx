@@ -25,6 +25,10 @@ import {
   resolveWorkshopAccountId
 } from '@renderer/components/modules/workshopProductSelectionHelpers'
 
+import {
+  AI_STUDIO_NOTE_MATERIAL_DRAG_MIME,
+  parseNoteMaterialDragPayload
+} from './noteMaterialDragPayload'
 import type { AiStudioAssetRecord } from './useAiStudioState'
 
 export type NoteSidebarMode = 'image-note' | 'video-note'
@@ -77,9 +81,7 @@ function isSupportedImagePath(filePath: string): boolean {
 }
 
 function uniqueStrings(values: string[]): string[] {
-  return Array.from(
-    new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))
-  )
+  return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
 }
 
 function basename(filePath: string | null | undefined): string {
@@ -98,6 +100,21 @@ function reorderItems<T>(items: T[], fromIndex: number, toIndex: number): T[] {
   const [moved] = next.splice(fromIndex, 1)
   next.splice(toIndex, 0, moved)
   return next
+}
+
+function readDroppedMaterialPaths(event: React.DragEvent<HTMLElement>): string[] {
+  const customPayload = parseNoteMaterialDragPayload(
+    event.dataTransfer.getData(AI_STUDIO_NOTE_MATERIAL_DRAG_MIME)
+  ).filter(isSupportedImagePath)
+  if (customPayload.length > 0) {
+    return uniqueStrings(customPayload)
+  }
+
+  return uniqueStrings(
+    Array.from(event.dataTransfer.files)
+      .map((file) => window.electronAPI.getPathForFile(file))
+      .filter(isSupportedImagePath)
+  )
 }
 
 function deriveSelectedDispatchBinding(tasks: Task[]): {
@@ -249,11 +266,7 @@ function EmptyMaterialStrip({
   const handleDrop: React.DragEventHandler<HTMLButtonElement> = (event) => {
     event.preventDefault()
     setDragging(false)
-    const paths = uniqueStrings(
-      Array.from(event.dataTransfer.files)
-        .map((file) => window.electronAPI.getPathForFile(file))
-        .filter(isSupportedImagePath)
-    )
+    const paths = readDroppedMaterialPaths(event)
     if (paths.length > 0) onAddMaterials(paths)
   }
 
@@ -277,9 +290,7 @@ function EmptyMaterialStrip({
       onDrop={handleDrop}
       className={cn(
         'flex w-full flex-col items-center justify-center gap-4 px-2 py-5 text-center transition',
-        dragging
-          ? 'bg-zinc-50/80'
-          : 'bg-transparent hover:bg-zinc-50/30'
+        dragging ? 'bg-zinc-50/80' : 'bg-transparent hover:bg-zinc-50/30'
       )}
     >
       <div
@@ -295,10 +306,65 @@ function EmptyMaterialStrip({
         </div>
       </div>
       <div className="pb-2 text-center">
-        <div className="text-[12px] font-medium tracking-[0.01em] text-zinc-700">点击上传或拖入素材</div>
+        <div className="text-[12px] font-medium tracking-[0.01em] text-zinc-700">
+          点击上传或拖入素材
+        </div>
         <div className="mt-1 text-[11px] text-zinc-400">支持 jpg / png / webp / heic</div>
       </div>
     </button>
+  )
+}
+
+function MaterialStrip({
+  materials,
+  onAddMaterials,
+  onRemove
+}: {
+  materials: AiStudioAssetRecord[]
+  onAddMaterials: (paths: string[]) => void
+  onRemove: (asset: AiStudioAssetRecord) => void
+}): React.JSX.Element {
+  const [dragging, setDragging] = useState(false)
+
+  if (materials.length === 0) {
+    return <EmptyMaterialStrip onAddMaterials={onAddMaterials} />
+  }
+
+  return (
+    <div
+      onDragEnter={(event) => {
+        event.preventDefault()
+        setDragging(true)
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+        setDragging(true)
+      }}
+      onDragLeave={(event) => {
+        event.preventDefault()
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        setDragging(false)
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDragging(false)
+        const paths = readDroppedMaterialPaths(event)
+        if (paths.length > 0) onAddMaterials(paths)
+      }}
+      className={cn(
+        'rounded-[20px] transition',
+        dragging
+          ? 'bg-sky-50/70 ring-1 ring-sky-200 shadow-[0_14px_30px_rgba(56,189,248,0.08)]'
+          : 'bg-transparent'
+      )}
+    >
+      <div className="grid grid-cols-4 gap-3">
+        {materials.map((asset) => (
+          <MaterialTile key={asset.id} asset={asset} onRemove={onRemove} />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -504,7 +570,12 @@ function DispatchSettingsModal({
 
   return (
     <div className="pointer-events-auto fixed inset-0 z-[90] flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.78),rgba(244,244,245,0.94))] px-5 py-8">
-      <button type="button" aria-label="关闭分发设置" className="absolute inset-0" onClick={onClose} />
+      <button
+        type="button"
+        aria-label="关闭分发设置"
+        className="absolute inset-0"
+        onClick={onClose}
+      />
       <div className="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-[min(920px,calc(100vw-3rem))] flex-col bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,252,0.98))] shadow-[0_28px_90px_rgba(15,23,42,0.12),0_0_0_1px_rgba(148,163,184,0.12)]">
         <div className="flex items-start justify-between gap-4 px-5 py-4">
           <div>
@@ -693,7 +764,12 @@ function PreviewEditorModal({
 
   return (
     <div className="pointer-events-auto fixed inset-0 z-[80] flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.72),rgba(244,244,245,0.92))] px-6 py-8">
-      <button type="button" aria-label="关闭预览编辑器" className="absolute inset-0" onClick={onClose} />
+      <button
+        type="button"
+        aria-label="关闭预览编辑器"
+        className="absolute inset-0"
+        onClick={onClose}
+      />
       <div className="relative z-10 flex max-h-[min(720px,calc(100vh-4rem))] w-[min(1040px,calc(100vw-5rem))] flex-col bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] shadow-[0_28px_90px_rgba(15,23,42,0.12),0_0_0_1px_rgba(148,163,184,0.14)]">
         <div className="flex items-center justify-end px-5 py-4">
           <button
@@ -860,13 +936,14 @@ function NoteSidebar({
   const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
   const isImageMode = mode === 'image-note'
   const showPreview = isImageMode && phase === 'preview'
-  const previewTaskIds = previewTasks.map((task) => task.id)
+  const previewTaskIds = useMemo(() => previewTasks.map((task) => task.id), [previewTasks])
   const previewTaskIdsKey = previewTaskIds.join('::')
   const allPreviewSelected =
-    previewTaskIds.length > 0 && previewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
+    previewTaskIds.length > 0 &&
+    previewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
   const activePreviewTask =
     showPreview && activePreviewTaskId
-      ? previewTasks.find((task) => task.id === activePreviewTaskId) ?? null
+      ? (previewTasks.find((task) => task.id === activePreviewTaskId) ?? null)
       : null
 
   useEffect(() => {
@@ -879,7 +956,7 @@ function NoteSidebar({
     setSelectedPreviewTaskIds((current) =>
       current.filter((taskId) => previewTaskIds.includes(taskId))
     )
-  }, [previewTaskIdsKey, showPreview])
+  }, [previewTaskIds, previewTaskIdsKey, showPreview])
 
   useEffect(() => {
     if (!showPreview || !isDispatchSettingsOpen) return
@@ -922,7 +999,9 @@ function NoteSidebar({
           return
         }
         setIsLoadingDispatchProducts(true)
-        const list = (await window.api.cms.product.list({ accountId })) as NoteSidebarProductRecord[]
+        const list = (await window.api.cms.product.list({
+          accountId
+        })) as NoteSidebarProductRecord[]
         if (canceled) return
         setProducts(list)
       } catch {
@@ -944,7 +1023,9 @@ function NoteSidebar({
       return
     }
     if (products.length === 0) return
-    const availableIds = new Set(products.map((product) => String(product.id ?? '').trim()).filter(Boolean))
+    const availableIds = new Set(
+      products.map((product) => String(product.id ?? '').trim()).filter(Boolean)
+    )
     setDispatchProductIdsDraft((current) =>
       current.filter((productId) => availableIds.has(String(productId ?? '').trim()))
     )
@@ -1053,15 +1134,11 @@ function NoteSidebar({
           <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
             {phase === 'editing' ? (
               <div className="pt-4">
-                {materials.length > 0 ? (
-                  <div className="grid grid-cols-4 gap-3">
-                    {materials.map((asset) => (
-                      <MaterialTile key={asset.id} asset={asset} onRemove={onRemoveMaterial} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyMaterialStrip onAddMaterials={onAddMaterials} />
-                )}
+                <MaterialStrip
+                  materials={materials}
+                  onAddMaterials={onAddMaterials}
+                  onRemove={onRemoveMaterial}
+                />
               </div>
             ) : null}
 

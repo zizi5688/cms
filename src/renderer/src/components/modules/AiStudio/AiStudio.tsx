@@ -1,20 +1,20 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { ImageIcon, Video } from 'lucide-react'
+import { Images, ImageIcon, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
 import { generateManifest } from '@renderer/lib/cms-engine'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
 
+import { BatchPickCanvas } from './BatchPickCanvas'
+import { buildBatchPickAssets } from './batchPickHelpers'
 import { ControlPanel } from './ControlPanel'
 import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './NoteSidebar'
 import { ResultPanel } from './ResultPanel'
 import { TaskQueue } from './TaskQueue'
-import {
-  normalizeNoteSidebarConstraints
-} from './noteSidebarHelpers'
+import { normalizeNoteSidebarConstraints } from './noteSidebarHelpers'
 import { useAiStudioState } from './useAiStudioState'
 
 const AI_STUDIO_CANVAS_SURFACE_CLASS =
@@ -40,26 +40,44 @@ const NOTE_SIDEBAR_DEFAULTS = {
   maxReuseDraft: '1'
 }
 
+type NoteCanvasMode = 'result' | 'batch-pick'
+
 function AiStudioCanvas({
   state,
   initialPromptDraft,
   noteSidebar,
-  isSidebarOpen
+  isSidebarOpen,
+  noteSidebarMode,
+  noteSidebarPhase,
+  canvasMode,
+  batchPickAssets,
+  selectedBatchPickAssetIds,
+  onToggleBatchPickAsset,
+  onChangeBatchPickSelection,
+  onOpenBatchPick,
+  onCloseBatchPick
 }: {
   state: ReturnType<typeof useAiStudioState>
   initialPromptDraft: string
   noteSidebar: React.JSX.Element
   isSidebarOpen: boolean
+  noteSidebarMode: NoteSidebarMode
+  noteSidebarPhase: NoteSidebarPhase
+  canvasMode: NoteCanvasMode
+  batchPickAssets: ReturnType<typeof buildBatchPickAssets>
+  selectedBatchPickAssetIds: string[]
+  onToggleBatchPickAsset: (assetId: string) => void
+  onChangeBatchPickSelection: (nextAssetIds: string[]) => void
+  onOpenBatchPick: () => void
+  onCloseBatchPick: () => void
 }): React.JSX.Element {
   const [promptDraft, setPromptDraft] = useState(initialPromptDraft)
   const overlayRef = useRef<HTMLDivElement | null>(null)
   const [composerOverlayPadding, setComposerOverlayPadding] = useState(isSidebarOpen ? 72 : 420)
+  const effectiveComposerOverlayPadding = isSidebarOpen ? 72 : composerOverlayPadding
 
   useLayoutEffect(() => {
-    if (isSidebarOpen) {
-      setComposerOverlayPadding(72)
-      return
-    }
+    if (isSidebarOpen) return
 
     const updateOverlayPadding = (): void => {
       const overlayHeight = overlayRef.current?.offsetHeight ?? 0
@@ -97,13 +115,43 @@ function AiStudioCanvas({
     >
       {noteSidebar}
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-        <ResultPanel state={state} bottomSpacerHeight={composerOverlayPadding} />
-      </div>
+      {canvasMode === 'batch-pick' ? (
+        <BatchPickCanvas
+          assets={batchPickAssets}
+          selectedAssetIds={selectedBatchPickAssetIds}
+          onToggleAsset={onToggleBatchPickAsset}
+          onSelectionChange={onChangeBatchPickSelection}
+          onExit={onCloseBatchPick}
+          reservedSidebarWidth={isSidebarOpen ? 352 : 0}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          <ResultPanel state={state} bottomSpacerHeight={effectiveComposerOverlayPadding} />
+        </div>
+      )}
+
+      {isSidebarOpen &&
+      noteSidebarMode === 'image-note' &&
+      noteSidebarPhase === 'editing' &&
+      canvasMode === 'result' ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex justify-center">
+          <button
+            type="button"
+            onClick={onOpenBatchPick}
+            className="pointer-events-auto inline-flex h-8 items-center gap-2 border border-zinc-200 bg-white px-3 text-[11px] font-medium tracking-[0.04em] text-zinc-700 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:border-zinc-300 hover:text-zinc-950 hover:shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
+          >
+            <Images className="h-3.5 w-3.5" />
+            批量选图
+          </button>
+        </div>
+      ) : null}
 
       {!isSidebarOpen ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5 pt-2">
-          <div ref={overlayRef} className="pointer-events-auto mx-auto flex w-full max-w-[920px] flex-col gap-3">
+          <div
+            ref={overlayRef}
+            className="pointer-events-auto mx-auto flex w-full max-w-[920px] flex-col gap-3"
+          >
             <div
               className={cn(
                 'inline-flex items-center self-start rounded-[18px] border border-black/8 p-1 shadow-[0_8px_18px_rgba(15,23,42,0.04)]',
@@ -167,16 +215,24 @@ function AiStudio(): React.JSX.Element {
   const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
   const setSelectedPublishTaskIds = useCmsStore((store) => store.setSelectedPublishTaskIds)
   const [noteSidebarOpen, setNoteSidebarOpen] = useState(false)
-  const [noteSidebarMode, setNoteSidebarMode] = useState<NoteSidebarMode>(NOTE_SIDEBAR_DEFAULTS.mode)
-  const [noteSidebarPhase, setNoteSidebarPhase] = useState<NoteSidebarPhase>(NOTE_SIDEBAR_DEFAULTS.phase)
+  const [noteSidebarMode, setNoteSidebarMode] = useState<NoteSidebarMode>(
+    NOTE_SIDEBAR_DEFAULTS.mode
+  )
+  const [noteSidebarPhase, setNoteSidebarPhase] = useState<NoteSidebarPhase>(
+    NOTE_SIDEBAR_DEFAULTS.phase
+  )
   const [noteCsvDraft, setNoteCsvDraft] = useState(NOTE_SIDEBAR_DEFAULTS.csvDraft)
-  const [noteGroupCountDraft, setNoteGroupCountDraft] = useState(NOTE_SIDEBAR_DEFAULTS.groupCountDraft)
+  const [noteGroupCountDraft, setNoteGroupCountDraft] = useState(
+    NOTE_SIDEBAR_DEFAULTS.groupCountDraft
+  )
   const [noteMinImagesDraft, setNoteMinImagesDraft] = useState(NOTE_SIDEBAR_DEFAULTS.minImagesDraft)
   const [noteMaxImagesDraft, setNoteMaxImagesDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
   const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
   const [notePreviewTasks, setNotePreviewTasks] = useState<Task[]>([])
   const [isGeneratingNotePreview, setIsGeneratingNotePreview] = useState(false)
   const [noteUploadedMaterialPaths, setNoteUploadedMaterialPaths] = useState<string[]>([])
+  const [noteCanvasMode, setNoteCanvasMode] = useState<NoteCanvasMode>('result')
+  const [selectedBatchPickAssetIds, setSelectedBatchPickAssetIds] = useState<string[]>([])
 
   const resetNoteSidebarState = (): void => {
     setNoteSidebarOpen(false)
@@ -189,13 +245,15 @@ function AiStudio(): React.JSX.Element {
     setNoteMaxReuseDraft(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
     setNotePreviewTasks([])
     setNoteUploadedMaterialPaths([])
+    setNoteCanvasMode('result')
+    setSelectedBatchPickAssetIds([])
   }
 
   const noteMaterials = useMemo(() => {
     const now = Date.now()
     const pooled = state.pooledOutputAssets.filter((asset) =>
-        /\.(jpg|jpeg|png|webp|heic)$/i.test(String(asset.filePath ?? '').trim())
-      )
+      /\.(jpg|jpeg|png|webp|heic)$/i.test(String(asset.filePath ?? '').trim())
+    )
     const uploaded = noteUploadedMaterialPaths.map((filePath, index) => ({
       id: `note-upload:${index}:${filePath}`,
       taskId: 'note-upload',
@@ -214,13 +272,47 @@ function AiStudio(): React.JSX.Element {
     return [...uploaded, ...pooled]
   }, [noteUploadedMaterialPaths, state.pooledOutputAssets])
 
+  const batchPickAssets = useMemo(
+    () => buildBatchPickAssets(state.historyTasks),
+    [state.historyTasks]
+  )
+
+  const handleToggleBatchPickAsset = useCallback((assetId: string): void => {
+    setSelectedBatchPickAssetIds((current) =>
+      current.includes(assetId)
+        ? current.filter((currentId) => currentId !== assetId)
+        : [...current, assetId]
+    )
+  }, [])
+
+  const handleChangeBatchPickSelection = useCallback((nextAssetIds: string[]): void => {
+    setSelectedBatchPickAssetIds(nextAssetIds)
+  }, [])
+
+  const handleOpenBatchPick = useCallback((): void => {
+    setNoteCanvasMode('batch-pick')
+  }, [])
+
+  const handleCloseBatchPick = useCallback((): void => {
+    setNoteCanvasMode('result')
+  }, [])
+
+  useEffect(() => {
+    if (!noteSidebarOpen || noteSidebarMode !== 'image-note' || noteSidebarPhase !== 'editing') {
+      setNoteCanvasMode('result')
+    }
+  }, [noteSidebarMode, noteSidebarOpen, noteSidebarPhase])
+
+  useEffect(() => {
+    const availableIds = new Set(batchPickAssets.map((asset) => asset.id))
+    setSelectedBatchPickAssetIds((current) =>
+      current.filter((assetId) => availableIds.has(assetId))
+    )
+  }, [batchPickAssets])
+
   const handleGenerateNotePreview = async (): Promise<void> => {
     const materialPaths = Array.from(
-      new Set(
-        noteMaterials
-          .map((asset) => String(asset.filePath ?? '').trim())
-          .filter(Boolean)
-      )
+      new Set(noteMaterials.map((asset) => String(asset.filePath ?? '').trim()).filter(Boolean))
     )
 
     if (materialPaths.length === 0) {
@@ -235,19 +327,15 @@ function AiStudio(): React.JSX.Element {
 
     setIsGeneratingNotePreview(true)
     try {
-      const nextTasks = generateManifest(
-        noteCsvDraft,
-        materialPaths,
-        {
-          ...normalizeNoteSidebarConstraints({
-            groupCount: noteGroupCountDraft,
-            minImages: noteMinImagesDraft,
-            maxImages: noteMaxImagesDraft,
-            maxReuse: noteMaxReuseDraft
-          }),
-          bestEffort: true
-        }
-      )
+      const nextTasks = generateManifest(noteCsvDraft, materialPaths, {
+        ...normalizeNoteSidebarConstraints({
+          groupCount: noteGroupCountDraft,
+          minImages: noteMinImagesDraft,
+          maxImages: noteMaxImagesDraft,
+          maxReuse: noteMaxReuseDraft
+        }),
+        bestEffort: true
+      })
       setNotePreviewTasks(nextTasks)
       setNoteSidebarPhase('preview')
       addLog(`[AI Studio] 已生成 ${nextTasks.length} 组图文笔记预览。`)
@@ -318,7 +406,9 @@ function AiStudio(): React.JSX.Element {
         { requestId }
       )
 
-      const firstAccountId = String(created[0]?.accountId ?? tasksToDispatch[0]?.accountId ?? '').trim()
+      const firstAccountId = String(
+        created[0]?.accountId ?? tasksToDispatch[0]?.accountId ?? ''
+      ).trim()
       if (firstAccountId) {
         setPreferredAccountId(firstAccountId)
       }
@@ -352,6 +442,8 @@ function AiStudio(): React.JSX.Element {
       onModeChange={(mode) => {
         setNoteSidebarMode(mode)
         setNoteSidebarPhase('editing')
+        setNoteCanvasMode('result')
+        setSelectedBatchPickAssetIds([])
       }}
       onCsvChange={setNoteCsvDraft}
       onGroupCountChange={setNoteGroupCountDraft}
@@ -362,6 +454,8 @@ function AiStudio(): React.JSX.Element {
       onRegenerate={() => {
         setNoteSidebarPhase('editing')
         setNotePreviewTasks([])
+        setNoteCanvasMode('result')
+        setSelectedBatchPickAssetIds([])
       }}
       onPreviewTasksChange={(tasks) => {
         setNotePreviewTasks(tasks)
@@ -391,6 +485,15 @@ function AiStudio(): React.JSX.Element {
       initialPromptDraft={readPromptSeed(state)}
       noteSidebar={noteSidebarNode}
       isSidebarOpen={noteSidebarOpen}
+      noteSidebarMode={noteSidebarMode}
+      noteSidebarPhase={noteSidebarPhase}
+      canvasMode={noteCanvasMode}
+      batchPickAssets={batchPickAssets}
+      selectedBatchPickAssetIds={selectedBatchPickAssetIds}
+      onToggleBatchPickAsset={handleToggleBatchPickAsset}
+      onChangeBatchPickSelection={handleChangeBatchPickSelection}
+      onOpenBatchPick={handleOpenBatchPick}
+      onCloseBatchPick={handleCloseBatchPick}
     />
   )
 }
