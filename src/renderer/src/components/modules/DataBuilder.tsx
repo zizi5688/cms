@@ -260,7 +260,12 @@ function DataBuilder(): React.JSX.Element {
   }, [workshopImport])
 
   const importedImagePaths = useMemo(() => {
-    if (workshopImport?.type !== 'image' || workshopImport?.source !== 'ai-studio') return []
+    if (
+      workshopImport?.type !== 'image' ||
+      (workshopImport?.source !== 'ai-studio' && workshopImport?.source !== 'ai-studio-note')
+    ) {
+      return []
+    }
     const fromPaths = Array.isArray(workshopImport.paths)
       ? workshopImport.paths.map((item) => String(item ?? '').trim()).filter(Boolean)
       : []
@@ -360,6 +365,7 @@ function DataBuilder(): React.JSX.Element {
 
   useEffect(() => {
     if (!isAiStudioImageImportMode || !isWorkshopActive) return
+    const preserveExistingPreview = workshopImport?.source === 'ai-studio-note'
     const importKey = buildAiStudioImageImportKey(importedImagePaths)
     if (
       !shouldSyncAiStudioImageImport({
@@ -373,8 +379,10 @@ function DataBuilder(): React.JSX.Element {
     lastAiStudioImportKeyRef.current = importKey
     lastScannedPathRef.current = `__ai_studio__${importedImagePaths.length}`
     setImageFiles(importedImagePaths)
-    setTasks([])
-    setUploadTasks([])
+    if (!preserveExistingPreview) {
+      setTasks([])
+      setUploadTasks([])
+    }
     setSelectedImageIds(new Set())
     setQueuedTaskIds(new Set())
     setDispatchProgress(null)
@@ -393,6 +401,7 @@ function DataBuilder(): React.JSX.Element {
     imageFiles,
     isAiStudioImageImportMode,
     isWorkshopActive,
+    workshopImport?.source,
     setDataWorkshopFolderPath,
     setTasks,
     setUploadTasks

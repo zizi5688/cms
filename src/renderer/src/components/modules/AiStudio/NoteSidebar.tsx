@@ -1,0 +1,754 @@
+import { useEffect, useState } from 'react'
+import type * as React from 'react'
+
+import {
+  Check,
+  ChevronLeft,
+  Clapperboard,
+  Image as ImageIcon,
+  Upload,
+  Video,
+  X
+} from 'lucide-react'
+
+import { Button } from '@renderer/components/ui/button'
+import { Input } from '@renderer/components/ui/input'
+import { Textarea } from '@renderer/components/ui/textarea'
+import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
+import { cn } from '@renderer/lib/utils'
+import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
+
+import type { AiStudioAssetRecord } from './useAiStudioState'
+
+export type NoteSidebarMode = 'image-note' | 'video-note'
+export type NoteSidebarPhase = 'editing' | 'preview'
+
+type NoteSidebarProps = {
+  isOpen: boolean
+  mode: NoteSidebarMode
+  phase: NoteSidebarPhase
+  materials: AiStudioAssetRecord[]
+  csvDraft: string
+  groupCountDraft: string
+  minImagesDraft: string
+  maxImagesDraft: string
+  maxReuseDraft: string
+  isGenerating?: boolean
+  previewTasks: Task[]
+  onOpenChange: (next: boolean) => void
+  onModeChange: (mode: NoteSidebarMode) => void
+  onCsvChange: (value: string) => void
+  onGroupCountChange: (value: string) => void
+  onMinImagesChange: (value: string) => void
+  onMaxImagesChange: (value: string) => void
+  onMaxReuseChange: (value: string) => void
+  onGenerate: () => void
+  onRegenerate: () => void
+  onPreviewTasksChange: (tasks: Task[]) => void
+  onDispatch: (selectedTaskIds: string[]) => void
+  onAddMaterials: (paths: string[]) => void
+  onRemoveMaterial: (asset: AiStudioAssetRecord) => void
+}
+
+function isSupportedImagePath(filePath: string): boolean {
+  return /\.(jpg|jpeg|png|webp|heic)$/i.test(String(filePath ?? '').trim())
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(
+    new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))
+  )
+}
+
+function basename(filePath: string | null | undefined): string {
+  const normalized = String(filePath ?? '').trim()
+  if (!normalized) return '未命名素材'
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? normalized
+}
+
+function reorderItems<T>(items: T[], fromIndex: number, toIndex: number): T[] {
+  if (fromIndex === toIndex) return items
+  if (fromIndex < 0 || toIndex < 0) return items
+  if (fromIndex >= items.length || toIndex >= items.length) return items
+
+  const next = [...items]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, moved)
+  return next
+}
+
+function IconButton({
+  icon,
+  label,
+  active,
+  onClick
+}: {
+  icon: React.ReactNode
+  label: string
+  active?: boolean
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        'inline-flex h-10 w-10 items-center justify-center rounded-full border transition',
+        active
+          ? 'border-zinc-950 bg-zinc-950 text-white shadow-[0_10px_30px_rgba(15,23,42,0.14)]'
+          : 'border-zinc-200 bg-white text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+      )}
+    >
+      {icon}
+    </button>
+  )
+}
+
+function MaterialTile({
+  asset,
+  onRemove
+}: {
+  asset: AiStudioAssetRecord
+  onRemove: (asset: AiStudioAssetRecord) => void
+}): React.JSX.Element {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const src = resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath)
+
+  return (
+    <div className="group/material relative">
+      {src ? (
+        <img
+          src={src}
+          alt={basename(asset.filePath)}
+          className="block aspect-[4/5] w-full bg-zinc-100 object-cover"
+          draggable={false}
+          loading="lazy"
+        />
+      ) : (
+        <div className="aspect-[4/5] w-full bg-zinc-100" />
+      )}
+
+      <button
+        type="button"
+        onClick={() => onRemove(asset)}
+        className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-500 opacity-0 shadow-[0_8px_18px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-900 group-hover/material:opacity-100"
+        aria-label="移出创作中心"
+        title="移出创作中心"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
+function EmptyMaterialStrip({
+  onAddMaterials
+}: {
+  onAddMaterials: (paths: string[]) => void
+}): React.JSX.Element {
+  const [dragging, setDragging] = useState(false)
+
+  const handlePick = async (): Promise<void> => {
+    const result = await window.electronAPI.openMediaFiles({
+      multiSelections: true,
+      accept: 'image'
+    })
+    if (!result) return
+    const items = Array.isArray(result) ? result : [result]
+    const paths = uniqueStrings(
+      items.map((item) => String(item?.originalPath ?? '').trim()).filter(isSupportedImagePath)
+    )
+    if (paths.length > 0) onAddMaterials(paths)
+  }
+
+  const handleDrop: React.DragEventHandler<HTMLButtonElement> = (event) => {
+    event.preventDefault()
+    setDragging(false)
+    const paths = uniqueStrings(
+      Array.from(event.dataTransfer.files)
+        .map((file) => window.electronAPI.getPathForFile(file))
+        .filter(isSupportedImagePath)
+    )
+    if (paths.length > 0) onAddMaterials(paths)
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void handlePick()}
+      onDragEnter={(event) => {
+        event.preventDefault()
+        setDragging(true)
+      }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={(event) => {
+        event.preventDefault()
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        setDragging(false)
+      }}
+      onDrop={handleDrop}
+      className={cn(
+        'flex w-full flex-col items-center justify-center gap-3 border transition',
+        dragging
+          ? 'border-zinc-300 bg-zinc-50'
+          : 'border-dashed border-zinc-200 bg-zinc-50/60 hover:border-zinc-300 hover:bg-zinc-50'
+      )}
+    >
+      <div className="flex aspect-[4/5] w-[150px] max-w-full items-center justify-center border border-zinc-200 bg-white">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-zinc-50 text-zinc-500">
+          <Upload className="h-4 w-4" />
+        </div>
+      </div>
+      <div className="pb-4 text-center">
+        <div className="text-[12px] font-medium text-zinc-700">点击上传或拖入素材</div>
+        <div className="mt-1 text-[11px] text-zinc-400">支持 jpg / png / webp / heic</div>
+      </div>
+    </button>
+  )
+}
+
+function PreviewNoteCard({
+  task,
+  onOpen,
+  onTaskChange,
+  selected,
+  onToggleSelect
+}: {
+  task: Task
+  onOpen: () => void
+  onTaskChange: (patch: Partial<Task>) => void
+  selected: boolean
+  onToggleSelect: () => void
+}): React.JSX.Element {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const imagePaths = task.assignedImages.filter(Boolean)
+  const coverPath = imagePaths[0] ?? ''
+  const coverSrc = resolveLocalImage(coverPath, workspacePath)
+  const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
+  const [draftValue, setDraftValue] = useState('')
+
+  const openEditor = (field: 'title' | 'body'): void => {
+    setEditingField(field)
+    setDraftValue(field === 'title' ? task.title : task.body)
+  }
+
+  const commitEditor = (): void => {
+    if (!editingField) return
+    const nextValue = draftValue.trim()
+    if (editingField === 'title') {
+      onTaskChange({ title: nextValue })
+    } else {
+      onTaskChange({ body: nextValue })
+    }
+    setEditingField(null)
+  }
+
+  return (
+    <article className="px-3 py-2">
+      <div className="grid grid-cols-[96px_minmax(0,1fr)] items-start gap-4">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="relative block overflow-hidden border border-zinc-200/80 bg-zinc-50 transition hover:border-sky-200 hover:shadow-[0_0_0_1px_rgba(125,211,252,0.26)]"
+          >
+            {coverSrc ? (
+              <img
+                src={coverSrc}
+                alt={basename(coverPath)}
+                className="block aspect-[4/5] w-full bg-zinc-100 object-cover"
+                draggable={false}
+                loading="lazy"
+              />
+            ) : (
+              <div className="flex aspect-[4/5] w-full items-center justify-center bg-zinc-50 text-[10px] tracking-[0.04em] text-zinc-400">
+                暂无封面
+              </div>
+            )}
+            <div className="absolute bottom-2 right-2 inline-flex h-5 items-center justify-center border border-white/90 bg-zinc-950/34 px-1.5 text-[10px] font-medium tracking-[0.02em] text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)] backdrop-blur-[4px]">
+              {imagePaths.length}张
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onToggleSelect()
+            }}
+            className={cn(
+              'absolute left-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center border shadow-[0_8px_18px_rgba(15,23,42,0.08)] transition',
+              selected
+                ? 'border-white bg-white text-zinc-950'
+                : 'border-white/80 bg-white/78 text-transparent backdrop-blur-[2px] hover:bg-white'
+            )}
+            aria-label={selected ? '取消选中笔记' : '选中笔记'}
+          >
+            <Check className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="flex min-w-0 flex-col items-start gap-2 text-left">
+          {editingField === 'title' ? (
+            <Input
+              autoFocus
+              value={draftValue}
+              onChange={(event) => setDraftValue(event.target.value)}
+              onBlur={commitEditor}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  commitEditor()
+                }
+                if (event.key === 'Escape') {
+                  setEditingField(null)
+                }
+              }}
+              className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => openEditor('title')}
+              className="max-w-full text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
+            >
+              <span className="line-clamp-2 break-all">{task.title.trim() || '未命名笔记'}</span>
+            </button>
+          )}
+
+          {editingField === 'body' ? (
+            <Textarea
+              autoFocus
+              value={draftValue}
+              onChange={(event) => setDraftValue(event.target.value)}
+              onBlur={commitEditor}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                  event.preventDefault()
+                  commitEditor()
+                }
+                if (event.key === 'Escape') {
+                  setEditingField(null)
+                }
+              }}
+              className="min-h-[96px] w-full resize-none rounded-none border-zinc-200 bg-white px-2 py-2 text-[12px] leading-6 text-zinc-600 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => openEditor('body')}
+              className="w-full text-left transition hover:text-zinc-700"
+            >
+              <div className="whitespace-pre-wrap break-words text-[12px] leading-6 text-zinc-500">
+                {task.body.trim() || '点击这里编辑正文'}
+              </div>
+            </button>
+          )}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function PreviewEditorModal({
+  task,
+  onClose,
+  onImagesChange
+}: {
+  task: Task
+  onClose: () => void
+  onImagesChange: (nextImages: string[]) => void
+}): React.JSX.Element {
+  const workspacePath = useCmsStore((store) => store.workspacePath)
+  const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
+  const imagePaths = task.assignedImages.filter(Boolean)
+
+  return (
+    <div className="pointer-events-auto fixed inset-0 z-[80] flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.72),rgba(244,244,245,0.92))] px-6 py-8">
+      <button type="button" aria-label="关闭预览编辑器" className="absolute inset-0" onClick={onClose} />
+      <div className="relative z-10 flex max-h-[min(720px,calc(100vh-4rem))] w-[min(1040px,calc(100vw-5rem))] flex-col bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] shadow-[0_28px_90px_rgba(15,23,42,0.12),0_0_0_1px_rgba(148,163,184,0.14)]">
+        <div className="flex items-center justify-end px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-8 w-8 items-center justify-center border border-zinc-200 bg-white text-zinc-500 shadow-[0_8px_18px_rgba(56,189,248,0.08)] transition hover:border-sky-200 hover:text-zinc-900"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden px-5 py-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          {imagePaths.length > 0 ? (
+            <div className="flex min-w-max gap-4">
+              {imagePaths.map((filePath, index) => {
+                const src = resolveLocalImage(filePath, workspacePath)
+
+                return (
+                  <div
+                    key={`${task.id}:${filePath}:${index}`}
+                    draggable
+                    onDragStart={() => setDraggingIndex(index)}
+                    onDragEnd={() => setDraggingIndex(null)}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      if (draggingIndex === null) return
+                      onImagesChange(reorderItems(imagePaths, draggingIndex, index))
+                      setDraggingIndex(null)
+                    }}
+                    className={cn(
+                      'group relative w-[172px] shrink-0 border border-zinc-200/80 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.035)] transition',
+                      draggingIndex === index
+                        ? 'opacity-70'
+                        : 'opacity-100 hover:border-sky-200 hover:shadow-[0_16px_36px_rgba(56,189,248,0.1)]'
+                    )}
+                  >
+                    <div className="absolute left-2 top-2 z-10 inline-flex h-6 min-w-6 items-center justify-center border border-zinc-200 bg-white px-1.5 text-[10px] tracking-[0.04em] text-zinc-500">
+                      {index + 1}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onImagesChange(imagePaths.filter((_, imageIndex) => imageIndex !== index))
+                        setDraggingIndex(null)
+                      }}
+                      className="absolute right-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center border border-zinc-200 bg-white text-zinc-500 opacity-0 transition hover:border-zinc-300 hover:text-zinc-900 group-hover:opacity-100"
+                      aria-label="删除图片"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                    {src ? (
+                      <img
+                        src={src}
+                        alt={basename(filePath)}
+                        className="block aspect-[4/5] w-full bg-zinc-50 object-contain"
+                        draggable={false}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="flex aspect-[4/5] w-full items-center justify-center bg-zinc-50 text-[11px] text-zinc-400">
+                        图片不可预览
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="flex h-full min-h-[260px] items-center justify-center border border-dashed border-zinc-200 bg-zinc-50 text-[12px] tracking-[0.04em] text-zinc-400">
+              当前笔记已无图片
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CapsuleInput({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+}): React.JSX.Element {
+  return (
+    <Input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      className="h-6 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 placeholder:text-zinc-400 focus-visible:ring-zinc-300"
+    />
+  )
+}
+
+function LabeledMiniField({
+  label,
+  children
+}: {
+  label: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <label className="flex min-w-0 flex-col gap-1">
+      <span className="px-1 text-[10px] tracking-[0.04em] text-zinc-400">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+function VideoModePlaceholder(): React.JSX.Element {
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 pb-8">
+      <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-4 py-2 text-[12px] text-zinc-500">
+        <Clapperboard className="h-4 w-4" />
+        视频笔记稍后接入
+      </div>
+    </div>
+  )
+}
+
+function NoteSidebar({
+  isOpen,
+  mode,
+  phase,
+  materials,
+  csvDraft,
+  groupCountDraft,
+  minImagesDraft,
+  maxImagesDraft,
+  maxReuseDraft,
+  isGenerating = false,
+  previewTasks,
+  onOpenChange,
+  onModeChange,
+  onCsvChange,
+  onGroupCountChange,
+  onMinImagesChange,
+  onMaxImagesChange,
+  onMaxReuseChange,
+  onGenerate,
+  onRegenerate,
+  onPreviewTasksChange,
+  onDispatch,
+  onAddMaterials,
+  onRemoveMaterial
+}: NoteSidebarProps): React.JSX.Element {
+  const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
+  const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
+  const isImageMode = mode === 'image-note'
+  const showPreview = isImageMode && phase === 'preview'
+  const previewTaskIds = previewTasks.map((task) => task.id)
+  const allPreviewSelected =
+    previewTaskIds.length > 0 && previewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
+  const activePreviewTask =
+    showPreview && activePreviewTaskId
+      ? previewTasks.find((task) => task.id === activePreviewTaskId) ?? null
+      : null
+
+  useEffect(() => {
+    if (!showPreview) {
+      setSelectedPreviewTaskIds([])
+      return
+    }
+
+    setSelectedPreviewTaskIds((current) =>
+      current.filter((taskId) => previewTaskIds.includes(taskId))
+    )
+  }, [previewTaskIds, showPreview])
+
+  if (!isOpen) {
+    return (
+      <div className="pointer-events-none absolute right-6 top-6 z-40">
+        <button
+          type="button"
+          onClick={() => onOpenChange(true)}
+          className="pointer-events-auto inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-[0_16px_40px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-950"
+          aria-label="展开创作中心"
+        >
+          <ImageIcon className="h-4 w-4" />
+        </button>
+      </div>
+    )
+  }
+
+  const updatePreviewTaskImages = (taskId: string, nextImages: string[]): void => {
+    onPreviewTasksChange(
+      previewTasks.map((task) =>
+        task.id === taskId ? { ...task, assignedImages: nextImages } : task
+      )
+    )
+  }
+
+  const updatePreviewTask = (taskId: string, patch: Partial<Task>): void => {
+    onPreviewTasksChange(
+      previewTasks.map((task) => (task.id === taskId ? { ...task, ...patch } : task))
+    )
+  }
+
+  return (
+    <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
+      <aside className="pointer-events-auto flex h-full w-full flex-col border-l border-zinc-200 bg-[linear-gradient(180deg,rgb(255,255,255),rgb(248,250,252))] shadow-[-18px_0_48px_rgba(15,23,42,0.08)]">
+        <div className="flex items-center justify-between px-4 pb-3 pt-4">
+          <div className="text-[14px] font-medium tracking-[0.02em] text-zinc-800">创作中心</div>
+          <div className="flex items-center gap-2">
+            <IconButton
+              icon={<ChevronLeft className="h-4 w-4" />}
+              label="收起侧栏"
+              onClick={() => onOpenChange(false)}
+            />
+            <IconButton
+              icon={<ImageIcon className="h-4 w-4" />}
+              label="创作图文笔记"
+              active={isImageMode}
+              onClick={() => onModeChange('image-note')}
+            />
+            <IconButton
+              icon={<Video className="h-4 w-4" />}
+              label="创作视频笔记"
+              active={mode === 'video-note'}
+              onClick={() => onModeChange('video-note')}
+            />
+          </div>
+        </div>
+
+        {mode === 'video-note' ? <VideoModePlaceholder /> : null}
+
+        {isImageMode ? (
+          <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+            {phase === 'editing' ? (
+              <div className="border-t border-zinc-200 pt-4">
+                {materials.length > 0 ? (
+                  <div className="grid grid-cols-4 gap-3">
+                    {materials.map((asset) => (
+                      <MaterialTile key={asset.id} asset={asset} onRemove={onRemoveMaterial} />
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyMaterialStrip onAddMaterials={onAddMaterials} />
+                )}
+              </div>
+            ) : null}
+
+            <div className="min-h-0 flex-1 overflow-y-auto pt-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              {showPreview ? (
+                <div className="space-y-3 py-2">
+                  <div className="flex items-center justify-between px-3">
+                    <div className="text-[11px] tracking-[0.04em] text-zinc-400">生成预览</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPreviewTaskIds(allPreviewSelected ? [] : previewTaskIds)
+                      }}
+                      className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                    >
+                      {allPreviewSelected ? '取消全选' : '全选'}
+                    </button>
+                  </div>
+                  {previewTasks.map((task) => (
+                    <PreviewNoteCard
+                      key={task.id}
+                      task={task}
+                      onOpen={() => setActivePreviewTaskId(task.id)}
+                      onTaskChange={(patch) => updatePreviewTask(task.id, patch)}
+                      selected={selectedPreviewTaskIds.includes(task.id)}
+                      onToggleSelect={() => {
+                        setSelectedPreviewTaskIds((current) =>
+                          current.includes(task.id)
+                            ? current.filter((taskId) => taskId !== task.id)
+                            : [...current, task.id]
+                        )
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="flex h-full min-h-[180px] items-end justify-center">
+                  <div className="text-[12px] text-zinc-300"> </div>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-auto p-0">
+              {phase === 'editing' ? (
+                <div className="space-y-2">
+                  <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
+                  <div className="border border-zinc-200 bg-white px-3 py-3">
+                    <Textarea
+                      value={csvDraft}
+                      onChange={(event) => onCsvChange(event.target.value)}
+                      placeholder="输入 CSV 格式文案"
+                      className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
+                    />
+
+                    <div className="mt-3 space-y-2 border-t border-zinc-100 pt-3">
+                      <div className="grid grid-cols-[0.9fr_1.45fr_0.9fr_auto] items-end gap-2">
+                        <LabeledMiniField label="组数">
+                          <CapsuleInput
+                            value={groupCountDraft}
+                            onChange={onGroupCountChange}
+                            placeholder="1"
+                          />
+                        </LabeledMiniField>
+                        <LabeledMiniField label="张数">
+                          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1">
+                            <CapsuleInput
+                              value={minImagesDraft}
+                              onChange={onMinImagesChange}
+                              placeholder="3"
+                            />
+                            <span className="text-[10px] text-zinc-300">-</span>
+                            <CapsuleInput
+                              value={maxImagesDraft}
+                              onChange={onMaxImagesChange}
+                              placeholder="5"
+                            />
+                          </div>
+                        </LabeledMiniField>
+                        <LabeledMiniField label="复用">
+                          <CapsuleInput
+                            value={maxReuseDraft}
+                            onChange={onMaxReuseChange}
+                            placeholder="1"
+                          />
+                        </LabeledMiniField>
+                        <Button
+                          type="button"
+                          onClick={onGenerate}
+                          disabled={isGenerating}
+                          className="h-6 rounded-none border border-zinc-200 bg-zinc-50 px-3 text-[11px] font-medium text-zinc-700 shadow-none transition hover:bg-zinc-100 hover:text-zinc-950 disabled:opacity-60"
+                        >
+                          {isGenerating ? '生成中' : '生成笔记'}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2 pt-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setActivePreviewTaskId(null)
+                      onRegenerate()
+                    }}
+                    className="h-7 rounded-none border border-zinc-200/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(246,248,250,0.92))] px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-700 shadow-[0_10px_24px_rgba(15,23,42,0.03)] transition hover:border-sky-200 hover:text-zinc-950 hover:shadow-[0_14px_28px_rgba(56,189,248,0.08)]"
+                  >
+                    重新生成
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => onDispatch(selectedPreviewTaskIds)}
+                    className="h-7 rounded-none border border-sky-100 bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(240,249,255,0.95))] px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-800 shadow-[0_12px_28px_rgba(56,189,248,0.08)] transition hover:border-sky-200 hover:text-zinc-950 hover:shadow-[0_16px_34px_rgba(56,189,248,0.12)]"
+                  >
+                    派发到发布工作台
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </aside>
+
+      {activePreviewTask ? (
+        <PreviewEditorModal
+          task={activePreviewTask}
+          onClose={() => setActivePreviewTaskId(null)}
+          onImagesChange={(nextImages) => updatePreviewTaskImages(activePreviewTask.id, nextImages)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+export { NoteSidebar }

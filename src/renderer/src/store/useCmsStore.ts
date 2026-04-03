@@ -17,7 +17,7 @@ export type WorkshopImport = {
   path: string | null
   paths?: string[]
   coverPath?: string
-  source: 'imagelab' | 'ai-studio' | null
+  source: 'imagelab' | 'ai-studio' | 'ai-studio-note' | null
 }
 
 export type MaterialImport = {

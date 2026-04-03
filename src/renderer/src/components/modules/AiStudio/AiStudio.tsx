@@ -1,14 +1,21 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
 import { ImageIcon, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
+import { generateManifest } from '@renderer/lib/cms-engine'
 import { cn } from '@renderer/lib/utils'
+import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
 
 import { ControlPanel } from './ControlPanel'
+import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './NoteSidebar'
 import { ResultPanel } from './ResultPanel'
 import { TaskQueue } from './TaskQueue'
+import {
+  buildUploadTasksFromNotePreviewTasks,
+  normalizeNoteSidebarConstraints
+} from './noteSidebarHelpers'
 import { useAiStudioState } from './useAiStudioState'
 
 const AI_STUDIO_CANVAS_SURFACE_CLASS =
@@ -20,18 +27,31 @@ function readPromptSeed(state: ReturnType<typeof useAiStudioState>): string {
   ).trim()
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
+}
+
 function AiStudioCanvas({
   state,
-  initialPromptDraft
+  initialPromptDraft,
+  noteSidebar,
+  isSidebarOpen
 }: {
   state: ReturnType<typeof useAiStudioState>
   initialPromptDraft: string
+  noteSidebar: React.JSX.Element
+  isSidebarOpen: boolean
 }): React.JSX.Element {
   const [promptDraft, setPromptDraft] = useState(initialPromptDraft)
   const overlayRef = useRef<HTMLDivElement | null>(null)
-  const [composerOverlayPadding, setComposerOverlayPadding] = useState(420)
+  const [composerOverlayPadding, setComposerOverlayPadding] = useState(isSidebarOpen ? 72 : 420)
 
   useLayoutEffect(() => {
+    if (isSidebarOpen) {
+      setComposerOverlayPadding(72)
+      return
+    }
+
     const updateOverlayPadding = (): void => {
       const overlayHeight = overlayRef.current?.offsetHeight ?? 0
       const extraGap = 28
@@ -57,7 +77,7 @@ function AiStudioCanvas({
       resizeObserver?.disconnect()
       window.removeEventListener('resize', updateOverlayPadding)
     }
-  }, [promptDraft, state.studioCapability])
+  }, [isSidebarOpen, promptDraft, state.studioCapability])
 
   return (
     <Card
@@ -66,74 +86,243 @@ function AiStudioCanvas({
         AI_STUDIO_CANVAS_SURFACE_CLASS
       )}
     >
+      {noteSidebar}
+
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         <ResultPanel state={state} bottomSpacerHeight={composerOverlayPadding} />
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5 pt-2">
-        <div ref={overlayRef} className="pointer-events-auto mx-auto flex w-full max-w-[920px] flex-col gap-3">
-          <div
-            className={cn(
-              'inline-flex items-center self-start rounded-[18px] border border-black/8 p-1 shadow-[0_8px_18px_rgba(15,23,42,0.04)]',
-              AI_STUDIO_CANVAS_SURFACE_CLASS
-            )}
-          >
-            <button
-              type="button"
-              onClick={() => state.setStudioCapability('image')}
+      {!isSidebarOpen ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 px-6 pb-5 pt-2">
+          <div ref={overlayRef} className="pointer-events-auto mx-auto flex w-full max-w-[920px] flex-col gap-3">
+            <div
               className={cn(
-                'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
-                state.studioCapability === 'image'
-                  ? 'border-zinc-950 bg-zinc-950 text-white'
-                  : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+                'inline-flex items-center self-start rounded-[18px] border border-black/8 p-1 shadow-[0_8px_18px_rgba(15,23,42,0.04)]',
+                AI_STUDIO_CANVAS_SURFACE_CLASS
               )}
             >
-              <ImageIcon className="h-4 w-4" />
-              图片
-            </button>
-            <button
-              type="button"
-              onClick={() => state.setStudioCapability('video')}
-              className={cn(
-                'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
-                state.studioCapability === 'video'
-                  ? 'border-zinc-950 bg-zinc-950 text-white'
-                  : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
-              )}
-            >
-              <Video className="h-4 w-4" />
-              视频
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => state.setStudioCapability('image')}
+                className={cn(
+                  'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
+                  state.studioCapability === 'image'
+                    ? 'border-zinc-950 bg-zinc-950 text-white'
+                    : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+                )}
+              >
+                <ImageIcon className="h-4 w-4" />
+                图片
+              </button>
+              <button
+                type="button"
+                onClick={() => state.setStudioCapability('video')}
+                className={cn(
+                  'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
+                  state.studioCapability === 'video'
+                    ? 'border-zinc-950 bg-zinc-950 text-white'
+                    : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-900'
+                )}
+              >
+                <Video className="h-4 w-4" />
+                视频
+              </button>
+            </div>
 
-          <div
-            className={cn(
-              'rounded-[28px] border border-black/8 px-3.5 pt-2.5 pb-3 shadow-[0_10px_28px_rgba(15,23,42,0.05)]',
-              AI_STUDIO_CANVAS_SURFACE_CLASS
-            )}
-          >
-            <TaskQueue state={state} promptDraft={promptDraft} onPromptChange={setPromptDraft} />
-            <div className="relative z-30 mt-2.5 pt-2.5 before:absolute before:left-4 before:right-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-black/8 before:to-transparent">
-              <ControlPanel
-                state={state}
-                promptDraft={promptDraft}
-                onPromptClear={() => setPromptDraft('')}
-              />
+            <div
+              className={cn(
+                'rounded-[28px] border border-black/8 px-3.5 pt-2.5 pb-3 shadow-[0_10px_28px_rgba(15,23,42,0.05)]',
+                AI_STUDIO_CANVAS_SURFACE_CLASS
+              )}
+            >
+              <TaskQueue state={state} promptDraft={promptDraft} onPromptChange={setPromptDraft} />
+              <div className="relative z-30 mt-2.5 pt-2.5 before:absolute before:left-4 before:right-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-black/8 before:to-transparent">
+                <ControlPanel
+                  state={state}
+                  promptDraft={promptDraft}
+                  onPromptClear={() => setPromptDraft('')}
+                />
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </Card>
   )
 }
 
 function AiStudio(): React.JSX.Element {
   const state = useAiStudioState()
+  const addLog = useCmsStore((store) => store.addLog)
+  const setTasks = useCmsStore((store) => store.setTasks)
+  const setUploadTasks = useCmsStore((store) => store.setUploadTasks)
+  const setCsvContent = useCmsStore((store) => store.setCsvContent)
+  const setWorkshopImport = useCmsStore((store) => store.setWorkshopImport)
+  const setActiveModule = useCmsStore((store) => store.setActiveModule)
+  const [noteSidebarOpen, setNoteSidebarOpen] = useState(false)
+  const [noteSidebarMode, setNoteSidebarMode] = useState<NoteSidebarMode>('image-note')
+  const [noteSidebarPhase, setNoteSidebarPhase] = useState<NoteSidebarPhase>('editing')
+  const [noteCsvDraft, setNoteCsvDraft] = useState('')
+  const [noteGroupCountDraft, setNoteGroupCountDraft] = useState('1')
+  const [noteMinImagesDraft, setNoteMinImagesDraft] = useState('3')
+  const [noteMaxImagesDraft, setNoteMaxImagesDraft] = useState('5')
+  const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState('1')
+  const [notePreviewTasks, setNotePreviewTasks] = useState<Task[]>([])
+  const [isGeneratingNotePreview, setIsGeneratingNotePreview] = useState(false)
+  const [noteUploadedMaterialPaths, setNoteUploadedMaterialPaths] = useState<string[]>([])
+
+  const noteMaterials = useMemo(() => {
+    const now = Date.now()
+    const pooled = state.pooledOutputAssets.filter((asset) =>
+        /\.(jpg|jpeg|png|webp|heic)$/i.test(String(asset.filePath ?? '').trim())
+      )
+    const uploaded = noteUploadedMaterialPaths.map((filePath, index) => ({
+      id: `note-upload:${index}:${filePath}`,
+      taskId: 'note-upload',
+      runId: null,
+      kind: 'input' as const,
+      role: 'note-upload',
+      filePath,
+      previewPath: filePath,
+      originPath: filePath,
+      selected: false,
+      sortOrder: index,
+      metadata: {},
+      createdAt: now + index,
+      updatedAt: now + index
+    }))
+    return [...uploaded, ...pooled]
+  }, [noteUploadedMaterialPaths, state.pooledOutputAssets])
+
+  const handleGenerateNotePreview = async (): Promise<void> => {
+    const materialPaths = Array.from(
+      new Set(
+        noteMaterials
+          .map((asset) => String(asset.filePath ?? '').trim())
+          .filter(Boolean)
+      )
+    )
+
+    if (materialPaths.length === 0) {
+      window.alert('请先从结果区加入至少一张图到图池。')
+      return
+    }
+
+    if (!noteCsvDraft.trim()) {
+      window.alert('请先输入 CSV 格式文案。')
+      return
+    }
+
+    setIsGeneratingNotePreview(true)
+    try {
+      const nextTasks = generateManifest(
+        noteCsvDraft,
+        materialPaths,
+        {
+          ...normalizeNoteSidebarConstraints({
+            groupCount: noteGroupCountDraft,
+            minImages: noteMinImagesDraft,
+            maxImages: noteMaxImagesDraft,
+            maxReuse: noteMaxReuseDraft
+          }),
+          bestEffort: true
+        }
+      )
+      setNotePreviewTasks(nextTasks)
+      setNoteSidebarPhase('preview')
+      addLog(`[AI Studio] 已生成 ${nextTasks.length} 组图文笔记预览。`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 图文笔记预览生成失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsGeneratingNotePreview(false)
+    }
+  }
+
+  const handleDispatchNotePreview = (selectedTaskIds: string[]): void => {
+    const tasksToDispatch =
+      selectedTaskIds.length > 0
+        ? notePreviewTasks.filter((task) => selectedTaskIds.includes(task.id))
+        : notePreviewTasks
+
+    if (tasksToDispatch.length === 0) return
+    const previewImagePaths = Array.from(
+      new Set(
+        tasksToDispatch.flatMap((task) =>
+          task.assignedImages.map((filePath) => String(filePath ?? '').trim()).filter(Boolean)
+        )
+      )
+    )
+    setCsvContent(noteCsvDraft)
+    setTasks(tasksToDispatch)
+    setUploadTasks(buildUploadTasksFromNotePreviewTasks(tasksToDispatch))
+    setWorkshopImport(
+      'image',
+      previewImagePaths[0] ?? null,
+      null,
+      previewImagePaths,
+      'ai-studio-note'
+    )
+    setActiveModule('workshop')
+    setNoteSidebarOpen(false)
+    addLog(`[AI Studio] 已将 ${tasksToDispatch.length} 组图文笔记预览发送到数据工坊。`)
+  }
+
+  const noteSidebarNode = (
+    <NoteSidebar
+      isOpen={noteSidebarOpen}
+      mode={noteSidebarMode}
+      phase={noteSidebarPhase}
+      materials={noteMaterials}
+      csvDraft={noteCsvDraft}
+      groupCountDraft={noteGroupCountDraft}
+      minImagesDraft={noteMinImagesDraft}
+      maxImagesDraft={noteMaxImagesDraft}
+      maxReuseDraft={noteMaxReuseDraft}
+      isGenerating={isGeneratingNotePreview}
+      previewTasks={notePreviewTasks}
+      onOpenChange={setNoteSidebarOpen}
+      onModeChange={(mode) => {
+        setNoteSidebarMode(mode)
+        setNoteSidebarPhase('editing')
+      }}
+      onCsvChange={setNoteCsvDraft}
+      onGroupCountChange={setNoteGroupCountDraft}
+      onMinImagesChange={setNoteMinImagesDraft}
+      onMaxImagesChange={setNoteMaxImagesDraft}
+      onMaxReuseChange={setNoteMaxReuseDraft}
+      onGenerate={() => void handleGenerateNotePreview()}
+      onRegenerate={() => {
+        setNoteSidebarPhase('editing')
+        setNotePreviewTasks([])
+      }}
+      onPreviewTasksChange={(tasks) => {
+        setNotePreviewTasks(tasks)
+      }}
+      onDispatch={handleDispatchNotePreview}
+      onAddMaterials={(paths) => {
+        setNoteUploadedMaterialPaths((current) => uniqueStrings([...current, ...paths]))
+      }}
+      onRemoveMaterial={(asset) => {
+        if (asset.taskId === 'note-upload') {
+          setNoteUploadedMaterialPaths((current) =>
+            current.filter((filePath) => filePath !== asset.filePath)
+          )
+          return
+        }
+        void state.toggleDispatchOutputPoolForTask(asset.taskId, asset.id)
+      }}
+    />
+  )
+
   return (
     <AiStudioCanvas
       key={`${state.studioCapability}:${state.activeTask?.id ?? 'empty'}`}
       state={state}
       initialPromptDraft={readPromptSeed(state)}
+      noteSidebar={noteSidebarNode}
+      isSidebarOpen={noteSidebarOpen}
     />
   )
 }
