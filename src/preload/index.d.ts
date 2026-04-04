@@ -28,7 +28,13 @@ declare global {
     productUrl: string
   }
 
-  type CmsPublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
+  type CmsPublishTaskStatus =
+    | 'pending'
+    | 'processing'
+    | 'failed'
+    | 'publish_failed'
+    | 'scheduled'
+    | 'published'
   type CmsPublishSessionStepState = 'pending' | 'active' | 'done' | 'error'
   type CmsPublishSessionStepKey = 'prepare' | 'upload' | 'cover' | 'content' | 'publish'
   type CmsPublishSessionStep = {
@@ -503,7 +509,11 @@ declare global {
   interface SuperCmsApi {
     cms: {
       system: {
-        onLog: (listener: (payload: { type?: string; message?: string; timestamp?: number } | string) => void) => () => void
+        onLog: (
+          listener: (
+            payload: { type?: string; message?: string; timestamp?: number } | string
+          ) => void
+        ) => () => void
         openExternal: (url: string) => Promise<boolean>
       }
       image: {
@@ -524,7 +534,9 @@ declare global {
       }
       product: {
         list: (payload?: { accountId?: string }) => Promise<CmsProductRecord[]>
-        save: (products: Array<Omit<CmsProductRecord, 'accountId'> & { accountId?: string }>) => Promise<CmsProductRecord[]>
+        save: (
+          products: Array<Omit<CmsProductRecord, 'accountId'> & { accountId?: string }>
+        ) => Promise<CmsProductRecord[]>
         sync: (accountId: string) => Promise<CmsProductRecord[]>
       }
       publisher: {
@@ -553,40 +565,82 @@ declare global {
       }
       scout: {
         keyword: {
-          list: () => Promise<Array<{
-            id: string; keyword: string; sortMode: string; isActive: boolean
-            productCount: number; lastSyncedAt: number | null; createdAt: number
-          }>>
-          add: (keyword: string, sortMode?: string) => Promise<{
-            id: string; keyword: string; sortMode: string; isActive: boolean
-            productCount: number; lastSyncedAt: number | null; createdAt: number
+          list: () => Promise<
+            Array<{
+              id: string
+              keyword: string
+              sortMode: string
+              isActive: boolean
+              productCount: number
+              lastSyncedAt: number | null
+              createdAt: number
+            }>
+          >
+          add: (
+            keyword: string,
+            sortMode?: string
+          ) => Promise<{
+            id: string
+            keyword: string
+            sortMode: string
+            isActive: boolean
+            productCount: number
+            lastSyncedAt: number | null
+            createdAt: number
           }>
           remove: (id: string) => Promise<void>
           toggle: (id: string, isActive: boolean) => Promise<void>
         }
         product: {
           list: (payload: {
-            keywordId: string; sortBy?: string; sortOrder?: string
-            limit?: number; offset?: number
-          }) => Promise<Array<{
-            id: string; keywordId: string; productName: string; productUrl: string
-            price: number | null; addCart24h: string | null; addCart24hValue: number
-            totalSales: string | null; threeMonthBuyers: string | null
-            addCartTag: string | null; positiveReviewTag: string | null; collectionTag: string | null
-            reviewCount: number; productRating: number | null
-            shopName: string | null; shopUrl: string | null; shopFans: string | null
-            shopSales: string | null; shopRating: number | null
-            sortMode: string | null; rankPosition: number | null
-            firstSeenAt: number; lastUpdatedAt: number
-          }>>
+            keywordId: string
+            sortBy?: string
+            sortOrder?: string
+            limit?: number
+            offset?: number
+          }) => Promise<
+            Array<{
+              id: string
+              keywordId: string
+              productName: string
+              productUrl: string
+              price: number | null
+              addCart24h: string | null
+              addCart24hValue: number
+              totalSales: string | null
+              threeMonthBuyers: string | null
+              addCartTag: string | null
+              positiveReviewTag: string | null
+              collectionTag: string | null
+              reviewCount: number
+              productRating: number | null
+              shopName: string | null
+              shopUrl: string | null
+              shopFans: string | null
+              shopSales: string | null
+              shopRating: number | null
+              sortMode: string | null
+              rankPosition: number | null
+              firstSeenAt: number
+              lastUpdatedAt: number
+            }>
+          >
         }
         sync: {
           importFile: () => Promise<{ keywordsUpdated: number; productsUpserted: number } | null>
-          importData: (data: unknown) => Promise<{ keywordsUpdated: number; productsUpserted: number }>
-          history: () => Promise<Array<{
-            id: string; syncedAt: number; sessionId: string | null
-            keywordsCount: number; productsCount: number; status: string
-          }>>
+          importData: (
+            data: unknown
+          ) => Promise<{ keywordsUpdated: number; productsUpserted: number }>
+          history: () => Promise<
+            Array<{
+              id: string
+              syncedAt: number
+              sessionId: string | null
+              keywordsCount: number
+              productsCount: number
+              status: string
+            }>
+          >
         }
         export: {
           excel: (payload: { keywordId?: string }) => Promise<string | null>
@@ -628,19 +682,14 @@ declare global {
               message?: string
             }) => void
           ) => () => void
-          deleteSnapshot: (payload: {
-            snapshotDate: string
-          }) => Promise<{
+          deleteSnapshot: (payload: { snapshotDate: string }) => Promise<{
             snapshotDate: string
             deletedSnapshotRows: number
             deletedWatchlistRows: number
             deletedProductMapRows: number
             deletedCoverCacheRows: number
           }>
-          deleteKeywordSnapshot: (payload: {
-            snapshotDate: string
-            keyword: string
-          }) => Promise<{
+          deleteKeywordSnapshot: (payload: { snapshotDate: string; keyword: string }) => Promise<{
             snapshotDate: string
             keyword: string
             deletedSnapshotRows: number
@@ -664,7 +713,9 @@ declare global {
             openDevTools: boolean
             logPath: string
           }>
-          coverDebugLog: (payload?: { limit?: number }) => Promise<{ logPath: string; lines: string[] }>
+          coverDebugLog: (payload?: {
+            limit?: number
+          }) => Promise<{ logPath: string; lines: string[] }>
           meta: () => Promise<{
             latestDate: string | null
             availableDates: string[]
@@ -677,55 +728,64 @@ declare global {
             keyword?: string
             onlyAlerts?: boolean
             limit?: number
-          }) => Promise<Array<{
-            keyword: string
-            todayHeat: number
-            prevHeat: number | null
-            deltaHeat: number | null
-            growthRate: number | null
-            productCount: number
-            isAlert: boolean
-            isRising2d: boolean
-          }>>
+          }) => Promise<
+            Array<{
+              keyword: string
+              todayHeat: number
+              prevHeat: number | null
+              deltaHeat: number | null
+              growthRate: number | null
+              productCount: number
+              isAlert: boolean
+              isRising2d: boolean
+            }>
+          >
           potentialProducts: (payload?: {
             snapshotDate?: string
             keyword?: string
             onlyNew?: boolean
             limit?: number
-            sortBy?: 'potentialScore' | 'addCart24hValue' | 'deltaAddCart24h' | 'shopFans' | 'lastUpdatedAt'
+            sortBy?:
+              | 'potentialScore'
+              | 'addCart24hValue'
+              | 'deltaAddCart24h'
+              | 'shopFans'
+              | 'lastUpdatedAt'
             sortOrder?: 'ASC' | 'DESC'
-          }) => Promise<Array<{
-            productKey: string
-            keyword: string
-            productName: string
-            productUrl: string | null
-            shopUrl: string | null
-            cachedImageUrl: string | null
-            price: number | null
-            addCart24hValue: number
-            prevAddCart24hValue: number | null
-            prev_cart_value: number | null
-            deltaAddCart24h: number | null
-            totalSales: string | null
-            recent_3m_sales: string | null
-            cart_tag: string | null
-            fav_tag: string | null
-            imported_at: string | null
-            shopSales: string | null
-            productRating: number | null
-            shopRating: number | null
-            isNew: boolean
-            firstSeenAt: number
-            lastUpdatedAt: number
-            positiveReviewTag: string | null
-            shopName: string | null
-            shopFans: string | null
-            scout_strategy_tag: 'flawed_hot' | 'exploding_new' | null
-            shop_dna_tag: 'viral_product' | null
-            lifecycle_status: 'exploding' | 'mature' | 'declining' | 'new'
-            potentialScore: number
-            suggestedAction: '优先种草' | '继续观察' | '暂缓'
-          }>>
+          }) => Promise<
+            Array<{
+              productKey: string
+              keyword: string
+              productName: string
+              productUrl: string | null
+              shopUrl: string | null
+              cachedImageUrl: string | null
+              price: number | null
+              addCart24hValue: number
+              prevAddCart24hValue: number | null
+              prev_cart_value: number | null
+              deltaAddCart24h: number | null
+              totalSales: string | null
+              recent_3m_sales: string | null
+              cart_tag: string | null
+              fav_tag: string | null
+              imported_at: string | null
+              shopSales: string | null
+              productRating: number | null
+              shopRating: number | null
+              isNew: boolean
+              firstSeenAt: number
+              lastUpdatedAt: number
+              positiveReviewTag: string | null
+              shopName: string | null
+              shopFans: string | null
+              scout_strategy_tag: 'flawed_hot' | 'exploding_new' | null
+              shop_dna_tag: 'viral_product' | null
+              lifecycle_status: 'exploding' | 'mature' | 'declining' | 'new'
+              potentialScore: number
+              suggestedAction: '优先种草' | '继续观察' | '暂缓'
+            }>
+          >
           trends: (payload?: {
             snapshotDate?: string
             keyword?: string
@@ -733,12 +793,15 @@ declare global {
             limit?: number
           }) => Promise<{
             dates: string[]
-            series: Array<{ keyword: string; values: number[]; max: number; min: number; volatility: number }>
+            series: Array<{
+              keyword: string
+              values: number[]
+              max: number
+              min: number
+              volatility: number
+            }>
           }>
-          productDetail: (payload: {
-            snapshotDate: string
-            productKey: string
-          }) => Promise<{
+          productDetail: (payload: { snapshotDate: string; productKey: string }) => Promise<{
             snapshotDate: string
             productKey: string
             keyword: string
@@ -757,38 +820,37 @@ declare global {
               salePrice?: number | null
             }>
           }) => Promise<{ upserted: number; skipped: number }>
-          markedProducts: (payload?: {
-            snapshotDate?: string
-            keyword?: string
-          }) => Promise<Array<{
-            id: string
-            snapshotDate: string
-            productKey: string
-            keyword: string
-            productName: string
-            productUrl: string | null
-            salePrice: number | null
-            sourceImage1: string | null
-            sourceImage2: string | null
-            supplier1Name: string | null
-            supplier1Url: string | null
-            supplier1Price: number | null
-            supplier2Name: string | null
-            supplier2Url: string | null
-            supplier2Price: number | null
-            supplier3Name: string | null
-            supplier3Url: string | null
-            supplier3Price: number | null
-            profit1: number | null
-            profit2: number | null
-            profit3: number | null
-            bestProfitAmount: number | null
-            sourcingStatus: 'idle' | 'running' | 'success' | 'failed'
-            sourcingMessage: string | null
-            sourcingUpdatedAt: number | null
-            createdAt: number
-            updatedAt: number
-          }>>
+          markedProducts: (payload?: { snapshotDate?: string; keyword?: string }) => Promise<
+            Array<{
+              id: string
+              snapshotDate: string
+              productKey: string
+              keyword: string
+              productName: string
+              productUrl: string | null
+              salePrice: number | null
+              sourceImage1: string | null
+              sourceImage2: string | null
+              supplier1Name: string | null
+              supplier1Url: string | null
+              supplier1Price: number | null
+              supplier2Name: string | null
+              supplier2Url: string | null
+              supplier2Price: number | null
+              supplier3Name: string | null
+              supplier3Url: string | null
+              supplier3Price: number | null
+              profit1: number | null
+              profit2: number | null
+              profit3: number | null
+              bestProfitAmount: number | null
+              sourcingStatus: 'idle' | 'running' | 'success' | 'failed'
+              sourcingMessage: string | null
+              sourcingUpdatedAt: number | null
+              createdAt: number
+              updatedAt: number
+            }>
+          >
           bindSupplier: (payload: {
             snapshotDate: string
             productKey: string
@@ -975,6 +1037,14 @@ declare global {
             runIndex: number
             dirPath: string
           }>
+          ensureProjectDirectory: (payload: {
+            projectId: string
+            projectName?: string
+            preferredPath?: string
+          }) => Promise<{
+            projectId: string
+            dirPath: string
+          }>
           recordRunAttempt: (payload: {
             runId?: string
             taskId: string
@@ -1042,19 +1112,21 @@ declare global {
             kind?: 'input' | 'output'
             ids?: string[]
           }) => Promise<AiStudioAssetRecord[]>
-          upsert: (payload: Array<{
-            id?: string
-            taskId: string
-            runId?: string | null
-            kind?: 'input' | 'output'
-            role?: string
-            filePath: string
-            previewPath?: string | null
-            originPath?: string | null
-            selected?: boolean
-            sortOrder?: number
-            metadata?: Record<string, unknown>
-          }>) => Promise<AiStudioAssetRecord[]>
+          upsert: (
+            payload: Array<{
+              id?: string
+              taskId: string
+              runId?: string | null
+              kind?: 'input' | 'output'
+              role?: string
+              filePath: string
+              previewPath?: string | null
+              originPath?: string | null
+              selected?: boolean
+              sortOrder?: number
+              metadata?: Record<string, unknown>
+            }>
+          ) => Promise<AiStudioAssetRecord[]>
           markSelected: (payload: {
             taskId: string
             assetIds: string[]
@@ -1069,7 +1141,9 @@ declare global {
           filePath?: string
           filePaths?: string[]
         }) => Promise<NoteRaceAutoImportBatchResult | null>
-        importCommerceFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
+        importCommerceFile: (payload?: {
+          filePath?: string
+        }) => Promise<NoteRaceImportResult | null>
         importContentFile: (payload?: { filePath?: string }) => Promise<NoteRaceImportResult | null>
         scanFolderImports: (payload: {
           dirPath: string
@@ -1081,9 +1155,7 @@ declare global {
           snapshotDate?: string
           includeDeleted?: boolean
         }) => Promise<NoteRaceSnapshotBatchStat[]>
-        deleteSnapshot: (payload: {
-          snapshotDate: string
-        }) => Promise<NoteRaceDeleteSnapshotResult>
+        deleteSnapshot: (payload: { snapshotDate: string }) => Promise<NoteRaceDeleteSnapshotResult>
         deleteSnapshotBatch: (payload: {
           snapshotDate: string
           importedAt: number
@@ -1184,7 +1256,10 @@ declare global {
         ) => Promise<{ deleted: number; deletedIds: string[] }>
         deleteBatch: (ids: string[]) => Promise<{ deleted: number; deletedIds: string[] }>
         delete: (taskId: string) => Promise<{ success: boolean }>
-        updateStatus: (taskId: string, status: CmsPublishTaskStatus) => Promise<CmsPublishTask | null>
+        updateStatus: (
+          taskId: string,
+          status: CmsPublishTaskStatus
+        ) => Promise<CmsPublishTask | null>
         onUpdated: (listener: (task: CmsPublishTask) => void) => () => void
         onCreateBatchProgress: (
           listener: (payload: {
@@ -1287,7 +1362,12 @@ declare global {
       dynamicWatermarkEnabled: boolean
       dynamicWatermarkOpacity: number
       dynamicWatermarkSize: number
-      dynamicWatermarkTrajectory: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+      dynamicWatermarkTrajectory:
+        | 'smoothSine'
+        | 'figureEight'
+        | 'diagonalWrap'
+        | 'largeEllipse'
+        | 'pseudoRandom'
       storageMaintenanceEnabled: boolean
       storageMaintenanceStartTime: string
       storageMaintenanceRetainDays: number
@@ -1318,7 +1398,12 @@ declare global {
       dynamicWatermarkEnabled?: boolean
       dynamicWatermarkOpacity?: number
       dynamicWatermarkSize?: number
-      dynamicWatermarkTrajectory?: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+      dynamicWatermarkTrajectory?:
+        | 'smoothSine'
+        | 'figureEight'
+        | 'diagonalWrap'
+        | 'largeEllipse'
+        | 'pseudoRandom'
       storageMaintenanceEnabled?: boolean
       storageMaintenanceStartTime?: string
       storageMaintenanceRetainDays?: number
@@ -1336,8 +1421,18 @@ declare global {
     rollbackStorageMaintenance: (
       runId: string
     ) => Promise<{ success: boolean; restored: number; errors: string[] }>
-    getFeishuConfig: () => Promise<{ appId: string; appSecret: string; baseToken: string; tableId: string } | null>
-    uploadImage: (filePath: string, appId: string, appSecret: string, baseToken: string) => Promise<string>
+    getFeishuConfig: () => Promise<{
+      appId: string
+      appSecret: string
+      baseToken: string
+      tableId: string
+    } | null>
+    uploadImage: (
+      filePath: string,
+      appId: string,
+      appSecret: string,
+      baseToken: string
+    ) => Promise<string>
     createRecord: (
       fields: Record<string, unknown>,
       appId: string,
@@ -1359,7 +1454,11 @@ declare global {
         tableId: string
       }): Promise<{ success: true }>
     }
-    processGridSplit: (payload: { sourceFiles: string[]; rows: number; cols: number }) => Promise<string[]>
+    processGridSplit: (payload: {
+      sourceFiles: string[]
+      rows: number
+      cols: number
+    }) => Promise<string[]>
     processHdUpscale: (payload: { files: string[]; exePath: string }) => Promise<string[]>
     processWatermark: (payload: {
       files: string[]
@@ -1368,14 +1467,22 @@ declare global {
       watermarkBox: WatermarkBox
     }) => Promise<string[]>
     onProcessLog: (
-      listener: (payload: { level: 'stdout' | 'stderr' | 'info' | 'error'; message: string; timestamp: number }) => void
+      listener: (payload: {
+        level: 'stdout' | 'stderr' | 'info' | 'error'
+        message: string
+        timestamp: number
+      }) => void
     ) => () => void
     deleteFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
     shellShowItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>
     shellOpenPath: (filePath: string) => Promise<{ success: boolean; error?: string }>
     exportFiles: (
       filePaths: string[]
-    ) => Promise<{ success: true; copied: number; destinationDir: string } | { success: false; error: string } | null>
+    ) => Promise<
+      | { success: true; copied: number; destinationDir: string }
+      | { success: false; error: string }
+      | null
+    >
   }
 
   interface Window {
