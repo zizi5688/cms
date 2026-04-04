@@ -37,6 +37,18 @@ import {
   summarizeMasterSlotResults
 } from './workflowRunHelpers'
 import { buildPoolDispatchPlan } from './poolDispatchHelpers'
+import {
+  buildProjectFolderPath,
+  createProjectContext,
+  getTaskProjectScopeId
+} from './aiStudioProjectHelpers'
+
+type AiStudioProjectContext = {
+  projectId: string
+  projectRootTaskId: string
+  projectName: string
+  projectPath: string | null
+}
 
 export type AiStudioImportedFolder = {
   folderPath: string
@@ -245,6 +257,13 @@ function basenameWithoutExtension(filePath: string): string {
   const parts = normalized.split(/[\\/]/).filter(Boolean)
   const fileName = parts[parts.length - 1] ?? normalized
   return fileName.replace(/\.[^.]+$/, '').trim()
+}
+
+function createClientUuid(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return `project-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function sameStringArray(left: string[], right: string[]): boolean {
@@ -1132,6 +1151,118 @@ function isHistoricalTask(task: AiStudioTaskView): boolean {
   )
 }
 
+function normalizeProjectMetadataText(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function readTaskProjectContext(
+  task:
+    | Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'>
+    | null
+    | undefined
+): AiStudioProjectContext | null {
+  if (!task) return null
+
+  const metadata = task.metadata && typeof task.metadata === 'object' ? task.metadata : {}
+  const projectRootTaskId =
+    normalizeProjectMetadataText(metadata.projectRootTaskId) ||
+    normalizeProjectMetadataText(task.id)
+  const projectId =
+    normalizeProjectMetadataText(metadata.projectId) ||
+    projectRootTaskId ||
+    normalizeProjectMetadataText(task.id)
+
+  if (!projectId) return null
+
+  return {
+    projectId,
+    projectRootTaskId,
+    projectName:
+      normalizeProjectMetadataText(metadata.projectName) ||
+      normalizeProjectMetadataText(task.productName) ||
+      '未命名项目',
+    projectPath:
+      normalizeProjectMetadataText(metadata.projectPath) ||
+      normalizeProjectMetadataText(task.sourceFolderPath) ||
+      null
+  }
+}
+
+function resolveTaskProjectId(
+  task:
+    | Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'>
+    | null
+    | undefined
+): string {
+  return readTaskProjectContext(task)?.projectId ?? normalizeProjectMetadataText(task?.id)
+}
+
+function resolveTaskProjectRootTaskId(
+  task:
+    | Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'>
+    | null
+    | undefined
+): string {
+  return (
+    readTaskProjectContext(task)?.projectRootTaskId ??
+    resolveTaskProjectId(task) ??
+    normalizeProjectMetadataText(task?.id)
+  )
+}
+
+function resolveTaskProjectName(
+  task:
+    | Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'>
+    | null
+    | undefined
+): string {
+  return (
+    readTaskProjectContext(task)?.projectName ||
+    normalizeProjectMetadataText(task?.productName) ||
+    '未命名项目'
+  )
+}
+
+function resolveTaskProjectPath(
+  task:
+    | Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'>
+    | null
+    | undefined
+): string | null {
+  return readTaskProjectContext(task)?.projectPath ?? null
+}
+
+function withProjectMetadata(
+  metadata: Record<string, unknown>,
+  project: AiStudioProjectContext | null
+): Record<string, unknown> {
+  if (!project) return metadata
+  return {
+    ...metadata,
+    projectId: project.projectId,
+    projectRootTaskId: project.projectRootTaskId,
+    projectName: project.projectName,
+    projectPath: project.projectPath
+  }
+}
+
+function resolveProjectUpdatedAt(
+  tasks: Array<Pick<AiStudioTaskView, 'createdAt' | 'updatedAt' | 'outputAssets'>>
+): number {
+  return Math.max(
+    0,
+    ...tasks.map((task) =>
+      Math.max(
+        Number(task.updatedAt) || 0,
+        Number(task.createdAt) || 0,
+        ...task.outputAssets.map((asset) =>
+          Math.max(Number(asset.updatedAt) || 0, Number(asset.createdAt) || 0)
+        )
+      )
+    )
+  )
+}
+
 function normalizeTask(task: AiStudioTaskRecord): AiStudioTaskRecord {
   return {
     ...task,
@@ -1247,6 +1378,7 @@ const useAiStudioState = () => {
   const setWorkshopImport = useCmsStore((state) => state.setWorkshopImport)
   const setMaterialImport = useCmsStore((state) => state.setMaterialImport)
   const setActiveModule = useCmsStore((state) => state.setActiveModule)
+  const workspacePath = useCmsStore((state) => state.workspacePath)
   const [templates, setTemplates] = useState<AiStudioTemplateRecord[]>([])
   const [tasks, setTasks] = useState<AiStudioTaskRecord[]>([])
   const [assets, setAssets] = useState<AiStudioAssetRecord[]>([])
@@ -1256,6 +1388,7 @@ const useAiStudioState = () => {
   const [statusFilter, setStatusFilter] = useState<AiStudioTaskStatusFilter>('all')
   const [studioCapability, setStudioCapabilityState] = useState<AiStudioCapability>('image')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const [projectScopeId, setProjectScopeId] = useState<string | null>(null)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isImporting, setIsImporting] = useState(false)
@@ -1479,9 +1612,80 @@ const useAiStudioState = () => {
     })
   }, [assetsByTaskId, draftByTaskId, tasks])
 
+  const selectedTaskRecord = useMemo(
+    () => taskViews.find((task) => task.id === activeTaskId) ?? taskViews[0] ?? null,
+    [activeTaskId, taskViews]
+  )
+
+  useEffect(() => {
+    const nextProjectScopeId = getTaskProjectScopeId(selectedTaskRecord)
+    if (!nextProjectScopeId || nextProjectScopeId === projectScopeId) return
+    setProjectScopeId(nextProjectScopeId)
+  }, [projectScopeId, selectedTaskRecord])
+
+  const currentProjectId = useMemo(
+    () => projectScopeId || resolveTaskProjectId(selectedTaskRecord),
+    [projectScopeId, selectedTaskRecord]
+  )
+  const projectTaskViews = useMemo(
+    () =>
+      currentProjectId
+        ? taskViews.filter((task) => resolveTaskProjectId(task) === currentProjectId)
+        : taskViews,
+    [currentProjectId, taskViews]
+  )
+  const taskViewsById = useMemo(
+    () => new Map(taskViews.map((task) => [task.id, task])),
+    [taskViews]
+  )
+  const currentProjectTask = useMemo(() => {
+    if (!selectedTaskRecord && !currentProjectId) return null
+    const rootTaskId = currentProjectId || resolveTaskProjectRootTaskId(selectedTaskRecord)
+    return (
+      taskViewsById.get(rootTaskId) ??
+      projectTaskViews.find((task) => task.id === rootTaskId) ??
+      selectedTaskRecord ??
+      null
+    )
+  }, [currentProjectId, projectTaskViews, selectedTaskRecord, taskViewsById])
+  const currentProjectName = useMemo(
+    () => resolveTaskProjectName(currentProjectTask ?? selectedTaskRecord),
+    [currentProjectTask, selectedTaskRecord]
+  )
+  const currentProjectPath = useMemo(
+    () => resolveTaskProjectPath(currentProjectTask ?? selectedTaskRecord),
+    [currentProjectTask, selectedTaskRecord]
+  )
+  const currentProjectUpdatedAt = useMemo(
+    () => resolveProjectUpdatedAt(projectTaskViews),
+    [projectTaskViews]
+  )
+
   const capabilityTaskViews = useMemo(
-    () => taskViews.filter((task) => readTaskCapability(task) === studioCapability),
-    [studioCapability, taskViews]
+    () => projectTaskViews.filter((task) => readTaskCapability(task) === studioCapability),
+    [projectTaskViews, studioCapability]
+  )
+
+  const resolveProjectContext = useCallback(
+    (
+      task?: Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'> | null
+    ): AiStudioProjectContext | null => {
+      const seedTask = task ?? currentProjectTask ?? selectedTaskRecord
+      if (!seedTask) return null
+      const rootTaskId = resolveTaskProjectRootTaskId(seedTask)
+      const rootTask =
+        taskViewsById.get(rootTaskId) ??
+        projectTaskViews.find((candidate) => candidate.id === rootTaskId) ??
+        seedTask
+
+      return {
+        projectId: resolveTaskProjectId(rootTask),
+        projectRootTaskId: resolveTaskProjectRootTaskId(rootTask),
+        projectName: resolveTaskProjectName(rootTask),
+        projectPath: resolveTaskProjectPath(rootTask)
+      }
+    },
+    [currentProjectTask, projectTaskViews, selectedTaskRecord, taskViewsById]
   )
 
   const setStudioCapability = useCallback(
@@ -1493,14 +1697,14 @@ const useAiStudioState = () => {
       setActiveTaskId((prev) => {
         if (
           prev &&
-          taskViews.some((task) => task.id === prev && readTaskCapability(task) === next)
+          projectTaskViews.some((task) => task.id === prev && readTaskCapability(task) === next)
         ) {
           return prev
         }
-        return taskViews.find((task) => readTaskCapability(task) === next)?.id ?? prev
+        return projectTaskViews.find((task) => readTaskCapability(task) === next)?.id ?? prev
       })
     },
-    [studioCapability, taskViews]
+    [projectTaskViews, studioCapability]
   )
 
   const visibleTasks = useMemo(() => {
@@ -1697,20 +1901,24 @@ const useAiStudioState = () => {
 
       const createdTasks: AiStudioTaskRecord[] = []
       const importedAssets: AiStudioAssetRecord[] = []
+      const projectContext = resolveProjectContext()
 
       for (const folder of folders) {
         const imageProviderSelection = resolveImageProviderSelection('', '')
         const created = coerceTaskRecord(
           await window.api.cms.aiStudio.task.create({
             provider: imageProviderSelection.providerName || aiConfig.aiProvider || 'grsai',
-            sourceFolderPath: folder.folderPath,
+            sourceFolderPath: projectContext?.projectPath ?? folder.folderPath,
             productName: folder.productName,
             status: 'draft',
             aspectRatio: '3:4',
             outputCount: 1,
             model: imageProviderSelection.modelName || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
             inputImagePaths: folder.imageFilePaths,
-            metadata: { importedImageCount: folder.imageFilePaths.length }
+            metadata: withProjectMetadata(
+              { importedImageCount: folder.imageFilePaths.length },
+              projectContext
+            )
           })
         )
         createdTasks.push(created)
@@ -1740,7 +1948,7 @@ const useAiStudioState = () => {
     } finally {
       setIsImporting(false)
     }
-  }, [aiConfig.aiProvider, defaultModel, resolveImageProviderSelection])
+  }, [aiConfig.aiProvider, defaultModel, resolveImageProviderSelection, resolveProjectContext])
 
   const createTaskWithInputs = useCallback(
     async (payload: {
@@ -1768,7 +1976,11 @@ const useAiStudioState = () => {
         payload.promptExtraOverride !== undefined
           ? payload.promptExtraOverride
           : (baseWorkflow?.masterStage.promptExtra ?? baseTask?.promptExtra ?? '')
-      const imageProviderSelection = resolveImageProviderSelection(baseTask?.provider, baseTask?.model)
+      const projectContext = resolveProjectContext(baseTask)
+      const imageProviderSelection = resolveImageProviderSelection(
+        baseTask?.provider,
+        baseTask?.model
+      )
       const inferredName = basenameWithoutExtension(
         primaryImagePath ?? referenceImagePaths[0] ?? ''
       )
@@ -1780,7 +1992,7 @@ const useAiStudioState = () => {
             normalizeAiProviderValue(baseTask?.provider) ||
             aiConfig.aiProvider ||
             'grsai',
-          sourceFolderPath: null,
+          sourceFolderPath: projectContext?.projectPath ?? baseTask?.sourceFolderPath ?? null,
           productName: inferredName || baseTask?.productName || '未命名任务',
           status: 'draft',
           aspectRatio: baseTask?.aspectRatio ?? '3:4',
@@ -1800,10 +2012,13 @@ const useAiStudioState = () => {
           priceMaxSnapshot: null,
           billedState: 'unbilled',
           metadata: (() => {
-            const nextMetadata = {
-              ...sanitizeDraftMetadata(baseTask?.metadata),
-              importedImageCount: inputImagePaths.length
-            }
+            const nextMetadata = withProjectMetadata(
+              {
+                ...sanitizeDraftMetadata(baseTask?.metadata),
+                importedImageCount: inputImagePaths.length
+              },
+              projectContext
+            )
             return writeWorkflowMetadata(
               {
                 templateId: inheritedTemplateId,
@@ -1839,7 +2054,14 @@ const useAiStudioState = () => {
       setActiveTaskId(created.id)
       return created
     },
-    [aiConfig.aiProvider, defaultModel, replaceAssets, replaceTask, resolveImageProviderSelection]
+    [
+      aiConfig.aiProvider,
+      defaultModel,
+      replaceAssets,
+      replaceTask,
+      resolveImageProviderSelection,
+      resolveProjectContext
+    ]
   )
 
   const createVideoTask = useCallback(
@@ -1863,13 +2085,20 @@ const useAiStudioState = () => {
       const nextVideoMeta: AiStudioVideoMetadata = {
         capability: 'video',
         profileId: profile.id,
-        model: String(mergedVideoMeta.model ?? '').trim() || providerSelection.modelName || profile.modelId,
+        model:
+          String(mergedVideoMeta.model ?? '').trim() ||
+          providerSelection.modelName ||
+          profile.modelId,
         adapterKind:
           mergedVideoMeta.adapterKind === 'allapi-unified' ? 'allapi-unified' : profile.adapterKind,
         submitPath:
-          String(mergedVideoMeta.submitPath ?? '').trim() || providerSelection.submitPath || profile.submitPath,
+          String(mergedVideoMeta.submitPath ?? '').trim() ||
+          providerSelection.submitPath ||
+          profile.submitPath,
         queryPath:
-          String(mergedVideoMeta.queryPath ?? '').trim() || providerSelection.queryPath || profile.queryPath,
+          String(mergedVideoMeta.queryPath ?? '').trim() ||
+          providerSelection.queryPath ||
+          profile.queryPath,
         mode: normalizeVideoMode(mergedVideoMeta.mode, profile.defaultMode),
         subjectReferencePath: String(mergedVideoMeta.subjectReferencePath ?? '').trim() || null,
         firstFramePath: String(mergedVideoMeta.firstFramePath ?? '').trim() || null,
@@ -1877,12 +2106,16 @@ const useAiStudioState = () => {
         aspectRatio: normalizeVideoAspectRatio(
           mergedVideoMeta.aspectRatio,
           profile.defaultAspectRatio,
-          String(mergedVideoMeta.model ?? '').trim() || providerSelection.modelName || profile.modelId
+          String(mergedVideoMeta.model ?? '').trim() ||
+            providerSelection.modelName ||
+            profile.modelId
         ),
         resolution: normalizeVideoResolution(mergedVideoMeta.resolution, profile.defaultResolution),
         duration: normalizeVideoDurationForModel(
           normalizeVideoDuration(mergedVideoMeta.duration, profile.defaultDuration),
-          String(mergedVideoMeta.model ?? '').trim() || providerSelection.modelName || profile.modelId,
+          String(mergedVideoMeta.model ?? '').trim() ||
+            providerSelection.modelName ||
+            profile.modelId,
           profile.defaultDuration
         ),
         outputCount: normalizePositiveInteger(
@@ -1902,11 +2135,12 @@ const useAiStudioState = () => {
         payload?.promptExtraOverride !== undefined
           ? payload.promptExtraOverride
           : (baseTask?.promptExtra ?? '')
+      const projectContext = resolveProjectContext(baseTask)
       const created = coerceTaskRecord(
         await window.api.cms.aiStudio.task.create({
           templateId: null,
           provider: providerSelection.providerName,
-          sourceFolderPath: null,
+          sourceFolderPath: projectContext?.projectPath ?? baseTask?.sourceFolderPath ?? null,
           productName: inferredName || baseTask?.productName || '未命名视频任务',
           status: 'draft',
           aspectRatio: nextVideoMeta.aspectRatio,
@@ -1922,10 +2156,13 @@ const useAiStudioState = () => {
           priceMaxSnapshot: null,
           billedState: 'unbilled',
           metadata: (() => {
-            const nextMetadata = {
-              ...sanitizeDraftMetadata(baseTask?.metadata),
-              importedImageCount: inputImagePaths.length
-            }
+            const nextMetadata = withProjectMetadata(
+              {
+                ...sanitizeDraftMetadata(baseTask?.metadata),
+                importedImageCount: inputImagePaths.length
+              },
+              projectContext
+            )
             return writeVideoMetadata({ metadata: nextMetadata }, nextVideoMeta)
           })()
         })
@@ -1946,12 +2183,15 @@ const useAiStudioState = () => {
       setActiveTaskId(created.id)
       return created
     },
-    [replaceAssets, replaceTask, resolveVideoProviderSelection]
+    [replaceAssets, replaceTask, resolveProjectContext, resolveVideoProviderSelection]
   )
 
   const syncVideoTaskInputs = useCallback(
     async (
-      task: Pick<AiStudioTaskRecord, 'id' | 'metadata' | 'promptExtra' | 'productName'>,
+      task: Pick<
+        AiStudioTaskRecord,
+        'id' | 'metadata' | 'promptExtra' | 'productName' | 'sourceFolderPath'
+      >,
       nextVideoMetaInput: AiStudioVideoMetadata,
       extraPatch?: Record<string, unknown>
     ) => {
@@ -1960,8 +2200,9 @@ const useAiStudioState = () => {
       } as Pick<AiStudioTaskRecord, 'metadata'>)
       const inputImagePaths = buildVideoInputPaths(nextVideoMeta)
       const inferredName = basenameWithoutExtension(getVideoInputNameSource(nextVideoMeta))
+      const projectContext = resolveProjectContext(task)
       const updated = await updateTaskPatch(task.id, {
-        sourceFolderPath: null,
+        sourceFolderPath: projectContext?.projectPath ?? task.sourceFolderPath ?? null,
         status: 'draft',
         productName: inferredName || task.productName || '未命名视频任务',
         aspectRatio: nextVideoMeta.aspectRatio,
@@ -1976,10 +2217,13 @@ const useAiStudioState = () => {
         priceMaxSnapshot: null,
         billedState: 'unbilled',
         metadata: (() => {
-          const nextMetadata = {
-            ...sanitizeDraftMetadata(task.metadata),
-            importedImageCount: inputImagePaths.length
-          }
+          const nextMetadata = withProjectMetadata(
+            {
+              ...sanitizeDraftMetadata(task.metadata),
+              importedImageCount: inputImagePaths.length
+            },
+            projectContext
+          )
           return writeVideoMetadata({ metadata: nextMetadata }, nextVideoMeta)
         })(),
         ...(extraPatch ?? {})
@@ -1998,14 +2242,14 @@ const useAiStudioState = () => {
       setActiveTaskId(task.id)
       return updated
     },
-    [replaceAssets, updateTaskPatch]
+    [replaceAssets, resolveProjectContext, updateTaskPatch]
   )
 
   const syncTaskInputs = useCallback(
     async (
       task: Pick<
         AiStudioTaskRecord,
-        'id' | 'templateId' | 'promptExtra' | 'metadata' | 'productName'
+        'id' | 'templateId' | 'promptExtra' | 'metadata' | 'productName' | 'sourceFolderPath'
       >,
       primaryImagePath: string | null,
       referenceImagePaths: string[]
@@ -2018,9 +2262,10 @@ const useAiStudioState = () => {
       const inferredName = basenameWithoutExtension(
         normalizedPrimary ?? normalizedReferences[0] ?? ''
       )
+      const projectContext = resolveProjectContext(task)
 
       const updated = await updateTaskPatch(task.id, {
-        sourceFolderPath: null,
+        sourceFolderPath: projectContext?.projectPath ?? task.sourceFolderPath ?? null,
         status: 'draft',
         productName: inferredName || task.productName || '未命名任务',
         primaryImagePath: normalizedPrimary,
@@ -2032,10 +2277,13 @@ const useAiStudioState = () => {
         priceMaxSnapshot: null,
         billedState: 'unbilled',
         metadata: (() => {
-          const nextMetadata = {
-            ...sanitizeDraftMetadata(task.metadata),
-            importedImageCount: inputImagePaths.length
-          }
+          const nextMetadata = withProjectMetadata(
+            {
+              ...sanitizeDraftMetadata(task.metadata),
+              importedImageCount: inputImagePaths.length
+            },
+            projectContext
+          )
           return writeWorkflowMetadata(
             {
               templateId: task.templateId,
@@ -2068,14 +2316,14 @@ const useAiStudioState = () => {
       setActiveTaskId(task.id)
       return updated
     },
-    [replaceAssets, updateTaskPatch]
+    [replaceAssets, resolveProjectContext, updateTaskPatch]
   )
 
   const ensureImageDraftTask = useCallback(async () => {
     const currentImageTask =
       studioCapability === 'image' && activeTask && readTaskCapability(activeTask) === 'image'
         ? activeTask
-        : (taskViews.find((task) => readTaskCapability(task) === 'image') ?? null)
+        : (projectTaskViews.find((task) => readTaskCapability(task) === 'image') ?? null)
 
     if (!currentImageTask) {
       return createTaskWithInputs({
@@ -2101,13 +2349,13 @@ const useAiStudioState = () => {
           inheritFrom: currentImageTask
         })
       : currentImageTask
-  }, [activeTask, createTaskWithInputs, studioCapability, taskViews])
+  }, [activeTask, createTaskWithInputs, projectTaskViews, studioCapability])
 
   const ensureVideoDraftTask = useCallback(async () => {
     const currentVideoTask =
       studioCapability === 'video' && activeTask && readTaskCapability(activeTask) === 'video'
         ? activeTask
-        : (taskViews.find((task) => readTaskCapability(task) === 'video') ?? null)
+        : (projectTaskViews.find((task) => readTaskCapability(task) === 'video') ?? null)
 
     if (!currentVideoTask) {
       return createVideoTask()
@@ -2124,7 +2372,7 @@ const useAiStudioState = () => {
       currentVideoTask.status === 'failed'
 
     return needsReset ? createVideoTask({ inheritFrom: currentVideoTask }) : currentVideoTask
-  }, [activeTask, createVideoTask, studioCapability, taskViews])
+  }, [activeTask, createVideoTask, projectTaskViews, studioCapability])
 
   const setVideoMode = useCallback(
     async (value: AiStudioVideoMode) => {
@@ -2209,7 +2457,10 @@ const useAiStudioState = () => {
         nextVideoMeta.duration
       )
       await syncVideoTaskInputs(task, nextVideoMeta, {
-        provider: providerSelection.providerName || normalizeAiProviderValue(payload.provider) || task.provider
+        provider:
+          providerSelection.providerName ||
+          normalizeAiProviderValue(payload.provider) ||
+          task.provider
       })
     },
     [ensureVideoDraftTask, resolveVideoProviderSelection, syncVideoTaskInputs]
@@ -2331,7 +2582,9 @@ const useAiStudioState = () => {
         taskViews
           .filter((task) => readTaskCapability(task) === 'video')
           .slice()
-          .sort((left, right) => right.createdAt - left.createdAt || right.updatedAt - left.updatedAt)[0] ?? null
+          .sort(
+            (left, right) => right.createdAt - left.createdAt || right.updatedAt - left.updatedAt
+          )[0] ?? null
       await createVideoTask({
         inheritFrom: latestVideoTask,
         promptExtraOverride: '',
@@ -2700,7 +2953,7 @@ const useAiStudioState = () => {
       return createVideoTask({
         inheritFrom:
           (activeTask && readTaskCapability(activeTask) === 'video' ? activeTask : null) ??
-          taskViews.find((task) => readTaskCapability(task) === 'video') ??
+          projectTaskViews.find((task) => readTaskCapability(task) === 'video') ??
           null,
         promptExtraOverride: ''
       })
@@ -2723,7 +2976,114 @@ const useAiStudioState = () => {
       promptExtraOverride: '',
       templateIdOverride: null
     })
-  }, [activeTask, createTaskWithInputs, createVideoTask, studioCapability, taskViews])
+  }, [activeTask, createTaskWithInputs, createVideoTask, projectTaskViews, studioCapability])
+
+  const createFreshProjectTask = useCallback(
+    async (productName?: string | null) => {
+      const imageProviderSelection = resolveImageProviderSelection('', '')
+      const projectId = createClientUuid()
+      const normalizedName = String(productName ?? '').trim() || '未命名项目'
+      const preferredProjectPath = buildProjectFolderPath(workspacePath, normalizedName, projectId)
+      const ensuredProjectDir = await window.api.cms.aiStudio.task.ensureProjectDirectory({
+        projectId,
+        projectName: normalizedName,
+        preferredPath: preferredProjectPath ?? undefined
+      })
+      const projectContext = createProjectContext({
+        taskId: projectId,
+        projectName: normalizedName,
+        projectPath: ensuredProjectDir.dirPath
+      })
+      const baseMetadata = withProjectMetadata({ importedImageCount: 0 }, projectContext)
+      const workflowSeed = {
+        templateId: null,
+        promptExtra: '',
+        primaryImagePath: null,
+        referenceImagePaths: [],
+        metadata: baseMetadata
+      }
+
+      const created = coerceTaskRecord(
+        await window.api.cms.aiStudio.task.create({
+          id: projectId,
+          templateId: null,
+          provider: imageProviderSelection.providerName || aiConfig.aiProvider || 'grsai',
+          sourceFolderPath: projectContext.projectPath,
+          productName: normalizedName,
+          status: 'draft',
+          aspectRatio: '3:4',
+          outputCount: 1,
+          model: imageProviderSelection.modelName || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
+          promptExtra: '',
+          primaryImagePath: null,
+          referenceImagePaths: [],
+          inputImagePaths: [],
+          remoteTaskId: null,
+          latestRunId: null,
+          priceMinSnapshot: null,
+          priceMaxSnapshot: null,
+          billedState: 'unbilled',
+          metadata: writeWorkflowMetadata(
+            workflowSeed,
+            resetWorkflowMetadataForInputs(workflowSeed)
+          )
+        })
+      )
+
+      replaceTask(created)
+      setProjectScopeId(projectContext.projectRootTaskId)
+      setSelectedTaskIds([created.id])
+      setActiveTaskId(created.id)
+      return created
+    },
+    [aiConfig.aiProvider, defaultModel, replaceTask, resolveImageProviderSelection, workspacePath]
+  )
+
+  const renameTask = useCallback(
+    async (taskId: string, productName: string) => {
+      const normalizedTaskId = String(taskId ?? '').trim()
+      if (!normalizedTaskId) return null
+      const normalizedName = String(productName ?? '').trim() || '未命名项目'
+      const targetTask = taskViewsById.get(normalizedTaskId) ?? null
+      const projectRootTaskId = resolveTaskProjectRootTaskId(targetTask)
+      const rootTask = taskViewsById.get(projectRootTaskId) ?? targetTask ?? null
+      if (!rootTask) return null
+      const projectContext = resolveProjectContext(rootTask) ?? {
+        projectId: rootTask.id,
+        projectRootTaskId: rootTask.id,
+        projectName: normalizedName,
+        projectPath: rootTask.sourceFolderPath
+      }
+      const nextProjectContext: AiStudioProjectContext = {
+        ...projectContext,
+        projectName: normalizedName
+      }
+      const relatedTasks = taskViews.filter(
+        (task) => resolveTaskProjectRootTaskId(task) === nextProjectContext.projectRootTaskId
+      )
+
+      let latestUpdated: AiStudioTaskRecord | null = null
+      for (const task of relatedTasks) {
+        const updated = await updateTaskPatch(task.id, {
+          ...(task.id === nextProjectContext.projectRootTaskId
+            ? { productName: normalizedName }
+            : {}),
+          metadata: withProjectMetadata(task.metadata ?? {}, nextProjectContext)
+        })
+        if (
+          task.id === normalizedTaskId ||
+          task.id === nextProjectContext.projectRootTaskId ||
+          !latestUpdated
+        ) {
+          latestUpdated = updated
+        }
+      }
+
+      setProjectScopeId(nextProjectContext.projectRootTaskId)
+      return latestUpdated
+    },
+    [resolveProjectContext, taskViews, taskViewsById, updateTaskPatch]
+  )
 
   const useDispatchOutputAsReference = useCallback(
     async (filePath: string) => {
@@ -3177,6 +3537,14 @@ const useAiStudioState = () => {
     [activeTask, patchWorkflowMetadata]
   )
 
+  const setProjectName = useCallback(
+    async (value: string) => {
+      if (!currentProjectTask) return
+      await renameTask(currentProjectTask.id, String(value ?? '').trim())
+    },
+    [currentProjectTask, renameTask]
+  )
+
   const setOutputCount = useCallback(
     async (value: number) => {
       if (!activeTask) return
@@ -3208,12 +3576,13 @@ const useAiStudioState = () => {
   const setImageModel = useCallback(
     async (payload: { provider?: string | null; model: string }) => {
       const task = await ensureImageDraftTask()
-      const nextSelection = resolveImageProviderSelection(payload.provider ?? task.provider, payload.model)
+      const nextSelection = resolveImageProviderSelection(
+        payload.provider ?? task.provider,
+        payload.model
+      )
       await updateTaskPatch(task.id, {
         provider:
-          nextSelection.providerName ||
-          normalizeAiProviderValue(payload.provider) ||
-          task.provider,
+          nextSelection.providerName || normalizeAiProviderValue(payload.provider) || task.provider,
         model:
           nextSelection.modelName ||
           payload.model ||
@@ -4029,7 +4398,9 @@ const useAiStudioState = () => {
               const interrupted = isTaskInterruptedError(error)
               const message = interrupted
                 ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-                : (error instanceof Error ? error.message : String(error))
+                : error instanceof Error
+                  ? error.message
+                  : String(error)
               patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
                 status: 'failed',
                 message
@@ -4055,11 +4426,9 @@ const useAiStudioState = () => {
         finalizedWorkflow.masterStage.completedCount = summary.completedCount
         finalizedWorkflow.masterStage.cleanSuccessCount = summary.cleanSuccessCount
         finalizedWorkflow.masterStage.cleanFailedCount = summary.cleanFailedCount
-        finalizedWorkflow.workflow.failures =
-          summary.failures as AiStudioWorkflowFailureRecord[]
+        finalizedWorkflow.workflow.failures = summary.failures as AiStudioWorkflowFailureRecord[]
 
-        const finalStatus =
-          finalizedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
+        const finalStatus = finalizedWorkflow.masterStage.cleanSuccessCount > 0 ? 'ready' : 'failed'
         task = await updateTaskPatch(finalizedTaskRecord.id, {
           status: finalStatus,
           metadata: writeWorkflowMetadata(finalizedTaskRecord, finalizedWorkflow),
@@ -4076,7 +4445,9 @@ const useAiStudioState = () => {
         const interrupted = isTaskInterruptedError(error)
         const failureMessage = interrupted
           ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-          : (error instanceof Error ? error.message : String(error))
+          : error instanceof Error
+            ? error.message
+            : String(error)
 
         replacePreviewSlotRuntimeStates(
           latestTask.id,
@@ -4617,6 +4988,11 @@ const useAiStudioState = () => {
     visibleTasks,
     historyTasks,
     activeTask,
+    currentProjectId,
+    currentProjectTask,
+    currentProjectName,
+    currentProjectPath,
+    currentProjectUpdatedAt,
     activeTaskId: activeTask?.id ?? activeTaskId,
     activeInputAssets,
     activeOutputAssets,
@@ -4658,6 +5034,7 @@ const useAiStudioState = () => {
     importFolders,
     setStatusFilter,
     setActiveTaskId,
+    setProjectScopeId,
     toggleTaskSelection,
     toggleOutputSelection,
     toggleDispatchOutputSelectionForTask,
@@ -4674,12 +5051,15 @@ const useAiStudioState = () => {
     sendPooledOutputsToWorkshop,
     sendPooledOutputsToVideoComposer,
     prepareNextDraftTask,
+    createFreshProjectTask,
+    renameTask,
     useDispatchOutputAsReference,
     useOutputAsVideoReference,
     useOutputAsVideoSubjectReference,
     interruptTask,
     interruptActiveTask,
     seedDemoTask,
+    setProjectName,
     assignPrimaryImage,
     addReferenceImages,
     removeReferenceImage,

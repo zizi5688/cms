@@ -34,7 +34,14 @@ import { SqliteService } from './services/sqliteService'
 import { QueueService } from './services/queueService'
 import { ScoutService, isDashboardIntermediateTemplateSourceFile } from './services/scoutService'
 import { NoteRaceService } from './services/noteRaceService'
-import { AiStudioService } from './services/aiStudioService'
+import {
+  AiStudioService,
+  type AiStudioAssetWriteInput,
+  type AiStudioBilledState,
+  type AiStudioRunWriteInput,
+  type AiStudioTaskCreateInput,
+  type AiStudioTaskUpdateInput
+} from './services/aiStudioService'
 import { normalizeCreateBatchTaskPayload } from './cmsTaskCreateBatchPayload'
 import { ensureNonEmptyProductSyncResult } from './productSyncGuards'
 import { getAppReleaseMeta } from './services/releaseMeta'
@@ -4610,7 +4617,10 @@ app.whenReady().then(async () => {
       provider: typeof body.provider === 'string' ? body.provider : undefined,
       sourceFolderPath: typeof body.sourceFolderPath === 'string' ? body.sourceFolderPath : undefined,
       productName: typeof body.productName === 'string' ? body.productName : undefined,
-      status: typeof body.status === 'string' ? (body.status as any) : undefined,
+      status:
+        typeof body.status === 'string'
+          ? (body.status as AiStudioTaskCreateInput['status'])
+          : undefined,
       aspectRatio: typeof body.aspectRatio === 'string' ? body.aspectRatio : undefined,
       outputCount: typeof body.outputCount === 'number' ? body.outputCount : Number(body.outputCount),
       model: typeof body.model === 'string' ? body.model : undefined,
@@ -4622,9 +4632,12 @@ app.whenReady().then(async () => {
       latestRunId: typeof body.latestRunId === 'string' ? body.latestRunId : undefined,
       priceMinSnapshot: typeof body.priceMinSnapshot === 'number' ? body.priceMinSnapshot : Number(body.priceMinSnapshot),
       priceMaxSnapshot: typeof body.priceMaxSnapshot === 'number' ? body.priceMaxSnapshot : Number(body.priceMaxSnapshot),
-      billedState: typeof body.billedState === 'string' ? (body.billedState as any) : undefined,
+      billedState:
+        typeof body.billedState === 'string'
+          ? (body.billedState as AiStudioTaskCreateInput['billedState'])
+          : undefined,
       metadata: body.metadata && typeof body.metadata === 'object' ? (body.metadata as Record<string, unknown>) : undefined,
-      assets: Array.isArray(body.assets) ? (body.assets as any[]) : undefined
+      assets: Array.isArray(body.assets) ? (body.assets as AiStudioAssetWriteInput[]) : undefined
     })
   })
 
@@ -4643,29 +4656,56 @@ app.whenReady().then(async () => {
     if (!taskId) throw new Error('[AI Studio] taskId 不能为空。')
     const patch = body.patch && typeof body.patch === 'object' ? (body.patch as Record<string, unknown>) : body
     return aiStudioService.updateTask(taskId, {
-      templateId: typeof patch.templateId === 'string' || patch.templateId == null ? (patch.templateId as any) : undefined,
+      templateId:
+        typeof patch.templateId === 'string' || patch.templateId == null
+          ? (patch.templateId as AiStudioTaskUpdateInput['templateId'])
+          : undefined,
       provider: typeof patch.provider === 'string' ? patch.provider : undefined,
-      sourceFolderPath: typeof patch.sourceFolderPath === 'string' || patch.sourceFolderPath == null ? (patch.sourceFolderPath as any) : undefined,
+      sourceFolderPath:
+        typeof patch.sourceFolderPath === 'string' || patch.sourceFolderPath == null
+          ? (patch.sourceFolderPath as AiStudioTaskUpdateInput['sourceFolderPath'])
+          : undefined,
       productName: typeof patch.productName === 'string' ? patch.productName : undefined,
-      status: typeof patch.status === 'string' ? (patch.status as any) : undefined,
+      status:
+        typeof patch.status === 'string'
+          ? (patch.status as AiStudioTaskUpdateInput['status'])
+          : undefined,
       aspectRatio: typeof patch.aspectRatio === 'string' ? patch.aspectRatio : undefined,
       outputCount: typeof patch.outputCount === 'number' ? patch.outputCount : Number(patch.outputCount),
       model: typeof patch.model === 'string' ? patch.model : undefined,
       promptExtra: typeof patch.promptExtra === 'string' ? patch.promptExtra : undefined,
-      primaryImagePath: typeof patch.primaryImagePath === 'string' || patch.primaryImagePath == null ? (patch.primaryImagePath as any) : undefined,
+      primaryImagePath:
+        typeof patch.primaryImagePath === 'string' || patch.primaryImagePath == null
+          ? (patch.primaryImagePath as AiStudioTaskUpdateInput['primaryImagePath'])
+          : undefined,
       referenceImagePaths: Array.isArray(patch.referenceImagePaths) ? (patch.referenceImagePaths as string[]) : undefined,
       inputImagePaths: Array.isArray(patch.inputImagePaths) ? (patch.inputImagePaths as string[]) : undefined,
-      remoteTaskId: typeof patch.remoteTaskId === 'string' || patch.remoteTaskId == null ? (patch.remoteTaskId as any) : undefined,
-      latestRunId: typeof patch.latestRunId === 'string' || patch.latestRunId == null ? (patch.latestRunId as any) : undefined,
+      remoteTaskId:
+        typeof patch.remoteTaskId === 'string' || patch.remoteTaskId == null
+          ? (patch.remoteTaskId as AiStudioTaskUpdateInput['remoteTaskId'])
+          : undefined,
+      latestRunId:
+        typeof patch.latestRunId === 'string' || patch.latestRunId == null
+          ? (patch.latestRunId as AiStudioTaskUpdateInput['latestRunId'])
+          : undefined,
       priceMinSnapshot: typeof patch.priceMinSnapshot === 'number' ? patch.priceMinSnapshot : Number(patch.priceMinSnapshot),
       priceMaxSnapshot: typeof patch.priceMaxSnapshot === 'number' ? patch.priceMaxSnapshot : Number(patch.priceMaxSnapshot),
-      billedState: typeof patch.billedState === 'string' ? (patch.billedState as any) : undefined,
+      billedState:
+        typeof patch.billedState === 'string'
+          ? (patch.billedState as AiStudioTaskUpdateInput['billedState'])
+          : undefined,
       metadata: patch.metadata && typeof patch.metadata === 'object' ? (patch.metadata as Record<string, unknown>) : undefined
     })
   })
 
   ipcMain.handle('cms.aiStudio.task.delete', async (_event, payload: unknown) => {
-    const taskId = typeof payload === 'string' ? payload.trim() : typeof (payload as any)?.taskId === 'string' ? String((payload as any).taskId).trim() : ''
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const taskId =
+      typeof payload === 'string'
+        ? payload.trim()
+        : typeof body.taskId === 'string'
+          ? body.taskId.trim()
+          : ''
     return aiStudioService.deleteTask(taskId)
   })
 
@@ -4676,6 +4716,15 @@ app.whenReady().then(async () => {
     return aiStudioService.ensureTaskRunDirectory(taskId, Number.isFinite(runIndex) ? runIndex : undefined)
   })
 
+  ipcMain.handle('cms.aiStudio.task.ensureProjectDirectory', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const projectId = typeof body.projectId === 'string' ? body.projectId : ''
+    const projectName = typeof body.projectName === 'string' ? body.projectName : undefined
+    const preferredPath =
+      typeof body.preferredPath === 'string' ? body.preferredPath : undefined
+    return aiStudioService.ensureProjectDirectory(projectId, projectName, preferredPath)
+  })
+
   ipcMain.handle('cms.aiStudio.task.recordRunAttempt', async (_event, payload: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     return aiStudioService.recordRunAttempt({
@@ -4684,7 +4733,10 @@ app.whenReady().then(async () => {
       provider: typeof body.provider === 'string' ? body.provider : undefined,
       status: typeof body.status === 'string' ? body.status : undefined,
       remoteTaskId: typeof body.remoteTaskId === 'string' ? body.remoteTaskId : undefined,
-      billedState: typeof body.billedState === 'string' ? (body.billedState as any) : undefined,
+      billedState:
+        typeof body.billedState === 'string'
+          ? (body.billedState as AiStudioRunWriteInput['billedState'])
+          : undefined,
       priceMinSnapshot: typeof body.priceMinSnapshot === 'number' ? body.priceMinSnapshot : Number(body.priceMinSnapshot),
       priceMaxSnapshot: typeof body.priceMaxSnapshot === 'number' ? body.priceMaxSnapshot : Number(body.priceMaxSnapshot),
       requestPayload: body.requestPayload && typeof body.requestPayload === 'object' ? (body.requestPayload as Record<string, unknown>) : undefined,
@@ -4725,7 +4777,10 @@ app.whenReady().then(async () => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     return aiStudioService.updateBilledState({
       taskId: typeof body.taskId === 'string' ? body.taskId : '',
-      billedState: typeof body.billedState === 'string' ? (body.billedState as any) : 'unbilled',
+      billedState:
+        typeof body.billedState === 'string'
+          ? (body.billedState as AiStudioBilledState)
+          : 'unbilled',
       priceMinSnapshot: typeof body.priceMinSnapshot === 'number' ? body.priceMinSnapshot : Number(body.priceMinSnapshot),
       priceMaxSnapshot: typeof body.priceMaxSnapshot === 'number' ? body.priceMaxSnapshot : Number(body.priceMaxSnapshot),
       runId: typeof body.runId === 'string' ? body.runId : undefined,
@@ -4744,8 +4799,13 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('cms.aiStudio.asset.upsert', async (_event, payload: unknown) => {
-    const assets = Array.isArray(payload) ? payload : Array.isArray((payload as any)?.assets) ? (payload as any).assets : []
-    return aiStudioService.upsertAssets(assets as any[])
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const assets = Array.isArray(payload)
+      ? (payload as AiStudioAssetWriteInput[])
+      : Array.isArray(body.assets)
+        ? (body.assets as AiStudioAssetWriteInput[])
+        : []
+    return aiStudioService.upsertAssets(assets)
   })
 
   ipcMain.handle('cms.aiStudio.asset.markSelected', async (_event, payload: unknown) => {

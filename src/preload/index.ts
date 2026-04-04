@@ -3,7 +3,13 @@ import { electronAPI as toolkitElectronAPI } from '@electron-toolkit/preload'
 
 type PublisherResult = { success: boolean; time?: string; error?: string }
 
-type CmsPublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
+type CmsPublishTaskStatus =
+  | 'pending'
+  | 'processing'
+  | 'failed'
+  | 'publish_failed'
+  | 'scheduled'
+  | 'published'
 
 type CmsPublishTask = {
   id: string
@@ -440,7 +446,11 @@ type AiStudioRunRecord = {
 const api = {
   cms: {
     system: {
-      onLog: (listener: (payload: { type?: string; message?: string; timestamp?: number } | string) => void): (() => void) => {
+      onLog: (
+        listener: (
+          payload: { type?: string; message?: string; timestamp?: number } | string
+        ) => void
+      ): (() => void) => {
         const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
           if (typeof payload === 'string') {
             listener(payload)
@@ -459,7 +469,8 @@ const api = {
           ipcRenderer.off('system-log', handler)
         }
       },
-      openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke('cms.system.openExternal', { url })
+      openExternal: (url: string): Promise<boolean> =>
+        ipcRenderer.invoke('cms.system.openExternal', { url })
     },
     image: {
       saveBase64: (payload: { dataUrl: string; filename: string }): Promise<string> =>
@@ -468,13 +479,21 @@ const api = {
     queue: {
       start: (
         payload: string | { accountId: string; taskIds?: string[] }
-      ): Promise<{ processed: number; succeeded: number; failed: number }> => ipcRenderer.invoke('cms.queue.start', payload)
+      ): Promise<{ processed: number; succeeded: number; failed: number }> =>
+        ipcRenderer.invoke('cms.queue.start', payload)
     },
     account: {
-      list: (): Promise<Array<{ id: string; name: string; partitionKey: string; lastLoginTime: number | null }>> =>
-        ipcRenderer.invoke('GET /accounts'),
-      create: (name: string): Promise<{ id: string; name: string; partitionKey: string; lastLoginTime: number | null }> =>
-        ipcRenderer.invoke('POST /accounts', { name }),
+      list: (): Promise<
+        Array<{ id: string; name: string; partitionKey: string; lastLoginTime: number | null }>
+      > => ipcRenderer.invoke('GET /accounts'),
+      create: (
+        name: string
+      ): Promise<{
+        id: string
+        name: string
+        partitionKey: string
+        lastLoginTime: number | null
+      }> => ipcRenderer.invoke('POST /accounts', { name }),
       login: (accountId: string): Promise<{ windowId: number }> =>
         ipcRenderer.invoke('POST /login-window', { accountId }),
       checkStatus: (accountId: string): Promise<boolean> =>
@@ -482,21 +501,59 @@ const api = {
       rename: (
         accountId: string,
         name: string
-      ): Promise<{ id: string; name: string; partitionKey: string; lastLoginTime: number | null }> =>
-        ipcRenderer.invoke('cms.account.rename', { accountId, name }),
-      delete: (accountId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('cms.account.delete', { accountId })
+      ): Promise<{
+        id: string
+        name: string
+        partitionKey: string
+        lastLoginTime: number | null
+      }> => ipcRenderer.invoke('cms.account.rename', { accountId, name }),
+      delete: (accountId: string): Promise<{ success: boolean }> =>
+        ipcRenderer.invoke('cms.account.delete', { accountId })
     },
     product: {
-      list: (
-        payload?: { accountId?: string }
-      ): Promise<Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId: string }>> =>
-        ipcRenderer.invoke('cms.product.list', payload),
+      list: (payload?: {
+        accountId?: string
+      }): Promise<
+        Array<{
+          id: string
+          name: string
+          price: string
+          cover: string
+          productUrl: string
+          accountId: string
+        }>
+      > => ipcRenderer.invoke('cms.product.list', payload),
       save: (
-        products: Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId?: string }>
-      ): Promise<Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId: string }>> =>
-        ipcRenderer.invoke('cms.product.save', products),
-      sync: (accountId: string): Promise<Array<{ id: string; name: string; price: string; cover: string; productUrl: string; accountId: string }>> =>
-        ipcRenderer.invoke('cms.product.sync', { accountId })
+        products: Array<{
+          id: string
+          name: string
+          price: string
+          cover: string
+          productUrl: string
+          accountId?: string
+        }>
+      ): Promise<
+        Array<{
+          id: string
+          name: string
+          price: string
+          cover: string
+          productUrl: string
+          accountId: string
+        }>
+      > => ipcRenderer.invoke('cms.product.save', products),
+      sync: (
+        accountId: string
+      ): Promise<
+        Array<{
+          id: string
+          name: string
+          price: string
+          cover: string
+          productUrl: string
+          accountId: string
+        }>
+      > => ipcRenderer.invoke('cms.product.sync', { accountId })
     },
     publisher: {
       publish: (
@@ -515,7 +572,8 @@ const api = {
           dryRun?: boolean
           mode?: 'immediate'
         }
-      ): Promise<PublisherResult> => ipcRenderer.invoke('publisher.publish', { accountId, taskData }),
+      ): Promise<PublisherResult> =>
+        ipcRenderer.invoke('publisher.publish', { accountId, taskData }),
       onAutomationLog: (listener: (message: string) => void): (() => void) => {
         const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
           if (typeof payload === 'string') {
@@ -593,38 +651,42 @@ const api = {
           'cms.task.createBatch',
           options?.requestId ? { tasks, requestId: options.requestId } : tasks
         ),
-      list: (
-        accountId: string
-      ): Promise<CmsPublishTask[]> => ipcRenderer.invoke('cms.task.list', accountId),
+      list: (accountId: string): Promise<CmsPublishTask[]> =>
+        ipcRenderer.invoke('cms.task.list', accountId),
       updateBatch: (
         idsOrPatches: string[] | Array<{ id: string; updates: unknown }>,
         updates?: { publishMode?: 'immediate'; status?: unknown; scheduledAt?: unknown }
       ): Promise<CmsPublishTask[]> => {
-        if (Array.isArray(idsOrPatches) && idsOrPatches.length > 0 && typeof idsOrPatches[0] === 'object' && updates === undefined) {
+        if (
+          Array.isArray(idsOrPatches) &&
+          idsOrPatches.length > 0 &&
+          typeof idsOrPatches[0] === 'object' &&
+          updates === undefined
+        ) {
           return ipcRenderer.invoke('cms.task.updateBatch', { updates: idsOrPatches })
         }
         const ids = Array.isArray(idsOrPatches) ? (idsOrPatches as string[]) : []
         return ipcRenderer.invoke('cms.task.updateBatch', { ids, updates: updates ?? {} })
       },
-      cancelSchedule: (
-        taskIds: string[]
-      ): Promise<CmsPublishTask[]> => ipcRenderer.invoke('cms.task.cancelSchedule', taskIds),
+      cancelSchedule: (taskIds: string[]): Promise<CmsPublishTask[]> =>
+        ipcRenderer.invoke('cms.task.cancelSchedule', taskIds),
       deleteByRemixSession: (
         sessionId: string,
         accountId?: string
       ): Promise<{ deleted: number; deletedIds: string[] }> =>
         ipcRenderer.invoke('cms.task.deleteByRemixSession', { sessionId, accountId }),
-      deleteBatch: (ids: string[]): Promise<{ deleted: number; deletedIds: string[] }> => ipcRenderer.invoke('cms.task.deleteBatch', ids),
-      delete: (taskId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('cms.task.delete', taskId),
+      deleteBatch: (ids: string[]): Promise<{ deleted: number; deletedIds: string[] }> =>
+        ipcRenderer.invoke('cms.task.deleteBatch', ids),
+      delete: (taskId: string): Promise<{ success: boolean }> =>
+        ipcRenderer.invoke('cms.task.delete', taskId),
       importImages: (filePaths: string[]): Promise<string[]> =>
         ipcRenderer.invoke('cms.task.importImages', { filePaths }),
       updateStatus: (
         taskId: string,
         status: CmsPublishTaskStatus
-      ): Promise<CmsPublishTask | null> => ipcRenderer.invoke('cms.task.updateStatus', { taskId, status }),
-      onUpdated: (
-        listener: (task: CmsPublishTask) => void
-      ): (() => void) => {
+      ): Promise<CmsPublishTask | null> =>
+        ipcRenderer.invoke('cms.task.updateStatus', { taskId, status }),
+      onUpdated: (listener: (task: CmsPublishTask) => void): (() => void) => {
         const handler = (_event: Electron.IpcRendererEvent, task: unknown): void => {
           if (!task || typeof task !== 'object') return
           listener(task as CmsPublishTask)
@@ -634,7 +696,9 @@ const api = {
           ipcRenderer.off('cms.task.updated', handler)
         }
       },
-      onCreateBatchProgress: (listener: (payload: CmsCreateBatchProgress) => void): (() => void) => {
+      onCreateBatchProgress: (
+        listener: (payload: CmsCreateBatchProgress) => void
+      ): (() => void) => {
         const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
           if (!payload || typeof payload !== 'object') return
           listener(payload as CmsCreateBatchProgress)
@@ -650,7 +714,8 @@ const api = {
         list: (): Promise<unknown[]> => ipcRenderer.invoke('cms.scout.keyword.list'),
         add: (keyword: string, sortMode?: string): Promise<unknown> =>
           ipcRenderer.invoke('cms.scout.keyword.add', { keyword, sortMode }),
-        remove: (id: string): Promise<void> => ipcRenderer.invoke('cms.scout.keyword.remove', { id }),
+        remove: (id: string): Promise<void> =>
+          ipcRenderer.invoke('cms.scout.keyword.remove', { id }),
         toggle: (id: string, isActive: boolean): Promise<void> =>
           ipcRenderer.invoke('cms.scout.keyword.toggle', { id, isActive })
       },
@@ -666,7 +731,9 @@ const api = {
       sync: {
         importFile: (): Promise<{ keywordsUpdated: number; productsUpserted: number } | null> =>
           ipcRenderer.invoke('cms.scout.sync.importFile'),
-        importData: (data: unknown): Promise<{ keywordsUpdated: number; productsUpserted: number }> =>
+        importData: (
+          data: unknown
+        ): Promise<{ keywordsUpdated: number; productsUpserted: number }> =>
           ipcRenderer.invoke('cms.scout.sync.importData', data),
         history: (): Promise<unknown[]> => ipcRenderer.invoke('cms.scout.sync.history')
       },
@@ -782,7 +849,9 @@ const api = {
           openDevTools: boolean
           logPath: string
         }> => ipcRenderer.invoke('cms.scout.dashboard.setCoverDebugState', payload),
-        coverDebugLog: (payload?: { limit?: number }): Promise<{ logPath: string; lines: string[] }> =>
+        coverDebugLog: (payload?: {
+          limit?: number
+        }): Promise<{ logPath: string; lines: string[] }> =>
           ipcRenderer.invoke('cms.scout.dashboard.coverDebugLog', payload),
         meta: (): Promise<{
           latestDate: string | null
@@ -802,9 +871,15 @@ const api = {
           keyword?: string
           onlyNew?: boolean
           limit?: number
-          sortBy?: 'potentialScore' | 'addCart24hValue' | 'deltaAddCart24h' | 'shopFans' | 'lastUpdatedAt'
+          sortBy?:
+            | 'potentialScore'
+            | 'addCart24hValue'
+            | 'deltaAddCart24h'
+            | 'shopFans'
+            | 'lastUpdatedAt'
           sortOrder?: 'ASC' | 'DESC'
-        }): Promise<unknown[]> => ipcRenderer.invoke('cms.scout.dashboard.potentialProducts', payload),
+        }): Promise<unknown[]> =>
+          ipcRenderer.invoke('cms.scout.dashboard.potentialProducts', payload),
         trends: (payload?: {
           snapshotDate?: string
           keyword?: string
@@ -812,7 +887,13 @@ const api = {
           limit?: number
         }): Promise<{
           dates: string[]
-          series: Array<{ keyword: string; values: number[]; max: number; min: number; volatility: number }>
+          series: Array<{
+            keyword: string
+            values: number[]
+            max: number
+            min: number
+            volatility: number
+          }>
         }> => ipcRenderer.invoke('cms.scout.dashboard.trends', payload),
         productDetail: (payload: {
           snapshotDate: string
@@ -840,35 +921,37 @@ const api = {
         markedProducts: (payload?: {
           snapshotDate?: string
           keyword?: string
-        }): Promise<Array<{
-          id: string
-          snapshotDate: string
-          productKey: string
-          keyword: string
-          productName: string
-          productUrl: string | null
-          salePrice: number | null
-          sourceImage1: string | null
-          sourceImage2: string | null
-          supplier1Name: string | null
-          supplier1Url: string | null
-          supplier1Price: number | null
-          supplier2Name: string | null
-          supplier2Url: string | null
-          supplier2Price: number | null
-          supplier3Name: string | null
-          supplier3Url: string | null
-          supplier3Price: number | null
-          profit1: number | null
-          profit2: number | null
-          profit3: number | null
-          bestProfitAmount: number | null
-          sourcingStatus: 'idle' | 'running' | 'success' | 'failed'
-          sourcingMessage: string | null
-          sourcingUpdatedAt: number | null
-          createdAt: number
-          updatedAt: number
-        }>> => ipcRenderer.invoke('cms.scout.dashboard.markedProducts', payload),
+        }): Promise<
+          Array<{
+            id: string
+            snapshotDate: string
+            productKey: string
+            keyword: string
+            productName: string
+            productUrl: string | null
+            salePrice: number | null
+            sourceImage1: string | null
+            sourceImage2: string | null
+            supplier1Name: string | null
+            supplier1Url: string | null
+            supplier1Price: number | null
+            supplier2Name: string | null
+            supplier2Url: string | null
+            supplier2Price: number | null
+            supplier3Name: string | null
+            supplier3Url: string | null
+            supplier3Price: number | null
+            profit1: number | null
+            profit2: number | null
+            profit3: number | null
+            bestProfitAmount: number | null
+            sourcingStatus: 'idle' | 'running' | 'success' | 'failed'
+            sourcingMessage: string | null
+            sourcingUpdatedAt: number | null
+            createdAt: number
+            updatedAt: number
+          }>
+        > => ipcRenderer.invoke('cms.scout.dashboard.markedProducts', payload),
         bindSupplier: (payload: {
           snapshotDate: string
           productKey: string
@@ -913,7 +996,9 @@ const api = {
         fetchXhsImage: (payload: { productId: string; xiaohongshuUrl: string }): void => {
           ipcRenderer.send('IPC_FETCH_XHS_IMAGE', payload)
         },
-        onXhsImageUpdated: (listener: (payload: { productId: string; imageUrl: string }) => void): (() => void) => {
+        onXhsImageUpdated: (
+          listener: (payload: { productId: string; imageUrl: string }) => void
+        ): (() => void) => {
           const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
             if (!payload || typeof payload !== 'object') return
             const row = payload as Record<string, unknown>
@@ -983,8 +1068,10 @@ const api = {
             ipcRenderer.off('IPC_SOURCING_LOGIN_NEEDED', handler)
           }
         },
-        open1688Login: (): Promise<boolean> => ipcRenderer.invoke('cms.scout.dashboard.open1688Login'),
-        check1688Login: (): Promise<boolean> => ipcRenderer.invoke('cms.scout.dashboard.check1688Login'),
+        open1688Login: (): Promise<boolean> =>
+          ipcRenderer.invoke('cms.scout.dashboard.open1688Login'),
+        check1688Login: (): Promise<boolean> =>
+          ipcRenderer.invoke('cms.scout.dashboard.check1688Login'),
         exportExcel: (payload?: {
           snapshotDate?: string
           keyword?: string
@@ -1022,7 +1109,8 @@ const api = {
           name: string
           promptText?: string
           config?: Record<string, unknown>
-        }): Promise<AiStudioTemplateRecord> => ipcRenderer.invoke('cms.aiStudio.template.upsert', payload),
+        }): Promise<AiStudioTemplateRecord> =>
+          ipcRenderer.invoke('cms.aiStudio.template.upsert', payload),
         delete: (payload: { templateId: string }): Promise<{ success: boolean }> =>
           ipcRenderer.invoke('cms.aiStudio.template.delete', payload)
       },
@@ -1093,11 +1181,22 @@ const api = {
         }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.update', payload),
         delete: (payload: { taskId: string } | string): Promise<{ success: boolean }> =>
           ipcRenderer.invoke('cms.aiStudio.task.delete', payload),
-        ensureRunDirectory: (payload: { taskId: string; runIndex?: number }): Promise<{
+        ensureRunDirectory: (payload: {
+          taskId: string
+          runIndex?: number
+        }): Promise<{
           taskId: string
           runIndex: number
           dirPath: string
         }> => ipcRenderer.invoke('cms.aiStudio.task.ensureRunDirectory', payload),
+        ensureProjectDirectory: (payload: {
+          projectId: string
+          projectName?: string
+          preferredPath?: string
+        }): Promise<{
+          projectId: string
+          dirPath: string
+        }> => ipcRenderer.invoke('cms.aiStudio.task.ensureProjectDirectory', payload),
         recordRunAttempt: (payload: {
           runId?: string
           taskId: string
@@ -1112,7 +1211,8 @@ const api = {
           errorMessage?: string | null
           startedAt?: number | null
           finishedAt?: number | null
-        }): Promise<AiStudioRunRecord> => ipcRenderer.invoke('cms.aiStudio.task.recordRunAttempt', payload),
+        }): Promise<AiStudioRunRecord> =>
+          ipcRenderer.invoke('cms.aiStudio.task.recordRunAttempt', payload),
         updateBilledState: (payload: {
           taskId: string
           billedState: 'unbilled' | 'billable' | 'not_billable' | 'settled'
@@ -1120,8 +1220,11 @@ const api = {
           priceMaxSnapshot?: number | null
           runId?: string | null
           remoteTaskId?: string | null
-        }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.updateBilledState', payload),
-        startRun: (payload: { taskId: string }): Promise<{
+        }): Promise<AiStudioTaskRecord> =>
+          ipcRenderer.invoke('cms.aiStudio.task.updateBilledState', payload),
+        startRun: (payload: {
+          taskId: string
+        }): Promise<{
           task: AiStudioTaskRecord
           run: AiStudioRunRecord
           outputs: AiStudioAssetRecord[]
@@ -1132,7 +1235,10 @@ const api = {
           priceMinSnapshot: number | null
           priceMaxSnapshot: number | null
         }> => ipcRenderer.invoke('cms.aiStudio.task.startRun', payload),
-        pollRun: (payload: { taskId: string; runId?: string | null }): Promise<{
+        pollRun: (payload: {
+          taskId: string
+          runId?: string | null
+        }): Promise<{
           task: AiStudioTaskRecord
           run: AiStudioRunRecord
           outputs: AiStudioAssetRecord[]
@@ -1143,7 +1249,9 @@ const api = {
           priceMinSnapshot: number | null
           priceMaxSnapshot: number | null
         }> => ipcRenderer.invoke('cms.aiStudio.task.pollRun', payload),
-        retryRun: (payload: { taskId: string }): Promise<{
+        retryRun: (payload: {
+          taskId: string
+        }): Promise<{
           task: AiStudioTaskRecord
           run: AiStudioRunRecord
           outputs: AiStudioAssetRecord[]
@@ -1165,26 +1273,31 @@ const api = {
           runId?: string
           kind?: 'input' | 'output'
           ids?: string[]
-        }): Promise<AiStudioAssetRecord[]> => ipcRenderer.invoke('cms.aiStudio.asset.list', payload),
-        upsert: (payload: Array<{
-          id?: string
-          taskId: string
-          runId?: string | null
-          kind?: 'input' | 'output'
-          role?: string
-          filePath: string
-          previewPath?: string | null
-          originPath?: string | null
-          selected?: boolean
-          sortOrder?: number
-          metadata?: Record<string, unknown>
-        }>): Promise<AiStudioAssetRecord[]> => ipcRenderer.invoke('cms.aiStudio.asset.upsert', payload),
+        }): Promise<AiStudioAssetRecord[]> =>
+          ipcRenderer.invoke('cms.aiStudio.asset.list', payload),
+        upsert: (
+          payload: Array<{
+            id?: string
+            taskId: string
+            runId?: string | null
+            kind?: 'input' | 'output'
+            role?: string
+            filePath: string
+            previewPath?: string | null
+            originPath?: string | null
+            selected?: boolean
+            sortOrder?: number
+            metadata?: Record<string, unknown>
+          }>
+        ): Promise<AiStudioAssetRecord[]> =>
+          ipcRenderer.invoke('cms.aiStudio.asset.upsert', payload),
         markSelected: (payload: {
           taskId: string
           assetIds: string[]
           selected?: boolean
           clearOthers?: boolean
-        }): Promise<AiStudioAssetRecord[]> => ipcRenderer.invoke('cms.aiStudio.asset.markSelected', payload)
+        }): Promise<AiStudioAssetRecord[]> =>
+          ipcRenderer.invoke('cms.aiStudio.asset.markSelected', payload)
       }
     },
     noteRace: {
@@ -1199,22 +1312,27 @@ const api = {
         ipcRenderer.invoke('cms.noteRace.importCommerceFile', payload),
       importContentFile: (payload?: { filePath?: string }): Promise<NoteRaceImportResult | null> =>
         ipcRenderer.invoke('cms.noteRace.importContentFile', payload),
-      scanFolderImports: (payload: { dirPath: string; sinceMs?: number }): Promise<NoteRaceScanFolderResult> =>
+      scanFolderImports: (payload: {
+        dirPath: string
+        sinceMs?: number
+      }): Promise<NoteRaceScanFolderResult> =>
         ipcRenderer.invoke('cms.noteRace.scanFolderImports', payload),
       meta: (): Promise<NoteRaceMeta> => ipcRenderer.invoke('cms.noteRace.meta'),
-      snapshotStats: (): Promise<NoteRaceSnapshotStat[]> => ipcRenderer.invoke('cms.noteRace.snapshotStats'),
+      snapshotStats: (): Promise<NoteRaceSnapshotStat[]> =>
+        ipcRenderer.invoke('cms.noteRace.snapshotStats'),
       snapshotBatchStats: (payload?: {
         snapshotDate?: string
         includeDeleted?: boolean
-      }): Promise<NoteRaceSnapshotBatchStat[]> => ipcRenderer.invoke('cms.noteRace.snapshotBatchStats', payload),
-      deleteSnapshot: (payload: {
-        snapshotDate: string
-      }): Promise<NoteRaceDeleteSnapshotResult> => ipcRenderer.invoke('cms.noteRace.deleteSnapshot', payload),
+      }): Promise<NoteRaceSnapshotBatchStat[]> =>
+        ipcRenderer.invoke('cms.noteRace.snapshotBatchStats', payload),
+      deleteSnapshot: (payload: { snapshotDate: string }): Promise<NoteRaceDeleteSnapshotResult> =>
+        ipcRenderer.invoke('cms.noteRace.deleteSnapshot', payload),
       deleteSnapshotBatch: (payload: {
         snapshotDate: string
         importedAt: number
         reason?: string
-      }): Promise<NoteRaceDeleteBatchResult> => ipcRenderer.invoke('cms.noteRace.deleteSnapshotBatch', payload),
+      }): Promise<NoteRaceDeleteBatchResult> =>
+        ipcRenderer.invoke('cms.noteRace.deleteSnapshotBatch', payload),
       restoreSnapshotBatch: (payload: {
         snapshotDate: string
         importedAt: number
@@ -1238,10 +1356,13 @@ const api = {
 const electronAPI = {
   openMediaFiles: (payload?: { multiSelections?: boolean; accept?: 'image' | 'video' | 'all' }) =>
     ipcRenderer.invoke('dialog:openMediaFiles', payload),
-  openMediaFilePaths: (payload?: { multiSelections?: boolean; accept?: 'image' | 'video' | 'all' }) =>
-    ipcRenderer.invoke('dialog:openMediaFilePaths', payload),
+  openMediaFilePaths: (payload?: {
+    multiSelections?: boolean
+    accept?: 'image' | 'video' | 'all'
+  }) => ipcRenderer.invoke('dialog:openMediaFilePaths', payload),
   openAudioFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:openAudioFile'),
-  prepareVideoPreview: (filePath: string) => ipcRenderer.invoke('media:prepareVideoPreview', { filePath }),
+  prepareVideoPreview: (filePath: string) =>
+    ipcRenderer.invoke('media:prepareVideoPreview', { filePath }),
   captureVideoFrame: (filePath: string, timeSec?: number): Promise<string> =>
     ipcRenderer.invoke('media:captureVideoFrame', { filePath, timeSec }),
   composeVideoFromImages: (payload: {
@@ -1306,8 +1427,11 @@ const electronAPI = {
     lowLoadMode?: boolean
     renderMode?: 'low' | 'hd'
     outputAspect?: '9:16' | '3:4'
-  }): Promise<ComposeVideoBatchFromImagesResult> => ipcRenderer.invoke('media:composeVideoBatchFromImages', payload),
-  onComposeVideoProgress: (listener: (payload: ComposeVideoProgressPayload) => void): (() => void) => {
+  }): Promise<ComposeVideoBatchFromImagesResult> =>
+    ipcRenderer.invoke('media:composeVideoBatchFromImages', payload),
+  onComposeVideoProgress: (
+    listener: (payload: ComposeVideoProgressPayload) => void
+  ): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
       if (!payload || typeof payload !== 'object') return
       const record = payload as Record<string, unknown>
@@ -1331,9 +1455,8 @@ const electronAPI = {
     outputDir?: string
     limit?: number
   }): Promise<SyncDouyinHotMusicResult> => ipcRenderer.invoke('media:syncDouyinHotMusic', payload),
-  listDouyinHotMusicTracks: (payload?: {
-    outputDir?: string
-  }): Promise<ListDouyinHotMusicResult> => ipcRenderer.invoke('media:listDouyinHotMusicTracks', payload),
+  listDouyinHotMusicTracks: (payload?: { outputDir?: string }): Promise<ListDouyinHotMusicResult> =>
+    ipcRenderer.invoke('media:listDouyinHotMusicTracks', payload),
   getReleaseMeta: (): Promise<AppReleaseMeta> => ipcRenderer.invoke('app:getReleaseMeta'),
   getAppUpdateState: (): Promise<AppUpdateState> => ipcRenderer.invoke('app:update.getState'),
   checkAppUpdate: (): Promise<AppUpdateState> => ipcRenderer.invoke('app:update.check'),
@@ -1357,8 +1480,10 @@ const electronAPI = {
     buttons?: string[]
     defaultId?: number
     cancelId?: number
-  }): Promise<{ response: number; checkboxChecked?: boolean }> => ipcRenderer.invoke('dialog:showMessageBox', payload),
-  scanDirectory: (folderPath: string): Promise<string[]> => ipcRenderer.invoke('scan-directory', folderPath),
+  }): Promise<{ response: number; checkboxChecked?: boolean }> =>
+    ipcRenderer.invoke('dialog:showMessageBox', payload),
+  scanDirectory: (folderPath: string): Promise<string[]> =>
+    ipcRenderer.invoke('scan-directory', folderPath),
   scanDirectoryRecursive: (folderPath: string): Promise<string[]> =>
     ipcRenderer.invoke('scan-directory-recursive', folderPath),
   scanMediaDirectoryRecursive: (folderPath: string): Promise<string[]> =>
@@ -1367,7 +1492,8 @@ const electronAPI = {
   getWorkspacePath: (): Promise<{ path: string; status: 'initialized' | 'uninitialized' }> =>
     ipcRenderer.invoke('workspace.getPath'),
   pickWorkspacePath: (): Promise<string | null> => ipcRenderer.invoke('workspace.pickPath'),
-  setWorkspacePath: (path: string): Promise<{ path: string }> => ipcRenderer.invoke('workspace.setPath', path),
+  setWorkspacePath: (path: string): Promise<{ path: string }> =>
+    ipcRenderer.invoke('workspace.setPath', path),
   relaunch: (): Promise<{ success: true }> => ipcRenderer.invoke('workspace.relaunch'),
   getConfig: (): Promise<{
     aiProvider: string
@@ -1390,7 +1516,12 @@ const electronAPI = {
     dynamicWatermarkEnabled: boolean
     dynamicWatermarkOpacity: number
     dynamicWatermarkSize: number
-    dynamicWatermarkTrajectory: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+    dynamicWatermarkTrajectory:
+      | 'smoothSine'
+      | 'figureEight'
+      | 'diagonalWrap'
+      | 'largeEllipse'
+      | 'pseudoRandom'
     storageMaintenanceEnabled: boolean
     storageMaintenanceStartTime: string
     storageMaintenanceRetainDays: number
@@ -1421,7 +1552,12 @@ const electronAPI = {
     dynamicWatermarkEnabled?: boolean
     dynamicWatermarkOpacity?: number
     dynamicWatermarkSize?: number
-    dynamicWatermarkTrajectory?: 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
+    dynamicWatermarkTrajectory?:
+      | 'smoothSine'
+      | 'figureEight'
+      | 'diagonalWrap'
+      | 'largeEllipse'
+      | 'pseudoRandom'
     storageMaintenanceEnabled?: boolean
     storageMaintenanceStartTime?: string
     storageMaintenanceRetainDays?: number
@@ -1430,19 +1566,30 @@ const electronAPI = {
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string
     defaultInterval?: number
-  }): Promise<{ success: true }> =>
-    ipcRenderer.invoke('save-config', patch),
+  }): Promise<{ success: true }> => ipcRenderer.invoke('save-config', patch),
   getStorageMaintenanceState: (): Promise<StorageMaintenanceState> =>
     ipcRenderer.invoke('cms.storage.maintenance.state'),
-  runStorageMaintenanceNow: (payload?: { reason?: string; dryRun?: boolean }): Promise<StorageMaintenanceSummary> =>
+  runStorageMaintenanceNow: (payload?: {
+    reason?: string
+    dryRun?: boolean
+  }): Promise<StorageMaintenanceSummary> =>
     ipcRenderer.invoke('cms.storage.maintenance.runNow', payload),
   rollbackStorageMaintenance: (
     runId: string
   ): Promise<{ success: boolean; restored: number; errors: string[] }> =>
     ipcRenderer.invoke('cms.storage.maintenance.rollback', { runId }),
-  getFeishuConfig: (): Promise<{ appId: string; appSecret: string; baseToken: string; tableId: string } | null> =>
-    ipcRenderer.invoke('get-feishu-config'),
-  uploadImage: (filePath: string, appId: string, appSecret: string, baseToken: string): Promise<string> =>
+  getFeishuConfig: (): Promise<{
+    appId: string
+    appSecret: string
+    baseToken: string
+    tableId: string
+  } | null> => ipcRenderer.invoke('get-feishu-config'),
+  uploadImage: (
+    filePath: string,
+    appId: string,
+    appSecret: string,
+    baseToken: string
+  ): Promise<string> =>
     ipcRenderer.invoke('feishu-upload-image', filePath, appId, appSecret, baseToken),
   createRecord: (
     fields: Record<string, unknown>,
@@ -1450,7 +1597,8 @@ const electronAPI = {
     appSecret: string,
     baseToken: string,
     tableId: string
-  ): Promise<string> => ipcRenderer.invoke('feishu-create-record', fields, appId, appSecret, baseToken, tableId),
+  ): Promise<string> =>
+    ipcRenderer.invoke('feishu-create-record', fields, appId, appSecret, baseToken, tableId),
   testFeishuConnection: (
     appId:
       | string
@@ -1465,7 +1613,13 @@ const electronAPI = {
     tableId?: string
   ): Promise<{ success: true }> =>
     typeof appId === 'object' && appId !== null
-      ? ipcRenderer.invoke('feishu-test-connection', appId.appId, appId.appSecret, appId.baseToken, appId.tableId)
+      ? ipcRenderer.invoke(
+          'feishu-test-connection',
+          appId.appId,
+          appId.appSecret,
+          appId.baseToken,
+          appId.tableId
+        )
       : ipcRenderer.invoke(
           'feishu-test-connection',
           appId,
@@ -1473,8 +1627,11 @@ const electronAPI = {
           baseToken ?? '',
           tableId ?? ''
         ),
-  processGridSplit: (payload: { sourceFiles: string[]; rows: number; cols: number }): Promise<string[]> =>
-    ipcRenderer.invoke('process-grid-split', payload),
+  processGridSplit: (payload: {
+    sourceFiles: string[]
+    rows: number
+    cols: number
+  }): Promise<string[]> => ipcRenderer.invoke('process-grid-split', payload),
   processHdUpscale: (payload: { files: string[]; exePath: string }): Promise<string[]> =>
     ipcRenderer.invoke('process-hd-upscale', payload),
   processWatermark: (payload: {
@@ -1484,7 +1641,11 @@ const electronAPI = {
     watermarkBox: { x: number; y: number; width: number; height: number }
   }): Promise<string[]> => ipcRenderer.invoke('process-watermark', payload),
   onProcessLog: (
-    listener: (payload: { level: 'stdout' | 'stderr' | 'info' | 'error'; message: string; timestamp: number }) => void
+    listener: (payload: {
+      level: 'stdout' | 'stderr' | 'info' | 'error'
+      message: string
+      timestamp: number
+    }) => void
   ): (() => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -1505,8 +1666,11 @@ const electronAPI = {
     ipcRenderer.invoke('shell-openPath', filePath),
   exportFiles: (
     filePaths: string[]
-  ): Promise<{ success: true; copied: number; destinationDir: string } | { success: false; error: string } | null> =>
-    ipcRenderer.invoke('export-files', filePaths)
+  ): Promise<
+    | { success: true; copied: number; destinationDir: string }
+    | { success: false; error: string }
+    | null
+  > => ipcRenderer.invoke('export-files', filePaths)
 }
 
 // 仅在启用上下文隔离时通过 contextBridge 暴露；否则挂载到全局 window

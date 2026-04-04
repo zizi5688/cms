@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { createHash, randomUUID } from 'crypto'
+import { mkdirSync } from 'fs'
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { basename, extname, join, resolve } from 'path'
 
@@ -505,7 +506,10 @@ function buildProviderUrl(baseUrl: string, apiPath: string): string {
   return `${normalizedBase}${safePath}`
 }
 
-function resolveProviderPathTemplate(apiPath: string, payload: Record<string, unknown>): {
+function resolveProviderPathTemplate(
+  apiPath: string,
+  payload: Record<string, unknown>
+): {
   apiPath: string
   payload: Record<string, unknown>
 } {
@@ -1218,6 +1222,33 @@ function mergeTaskMetadata(
   return { ...base, ...patch }
 }
 
+function readAiStudioProjectMetadata(metadata: Record<string, unknown> | null | undefined): {
+  projectId: string
+  projectRootTaskId: string
+  projectName: string
+  projectPath: string | null
+} | null {
+  const base = metadata && typeof metadata === 'object' ? metadata : {}
+  const projectRootTaskId = normalizeText(base.projectRootTaskId)
+  const projectId = normalizeText(base.projectId) || projectRootTaskId
+  if (!projectId) return null
+
+  return {
+    projectId,
+    projectRootTaskId: projectRootTaskId || projectId,
+    projectName: normalizeText(base.projectName),
+    projectPath: normalizeNullableText(base.projectPath)
+  }
+}
+
+function normalizeProjectDirectorySegment(value: string): string {
+  const normalized = normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return normalized || 'project'
+}
+
 function detectFallbackPrice(model: string): { min: number | null; max: number | null } {
   const normalized = normalizeText(model).toLowerCase()
   const exact = GRSAI_PRICE_FALLBACKS[normalized]
@@ -1354,6 +1385,22 @@ function mapTaskRow(row: Record<string, unknown>): AiStudioTaskRecord {
   }
 }
 
+function sanitizeProjectDirectorySegment(value: string): string {
+  const normalized = normalizeText(value)
+  if (!normalized) return 'project'
+  const cleaned = Array.from(normalized, (character) => (character >= ' ' ? character : ' ')).join(
+    ''
+  )
+  return (
+    cleaned
+      .replace(/[<>:"/\\|?*]+/g, ' ')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'project'
+  )
+}
+
 function mapAssetRow(row: Record<string, unknown>): AiStudioAssetRecord {
   return {
     id: normalizeText(row.id),
@@ -1417,12 +1464,84 @@ export class AiStudioService {
     return workspacePath
   }
 
+  private buildProjectDirectoryPath(projectName: string, projectId: string): string {
+    const slug = normalizeProjectDirectorySegment(projectName)
+    const shortId = normalizeProjectDirectorySegment(projectId).slice(0, 8) || 'project'
+    return join(this.getWorkspacePath(), 'ai-studio', 'projects', `${slug}-${shortId}`)
+  }
+
+  private normalizeProjectStorage(
+    taskId: string,
+    sourceFolderPath: string | null,
+    productName: string,
+    metadata: Record<string, unknown>
+  ): {
+    sourceFolderPath: string | null
+    metadata: Record<string, unknown>
+  } {
+    const projectMeta = readAiStudioProjectMetadata(metadata)
+    if (!projectMeta) {
+      return { sourceFolderPath, metadata }
+    }
+
+    const projectName = projectMeta.projectName || normalizeText(productName) || '未命名项目'
+    const projectPath =
+      projectMeta.projectPath ||
+      sourceFolderPath ||
+      this.buildProjectDirectoryPath(projectName, projectMeta.projectId || taskId)
+
+    return {
+      sourceFolderPath: projectPath,
+      metadata: mergeTaskMetadata(metadata, {
+        projectId: projectMeta.projectId || taskId,
+        projectRootTaskId: projectMeta.projectRootTaskId || projectMeta.projectId || taskId,
+        projectName,
+        projectPath
+      })
+    }
+  }
+
+  private ensureTaskDirectorySync(dirPath: string | null | undefined): void {
+    const normalized = normalizeNullableText(dirPath)
+    if (!normalized) return
+    mkdirSync(normalized, { recursive: true })
+  }
+
   private getVideoDebugLogPath(): string {
     return join(this.getWorkspacePath(), 'debug', AI_STUDIO_VIDEO_DEBUG_FILE_NAME)
   }
 
   private getImageDebugLogPath(): string {
     return join(this.getWorkspacePath(), 'debug', AI_STUDIO_IMAGE_DEBUG_FILE_NAME)
+  }
+
+  async ensureProjectDirectory(
+    projectId: string,
+    projectName?: string | null,
+    preferredPath?: string | null
+  ): Promise<{
+    projectId: string
+    dirPath: string
+  }> {
+    const normalizedProjectId = normalizeText(projectId)
+    if (!normalizedProjectId) throw new Error('[AI Studio] projectId 不能为空。')
+
+    const explicitPath = normalizeText(preferredPath)
+    const dirPath =
+      explicitPath ||
+      join(
+        this.getWorkspacePath(),
+        'ai-studio',
+        'projects',
+        `${sanitizeProjectDirectorySegment(normalizeText(projectName) || '未命名项目')}-${normalizedProjectId.slice(0, 8)}`
+      )
+
+    await mkdir(dirPath, { recursive: true })
+
+    return {
+      projectId: normalizedProjectId,
+      dirPath
+    }
   }
 
   private async appendVideoDebugLog(
@@ -1547,9 +1666,7 @@ export class AiStudioService {
       headers
     }
     const timeoutMs = resolveAiStudioProviderRequestTimeoutMs(
-      options?.timeoutMs === undefined
-        ? AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS
-        : options.timeoutMs
+      options?.timeoutMs === undefined ? AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS : options.timeoutMs
     )
     const abortController = timeoutMs === null ? null : new AbortController()
     const timeoutHandle =
@@ -1676,8 +1793,7 @@ export class AiStudioService {
           statusCode,
           payload: parsedPayload,
           fallback: `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${resolvedApiPath}）。`
-        }) ??
-        `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${resolvedApiPath}）。`
+        }) ?? `[AI Studio] AI 服务请求失败（HTTP ${statusCode}，${method} ${resolvedApiPath}）。`
       )
     }
 
@@ -2145,17 +2261,17 @@ export class AiStudioService {
               aspectRatio: 'adaptive',
               duration: 4
             })
-        : looksLikeVideoCreateEndpoint
-          ? {
-              model: config.defaultImageModel || 'veo3.1-fast',
-              prompt: 'ping',
-              enhance_prompt: true,
-              enable_upsample: true,
-              aspect_ratio: '16:9'
-            }
-          : isCustomEndpoint
-            ? {}
-            : { id: CONNECTION_TEST_ID }
+          : looksLikeVideoCreateEndpoint
+            ? {
+                model: config.defaultImageModel || 'veo3.1-fast',
+                prompt: 'ping',
+                enhance_prompt: true,
+                enable_upsample: true,
+                aspect_ratio: '16:9'
+              }
+            : isCustomEndpoint
+              ? {}
+              : { id: CONNECTION_TEST_ID }
 
     const response = await this.requestProvider(
       connectionApiPath,
@@ -2168,16 +2284,16 @@ export class AiStudioService {
               allowStatusCodes: [400, 422],
               providerConfig: config
             }
-        : looksLikeVideoCreateEndpoint
-          ? { method: 'POST', providerConfig: config }
-          : isCustomEndpoint
-            ? {
-                method: 'POST',
-                allowStatusCodes: [400, 405, 422],
-                allowProviderCodes: [-22],
-                providerConfig: config
-              }
-            : { allowStatusCodes: [400], allowProviderCodes: [-22], providerConfig: config }
+          : looksLikeVideoCreateEndpoint
+            ? { method: 'POST', providerConfig: config }
+            : isCustomEndpoint
+              ? {
+                  method: 'POST',
+                  allowStatusCodes: [400, 405, 422],
+                  allowProviderCodes: [-22],
+                  providerConfig: config
+                }
+              : { allowStatusCodes: [400], allowProviderCodes: [-22], providerConfig: config }
     )
     return {
       success: true,
@@ -2832,11 +2948,19 @@ export class AiStudioService {
   createTask(input: AiStudioTaskCreateInput): AiStudioTaskRecord {
     const taskId = normalizeText(input.id) || randomUUID()
     const now = Date.now()
+    const normalizedMetadata =
+      input.metadata && typeof input.metadata === 'object' ? input.metadata : {}
+    const normalizedProject = this.normalizeProjectStorage(
+      taskId,
+      normalizeNullableText(input.sourceFolderPath),
+      normalizeText(input.productName),
+      normalizedMetadata
+    )
     const record = {
       taskId,
       templateId: normalizeNullableText(input.templateId),
       provider: normalizeText(input.provider) || 'grsai',
-      sourceFolderPath: normalizeNullableText(input.sourceFolderPath),
+      sourceFolderPath: normalizedProject.sourceFolderPath,
       productName: normalizeText(input.productName),
       status: normalizeTaskStatus(input.status),
       aspectRatio: normalizeText(input.aspectRatio) || '3:4',
@@ -2851,7 +2975,7 @@ export class AiStudioService {
       priceMinSnapshot: normalizeNullableNumber(input.priceMinSnapshot),
       priceMaxSnapshot: normalizeNullableNumber(input.priceMaxSnapshot),
       billedState: normalizeBilledState(input.billedState),
-      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {}
+      metadata: normalizedProject.metadata
     }
 
     const tx = this.db.transaction(() => {
@@ -2902,11 +3026,26 @@ export class AiStudioService {
     })
 
     tx()
+    this.ensureTaskDirectorySync(record.sourceFolderPath)
     return this.getTaskOrThrow(record.taskId)
   }
 
   updateTask(taskId: string, patch: AiStudioTaskUpdateInput): AiStudioTaskRecord {
     const existing = this.getTaskOrThrow(taskId)
+    const nextMetadata =
+      patch.metadata !== undefined
+        ? mergeTaskMetadata(existing.metadata, parseJsonObject(patch.metadata))
+        : existing.metadata
+    const nextSourceFolderPath =
+      patch.sourceFolderPath !== undefined
+        ? normalizeNullableText(patch.sourceFolderPath)
+        : existing.sourceFolderPath
+    const normalizedProject = this.normalizeProjectStorage(
+      taskId,
+      nextSourceFolderPath,
+      patch.productName !== undefined ? normalizeText(patch.productName) : existing.productName,
+      nextMetadata
+    )
     const next = {
       templateId:
         patch.templateId !== undefined
@@ -2916,10 +3055,7 @@ export class AiStudioService {
         patch.provider !== undefined
           ? normalizeText(patch.provider) || existing.provider
           : existing.provider,
-      sourceFolderPath:
-        patch.sourceFolderPath !== undefined
-          ? normalizeNullableText(patch.sourceFolderPath)
-          : existing.sourceFolderPath,
+      sourceFolderPath: normalizedProject.sourceFolderPath,
       productName:
         patch.productName !== undefined ? normalizeText(patch.productName) : existing.productName,
       status: patch.status !== undefined ? normalizeTaskStatus(patch.status) : existing.status,
@@ -2966,10 +3102,7 @@ export class AiStudioService {
         patch.billedState !== undefined
           ? normalizeBilledState(patch.billedState)
           : existing.billedState,
-      metadata:
-        patch.metadata !== undefined
-          ? mergeTaskMetadata(existing.metadata, parseJsonObject(patch.metadata))
-          : existing.metadata,
+      metadata: normalizedProject.metadata,
       updatedAt: Date.now()
     }
 
@@ -3022,6 +3155,7 @@ export class AiStudioService {
         taskId
       )
 
+    this.ensureTaskDirectorySync(next.sourceFolderPath)
     return this.getTaskOrThrow(taskId)
   }
 
@@ -3174,7 +3308,7 @@ export class AiStudioService {
   }> {
     const normalizedTaskId = normalizeText(taskId)
     if (!normalizedTaskId) throw new Error('[AI Studio] taskId 不能为空。')
-    this.getTaskOrThrow(normalizedTaskId)
+    const task = this.getTaskOrThrow(normalizedTaskId)
 
     let resolvedRunIndex = runIndex
     if (!resolvedRunIndex || resolvedRunIndex <= 0) {
@@ -3187,13 +3321,27 @@ export class AiStudioService {
       resolvedRunIndex = maxRunIndex + 1
     }
 
-    const dirPath = join(
-      this.getWorkspacePath(),
-      'ai-studio',
-      'tasks',
-      normalizedTaskId,
-      `run-${String(resolvedRunIndex).padStart(3, '0')}`
-    )
+    const projectMeta = readAiStudioProjectMetadata(task.metadata)
+    const projectPath =
+      projectMeta?.projectPath ||
+      (projectMeta?.projectId ? normalizeText(task.sourceFolderPath) : '') ||
+      (projectMeta?.projectId
+        ? this.buildProjectDirectoryPath(projectMeta.projectName, projectMeta.projectId)
+        : '')
+    const dirPath = projectPath
+      ? join(
+          projectPath,
+          'tasks',
+          normalizedTaskId,
+          `run-${String(resolvedRunIndex).padStart(3, '0')}`
+        )
+      : join(
+          this.getWorkspacePath(),
+          'ai-studio',
+          'tasks',
+          normalizedTaskId,
+          `run-${String(resolvedRunIndex).padStart(3, '0')}`
+        )
     await mkdir(dirPath, { recursive: true })
 
     return {

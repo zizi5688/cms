@@ -926,7 +926,7 @@ function NoteSidebar({
   onAddMaterials,
   onRemoveMaterial,
   onOpenBatchPick
-}: NoteSidebarProps): React.JSX.Element {
+}: NoteSidebarProps): React.JSX.Element | null {
   const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
   const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
   const [isDispatchSettingsOpen, setIsDispatchSettingsOpen] = useState(false)
@@ -1036,18 +1036,7 @@ function NoteSidebar({
   }, [dispatchAccountIdDraft, products])
 
   if (!isOpen) {
-    return (
-      <div className="pointer-events-none absolute right-6 top-6 z-40">
-        <button
-          type="button"
-          onClick={() => onOpenChange(true)}
-          className="pointer-events-auto inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-[0_16px_40px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-950"
-          aria-label="展开创作中心"
-        >
-          <ImageIcon className="h-4 w-4" />
-        </button>
-      </div>
-    )
+    return null
   }
 
   const updatePreviewTaskImages = (taskId: string, nextImages: string[]): void => {
@@ -1108,7 +1097,7 @@ function NoteSidebar({
 
   return (
     <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
-      <aside className="pointer-events-auto flex h-full w-full flex-col border-l border-zinc-200/55 bg-[linear-gradient(180deg,rgba(255,255,255,0.97),rgba(249,250,251,0.94))] shadow-[-18px_0_48px_rgba(15,23,42,0.05)] backdrop-blur-[18px]">
+      <aside className="pointer-events-auto flex h-full w-full flex-col bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(249,250,251,0.95))] shadow-[-18px_0_48px_rgba(15,23,42,0.04)] backdrop-blur-[18px]">
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
           <div className="text-[14px] font-medium tracking-[0.02em] text-zinc-800">创作中心</div>
           <div className="flex items-center gap-2">
