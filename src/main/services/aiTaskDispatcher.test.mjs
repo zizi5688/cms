@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { resolveAiStudioProviderConfig } from './aiStudioProviderConfigHelpers.ts'
+import { dispatchAiTask } from './aiTaskDispatcher.ts'
 
-const CONFIG = {
-  provider: 'grsai',
-  baseUrl: 'https://grs.example.com',
-  apiKey: 'grs-key',
-  defaultImageModel: 'nano-banana',
-  endpointPath: '/v1/draw/nano-banana',
+const STATE = {
+  aiProvider: 'allapi',
+  aiBaseUrl: 'https://allapi.example.com',
+  aiApiKey: 'allapi-key',
+  aiDefaultImageModel: 'jimeng-image-3.0',
+  aiEndpointPath: '/v1/images/generations',
   aiRuntimeDefaults: {
     chatProviderId: 'provider-openai',
     imageProviderId: 'provider-allapi',
     videoProviderId: 'provider-volc'
   },
-  providerProfiles: [
+  aiProviderProfiles: [
     {
       id: 'provider-openai',
       providerName: 'openai',
@@ -107,41 +107,45 @@ const CONFIG = {
   ]
 }
 
-test('resolveAiStudioProviderConfig uses the image runtime default route before legacy compatibility fields', () => {
-  const resolved = resolveAiStudioProviderConfig(CONFIG, {
-    provider: '',
-    model: '',
-    metadata: {}
-  }, 'image')
+test('dispatchAiTask routes direct mode requests to the matching capability executor', async () => {
+  const calls = []
+  const executors = {
+    chat: async ({ route, request }) => {
+      calls.push(['chat', route.providerId, request.input])
+      return { ok: true, capability: 'chat' }
+    },
+    image: async ({ route, request }) => {
+      calls.push(['image', route.providerId, request.input])
+      return { ok: true, capability: 'image' }
+    },
+    video: async ({ route, request }) => {
+      calls.push(['video', route.providerId, request.input])
+      return { ok: true, capability: 'video' }
+    }
+  }
 
-  assert.equal(resolved.provider, 'allapi')
-  assert.equal(resolved.baseUrl, 'https://allapi.example.com')
-  assert.equal(resolved.apiKey, 'allapi-key')
-  assert.equal(resolved.defaultImageModel, 'jimeng-image-3.0')
-  assert.equal(resolved.endpointPath, '/v1/images/generations')
-})
+  const chatResult = await dispatchAiTask(
+    STATE,
+    { capability: 'chat', input: { prompt: 'hi' } },
+    executors
+  )
+  const imageResult = await dispatchAiTask(
+    STATE,
+    { capability: 'image', input: { prompt: 'draw' } },
+    executors
+  )
+  const videoResult = await dispatchAiTask(
+    STATE,
+    { capability: 'video', input: { prompt: 'animate' } },
+    executors
+  )
 
-test('resolveAiStudioProviderConfig reads the video runtime default route from videoProviderId and video default model', () => {
-  const resolved = resolveAiStudioProviderConfig(CONFIG, {
-    provider: '',
-    model: '',
-    metadata: {}
-  }, 'video')
-
-  assert.equal(resolved.provider, 'volc')
-  assert.equal(resolved.baseUrl, 'https://volc.example.com')
-  assert.equal(resolved.apiKey, 'volc-key')
-  assert.equal(resolved.defaultImageModel, 'seedance-1.0-pro')
-  assert.equal(resolved.endpointPath, '/volc/v1/contents/generations/tasks')
-})
-
-test('resolveAiStudioProviderConfig still allows explicit task provider and model to override the runtime default', () => {
-  const resolved = resolveAiStudioProviderConfig(CONFIG, {
-    provider: 'allapi',
-    model: 'jimeng-image-3.0',
-    metadata: {}
-  }, 'image')
-
-  assert.equal(resolved.provider, 'allapi')
-  assert.equal(resolved.defaultImageModel, 'jimeng-image-3.0')
+  assert.deepEqual(calls, [
+    ['chat', 'provider-openai', { prompt: 'hi' }],
+    ['image', 'provider-allapi', { prompt: 'draw' }],
+    ['video', 'provider-volc', { prompt: 'animate' }]
+  ])
+  assert.deepEqual(chatResult, { ok: true, capability: 'chat' })
+  assert.deepEqual(imageResult, { ok: true, capability: 'image' })
+  assert.deepEqual(videoResult, { ok: true, capability: 'video' })
 })

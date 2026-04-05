@@ -10,7 +10,11 @@ import {
   CardTitle
 } from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
+import { Tabs } from '@renderer/components/ui/tabs'
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import { createEmptyAiRuntimeDefaults } from '../../../../shared/ai/aiProviderTypes'
+
+import { AiProviderSettingsPanel } from './settings/AiProviderSettingsPanel'
 
 function isNonEmpty(value: string): boolean {
   return value.trim().length > 0
@@ -202,6 +206,7 @@ function Settings(): React.JSX.Element {
   const [workspaceStatus, setWorkspaceStatus] = useState<'initialized' | 'uninitialized'>(
     'uninitialized'
   )
+  const [settingsPage, setSettingsPage] = useState<'general' | 'aiProviders'>('general')
   const [previewTime, setPreviewTime] = useState(0)
   const exePickerRef = useRef<HTMLInputElement | null>(null)
   const pythonPickerRef = useRef<HTMLInputElement | null>(null)
@@ -287,6 +292,11 @@ function Settings(): React.JSX.Element {
             aiProviderProfiles: Array.isArray(savedTools.aiProviderProfiles)
               ? savedTools.aiProviderProfiles
               : [],
+            aiRuntimeDefaults:
+              savedTools.aiRuntimeDefaults &&
+              typeof savedTools.aiRuntimeDefaults === 'object'
+                ? savedTools.aiRuntimeDefaults
+                : createEmptyAiRuntimeDefaults(),
             importStrategy: savedTools.importStrategy === 'move' ? 'move' : 'copy',
             realEsrganPath: savedTools.realEsrganPath ?? '',
             pythonPath: savedTools.pythonPath ?? '',
@@ -448,6 +458,7 @@ function Settings(): React.JSX.Element {
           aiDefaultImageModel: config.aiDefaultImageModel,
           aiEndpointPath: config.aiEndpointPath,
           aiProviderProfiles: config.aiProviderProfiles,
+          aiRuntimeDefaults: config.aiRuntimeDefaults,
           importStrategy: config.importStrategy,
           realEsrganPath: config.realEsrganPath,
           pythonPath: config.pythonPath,
@@ -482,6 +493,7 @@ function Settings(): React.JSX.Element {
     config.aiEndpointPath,
     config.aiProvider,
     config.aiProviderProfiles,
+    config.aiRuntimeDefaults,
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
@@ -895,6 +907,26 @@ function Settings(): React.JSX.Element {
         </CardHeader>
       </Card>
 
+      <div className="flex items-center justify-between gap-3">
+        <Tabs
+          value={settingsPage}
+          onValueChange={(value) => setSettingsPage(value as 'general' | 'aiProviders')}
+          items={[
+            { value: 'general', label: '通用设置' },
+            { value: 'aiProviders', label: 'AI 供应商' }
+          ]}
+        />
+        <div className="text-xs text-zinc-500">
+          {settingsPage === 'aiProviders'
+            ? '统一维护默认路由与供应商模型。'
+            : '工作区、飞书、工具和系统级配置。'}
+        </div>
+      </div>
+
+      {settingsPage === 'aiProviders' ? (
+        <AiProviderSettingsPanel config={config} updateConfig={updateConfig} />
+      ) : (
+        <>
       <Card>
         <CardHeader>
           <CardTitle>工作区管理</CardTitle>
@@ -919,8 +951,8 @@ function Settings(): React.JSX.Element {
           <div className="flex items-center gap-2">
             <Button onClick={changeWorkspace}>切换工作区</Button>
           </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
 
       <Card>
         <CardHeader>
@@ -1574,8 +1606,10 @@ function Settings(): React.JSX.Element {
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+        </>
+      )}
     </div>
   )
 }

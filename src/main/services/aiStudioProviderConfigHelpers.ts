@@ -1,29 +1,35 @@
+import type { AiCapability, AiModelProfile, AiProviderProfile } from '../../shared/ai/aiProviderTypes.ts'
+import { createEmptyAiRuntimeDefaults } from '../../shared/ai/aiProviderTypes.ts'
+import { normalizeAiProviderProfiles } from './aiProviderCatalogHelpers.ts'
+import {
+  findAiProviderProfile,
+  getAiCapabilityProfile,
+  type ResolvedAiProviderState
+} from './aiProviderState.ts'
+
 const GRSAI_DEFAULT_BASE_URL = 'https://grsaiapi.com'
 const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
 const LEGACY_DEFAULT_IMAGE_MODEL = 'image-default'
 
-type AiStudioProviderModelProfile = {
-  id: string
-  modelName: string
-  endpointPath: string
-}
-
-type AiStudioProviderProfile = {
-  id: string
-  providerName: string
-  baseUrl: string
-  apiKey: string
-  models: AiStudioProviderModelProfile[]
-  defaultModelId: string | null
-}
-
-type AiStudioProviderConfigInput = {
+type AiStudioProviderConfigInput = Partial<
+  Pick<
+    ResolvedAiProviderState,
+    | 'aiProvider'
+    | 'aiBaseUrl'
+    | 'aiApiKey'
+    | 'aiDefaultImageModel'
+    | 'aiEndpointPath'
+    | 'aiProviderProfiles'
+    | 'aiRuntimeDefaults'
+  >
+> & {
   provider?: unknown
   baseUrl?: unknown
   apiKey?: unknown
   defaultImageModel?: unknown
   endpointPath?: unknown
   providerProfiles?: unknown
+  aiRuntimeDefaults?: unknown
 }
 
 type AiStudioTaskProviderInput = {
@@ -45,11 +51,6 @@ function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function normalizeNullableText(value: unknown): string | null {
-  const normalized = normalizeText(value)
-  return normalized || null
-}
-
 function normalizeConfiguredModel(value: unknown): string {
   const normalized = normalizeText(value)
   return normalized === LEGACY_DEFAULT_IMAGE_MODEL ? '' : normalized
@@ -64,101 +65,91 @@ function sanitizeBaseUrl(baseUrl: string): string {
   return normalized || GRSAI_DEFAULT_BASE_URL
 }
 
-function normalizeProviderProfiles(value: unknown): AiStudioProviderProfile[] {
-  if (!Array.isArray(value)) return []
-
-  const profiles: AiStudioProviderProfile[] = []
-  value.forEach((item, index) => {
-    const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
-    const providerName = normalizeText(record.providerName ?? record.name)
-    if (!providerName) return
-
-    const models: AiStudioProviderModelProfile[] = []
-    if (Array.isArray(record.models)) {
-      record.models.forEach((modelItem, modelIndex) => {
-        const modelRecord =
-          modelItem && typeof modelItem === 'object' ? (modelItem as Record<string, unknown>) : {}
-        const modelName = normalizeText(modelRecord.modelName ?? modelRecord.name)
-        if (!modelName) return
-        models.push({
-          id: normalizeText(modelRecord.id) || `${providerName}:${modelIndex}`,
-          modelName,
-          endpointPath: normalizeText(modelRecord.endpointPath)
-        })
-      })
-    }
-
-    const requestedDefaultModelId = normalizeNullableText(record.defaultModelId)
-    profiles.push({
-      id: normalizeText(record.id) || `${providerName}:${index}`,
-      providerName,
-      baseUrl: normalizeText(record.baseUrl),
-      apiKey: normalizeText(record.apiKey),
-      models,
-      defaultModelId:
-        requestedDefaultModelId && models.some((model) => model.id === requestedDefaultModelId)
-          ? requestedDefaultModelId
-          : (models[0]?.id ?? null)
-    })
-  })
-
-  return profiles
-}
-
-function findProviderProfile(
-  profiles: AiStudioProviderProfile[],
-  providerName: string
-): AiStudioProviderProfile | null {
-  const normalized = normalizeText(providerName).toLowerCase()
-  if (!normalized) return null
-  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? null
+function resolveDefaultProviderId(
+  rawRuntimeDefaults: unknown,
+  capability: AiCapability
+): string | null {
+  const record =
+    rawRuntimeDefaults && typeof rawRuntimeDefaults === 'object'
+      ? (rawRuntimeDefaults as Record<string, unknown>)
+      : createEmptyAiRuntimeDefaults()
+  if (capability === 'chat') return normalizeText(record.chatProviderId) || null
+  if (capability === 'video') return normalizeText(record.videoProviderId) || null
+  return normalizeText(record.imageProviderId) || null
 }
 
 function findProviderModelProfile(
-  providerProfile: AiStudioProviderProfile | null,
+  providerProfile: AiProviderProfile | null,
+  capability: AiCapability,
   modelName: string
-): AiStudioProviderModelProfile | null {
+): AiModelProfile | null {
   if (!providerProfile) return null
   const normalized = normalizeText(modelName).toLowerCase()
   if (!normalized) return null
   return (
-    providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+    getAiCapabilityProfile(providerProfile, capability).models.find(
+      (model) => model.modelName.toLowerCase() === normalized
+    ) ?? null
   )
 }
 
 function resolveProviderModelProfile(
-  providerProfile: AiStudioProviderProfile | null,
+  providerProfile: AiProviderProfile | null,
+  capability: AiCapability,
   preferredModelName: string
-): AiStudioProviderModelProfile | null {
-  const preferred = findProviderModelProfile(providerProfile, preferredModelName)
+): AiModelProfile | null {
+  const preferred = findProviderModelProfile(providerProfile, capability, preferredModelName)
   if (preferred) return preferred
-  if (providerProfile?.defaultModelId) {
+  const capabilityProfile = getAiCapabilityProfile(providerProfile, capability)
+  if (capabilityProfile.defaultModelId) {
     return (
-      providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+      capabilityProfile.models.find((model) => model.id === capabilityProfile.defaultModelId) ?? null
     )
   }
-  return providerProfile?.models[0] ?? null
+  return capabilityProfile.models[0] ?? null
+}
+
+function findFirstProviderForCapability(
+  profiles: AiProviderProfile[],
+  capability: AiCapability
+): AiProviderProfile | null {
+  return (
+    profiles.find((profile) => {
+      const capabilityProfile = getAiCapabilityProfile(profile, capability)
+      return profile.enabled && capabilityProfile.enabled && capabilityProfile.models.length > 0
+    }) ?? null
+  )
 }
 
 export function resolveAiStudioProviderConfig(
   provided: AiStudioProviderConfigInput = {},
-  task?: AiStudioTaskProviderInput | null
+  task?: AiStudioTaskProviderInput | null,
+  capability: AiCapability = 'image'
 ): ResolvedAiStudioProviderConfig {
   const fallback: ResolvedAiStudioProviderConfig = {
-    provider: normalizeText(provided.provider) || 'grsai',
-    baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl)),
-    apiKey: normalizeText(provided.apiKey),
-    defaultImageModel: resolveConfiguredModel(provided.defaultImageModel, DEFAULT_IMAGE_MODEL),
-    endpointPath: normalizeText(provided.endpointPath),
-    providerProfiles: provided.providerProfiles
+    provider: normalizeText(provided.provider ?? provided.aiProvider) || 'grsai',
+    baseUrl: sanitizeBaseUrl(normalizeText(provided.baseUrl ?? provided.aiBaseUrl)),
+    apiKey: normalizeText(provided.apiKey ?? provided.aiApiKey),
+    defaultImageModel: resolveConfiguredModel(
+      provided.defaultImageModel ?? provided.aiDefaultImageModel,
+      DEFAULT_IMAGE_MODEL
+    ),
+    endpointPath: normalizeText(provided.endpointPath ?? provided.aiEndpointPath),
+    providerProfiles: provided.providerProfiles ?? provided.aiProviderProfiles
   }
 
-  const providerProfiles = normalizeProviderProfiles(provided.providerProfiles)
+  const providerProfiles = normalizeAiProviderProfiles(
+    provided.providerProfiles ?? provided.aiProviderProfiles
+  )
+  const runtimeDefaultProviderId = resolveDefaultProviderId(
+    provided.aiRuntimeDefaults,
+    capability
+  )
   const taskProviderName = normalizeText(task?.provider)
   const taskModelName = normalizeConfiguredModel(task?.model)
-  const taskProviderProfile = findProviderProfile(providerProfiles, taskProviderName)
-  const activeProvider =
-    taskProviderProfile ?? findProviderProfile(providerProfiles, fallback.provider)
+  const taskProviderProfile = taskProviderName
+    ? findAiProviderProfile(providerProfiles, taskProviderName)
+    : null
 
   if (taskProviderName && !taskProviderProfile) {
     return {
@@ -167,6 +158,12 @@ export function resolveAiStudioProviderConfig(
       defaultImageModel: resolveConfiguredModel(taskModelName, fallback.defaultImageModel)
     }
   }
+
+  const activeProvider =
+    taskProviderProfile ??
+    findAiProviderProfile(providerProfiles, runtimeDefaultProviderId ?? '') ??
+    findAiProviderProfile(providerProfiles, fallback.provider) ??
+    findFirstProviderForCapability(providerProfiles, capability)
 
   if (!activeProvider) {
     return {
@@ -178,6 +175,7 @@ export function resolveAiStudioProviderConfig(
 
   const modelProfile = resolveProviderModelProfile(
     activeProvider,
+    capability,
     taskModelName || fallback.defaultImageModel
   )
 
@@ -190,6 +188,6 @@ export function resolveAiStudioProviderConfig(
       fallback.defaultImageModel
     ),
     endpointPath: normalizeText(modelProfile?.endpointPath) || fallback.endpointPath,
-    providerProfiles: provided.providerProfiles
+    providerProfiles: fallback.providerProfiles
   }
 }

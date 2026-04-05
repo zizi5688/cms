@@ -1,4 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes'
 
 declare global {
   type WatermarkBox = { x: number; y: number; width: number; height: number }
@@ -936,6 +937,44 @@ declare global {
           }) => Promise<string | null>
         }
       }
+      ai: {
+        route: {
+          resolve: (payload: { capability: AiCapability }) => Promise<{
+            providerId: string
+            providerName: string
+            capability: AiCapability
+            baseUrl: string
+            apiKey: string
+            modelId: string
+            modelName: string
+            endpointPath: string
+            protocol: 'openai' | 'google-genai' | 'vendor-custom'
+          }>
+        }
+        task: {
+          run: (payload: {
+            capability: AiCapability
+            input: unknown
+            context?: Record<string, unknown>
+          }) => Promise<{
+            mode: 'direct'
+            capability: AiCapability
+            route: {
+              providerId: string
+              providerName: string
+              capability: AiCapability
+              baseUrl: string
+              apiKey: string
+              modelId: string
+              modelName: string
+              endpointPath: string
+              protocol: 'openai' | 'google-genai' | 'vendor-custom'
+            }
+            input: unknown
+            context: Record<string, unknown>
+          }>
+        }
+      }
       aiStudio: {
         provider: {
           testConnection: (payload?: {
@@ -1347,14 +1386,8 @@ declare global {
       aiApiKey: string
       aiDefaultImageModel: string
       aiEndpointPath: string
-      aiProviderProfiles: Array<{
-        id: string
-        providerName: string
-        baseUrl: string
-        apiKey: string
-        models: Array<{ id: string; modelName: string; endpointPath: string }>
-        defaultModelId: string | null
-      }>
+      aiProviderProfiles: AiProviderProfile[]
+      aiRuntimeDefaults: AiRuntimeDefaults
       importStrategy: 'copy' | 'move'
       realEsrganPath: string
       pythonPath: string
@@ -1383,14 +1416,8 @@ declare global {
       aiApiKey?: string
       aiDefaultImageModel?: string
       aiEndpointPath?: string
-      aiProviderProfiles?: Array<{
-        id: string
-        providerName: string
-        baseUrl: string
-        apiKey: string
-        models: Array<{ id: string; modelName: string; endpointPath: string }>
-        defaultModelId: string | null
-      }>
+      aiProviderProfiles?: AiProviderProfile[]
+      aiRuntimeDefaults?: AiRuntimeDefaults
       importStrategy?: 'copy' | 'move'
       realEsrganPath?: string
       pythonPath?: string
