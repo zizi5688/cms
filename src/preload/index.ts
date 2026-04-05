@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI as toolkitElectronAPI } from '@electron-toolkit/preload'
+import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
 
 type PublisherResult = { success: boolean; time?: string; error?: string }
 
@@ -1080,6 +1081,44 @@ const api = {
         }): Promise<string | null> => ipcRenderer.invoke('cms.scout.dashboard.exportExcel', payload)
       }
     },
+    ai: {
+      route: {
+        resolve: (payload: { capability: AiCapability }): Promise<{
+          providerId: string
+          providerName: string
+          capability: AiCapability
+          baseUrl: string
+          apiKey: string
+          modelId: string
+          modelName: string
+          endpointPath: string
+          protocol: 'openai' | 'google-genai' | 'vendor-custom'
+        }> => ipcRenderer.invoke('cms.ai.route.resolve', payload)
+      },
+      task: {
+        run: (payload: {
+          capability: AiCapability
+          input: unknown
+          context?: Record<string, unknown>
+        }): Promise<{
+          mode: 'direct'
+          capability: AiCapability
+          route: {
+            providerId: string
+            providerName: string
+            capability: AiCapability
+            baseUrl: string
+            apiKey: string
+            modelId: string
+            modelName: string
+            endpointPath: string
+            protocol: 'openai' | 'google-genai' | 'vendor-custom'
+          }
+          input: unknown
+          context: Record<string, unknown>
+        }> => ipcRenderer.invoke('cms.ai.task.run', payload)
+      }
+    },
     aiStudio: {
       provider: {
         testConnection: (payload?: {
@@ -1501,14 +1540,8 @@ const electronAPI = {
     aiApiKey: string
     aiDefaultImageModel: string
     aiEndpointPath: string
-    aiProviderProfiles: Array<{
-      id: string
-      providerName: string
-      baseUrl: string
-      apiKey: string
-      models: Array<{ id: string; modelName: string; endpointPath: string }>
-      defaultModelId: string | null
-    }>
+    aiProviderProfiles: AiProviderProfile[]
+    aiRuntimeDefaults: AiRuntimeDefaults
     importStrategy: 'copy' | 'move'
     realEsrganPath: string
     pythonPath: string
@@ -1537,14 +1570,8 @@ const electronAPI = {
     aiApiKey?: string
     aiDefaultImageModel?: string
     aiEndpointPath?: string
-    aiProviderProfiles?: Array<{
-      id: string
-      providerName: string
-      baseUrl: string
-      apiKey: string
-      models: Array<{ id: string; modelName: string; endpointPath: string }>
-      defaultModelId: string | null
-    }>
+    aiProviderProfiles?: AiProviderProfile[]
+    aiRuntimeDefaults?: AiRuntimeDefaults
     importStrategy?: 'copy' | 'move'
     realEsrganPath?: string
     pythonPath?: string

@@ -1,4 +1,9 @@
 import { create } from 'zustand'
+import {
+  createEmptyAiRuntimeDefaults,
+  type AiProviderProfile,
+  type AiRuntimeDefaults
+} from '../../../shared/ai/aiProviderTypes'
 
 export type TaskStatus = 'idle' | 'uploading' | 'success' | 'error'
 export type ActiveModuleKey =
@@ -70,20 +75,7 @@ export interface CmsPreferences {
 
 export type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
-export interface AiModelProfile {
-  id: string
-  modelName: string
-  endpointPath: string
-}
-
-export interface AiProviderProfile {
-  id: string
-  providerName: string
-  baseUrl: string
-  apiKey: string
-  models: AiModelProfile[]
-  defaultModelId: string | null
-}
+export type { AiCapability, AiCapabilityProfile, AiModelProfile, AiProviderProfile } from '../../../shared/ai/aiProviderTypes'
 
 export interface CmsConfig {
   appId: string
@@ -96,6 +88,7 @@ export interface CmsConfig {
   aiDefaultImageModel: string
   aiEndpointPath: string
   aiProviderProfiles: AiProviderProfile[]
+  aiRuntimeDefaults: AiRuntimeDefaults
   titleField: string
   bodyField: string
   imageField: string
@@ -186,6 +179,7 @@ const initialConfig: CmsConfig = {
   aiDefaultImageModel: '',
   aiEndpointPath: '',
   aiProviderProfiles: [],
+  aiRuntimeDefaults: createEmptyAiRuntimeDefaults(),
   titleField: '标题',
   bodyField: '正文',
   imageField: '图片',

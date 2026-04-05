@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 import { createPortal } from 'react-dom'
+import { createEmptyAiProviderCapabilities } from '../../../../../shared/ai/aiProviderTypes'
 
 import {
   ArrowUp,
@@ -28,7 +29,7 @@ import {
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { cn } from '@renderer/lib/utils'
-import { useCmsStore, type AiProviderProfile } from '@renderer/store/useCmsStore'
+import { useCmsStore, type AiModelProfile, type AiProviderProfile } from '@renderer/store/useCmsStore'
 
 import {
   normalizeOutputCountDraftOnBlur,
@@ -232,8 +233,43 @@ function createProviderProfile(
     providerName,
     baseUrl: baseUrl.trim(),
     apiKey: apiKey.trim(),
+    enabled: true,
+    source: 'custom',
+    capabilities: createEmptyAiProviderCapabilities(),
     models: [],
     defaultModelId: null
+  }
+}
+
+function createModelProfile(id: string, modelName: string, endpointPath: string): AiModelProfile {
+  return {
+    id,
+    modelName,
+    endpointPath,
+    protocol: 'openai',
+    enabled: true
+  }
+}
+
+function withImageCapabilityMirror(
+  providerProfile: AiProviderProfile,
+  models: AiModelProfile[],
+  defaultModelId: string | null
+): AiProviderProfile {
+  const capabilities = providerProfile.capabilities ?? createEmptyAiProviderCapabilities()
+  return {
+    ...providerProfile,
+    models,
+    defaultModelId,
+    capabilities: {
+      ...capabilities,
+      image: {
+        ...capabilities.image,
+        enabled: models.length > 0,
+        models,
+        defaultModelId
+      }
+    }
   }
 }
 
@@ -821,7 +857,7 @@ function SharedModelConfigurator({
   )
 }
 
-function ImageModelConfigurator({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
+export function ImageModelConfigurator({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
   const task = state.activeTask
   const config = useCmsStore((store) => store.config)
   const updateConfig = useCmsStore((store) => store.updateConfig)
@@ -1016,27 +1052,20 @@ function ImageModelConfigurator({ state }: { state: UseAiStudioStateResult }): R
         if (profile.id !== activeProviderProfile.id) return profile
         const existingModel = findAiModelProfile(profile, modelName)
         if (existingModel) {
-          return {
-            ...profile,
-            models: profile.models.map((model) =>
+          return withImageCapabilityMirror(
+            profile,
+            profile.models.map((model) =>
               model.id === existingModel.id ? { ...model, endpointPath } : model
             ),
-            defaultModelId: existingModel.id
-          }
+            existingModel.id
+          )
         }
         const nextModelId = crypto.randomUUID()
-        return {
-          ...profile,
-          models: [
-            ...profile.models,
-            {
-              id: nextModelId,
-              modelName,
-              endpointPath
-            }
-          ],
-          defaultModelId: profile.defaultModelId
-        }
+        return withImageCapabilityMirror(
+          profile,
+          [...profile.models, createModelProfile(nextModelId, modelName, endpointPath)],
+          profile.defaultModelId
+        )
       })
 
       await persistProviderProfiles(nextProfiles, activeProviderProfile.providerName, modelName)
@@ -1136,11 +1165,7 @@ function ImageModelConfigurator({ state }: { state: UseAiStudioStateResult }): R
           profile.defaultModelId && nextModels.some((model) => model.id === profile.defaultModelId)
             ? profile.defaultModelId
             : (nextModels[0]?.id ?? null)
-        return {
-          ...profile,
-          models: nextModels,
-          defaultModelId: nextDefaultModelId
-        }
+        return withImageCapabilityMirror(profile, nextModels, nextDefaultModelId)
       })
 
       const nextProviderProfile =
@@ -1236,7 +1261,7 @@ function ImageModelConfigurator({ state }: { state: UseAiStudioStateResult }): R
   )
 }
 
-function VideoModelConfigurator({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
+export function VideoModelConfigurator({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
   const task = state.activeTask
   const videoMeta = state.videoMeta
   const config = useCmsStore((store) => store.config)
@@ -1420,11 +1445,7 @@ function VideoModelConfigurator({ state }: { state: UseAiStudioStateResult }): R
           ...profile,
           models: [
             ...profile.models,
-            {
-              id: crypto.randomUUID(),
-              modelName,
-              endpointPath
-            }
+            createModelProfile(crypto.randomUUID(), modelName, endpointPath)
           ],
           defaultModelId: profile.defaultModelId
         }
@@ -1630,26 +1651,28 @@ function ControlPanel({
   const config = useCmsStore((store) => store.config)
   const task = state.activeTask
   const isVideoStudio = state.studioCapability === 'video'
-  const currentImageSelection = useMemo(
+  const currentImageModel = useMemo(
     () =>
       resolveAiTaskProviderSelection(
         Array.isArray(config.aiProviderProfiles) ? config.aiProviderProfiles : [],
         {
+          capability: 'image',
           taskProviderName: task?.provider,
           taskModelName: task?.model,
+          fallbackProviderId: config.aiRuntimeDefaults?.imageProviderId ?? null,
           fallbackProviderName: config.aiProvider,
           fallbackModelName: config.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
         }
-      ),
+      ).modelName || DEFAULT_GRSAI_IMAGE_MODEL,
     [
       config.aiDefaultImageModel,
       config.aiProvider,
+      config.aiRuntimeDefaults?.imageProviderId,
       config.aiProviderProfiles,
       task?.model,
       task?.provider
     ]
   )
-  const currentImageModel = currentImageSelection.modelName || DEFAULT_GRSAI_IMAGE_MODEL
   const currentVideoMeta = state.videoMeta
   const availableVideoAspectRatioOptions = useMemo(
     () =>
@@ -1805,8 +1828,6 @@ function ControlPanel({
       <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
         {isVideoStudio ? (
           <>
-            <VideoModelConfigurator state={state} />
-
             <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
               <span className={CONTROL_FIELD_LABEL_CLASS}>模式</span>
               <select
@@ -1894,8 +1915,6 @@ function ControlPanel({
           </>
         ) : (
           <>
-            <ImageModelConfigurator state={state} />
-
             <label className="flex w-[76px] min-w-[76px] shrink-0 flex-col gap-1">
               <span className={CONTROL_FIELD_LABEL_CLASS}>输出张数</span>
               <input

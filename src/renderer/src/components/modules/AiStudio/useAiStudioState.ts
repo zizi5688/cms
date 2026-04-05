@@ -1779,12 +1779,14 @@ const useAiStudioState = () => {
   const resolveImageProviderSelection = useCallback(
     (providerName?: string | null, modelName?: string | null) =>
       resolveAiTaskProviderSelection(providerProfiles, {
+        capability: 'image',
         taskProviderName: providerName,
         taskModelName: modelName,
+        fallbackProviderId: aiConfig.aiRuntimeDefaults?.imageProviderId ?? null,
         fallbackProviderName: aiConfig.aiProvider,
         fallbackModelName: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
       }),
-    [aiConfig.aiProvider, defaultModel, providerProfiles]
+    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.imageProviderId, defaultModel, providerProfiles]
   )
   const resolveImageTaskProviderState = useCallback(
     (task?: Pick<AiStudioTaskRecord, 'provider' | 'model'> | null) =>
@@ -1794,9 +1796,11 @@ const useAiStudioState = () => {
   const resolveVideoProviderSelection = useCallback(
     (providerName?: string | null, modelName?: string | null, endpointPath?: string | null) => {
       const resolved = resolveAiTaskProviderSelection(providerProfiles, {
+        capability: 'video',
         taskProviderName: providerName,
         taskModelName: modelName,
         taskEndpointPath: endpointPath,
+        fallbackProviderId: aiConfig.aiRuntimeDefaults?.videoProviderId ?? null,
         fallbackProviderName: aiConfig.aiProvider,
         fallbackModelName: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
       })
@@ -1808,7 +1812,7 @@ const useAiStudioState = () => {
         queryPath: endpointPair.queryPath
       }
     },
-    [aiConfig.aiProvider, defaultModel, providerProfiles]
+    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.videoProviderId, defaultModel, providerProfiles]
   )
 
   const replaceTask = useCallback((nextTask: AiStudioTaskRecord) => {

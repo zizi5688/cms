@@ -1,4 +1,11 @@
-import type { AiModelProfile, AiProviderProfile } from '@renderer/store/useCmsStore'
+import type {
+  AiCapability,
+  AiCapabilityProfile,
+  AiModelProfile,
+  AiProviderProfile,
+  AiRuntimeDefaults
+} from '../../../shared/ai/aiProviderTypes'
+import { isAiProviderDeleted } from '../../../shared/ai/aiProviderTypes.ts'
 
 export function normalizeAiProviderValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -18,48 +25,121 @@ export function findAiProviderProfile(
   providerName: string
 ): AiProviderProfile | null {
   const normalized = normalizeAiProviderValue(providerName).toLowerCase()
-  if (!normalized) return profiles[0] ?? null
-  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? null
+  const visibleProfiles = profiles.filter((profile) => !isAiProviderDeleted(profile))
+  if (!normalized) return visibleProfiles[0] ?? null
+  return (
+    visibleProfiles.find(
+      (profile) =>
+        profile.providerName.toLowerCase() === normalized || profile.id.toLowerCase() === normalized
+    ) ?? null
+  )
+}
+
+function findAiProviderProfileById(
+  profiles: AiProviderProfile[],
+  providerId: string
+): AiProviderProfile | null {
+  const normalized = normalizeAiProviderValue(providerId).toLowerCase()
+  if (!normalized) return null
+  return (
+    profiles.find(
+      (profile) => !isAiProviderDeleted(profile) && profile.id.toLowerCase() === normalized
+    ) ?? null
+  )
+}
+
+function getCapabilityProfile(
+  providerProfile: AiProviderProfile | null,
+  capability: AiCapability
+): AiCapabilityProfile {
+  if (!providerProfile) {
+    return {
+      enabled: false,
+      defaultModelId: null,
+      models: []
+    }
+  }
+  if (providerProfile.capabilities?.[capability]) {
+    return providerProfile.capabilities[capability]
+  }
+  if (capability === 'image') {
+    return {
+      enabled: providerProfile.enabled,
+      defaultModelId: providerProfile.defaultModelId,
+      models: providerProfile.models
+    }
+  }
+  return {
+    enabled: false,
+    defaultModelId: null,
+    models: []
+  }
 }
 
 export function findAiModelProfile(
   providerProfile: AiProviderProfile | null,
-  modelName: string
+  modelName: string,
+  capability: AiCapability = 'image'
 ): AiModelProfile | null {
   if (!providerProfile) return null
   const normalized = normalizeAiProviderValue(modelName).toLowerCase()
   if (!normalized) return null
-  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
+  return (
+    getCapabilityProfile(providerProfile, capability).models.find(
+      (model) => model.modelName.toLowerCase() === normalized
+    ) ?? null
+  )
 }
 
 export function resolveAiProviderModel(
   providerProfile: AiProviderProfile | null,
-  preferredModelName: string
+  preferredModelName: string,
+  capability: AiCapability = 'image'
 ): AiModelProfile | null {
-  const preferred = findAiModelProfile(providerProfile, preferredModelName)
+  const capabilityProfile = getCapabilityProfile(providerProfile, capability)
+  const preferred = findAiModelProfile(providerProfile, preferredModelName, capability)
   if (preferred) return preferred
-  if (providerProfile?.defaultModelId) {
-    return providerProfile.models.find((model) => model.id === providerProfile.defaultModelId) ?? null
+  if (capabilityProfile.defaultModelId) {
+    return capabilityProfile.models.find((model) => model.id === capabilityProfile.defaultModelId) ?? null
   }
-  return providerProfile?.models[0] ?? null
+  return capabilityProfile.models[0] ?? null
 }
 
 export function buildAiConfigPatch(
   profiles: AiProviderProfile[],
-  providerName: string,
-  preferredModelName = ''
+  runtimeDefaultsOrProviderName: AiRuntimeDefaults | string,
+  providerNameOrPreferredModel = '',
+  maybePreferredModelName = ''
 ): {
   aiProviderProfiles: AiProviderProfile[]
+  aiRuntimeDefaults: AiRuntimeDefaults
   aiProvider: string
   aiBaseUrl: string
   aiApiKey: string
   aiDefaultImageModel: string
   aiEndpointPath: string
 } {
+  const hasRuntimeDefaults =
+    typeof runtimeDefaultsOrProviderName === 'object' && runtimeDefaultsOrProviderName !== null
+  const aiRuntimeDefaults = hasRuntimeDefaults
+    ? (runtimeDefaultsOrProviderName as AiRuntimeDefaults)
+    : {
+        chatProviderId: null,
+        imageProviderId: null,
+        videoProviderId: null
+      }
+  const providerName = hasRuntimeDefaults
+    ? providerNameOrPreferredModel
+    : String(runtimeDefaultsOrProviderName ?? '')
+  const preferredModelName = hasRuntimeDefaults ? maybePreferredModelName : providerNameOrPreferredModel
   const activeProvider = findAiProviderProfile(profiles, providerName)
-  const activeModel = resolveAiProviderModel(activeProvider, preferredModelName)
+  const activeModel = resolveAiProviderModel(activeProvider, preferredModelName, 'image')
   return {
     aiProviderProfiles: profiles,
+    aiRuntimeDefaults: {
+      ...aiRuntimeDefaults,
+      imageProviderId: aiRuntimeDefaults.imageProviderId ?? activeProvider?.id ?? null
+    },
     aiProvider: activeProvider?.providerName || normalizeAiProviderValue(providerName) || 'grsai',
     aiBaseUrl: activeProvider?.baseUrl ?? '',
     aiApiKey: activeProvider?.apiKey ?? '',
@@ -71,8 +151,10 @@ export function buildAiConfigPatch(
 export function resolveAiTaskProviderSelection(
   profiles: AiProviderProfile[],
   options?: {
+    capability?: AiCapability
     taskProviderName?: string | null
     taskModelName?: string | null
+    fallbackProviderId?: string | null
     taskEndpointPath?: string | null
     fallbackProviderName?: string | null
     fallbackModelName?: string | null
@@ -86,12 +168,12 @@ export function resolveAiTaskProviderSelection(
   baseUrl: string
   apiKey: string
 } {
+  const capability = options?.capability ?? 'image'
   const normalizedFallbackProviderName = normalizeAiProviderValue(options?.fallbackProviderName)
   const fallbackProvider =
-    (normalizedFallbackProviderName
-      ? findAiProviderProfile(profiles, normalizedFallbackProviderName)
-      : null) ??
-    profiles[0] ??
+    findAiProviderProfileById(profiles, normalizeAiProviderValue(options?.fallbackProviderId)) ??
+    (normalizedFallbackProviderName ? findAiProviderProfile(profiles, normalizedFallbackProviderName) : null) ??
+    profiles.find((profile) => !isAiProviderDeleted(profile)) ??
     null
   const normalizedTaskProviderName = normalizeAiProviderValue(options?.taskProviderName)
   const taskProviderProfile = normalizedTaskProviderName
@@ -122,7 +204,8 @@ export function resolveAiTaskProviderSelection(
   const fallbackModelName = normalizeAiProviderValue(options?.fallbackModelName)
   const modelProfile = resolveAiProviderModel(
     providerProfile,
-    preferredTaskModelName || fallbackModelName
+    preferredTaskModelName || fallbackModelName,
+    capability
   )
   const modelName = preferredTaskModelName || modelProfile?.modelName || fallbackModelName
   const endpointPath =

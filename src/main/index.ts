@@ -4,7 +4,7 @@ import { join, resolve, extname, basename, dirname } from 'path'
 import * as path from 'path'
 import { createReadStream, openAsBlob, existsSync, statSync, appendFileSync } from 'fs'
 import { copyFile, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'fs/promises'
-import { createHash, randomUUID } from 'crypto'
+import { createHash } from 'crypto'
 import { tmpdir } from 'os'
 import ElectronStore from 'electron-store'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -14,7 +14,21 @@ import { Readable } from 'stream'
 import sharp from 'sharp'
 import pLimit from 'p-limit'
 import { fileURLToPath } from 'url'
+import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
 import { AccountManager } from './services/accountManager'
+import { dispatchAiTask, type AiTaskRequest } from './services/aiTaskDispatcher'
+import { executeChatTask } from './services/chatExecutor'
+import {
+  readResolvedAiProviderStateFromStore,
+  resolveUpdatedAiProviderState,
+  syncResolvedAiProviderStateToStore
+} from './services/aiProviderState'
+import {
+  resolveChatRoute,
+  resolveImageRoute,
+  resolveVideoRoute,
+  type ResolvedAiRoute
+} from './services/aiRouter'
 import { PublisherService, registerQueueRunnerIpc, runQueue } from './publisher'
 import { ProductManager } from './services/productManager'
 import { TaskManager } from './taskManager'
@@ -132,32 +146,6 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
-}
-
-type AiProvider = string
-
-type AiModelProfile = {
-  id: string
-  modelName: string
-  endpointPath: string
-}
-
-type AiProviderProfile = {
-  id: string
-  providerName: string
-  baseUrl: string
-  apiKey: string
-  models: AiModelProfile[]
-  defaultModelId: string | null
-}
-
-type ResolvedAiProviderState = {
-  aiProvider: string
-  aiBaseUrl: string
-  aiApiKey: string
-  aiDefaultImageModel: string
-  aiEndpointPath: string
-  aiProviderProfiles: AiProviderProfile[]
 }
 
 type AiStudioImportedFolder = {
@@ -536,208 +524,6 @@ const defaultStorageMaintenanceStartTime = '02:30'
 const defaultStorageMaintenanceRetainDays = 7
 type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
-function normalizeAiProvider(value: unknown): AiProvider {
-  const normalized = typeof value === 'string' ? value.trim() : ''
-  return normalized || 'grsai'
-}
-
-function normalizeConfigText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function normalizeAiEndpointPath(value: unknown): string {
-  const normalized = normalizeConfigText(value)
-  if (!normalized) return ''
-  if (/^https?:\/\//i.test(normalized)) {
-    return normalized.replace(/\/+$/, '')
-  }
-  return normalized.startsWith('/') ? normalized : `/${normalized}`
-}
-
-function normalizeAiModelProfiles(value: unknown): AiModelProfile[] {
-  if (!Array.isArray(value)) return []
-  const map = new Map<string, AiModelProfile>()
-  for (const item of value) {
-    if (!item || typeof item !== 'object') continue
-    const record = item as Record<string, unknown>
-    const modelName = normalizeConfigText(record.modelName ?? record.name)
-    if (!modelName) continue
-    const key = modelName.toLowerCase()
-    const existing = map.get(key)
-    map.set(key, {
-      id: existing?.id || normalizeConfigText(record.id) || randomUUID(),
-      modelName: existing?.modelName || modelName,
-      endpointPath: normalizeAiEndpointPath(record.endpointPath) || existing?.endpointPath || ''
-    })
-  }
-  return Array.from(map.values())
-}
-
-function normalizeAiProviderProfiles(value: unknown): AiProviderProfile[] {
-  if (!Array.isArray(value)) return []
-  const map = new Map<string, AiProviderProfile>()
-  for (const item of value) {
-    if (!item || typeof item !== 'object') continue
-    const record = item as Record<string, unknown>
-    const providerName = normalizeAiProvider(record.providerName ?? record.name)
-    const key = providerName.toLowerCase()
-    const existing = map.get(key)
-    const nextModels = normalizeAiModelProfiles([
-      ...(existing?.models ?? []),
-      ...(Array.isArray(record.models) ? record.models : [])
-    ])
-    const requestedDefaultModelId = normalizeConfigText(record.defaultModelId)
-    const defaultModelId =
-      (requestedDefaultModelId && nextModels.some((model) => model.id === requestedDefaultModelId)
-        ? requestedDefaultModelId
-        : existing?.defaultModelId && nextModels.some((model) => model.id === existing.defaultModelId)
-          ? existing.defaultModelId
-          : nextModels[0]?.id) ?? null
-
-    map.set(key, {
-      id: existing?.id || normalizeConfigText(record.id) || randomUUID(),
-      providerName: existing?.providerName || providerName,
-      baseUrl: normalizeConfigText(record.baseUrl) || existing?.baseUrl || '',
-      apiKey: normalizeConfigText(record.apiKey) || existing?.apiKey || '',
-      models: nextModels,
-      defaultModelId
-    })
-  }
-  return Array.from(map.values())
-}
-
-function shouldMaterializeLegacyAiProvider(selection: {
-  provider: string
-  baseUrl: string
-  apiKey: string
-  modelName: string
-  endpointPath: string
-}): boolean {
-  const providerName = normalizeAiProvider(selection.provider)
-  const baseUrl = normalizeConfigText(selection.baseUrl)
-  const apiKey = normalizeConfigText(selection.apiKey)
-  const modelName = normalizeConfigText(selection.modelName)
-  const endpointPath = normalizeAiEndpointPath(selection.endpointPath)
-
-  if (baseUrl || apiKey || modelName || endpointPath) return true
-  return providerName !== 'grsai'
-}
-
-function buildLegacyAiProviderProfiles(selection: {
-  provider: string
-  baseUrl: string
-  apiKey: string
-  modelName: string
-  endpointPath: string
-}): AiProviderProfile[] {
-  if (!shouldMaterializeLegacyAiProvider(selection)) return []
-
-  const providerName = normalizeAiProvider(selection.provider)
-  const modelName = normalizeConfigText(selection.modelName)
-  const endpointPath = normalizeAiEndpointPath(selection.endpointPath)
-  const models = modelName
-    ? [
-        {
-          id: randomUUID(),
-          modelName,
-          endpointPath
-        }
-      ]
-    : []
-
-  return [
-    {
-      id: randomUUID(),
-      providerName,
-      baseUrl: normalizeConfigText(selection.baseUrl),
-      apiKey: normalizeConfigText(selection.apiKey),
-      models,
-      defaultModelId: models[0]?.id ?? null
-    }
-  ]
-}
-
-function findAiProviderProfile(
-  profiles: AiProviderProfile[],
-  providerName: string
-): AiProviderProfile | null {
-  const normalized = normalizeAiProvider(providerName).toLowerCase()
-  return profiles.find((profile) => profile.providerName.toLowerCase() === normalized) ?? null
-}
-
-function findAiModelProfile(
-  providerProfile: AiProviderProfile | null,
-  modelName: string
-): AiModelProfile | null {
-  if (!providerProfile) return null
-  const normalized = normalizeConfigText(modelName).toLowerCase()
-  if (!normalized) return null
-  return providerProfile.models.find((model) => model.modelName.toLowerCase() === normalized) ?? null
-}
-
-function resolveAiProviderState(
-  rawProfiles: unknown,
-  selection: {
-    provider: string
-    baseUrl: string
-    apiKey: string
-    modelName: string
-    endpointPath: string
-  }
-): ResolvedAiProviderState {
-  const legacy = {
-    provider: normalizeAiProvider(selection.provider),
-    baseUrl: normalizeConfigText(selection.baseUrl),
-    apiKey: normalizeConfigText(selection.apiKey),
-    modelName: normalizeConfigText(selection.modelName),
-    endpointPath: normalizeAiEndpointPath(selection.endpointPath)
-  }
-
-  let aiProviderProfiles = normalizeAiProviderProfiles(rawProfiles)
-  if (aiProviderProfiles.length === 0) {
-    aiProviderProfiles = buildLegacyAiProviderProfiles(legacy)
-  }
-
-  const activeProvider =
-    findAiProviderProfile(aiProviderProfiles, legacy.provider) ?? aiProviderProfiles[0] ?? null
-
-  let activeModel = findAiModelProfile(activeProvider, legacy.modelName)
-  if (!activeModel && activeProvider?.defaultModelId) {
-    activeModel = activeProvider.models.find((model) => model.id === activeProvider.defaultModelId) ?? null
-  }
-  if (!activeModel) {
-    activeModel = activeProvider?.models[0] ?? null
-  }
-
-  return {
-    aiProvider: activeProvider?.providerName ?? legacy.provider,
-    aiBaseUrl: activeProvider?.baseUrl ?? legacy.baseUrl,
-    aiApiKey: activeProvider?.apiKey ?? legacy.apiKey,
-    aiDefaultImageModel: activeModel?.modelName ?? '',
-    aiEndpointPath: activeModel?.endpointPath ?? '',
-    aiProviderProfiles
-  }
-}
-
-function readResolvedAiProviderStateFromStore(): ResolvedAiProviderState {
-  return resolveAiProviderState(configStore.get('aiProviderProfiles'), {
-    provider: normalizeAiProvider(configStore.get('aiProvider')),
-    baseUrl: normalizeConfigText(configStore.get('aiBaseUrl')),
-    apiKey: normalizeConfigText(configStore.get('aiApiKey')),
-    modelName: normalizeConfigText(configStore.get('aiDefaultImageModel')),
-    endpointPath: normalizeAiEndpointPath(configStore.get('aiEndpointPath'))
-  })
-}
-
-function syncResolvedAiProviderStateToStore(state: ResolvedAiProviderState): void {
-  configStore.set('aiProviderProfiles', state.aiProviderProfiles)
-  configStore.set('aiProvider', state.aiProvider)
-  configStore.set('aiBaseUrl', state.aiBaseUrl)
-  configStore.set('aiApiKey', state.aiApiKey)
-  configStore.set('aiDefaultImageModel', state.aiDefaultImageModel)
-  configStore.set('aiEndpointPath', state.aiEndpointPath)
-}
-
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
   if (!value || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
@@ -808,6 +594,7 @@ const configStore = new StoreCtor<{
   aiDefaultImageModel?: string
   aiEndpointPath?: string
   aiProviderProfiles?: AiProviderProfile[]
+  aiRuntimeDefaults?: AiRuntimeDefaults
   realEsrganPath: string
   pythonPath: string
   watermarkScriptPath: string
@@ -833,6 +620,24 @@ const configStore = new StoreCtor<{
     cooldownDurationMs?: number
   }
 }>()
+
+function resolveAiRouteByCapability(
+  capability: AiCapability,
+  routeResolvers: {
+    chat: () => ResolvedAiRoute
+    image: () => ResolvedAiRoute
+    video: () => ResolvedAiRoute
+  }
+): ResolvedAiRoute {
+  if (capability === 'chat') return routeResolvers.chat()
+  if (capability === 'video') return routeResolvers.video()
+  return routeResolvers.image()
+}
+
+function normalizeAiIpcErrorMessage(channel: 'cms.ai.route.resolve' | 'cms.ai.task.run', error: unknown): string {
+  if (error instanceof Error) return `[${channel}] ${error.message}`
+  return `[${channel}] ${String(error ?? 'Unknown AI error')}`
+}
 
 async function readFeishuJson<T>(res: Response): Promise<{ data: T; logId: string | null }> {
   const logId = res.headers.get('x-tt-logid')
@@ -1242,7 +1047,7 @@ app.whenReady().then(async () => {
   const aiStudioService = new AiStudioService(
     () => workspaceService.currentPath,
     () => {
-      const aiState = readResolvedAiProviderStateFromStore()
+      const aiState = readResolvedAiProviderStateFromStore(configStore)
       return {
         provider: aiState.aiProvider,
         baseUrl: aiState.aiBaseUrl,
@@ -3358,8 +3163,8 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('get-config', async () => {
-    const aiState = readResolvedAiProviderStateFromStore()
-    syncResolvedAiProviderStateToStore(aiState)
+    const aiState = readResolvedAiProviderStateFromStore(configStore)
+    syncResolvedAiProviderStateToStore(configStore, aiState)
 
     const storedBox = configStore.get('watermarkBox')
     const watermarkBox = isValidWatermarkBox(storedBox) ? storedBox : defaultWatermarkBox
@@ -3458,6 +3263,7 @@ app.whenReady().then(async () => {
       aiDefaultImageModel: aiState.aiDefaultImageModel,
       aiEndpointPath: aiState.aiEndpointPath,
       aiProviderProfiles: aiState.aiProviderProfiles,
+      aiRuntimeDefaults: aiState.aiRuntimeDefaults,
       importStrategy,
       realEsrganPath: configStore.get('realEsrganPath') ?? '',
       pythonPath: configStore.get('pythonPath') ?? '',
@@ -3490,6 +3296,7 @@ app.whenReady().then(async () => {
             aiDefaultImageModel?: string
             aiEndpointPath?: string
             aiProviderProfiles?: AiProviderProfile[]
+            aiRuntimeDefaults?: AiRuntimeDefaults
             importStrategy?: 'copy' | 'move'
             realEsrganPath?: string
             pythonPath?: string
@@ -3517,100 +3324,9 @@ app.whenReady().then(async () => {
         | null
         | undefined
     ) => {
-      const currentAiState = readResolvedAiProviderStateFromStore()
-      let aiProviderProfiles =
-        patch?.aiProviderProfiles !== undefined
-          ? normalizeAiProviderProfiles(patch.aiProviderProfiles)
-          : currentAiState.aiProviderProfiles
-      const desiredAiProvider =
-        typeof patch?.aiProvider === 'string' ? normalizeAiProvider(patch.aiProvider) : currentAiState.aiProvider
-      const desiredAiBaseUrl =
-        typeof patch?.aiBaseUrl === 'string' ? patch.aiBaseUrl.trim() : currentAiState.aiBaseUrl
-      const desiredAiApiKey =
-        typeof patch?.aiApiKey === 'string' ? patch.aiApiKey.trim() : currentAiState.aiApiKey
-      const desiredAiDefaultImageModel =
-        typeof patch?.aiDefaultImageModel === 'string'
-          ? patch.aiDefaultImageModel.trim()
-          : currentAiState.aiDefaultImageModel
-      const desiredAiEndpointPath =
-        typeof patch?.aiEndpointPath === 'string'
-          ? normalizeAiEndpointPath(patch.aiEndpointPath)
-          : currentAiState.aiEndpointPath
-
-      let activeProvider = findAiProviderProfile(aiProviderProfiles, desiredAiProvider)
-      const shouldCreateMissingProvider =
-        !activeProvider &&
-        shouldMaterializeLegacyAiProvider({
-          provider: desiredAiProvider,
-          baseUrl: desiredAiBaseUrl,
-          apiKey: desiredAiApiKey,
-          modelName: desiredAiDefaultImageModel,
-          endpointPath: desiredAiEndpointPath
-        })
-
-      if (shouldCreateMissingProvider) {
-        aiProviderProfiles = normalizeAiProviderProfiles([
-          ...aiProviderProfiles,
-          {
-            id: randomUUID(),
-            providerName: desiredAiProvider,
-            baseUrl: desiredAiBaseUrl,
-            apiKey: desiredAiApiKey,
-            models: [],
-            defaultModelId: null
-          }
-        ])
-        activeProvider = findAiProviderProfile(aiProviderProfiles, desiredAiProvider)
-      }
-
-      if (activeProvider) {
-        const nextModels = activeProvider.models.map((model) => ({ ...model }))
-        let defaultModelId = activeProvider.defaultModelId
-        const existingModel = findAiModelProfile(activeProvider, desiredAiDefaultImageModel)
-
-        if (desiredAiDefaultImageModel) {
-          if (existingModel) {
-            const target = nextModels.find((model) => model.id === existingModel.id)
-            if (target) {
-              target.endpointPath = desiredAiEndpointPath || target.endpointPath
-              defaultModelId = target.id
-            }
-          } else {
-            const createdModel = {
-              id: randomUUID(),
-              modelName: desiredAiDefaultImageModel,
-              endpointPath: desiredAiEndpointPath
-            }
-            nextModels.push(createdModel)
-            defaultModelId = createdModel.id
-          }
-        } else if (defaultModelId && !nextModels.some((model) => model.id === defaultModelId)) {
-          defaultModelId = nextModels[0]?.id ?? null
-        }
-
-        aiProviderProfiles = normalizeAiProviderProfiles(
-          aiProviderProfiles.map((profile) =>
-            profile.id === activeProvider.id
-              ? {
-                  ...profile,
-                  baseUrl: desiredAiBaseUrl,
-                  apiKey: desiredAiApiKey,
-                  models: nextModels,
-                  defaultModelId
-                }
-              : profile
-          )
-        )
-      }
-
-      const resolvedAiState = resolveAiProviderState(aiProviderProfiles, {
-        provider: desiredAiProvider,
-        baseUrl: desiredAiBaseUrl,
-        apiKey: desiredAiApiKey,
-        modelName: desiredAiDefaultImageModel,
-        endpointPath: desiredAiEndpointPath
-      })
-      syncResolvedAiProviderStateToStore(resolvedAiState)
+      const currentAiState = readResolvedAiProviderStateFromStore(configStore)
+      const resolvedAiState = resolveUpdatedAiProviderState(currentAiState, patch)
+      syncResolvedAiProviderStateToStore(configStore, resolvedAiState)
 
       if (patch?.importStrategy === 'copy' || patch?.importStrategy === 'move') {
         configStore.set('importStrategy', patch.importStrategy)
@@ -3740,6 +3456,75 @@ app.whenReady().then(async () => {
       return { success: true }
     }
   )
+
+  ipcMain.handle('cms.ai.route.resolve', async (_event, payload: { capability?: unknown } | null | undefined) => {
+    try {
+      const capability =
+        payload?.capability === 'chat' || payload?.capability === 'image' || payload?.capability === 'video'
+          ? payload.capability
+          : null
+      if (!capability) {
+        throw new Error('cms.ai.route.resolve requires capability: chat | image | video')
+      }
+
+      const aiState = readResolvedAiProviderStateFromStore(configStore)
+      syncResolvedAiProviderStateToStore(configStore, aiState)
+      return resolveAiRouteByCapability(capability, {
+        chat: () => resolveChatRoute(aiState),
+        image: () => resolveImageRoute(aiState),
+        video: () => resolveVideoRoute(aiState)
+      })
+    } catch (error) {
+      throw new Error(normalizeAiIpcErrorMessage('cms.ai.route.resolve', error))
+    }
+  })
+
+  ipcMain.handle('cms.ai.task.run', async (_event, payload: AiTaskRequest | null | undefined) => {
+    try {
+      const capability =
+        payload?.capability === 'chat' || payload?.capability === 'image' || payload?.capability === 'video'
+          ? payload.capability
+          : null
+      if (!capability) {
+        throw new Error('cms.ai.task.run requires capability: chat | image | video')
+      }
+
+      const aiState = readResolvedAiProviderStateFromStore(configStore)
+      syncResolvedAiProviderStateToStore(configStore, aiState)
+
+      return dispatchAiTask(
+        aiState,
+        {
+          capability,
+          input: payload?.input,
+          context: payload?.context
+        },
+        {
+          chat: async ({ route, request }) =>
+            executeChatTask({
+              route,
+              request
+            }),
+          image: async ({ route, request }) => ({
+            mode: 'direct' as const,
+            capability: request.capability,
+            route,
+            input: request.input,
+            context: request.context ?? {}
+          }),
+          video: async ({ route, request }) => ({
+            mode: 'direct' as const,
+            capability: request.capability,
+            route,
+            input: request.input,
+            context: request.context ?? {}
+          })
+        }
+      )
+    } catch (error) {
+      throw new Error(normalizeAiIpcErrorMessage('cms.ai.task.run', error))
+    }
+  })
 
   ipcMain.handle('cms.storage.maintenance.state', async () => {
     return (

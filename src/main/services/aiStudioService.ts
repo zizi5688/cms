@@ -1633,8 +1633,15 @@ export class AiStudioService {
     return row ? mapTemplateRow(row) : null
   }
 
-  private getProviderConfig(task?: AiStudioTaskRecord): AiStudioProviderConfig {
-    return resolveAiStudioProviderConfig(asObject(this.resolveProviderConfig()), task ?? null)
+  private getProviderConfig(
+    task?: AiStudioTaskRecord,
+    capability: 'image' | 'video' | 'chat' = 'image'
+  ): AiStudioProviderConfig {
+    return resolveAiStudioProviderConfig(
+      asObject(this.resolveProviderConfig()),
+      task ?? null,
+      capability
+    )
   }
 
   private async requestProvider(
@@ -1845,7 +1852,7 @@ export class AiStudioService {
       primaryImagePath = currentAiMasterAsset.filePath
     }
 
-    const config = this.getProviderConfig(task)
+    const config = this.getProviderConfig(task, 'image')
     const template = this.getTemplateById(task.templateId)
     const prompt = resolvePrompt(task, template)
     const model = resolveConfiguredModel(
@@ -2031,10 +2038,11 @@ export class AiStudioService {
   private async persistFailedSubmit(
     taskId: string,
     requestSnapshot: Record<string, unknown>,
-    errorMessage: string
+    errorMessage: string,
+    capability: 'image' | 'video' = 'image'
   ): Promise<void> {
     const task = this.getTaskOrThrow(taskId)
-    const config = this.getProviderConfig(task)
+    const config = this.getProviderConfig(task, capability)
     await this.recordRunAttempt({
       taskId,
       provider: config.provider,
@@ -2332,7 +2340,7 @@ export class AiStudioService {
 
   async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
     const task = this.getTaskOrThrow(taskId)
-    const config = this.getProviderConfig(task)
+    const config = this.getProviderConfig(task, 'video')
     const context = await this.buildSubmitContext(taskId)
     const priceSnapshot = await this.resolvePriceSnapshot(context.model)
     const submitApiPath = config.endpointPath || GRSAI_DRAW_PATH
@@ -2435,7 +2443,7 @@ export class AiStudioService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
-      await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
+      await this.persistFailedSubmit(taskId, context.requestSnapshot, message, 'image')
       await this.appendImageDebugLog('image.submit.error', {
         taskId,
         submitPath: submitApiPath,
@@ -2564,7 +2572,7 @@ export class AiStudioService {
         requestSnapshot: context.requestSnapshot
       })
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
-      await this.persistFailedSubmit(taskId, context.requestSnapshot, message)
+      await this.persistFailedSubmit(taskId, context.requestSnapshot, message, 'video')
       throw error
     }
   }
@@ -2720,7 +2728,7 @@ export class AiStudioService {
       normalizeText(requestSnapshot.queryPath) ||
       readVideoMetadata(task).queryPath ||
       AI_VIDEO_QUERY_PATH
-    const providerConfig = this.getProviderConfig(task)
+    const providerConfig = this.getProviderConfig(task, 'video')
 
     await this.appendVideoDebugLog('video.poll.context', {
       taskId,
