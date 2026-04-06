@@ -784,17 +784,7 @@ function buildGeminiGenerateContentPayload(payload: {
   urls: string[]
   referenceCount: number
 }): Record<string, unknown> {
-  const parts: Array<Record<string, unknown>> = [
-    {
-      text: buildImagePromptDirective({
-        prompt: payload.prompt,
-        aspectRatio: payload.aspectRatio,
-        imageSize: payload.imageSize,
-        outputCount: payload.outputCount,
-        referenceCount: payload.referenceCount
-      })
-    }
-  ]
+  const parts: Array<Record<string, unknown>> = []
 
   for (const url of payload.urls) {
     const parsed = parseDataUrl(url)
@@ -807,6 +797,16 @@ function buildGeminiGenerateContentPayload(payload: {
     })
   }
 
+  parts.push({
+    text: buildImagePromptDirective({
+      prompt: payload.prompt,
+      aspectRatio: payload.aspectRatio,
+      imageSize: payload.imageSize,
+      outputCount: payload.outputCount,
+      referenceCount: payload.referenceCount
+    })
+  })
+
   return {
     contents: [
       {
@@ -816,7 +816,8 @@ function buildGeminiGenerateContentPayload(payload: {
     ],
     generationConfig: buildGeminiGenerationConfig({
       aspectRatio: payload.aspectRatio,
-      imageSize: payload.imageSize
+      imageSize: payload.imageSize,
+      candidateCount: payload.outputCount
     })
   }
 }
@@ -2340,7 +2341,7 @@ export class AiStudioService {
 
   async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
     const task = this.getTaskOrThrow(taskId)
-    const config = this.getProviderConfig(task, 'video')
+    const config = this.getProviderConfig(task, 'image')
     const context = await this.buildSubmitContext(taskId)
     const priceSnapshot = await this.resolvePriceSnapshot(context.model)
     const submitApiPath = config.endpointPath || GRSAI_DRAW_PATH

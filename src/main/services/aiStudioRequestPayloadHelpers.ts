@@ -64,9 +64,14 @@ export function buildGeminiImageConfig(payload: {
 export function buildGeminiGenerationConfig(payload: {
   aspectRatio?: string | null
   imageSize?: string | null
+  candidateCount?: number | null
 }): Record<string, unknown> {
+  const candidateCount = Number(payload.candidateCount)
   return {
     responseModalities: ['TEXT', 'IMAGE'],
+    ...(Number.isFinite(candidateCount) && candidateCount > 0
+      ? { candidateCount: Math.max(1, Math.floor(candidateCount)) }
+      : {}),
     ...(buildGeminiImageConfig(payload) ? { imageConfig: buildGeminiImageConfig(payload) } : {})
   }
 }
