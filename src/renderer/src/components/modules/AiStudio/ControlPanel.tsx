@@ -1675,20 +1675,6 @@ function ControlPanel({
       task?.provider
     ]
   )
-  const currentChatSelection = useMemo(
-    () =>
-      resolveAiTaskProviderSelection(
-        Array.isArray(config.aiProviderProfiles) ? config.aiProviderProfiles : [],
-        {
-          capability: 'chat',
-          fallbackProviderId: config.aiRuntimeDefaults?.chatProviderId ?? null,
-          fallbackProviderName: config.aiProvider,
-          fallbackModelName: ''
-        }
-      ),
-    [config.aiProvider, config.aiRuntimeDefaults?.chatProviderId, config.aiProviderProfiles]
-  )
-  const currentChatModel = currentChatSelection.modelName || '未配置会话模型'
   const currentVideoMeta = state.videoMeta
   const availableVideoAspectRatioOptions = useMemo(
     () =>
@@ -1854,14 +1840,7 @@ function ControlPanel({
   return (
     <div className="relative z-30 flex min-w-0 items-end gap-2 overflow-x-auto overflow-y-visible pb-0.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
       <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
-        {isChatStudio ? (
-          <label className="flex min-w-[196px] shrink-0 flex-col gap-1">
-            <span className={CONTROL_FIELD_LABEL_CLASS}>会话模型</span>
-            <div className={cn(fieldClass, 'inline-flex items-center')}>
-              <span className="truncate">{currentChatModel}</span>
-            </div>
-          </label>
-        ) : isVideoStudio ? (
+        {isChatStudio ? null : isVideoStudio ? (
           <>
             <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
               <span className={CONTROL_FIELD_LABEL_CLASS}>模式</span>

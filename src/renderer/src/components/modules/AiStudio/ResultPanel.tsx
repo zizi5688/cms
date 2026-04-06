@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { createPortal } from 'react-dom'
 
 import {
+  Copy,
   ChevronLeft,
   ChevronRight,
   Check,
@@ -83,6 +84,14 @@ type ImageLightboxState = {
   activeAssetId: string
 }
 
+type ChatBlock =
+  | { type: 'hr'; id: string }
+  | { type: 'heading'; id: string; level: 1 | 2 | 3; text: string }
+  | { type: 'paragraph'; id: string; text: string }
+  | { type: 'bullet-list'; id: string; items: string[] }
+  | { type: 'ordered-list'; id: string; items: string[] }
+  | { type: 'code'; id: string; language: string; code: string }
+
 function basename(filePath: string | null | undefined): string {
   const normalized = String(filePath ?? '').trim()
   if (!normalized) return '未命名文件'
@@ -92,6 +101,270 @@ function basename(filePath: string | null | undefined): string {
 
 function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function renderChatInline(text: string, keyPrefix: string): React.ReactNode[] {
+  const content = String(text ?? '')
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g
+  const nodes: React.ReactNode[] = []
+  let cursor = 0
+  let match: RegExpExecArray | null
+  let index = 0
+
+  while ((match = pattern.exec(content)) !== null) {
+    const [token] = match
+    const start = match.index
+    if (start > cursor) {
+      nodes.push(
+        <span key={`${keyPrefix}-text-${index}`}>{content.slice(cursor, start)}</span>
+      )
+      index += 1
+    }
+
+    if (token.startsWith('`') && token.endsWith('`')) {
+      nodes.push(
+        <code
+          key={`${keyPrefix}-code-${index}`}
+          className="rounded-[10px] bg-zinc-100 px-2 py-0.5 font-mono text-[0.92em] text-zinc-900"
+        >
+          {token.slice(1, -1)}
+        </code>
+      )
+    } else if (token.startsWith('**') && token.endsWith('**')) {
+      nodes.push(
+        <strong key={`${keyPrefix}-strong-${index}`} className="font-semibold text-zinc-950">
+          {token.slice(2, -2)}
+        </strong>
+      )
+    } else {
+      nodes.push(<span key={`${keyPrefix}-raw-${index}`}>{token}</span>)
+    }
+
+    cursor = start + token.length
+    index += 1
+  }
+
+  if (cursor < content.length) {
+    nodes.push(<span key={`${keyPrefix}-tail`}>{content.slice(cursor)}</span>)
+  }
+
+  return nodes
+}
+
+function parseChatBlocks(text: string): ChatBlock[] {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n')
+  const lines = normalized.split('\n')
+  const blocks: ChatBlock[] = []
+  let paragraphLines: string[] = []
+  let listItems: string[] = []
+  let listType: 'bullet-list' | 'ordered-list' | null = null
+  let codeFenceLanguage = ''
+  let codeFenceLines: string[] | null = null
+  let blockIndex = 0
+
+  const nextId = (prefix: string): string => `${prefix}-${blockIndex++}`
+
+  const flushParagraph = (): void => {
+    const textValue = paragraphLines.join('\n').trim()
+    if (!textValue) {
+      paragraphLines = []
+      return
+    }
+    blocks.push({ type: 'paragraph', id: nextId('paragraph'), text: textValue })
+    paragraphLines = []
+  }
+
+  const flushList = (): void => {
+    if (!listType || listItems.length === 0) {
+      listItems = []
+      listType = null
+      return
+    }
+    blocks.push({ type: listType, id: nextId('list'), items: [...listItems] })
+    listItems = []
+    listType = null
+  }
+
+  const flushCodeFence = (): void => {
+    if (!codeFenceLines) return
+    blocks.push({
+      type: 'code',
+      id: nextId('code'),
+      language: codeFenceLanguage,
+      code: codeFenceLines.join('\n').trimEnd()
+    })
+    codeFenceLines = null
+    codeFenceLanguage = ''
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+
+    if (codeFenceLines) {
+      if (trimmed.startsWith('```')) {
+        flushCodeFence()
+      } else {
+        codeFenceLines.push(line)
+      }
+      continue
+    }
+
+    if (trimmed.startsWith('```')) {
+      flushParagraph()
+      flushList()
+      codeFenceLanguage = trimmed.slice(3).trim()
+      codeFenceLines = []
+      continue
+    }
+
+    if (!trimmed) {
+      flushParagraph()
+      flushList()
+      continue
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      flushParagraph()
+      flushList()
+      blocks.push({ type: 'hr', id: nextId('hr') })
+      continue
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.+)$/)
+    if (headingMatch) {
+      flushParagraph()
+      flushList()
+      blocks.push({
+        type: 'heading',
+        id: nextId('heading'),
+        level: headingMatch[1].length as 1 | 2 | 3,
+        text: headingMatch[2].trim()
+      })
+      continue
+    }
+
+    const bulletMatch = trimmed.match(/^[-*•]\s+(.+)$/)
+    if (bulletMatch) {
+      flushParagraph()
+      if (listType && listType !== 'bullet-list') flushList()
+      listType = 'bullet-list'
+      listItems.push(bulletMatch[1].trim())
+      continue
+    }
+
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/)
+    if (orderedMatch) {
+      flushParagraph()
+      if (listType && listType !== 'ordered-list') flushList()
+      listType = 'ordered-list'
+      listItems.push(orderedMatch[1].trim())
+      continue
+    }
+
+    flushList()
+    paragraphLines.push(line)
+  }
+
+  flushParagraph()
+  flushList()
+  flushCodeFence()
+
+  return blocks
+}
+
+function ChatCodeBlock({
+  language,
+  code
+}: {
+  language: string
+  code: string
+}): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = (): void => {
+    void navigator.clipboard
+      .writeText(code)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      })
+      .catch(() => {
+        setCopied(false)
+      })
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[22px] border border-zinc-200 bg-zinc-100/85">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 text-[12px] text-zinc-500">
+        <span className="font-medium">{language || 'text'}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-full text-zinc-500 transition hover:bg-white/80 hover:text-zinc-900"
+          aria-label="复制代码"
+          title="复制代码"
+        >
+          {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+        </button>
+      </div>
+      <pre className="overflow-x-auto px-4 pb-4 text-[13px] leading-7 text-zinc-900 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+        <code className="font-mono">{code}</code>
+      </pre>
+    </div>
+  )
+}
+
+function ChatRichText({ text }: { text: string }): React.JSX.Element {
+  const blocks = useMemo(() => parseChatBlocks(text), [text])
+
+  return (
+    <div className="max-w-[980px] space-y-6">
+      {blocks.map((block) => {
+        if (block.type === 'hr') {
+          return <div key={block.id} className="h-px w-full bg-zinc-200/80" />
+        }
+        if (block.type === 'heading') {
+          const headingClassName =
+            block.level === 1
+              ? 'text-[30px] font-semibold tracking-[-0.045em] text-zinc-950'
+              : block.level === 2
+                ? 'text-[24px] font-semibold tracking-[-0.04em] text-zinc-950'
+                : 'text-[18px] font-semibold tracking-[-0.03em] text-zinc-950'
+          return (
+            <h2 key={block.id} className={headingClassName}>
+              {renderChatInline(block.text, block.id)}
+            </h2>
+          )
+        }
+        if (block.type === 'paragraph') {
+          return (
+            <p key={block.id} className="text-[15px] leading-8 text-zinc-900">
+              {renderChatInline(block.text, block.id)}
+            </p>
+          )
+        }
+        if (block.type === 'bullet-list') {
+          return (
+            <ul key={block.id} className="space-y-3 pl-7 text-[15px] leading-8 text-zinc-900 list-disc marker:text-zinc-900">
+              {block.items.map((item, index) => (
+                <li key={`${block.id}-${index}`}>{renderChatInline(item, `${block.id}-${index}`)}</li>
+              ))}
+            </ul>
+          )
+        }
+        if (block.type === 'ordered-list') {
+          return (
+            <ol key={block.id} className="space-y-3 pl-7 text-[15px] leading-8 text-zinc-900 list-decimal marker:text-zinc-500">
+              {block.items.map((item, index) => (
+                <li key={`${block.id}-${index}`}>{renderChatInline(item, `${block.id}-${index}`)}</li>
+              ))}
+            </ol>
+          )
+        }
+        return <ChatCodeBlock key={block.id} language={block.language} code={block.code} />
+      })}
+    </div>
+  )
 }
 
 function buildExcerpt(promptDraft: string): string {
@@ -1810,24 +2083,21 @@ function ResultPanel({
 
   if (isChatStudio) {
     return (
-      <div className="flex h-full min-h-0 flex-col gap-4 pb-4">
-        <section className="rounded-[28px] border border-zinc-200 bg-white/90 p-5 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-          <div className="text-[12px] font-medium tracking-[0.08em] text-zinc-500">会话结果</div>
-          <div className="mt-3 rounded-[20px] border border-zinc-200 bg-zinc-50/80 p-4">
-            {state.isChatRunning ? (
-              <div className="text-[14px] leading-7 text-zinc-500">正在等待会话结果...</div>
-            ) : state.chatError ? (
-              <div className="text-[14px] leading-7 text-rose-600">{state.chatError}</div>
-            ) : state.chatResultText ? (
-              <div className="whitespace-pre-wrap text-[14px] leading-7 text-zinc-900">
-                {state.chatResultText}
-              </div>
-            ) : (
-              <div className="text-[14px] leading-7 text-zinc-500">
-                输入一条消息后，这里会展示模型返回的文本结果。
-              </div>
-            )}
-          </div>
+      <div className="flex h-full min-h-0 flex-col gap-5 pb-4">
+        <section className="flex min-w-0 flex-col gap-4 px-1 pt-1">
+          {state.isChatRunning ? (
+            <div className="text-[15px] leading-8 text-zinc-500">正在等待会话结果...</div>
+          ) : state.chatError ? (
+            <div className="whitespace-pre-wrap text-[15px] leading-8 text-rose-600">
+              {state.chatError}
+            </div>
+          ) : state.chatResultText ? (
+            <ChatRichText text={state.chatResultText} />
+          ) : (
+            <div className="text-[15px] leading-8 text-zinc-500">
+              输入一条消息后，这里会直接展示模型返回的文本结果。
+            </div>
+          )}
         </section>
         <div
           aria-hidden="true"

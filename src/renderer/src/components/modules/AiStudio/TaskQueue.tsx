@@ -1305,15 +1305,17 @@ function TaskQueue({
       >
         <div
           className={cn(
-            isChatStudio ? 'flex flex-col gap-3 py-0.5' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 py-0'
+            isChatStudio
+              ? 'flex flex-col gap-3 py-0.5'
+              : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 py-0'
           )}
         >
-          <div className={cn(isChatStudio ? 'flex items-center justify-between gap-3' : 'flex flex-col items-start gap-1.5 pt-0.5')}>
-            {isChatStudio ? (
-              <div className="inline-flex items-center rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] font-medium tracking-[0.08em] text-zinc-500">
-                单轮会话
-              </div>
-            ) : isVideoStudio ? (
+          <div
+            className={cn(
+              isChatStudio ? 'hidden' : 'flex flex-col items-start gap-1.5 pt-0.5'
+            )}
+          >
+            {isVideoStudio ? (
               <>
                 {videoMeta.mode === 'subject-reference' ? (
                   <VideoInputCard
@@ -1369,13 +1371,15 @@ function TaskQueue({
               />
             )}
 
-            <QuickInsertPopover
-              templates={state.templates}
-              onCreate={handleOpenTemplateModal}
-              onInsert={handleInsertTemplate}
-              onEdit={handleEditTemplate}
-              onDelete={(template) => void handleDeleteTemplate(template)}
-            />
+            {!isChatStudio ? (
+              <QuickInsertPopover
+                templates={state.templates}
+                onCreate={handleOpenTemplateModal}
+                onInsert={handleInsertTemplate}
+                onEdit={handleEditTemplate}
+                onDelete={(template) => void handleDeleteTemplate(template)}
+              />
+            ) : null}
           </div>
 
           <div className={cn('min-w-0 self-stretch', isChatStudio ? '' : 'pt-0.5')}>
