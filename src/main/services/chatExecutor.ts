@@ -84,17 +84,11 @@ function pickNumeric(record: Record<string, unknown>, key: string): number | und
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-export function createChatCompletionPayload(
-  route: ResolvedAiRoute,
-  request: AiTaskRequest
-): Record<string, unknown> {
-  if (route.protocol !== 'openai') {
-    throw new ChatExecutorError(
-      'AI_CHAT_PROTOCOL_UNSUPPORTED',
-      `Protocol ${route.protocol} is not supported in MVP chat direct mode.`
-    )
-  }
+function isGeminiGenerateContentRoute(route: ResolvedAiRoute): boolean {
+  return /:generatecontent(?:$|[?#])/i.test(normalizeText(route.endpointPath))
+}
 
+function createOpenAiChatPayload(route: ResolvedAiRoute, request: AiTaskRequest): Record<string, unknown> {
   const input = request.input && typeof request.input === 'object' ? (request.input as Record<string, unknown>) : {}
   return {
     model: route.modelName,
@@ -109,7 +103,32 @@ export function createChatCompletionPayload(
   }
 }
 
-function extractAssistantText(payload: Record<string, unknown>): string {
+function createGeminiChatPayload(request: AiTaskRequest): Record<string, unknown> {
+  return {
+    contents: resolveMessages(request.input).map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }]
+    }))
+  }
+}
+
+export function createChatCompletionPayload(
+  route: ResolvedAiRoute,
+  request: AiTaskRequest
+): Record<string, unknown> {
+  if (route.protocol === 'openai' && !isGeminiGenerateContentRoute(route)) {
+    return createOpenAiChatPayload(route, request)
+  }
+  if (route.protocol === 'google-genai' || isGeminiGenerateContentRoute(route)) {
+    return createGeminiChatPayload(request)
+  }
+  throw new ChatExecutorError(
+    'AI_CHAT_PROTOCOL_UNSUPPORTED',
+    `Protocol ${route.protocol} is not supported in MVP chat direct mode.`
+  )
+}
+
+function extractOpenAiAssistantText(payload: Record<string, unknown>): string {
   const choices = Array.isArray(payload.choices) ? payload.choices : []
   const firstChoice =
     choices[0] && typeof choices[0] === 'object' ? (choices[0] as Record<string, unknown>) : {}
@@ -135,6 +154,40 @@ function extractAssistantText(payload: Record<string, unknown>): string {
     'AI_CHAT_RESPONSE_INVALID',
     'Provider response did not contain assistant text.'
   )
+}
+
+function extractGeminiAssistantText(payload: Record<string, unknown>): string {
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+  const firstCandidate =
+    candidates[0] && typeof candidates[0] === 'object'
+      ? (candidates[0] as Record<string, unknown>)
+      : {}
+  const content =
+    firstCandidate.content && typeof firstCandidate.content === 'object'
+      ? (firstCandidate.content as Record<string, unknown>)
+      : {}
+  const parts = Array.isArray(content.parts) ? content.parts : []
+  const text = parts
+    .map((item) => {
+      const part = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+      return typeof part.text === 'string' ? part.text.trim() : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+
+  if (text) return text
+
+  throw new ChatExecutorError(
+    'AI_CHAT_RESPONSE_INVALID',
+    'Provider response did not contain Gemini text parts.'
+  )
+}
+
+function extractAssistantText(route: ResolvedAiRoute, payload: Record<string, unknown>): string {
+  if (route.protocol === 'google-genai' || isGeminiGenerateContentRoute(route)) {
+    return extractGeminiAssistantText(payload)
+  }
+  return extractOpenAiAssistantText(payload)
 }
 
 export async function executeChatTask(
@@ -172,7 +225,7 @@ export async function executeChatTask(
     mode: 'direct',
     capability: 'chat',
     route: input.route,
-    outputText: extractAssistantText(body),
+    outputText: extractAssistantText(input.route, body),
     response: body
   }
 }

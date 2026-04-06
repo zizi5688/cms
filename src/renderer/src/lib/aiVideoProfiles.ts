@@ -1,4 +1,4 @@
-export type AiStudioCapability = 'image' | 'video'
+export type AiStudioCapability = 'image' | 'video' | 'chat'
 
 export type AiStudioVideoMode = 'subject-reference' | 'first-last-frame'
 export type AiVideoAdapterKind = 'allapi-unified'

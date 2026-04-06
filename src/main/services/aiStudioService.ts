@@ -29,7 +29,7 @@ import { SqliteService } from './sqliteService'
 export type AiStudioTemplateRecord = {
   id: string
   provider: string
-  capability: 'image' | 'video'
+  capability: 'image' | 'video' | 'chat'
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -1310,8 +1310,10 @@ type AiStudioVideoMetadataRecord = {
   outputCount: number
 }
 
-function normalizeTemplateCapability(value: unknown): 'image' | 'video' {
-  return value === 'video' ? 'video' : 'image'
+function normalizeTemplateCapability(value: unknown): 'image' | 'video' | 'chat' {
+  if (value === 'video') return 'video'
+  if (value === 'chat') return 'chat'
+  return 'image'
 }
 
 function readTaskCapability(task: Pick<AiStudioTaskRecord, 'metadata'>): 'image' | 'video' {
@@ -1619,7 +1621,7 @@ export class AiStudioService {
 
   private getTemplateByProviderAndName(
     provider: string,
-    capability: 'image' | 'video',
+    capability: 'image' | 'video' | 'chat',
     name: string
   ): AiStudioTemplateRecord | null {
     const normalizedProvider = normalizeText(provider)
@@ -2879,7 +2881,7 @@ export class AiStudioService {
     return this.getRunById(normalizedRunId)
   }
 
-  listTemplates(capability: 'image' | 'video' = 'image'): AiStudioTemplateRecord[] {
+  listTemplates(capability: 'image' | 'video' | 'chat' = 'image'): AiStudioTemplateRecord[] {
     const normalizedCapability = normalizeTemplateCapability(capability)
     const rows = this.db
       .prepare(
@@ -2905,7 +2907,7 @@ export class AiStudioService {
   upsertTemplate(input: {
     id?: string
     provider?: string
-    capability?: 'image' | 'video'
+    capability?: 'image' | 'video' | 'chat'
     name: string
     promptText?: string
     config?: Record<string, unknown>

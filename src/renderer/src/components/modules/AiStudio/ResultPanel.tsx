@@ -1789,6 +1789,7 @@ function ResultPanel({
   const [videoLightboxAsset, setVideoLightboxAsset] = useState<AiStudioAssetRecord | null>(null)
   const [imageLightboxState, setImageLightboxState] = useState<ImageLightboxState | null>(null)
   const isVideoStudio = state.studioCapability === 'video'
+  const isChatStudio = state.studioCapability === 'chat'
   const historyTailRef = useRef<HTMLDivElement | null>(null)
   const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
   const latestRevealHistoryKey =
@@ -1806,6 +1807,36 @@ function ResultPanel({
     previousLatestRevealHistoryKeyRef.current = latestRevealHistoryKey
     historyTailRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
   }, [latestRevealHistoryKey])
+
+  if (isChatStudio) {
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-4 pb-4">
+        <section className="rounded-[28px] border border-zinc-200 bg-white/90 p-5 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+          <div className="text-[12px] font-medium tracking-[0.08em] text-zinc-500">会话结果</div>
+          <div className="mt-3 rounded-[20px] border border-zinc-200 bg-zinc-50/80 p-4">
+            {state.isChatRunning ? (
+              <div className="text-[14px] leading-7 text-zinc-500">正在等待会话结果...</div>
+            ) : state.chatError ? (
+              <div className="text-[14px] leading-7 text-rose-600">{state.chatError}</div>
+            ) : state.chatResultText ? (
+              <div className="whitespace-pre-wrap text-[14px] leading-7 text-zinc-900">
+                {state.chatResultText}
+              </div>
+            ) : (
+              <div className="text-[14px] leading-7 text-zinc-500">
+                输入一条消息后，这里会展示模型返回的文本结果。
+              </div>
+            )}
+          </div>
+        </section>
+        <div
+          aria-hidden="true"
+          className="w-full shrink-0"
+          style={{ height: `${Math.max(0, bottomSpacerHeight)}px` }}
+        />
+      </div>
+    )
+  }
 
   if (state.historyTasks.length === 0) {
     return isVideoStudio ? (

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { ArrowLeft, ImageIcon, Video } from 'lucide-react'
+import { ArrowLeft, ImageIcon, MessageSquare, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
 import { generateManifest } from '@renderer/lib/cms-engine'
@@ -186,6 +186,19 @@ function AiStudioCanvas({
               >
                 <Video className="h-4 w-4" />
                 视频
+              </button>
+              <button
+                type="button"
+                onClick={() => state.setStudioCapability('chat')}
+                className={cn(
+                  'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
+                  state.studioCapability === 'chat'
+                    ? 'border-transparent bg-zinc-900 text-white'
+                    : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:text-zinc-900'
+                )}
+              >
+                <MessageSquare className="h-4 w-4" />
+                会话
               </button>
             </div>
 

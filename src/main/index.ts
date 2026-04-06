@@ -4337,7 +4337,8 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cms.aiStudio.template.list', async (_event, payload: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-    const capability = body.capability === 'video' ? 'video' : 'image'
+    const capability =
+      body.capability === 'video' ? 'video' : body.capability === 'chat' ? 'chat' : 'image'
     return aiStudioService.listTemplates(capability)
   })
 
@@ -4346,7 +4347,8 @@ app.whenReady().then(async () => {
     return aiStudioService.upsertTemplate({
       id: typeof body.id === 'string' ? body.id : undefined,
       provider: typeof body.provider === 'string' ? body.provider : undefined,
-      capability: body.capability === 'video' ? 'video' : 'image',
+      capability:
+        body.capability === 'video' ? 'video' : body.capability === 'chat' ? 'chat' : 'image',
       name: typeof body.name === 'string' ? body.name : '',
       promptText: typeof body.promptText === 'string' ? body.promptText : undefined,
       config: body.config && typeof body.config === 'object' ? (body.config as Record<string, unknown>) : undefined

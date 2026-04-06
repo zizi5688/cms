@@ -966,6 +966,7 @@ function TaskQueue({
   const [isSavingTemplateModal, setIsSavingTemplateModal] = useState(false)
 
   const isVideoStudio = state.studioCapability === 'video'
+  const isChatStudio = state.studioCapability === 'chat'
   const videoMeta = state.videoMeta
   const primaryAsset =
     state.activeInputAssets.find((asset) => asset.filePath === state.primaryImagePath) ?? null
@@ -990,7 +991,9 @@ function TaskQueue({
     state.activeInputAssets.find((asset) => asset.filePath === videoMeta.lastFramePath) ?? null
   const canAddMore = inputAssets.length < MAX_AI_STUDIO_REFERENCE_IMAGES
   const isImportingImages = isPickingImages || isPastingImages
-  const promptComposerMinHeight = isVideoStudio
+  const promptComposerMinHeight = isChatStudio
+    ? 132
+    : isVideoStudio
     ? videoMeta.mode === 'first-last-frame'
       ? 148
       : 132
@@ -1177,6 +1180,10 @@ function TaskQueue({
     event.stopPropagation()
     setIsDragActive(false)
 
+    if (isChatStudio) {
+      return
+    }
+
     const filePaths = getDroppedImagePaths(event.dataTransfer.files)
     if (filePaths.length === 0) {
       window.alert('拖入失败：未检测到本地图片路径，请从 Finder 拖入 jpg/jpeg/png/webp/heic 文件。')
@@ -1272,25 +1279,41 @@ function TaskQueue({
   return (
     <>
       <div
-        onDragOver={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          event.dataTransfer.dropEffect = 'copy'
-          setIsDragActive(true)
-        }}
-        onDragLeave={(event) => {
-          event.stopPropagation()
-          setIsDragActive(false)
-        }}
+        onDragOver={
+          isChatStudio
+            ? undefined
+            : (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                event.dataTransfer.dropEffect = 'copy'
+                setIsDragActive(true)
+              }
+        }
+        onDragLeave={
+          isChatStudio
+            ? undefined
+            : (event) => {
+                event.stopPropagation()
+                setIsDragActive(false)
+              }
+        }
         onDrop={(event) => void handleDrop(event)}
         className={cn(
           'transition',
           isDragActive && 'rounded-[26px] bg-sky-50/40 ring-1 ring-sky-200/80'
         )}
       >
-        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 py-0">
-          <div className="flex flex-col items-start gap-1.5 pt-0.5">
-            {isVideoStudio ? (
+        <div
+          className={cn(
+            isChatStudio ? 'flex flex-col gap-3 py-0.5' : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 py-0'
+          )}
+        >
+          <div className={cn(isChatStudio ? 'flex items-center justify-between gap-3' : 'flex flex-col items-start gap-1.5 pt-0.5')}>
+            {isChatStudio ? (
+              <div className="inline-flex items-center rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] font-medium tracking-[0.08em] text-zinc-500">
+                单轮会话
+              </div>
+            ) : isVideoStudio ? (
               <>
                 {videoMeta.mode === 'subject-reference' ? (
                   <VideoInputCard
@@ -1355,13 +1378,15 @@ function TaskQueue({
             />
           </div>
 
-          <div className="min-w-0 self-stretch pt-0.5">
+          <div className={cn('min-w-0 self-stretch', isChatStudio ? '' : 'pt-0.5')}>
             <Textarea
               value={promptDraft}
               onChange={(event) => onPromptChange(event.target.value)}
               onPaste={(event) => void handlePromptPaste(event)}
               placeholder={
-                isVideoStudio
+                isChatStudio
+                  ? '输入本次聊天内容，例如：帮我写一条新品发布文案。'
+                  : isVideoStudio
                   ? '描述镜头运动、节奏、主体动作和氛围，例如：主体轻微转身，镜头缓慢推近，背景光影流动。'
                   : '输入本次提示词...'
               }
