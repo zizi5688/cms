@@ -237,6 +237,8 @@ export type AiStudioVideoMetadata = {
   failures: AiStudioVideoFailureRecord[]
 }
 
+type AiStudioImageRouteMode = 'follow-settings-default' | 'task-pinned'
+
 const AI_STUDIO_MASTER_OUTPUT_ROLE = 'master-raw'
 const AI_STUDIO_MASTER_CLEAN_ROLE = 'master-clean'
 const AI_STUDIO_CHILD_OUTPUT_ROLE = 'child-output'
@@ -246,6 +248,9 @@ const AI_STUDIO_SOURCE_REFERENCE_ROLE = 'source-reference'
 const AI_STUDIO_VIDEO_SUBJECT_REFERENCE_ROLE = 'video-subject-reference'
 const AI_STUDIO_VIDEO_FIRST_FRAME_ROLE = 'video-first-frame'
 const AI_STUDIO_VIDEO_LAST_FRAME_ROLE = 'video-last-frame'
+const AI_STUDIO_IMAGE_ROUTE_MODE_KEY = 'imageRouteMode'
+const AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT = 'follow-settings-default'
+const AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED = 'task-pinned'
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
@@ -342,6 +347,24 @@ function stripVideoMetadata(
   const next = metadata && typeof metadata === 'object' ? { ...metadata } : {}
   delete next.video
   if (next.capability === 'video') delete next.capability
+  return next
+}
+
+function readImageRouteMode(
+  task: Pick<AiStudioTaskRecord, 'metadata'> | null | undefined
+): AiStudioImageRouteMode {
+  const metadata = task?.metadata && typeof task.metadata === 'object' ? task.metadata : {}
+  return metadata[AI_STUDIO_IMAGE_ROUTE_MODE_KEY] === AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+    ? AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+    : AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT
+}
+
+function writeImageRouteMode(
+  metadata: Record<string, unknown> | null | undefined,
+  routeMode: AiStudioImageRouteMode
+): Record<string, unknown> {
+  const next = metadata && typeof metadata === 'object' ? { ...metadata } : {}
+  next[AI_STUDIO_IMAGE_ROUTE_MODE_KEY] = routeMode
   return next
 }
 
@@ -1792,8 +1815,10 @@ const useAiStudioState = () => {
     [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.imageProviderId, defaultModel, providerProfiles]
   )
   const resolveImageTaskProviderState = useCallback(
-    (task?: Pick<AiStudioTaskRecord, 'provider' | 'model'> | null) =>
-      resolveImageProviderSelection(task?.provider, task?.model),
+    (task?: Pick<AiStudioTaskRecord, 'provider' | 'model' | 'metadata'> | null) =>
+      readImageRouteMode(task) === AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+        ? resolveImageProviderSelection(task?.provider, task?.model)
+        : resolveImageProviderSelection('', ''),
     [resolveImageProviderSelection]
   )
   const resolveChatProviderSelection = useCallback(
@@ -1935,7 +1960,10 @@ const useAiStudioState = () => {
             model: imageProviderSelection.modelName || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
             inputImagePaths: folder.imageFilePaths,
             metadata: withProjectMetadata(
-              { importedImageCount: folder.imageFilePaths.length },
+              writeImageRouteMode(
+                { importedImageCount: folder.imageFilePaths.length },
+                AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT
+              ),
               projectContext
             )
           })
@@ -1987,6 +2015,10 @@ const useAiStudioState = () => {
       )
       const baseTask = payload.inheritFrom ?? null
       const baseWorkflow = baseTask ? readWorkflowMetadata(baseTask) : null
+      const routeMode =
+        readImageRouteMode(baseTask) === AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+          ? AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+          : AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT
       const inheritedTemplateId =
         payload.templateIdOverride !== undefined
           ? payload.templateIdOverride
@@ -1996,10 +2028,10 @@ const useAiStudioState = () => {
           ? payload.promptExtraOverride
           : (baseWorkflow?.masterStage.promptExtra ?? baseTask?.promptExtra ?? '')
       const projectContext = resolveProjectContext(baseTask)
-      const imageProviderSelection = resolveImageProviderSelection(
-        baseTask?.provider,
-        baseTask?.model
-      )
+      const imageProviderSelection =
+        routeMode === AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+          ? resolveImageProviderSelection(baseTask?.provider, baseTask?.model)
+          : resolveImageProviderSelection('', '')
       const inferredName = basenameWithoutExtension(
         primaryImagePath ?? referenceImagePaths[0] ?? ''
       )
@@ -2032,10 +2064,13 @@ const useAiStudioState = () => {
           billedState: 'unbilled',
           metadata: (() => {
             const nextMetadata = withProjectMetadata(
-              {
-                ...sanitizeDraftMetadata(baseTask?.metadata),
-                importedImageCount: inputImagePaths.length
-              },
+              writeImageRouteMode(
+                {
+                  ...sanitizeDraftMetadata(baseTask?.metadata),
+                  importedImageCount: inputImagePaths.length
+                },
+                routeMode
+              ),
               projectContext
             )
             return writeWorkflowMetadata(
@@ -3013,7 +3048,10 @@ const useAiStudioState = () => {
         projectName: normalizedName,
         projectPath: ensuredProjectDir.dirPath
       })
-      const baseMetadata = withProjectMetadata({ importedImageCount: 0 }, projectContext)
+      const baseMetadata = writeImageRouteMode(
+        withProjectMetadata({ importedImageCount: 0 }, projectContext),
+        AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT
+      )
       const workflowSeed = {
         templateId: null,
         promptExtra: '',
@@ -3586,7 +3624,8 @@ const useAiStudioState = () => {
       const nextSelection = resolveImageProviderSelection(value, '')
       await updateTaskPatch(task.id, {
         provider: nextSelection.providerName || normalizeAiProviderValue(value) || task.provider,
-        model: nextSelection.modelName || task.model || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
+        model: nextSelection.modelName || task.model || defaultModel || DEFAULT_GRSAI_IMAGE_MODEL,
+        metadata: writeImageRouteMode(task.metadata, AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED)
       })
     },
     [defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch]
@@ -3607,7 +3646,8 @@ const useAiStudioState = () => {
           payload.model ||
           task.model ||
           defaultModel ||
-          DEFAULT_GRSAI_IMAGE_MODEL
+          DEFAULT_GRSAI_IMAGE_MODEL,
+        metadata: writeImageRouteMode(task.metadata, AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED)
       })
     },
     [defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch]
@@ -4167,6 +4207,7 @@ const useAiStudioState = () => {
         activeTask
       const sourceTask =
         sourceTaskView ?? (payload?.taskId ? await loadLatestTaskRecord(payload.taskId) : null)
+      const sourceRouteMode = readImageRouteMode(sourceTask)
       const sourceProviderSelection = resolveImageTaskProviderState(sourceTask)
       if (!sourceTask || !sourceProviderSelection.providerProfile) {
         throw new Error('[AI Studio] 请先在模型设置中创建并选择图片供应商。')
@@ -4190,11 +4231,14 @@ const useAiStudioState = () => {
           Number(payload?.requestedCount ?? sourceWorkflow.masterStage.requestedCount ?? 1) || 1
         )
       )
+      const preferredSourceModel =
+        sourceRouteMode === AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
+          ? sourceTask.model || sourceProviderSelection.modelName
+          : sourceProviderSelection.modelName || sourceTask.model
       const effectiveModel =
         String(
           payload?.model ??
-            sourceTask.model ??
-            sourceProviderSelection.modelName ??
+            preferredSourceModel ??
             defaultModel ??
             DEFAULT_GRSAI_IMAGE_MODEL
         ).trim() || DEFAULT_GRSAI_IMAGE_MODEL
@@ -4249,7 +4293,13 @@ const useAiStudioState = () => {
         status: 'running',
         remoteTaskId: null,
         latestRunId: null,
-        metadata: writeWorkflowMetadata(workingTask, workflow)
+        metadata: writeWorkflowMetadata(
+          {
+            ...workingTask,
+            metadata: writeImageRouteMode(workingTask.metadata, sourceRouteMode)
+          },
+          workflow
+        )
       })
       await refresh()
       payload?.onStarted?.()

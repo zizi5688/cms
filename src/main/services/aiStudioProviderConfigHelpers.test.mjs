@@ -135,13 +135,24 @@ test('resolveAiStudioProviderConfig reads the video runtime default route from v
   assert.equal(resolved.endpointPath, '/volc/v1/contents/generations/tasks')
 })
 
-test('resolveAiStudioProviderConfig still allows explicit task provider and model to override the runtime default', () => {
+test('resolveAiStudioProviderConfig uses the runtime default for legacy image tasks without a pinned route mode', () => {
   const resolved = resolveAiStudioProviderConfig(CONFIG, {
-    provider: 'allapi',
-    model: 'jimeng-image-3.0',
+    provider: 'grsai',
+    model: 'nano-banana',
     metadata: {}
   }, 'image')
 
   assert.equal(resolved.provider, 'allapi')
   assert.equal(resolved.defaultImageModel, 'jimeng-image-3.0')
+})
+
+test('resolveAiStudioProviderConfig still allows explicit task provider and model to override the runtime default when pinned', () => {
+  const resolved = resolveAiStudioProviderConfig(CONFIG, {
+    provider: 'grsai',
+    model: 'nano-banana',
+    metadata: { imageRouteMode: 'task-pinned' }
+  }, 'image')
+
+  assert.equal(resolved.provider, 'grsai')
+  assert.equal(resolved.defaultImageModel, 'nano-banana')
 })
