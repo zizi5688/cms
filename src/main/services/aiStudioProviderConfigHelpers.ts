@@ -10,6 +10,8 @@ import {
 const GRSAI_DEFAULT_BASE_URL = 'https://grsaiapi.com'
 const DEFAULT_IMAGE_MODEL = 'nano-banana-fast'
 const LEGACY_DEFAULT_IMAGE_MODEL = 'image-default'
+const AI_STUDIO_IMAGE_ROUTE_MODE_KEY = 'imageRouteMode'
+const AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED = 'task-pinned'
 
 type AiStudioProviderConfigInput = Partial<
   Pick<
@@ -63,6 +65,18 @@ function resolveConfiguredModel(value: unknown, fallback = DEFAULT_IMAGE_MODEL):
 function sanitizeBaseUrl(baseUrl: string): string {
   const normalized = normalizeText(baseUrl).replace(/\/+$/, '')
   return normalized || GRSAI_DEFAULT_BASE_URL
+}
+
+function shouldTaskPreferRuntimeDefault(
+  task: AiStudioTaskProviderInput | null | undefined,
+  capability: AiCapability
+): boolean {
+  if (capability !== 'image') return false
+  const metadata =
+    task?.metadata && typeof task.metadata === 'object'
+      ? (task.metadata as Record<string, unknown>)
+      : {}
+  return metadata[AI_STUDIO_IMAGE_ROUTE_MODE_KEY] !== AI_STUDIO_IMAGE_ROUTE_MODE_TASK_PINNED
 }
 
 function resolveDefaultProviderId(
@@ -145,8 +159,9 @@ export function resolveAiStudioProviderConfig(
     provided.aiRuntimeDefaults,
     capability
   )
-  const taskProviderName = normalizeText(task?.provider)
-  const taskModelName = normalizeConfiguredModel(task?.model)
+  const preferRuntimeDefault = shouldTaskPreferRuntimeDefault(task, capability)
+  const taskProviderName = preferRuntimeDefault ? '' : normalizeText(task?.provider)
+  const taskModelName = preferRuntimeDefault ? '' : normalizeConfiguredModel(task?.model)
   const taskProviderProfile = taskProviderName
     ? findAiProviderProfile(providerProfiles, taskProviderName)
     : null
