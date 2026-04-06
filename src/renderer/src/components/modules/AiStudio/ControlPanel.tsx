@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Clapperboard,
   FlaskConical,
+  MessageSquare,
   Plus,
   Send,
   Trash2,
@@ -1651,6 +1652,7 @@ function ControlPanel({
   const config = useCmsStore((store) => store.config)
   const task = state.activeTask
   const isVideoStudio = state.studioCapability === 'video'
+  const isChatStudio = state.studioCapability === 'chat'
   const currentImageModel = useMemo(
     () =>
       resolveAiTaskProviderSelection(
@@ -1691,15 +1693,21 @@ function ControlPanel({
   const requestedImageCount = Math.max(1, state.masterOutputCount || 1)
   const requestedVideoCount = Math.max(1, currentVideoMeta.outputCount || 1)
   const previewRuntimeStates = task ? state.previewSlotRuntimeByTaskId[task.id] ?? {} : null
-  const isRunning =
-    task?.status === 'running' ||
-    (!isVideoStudio && hasActivePreviewSlotRuntimeStates(previewRuntimeStates))
+  const isRunning = isChatStudio
+    ? state.isChatRunning
+    : task?.status === 'running' ||
+      (!isVideoStudio && hasActivePreviewSlotRuntimeStates(previewRuntimeStates))
   const isInterrupting = task ? state.interruptingTaskIds.includes(task.id) : false
   const primaryActionState = resolvePrimaryGenerateButtonState({
     isVideoStudio,
     isRunning,
     isInterrupting
   })
+  const primaryActionLabel = isChatStudio
+    ? state.isChatRunning
+      ? '发送中...'
+      : '发送消息'
+    : primaryActionState.actionLabel
   const poolTriggerRef = useRef<HTMLDivElement | null>(null)
   const poolCloseTimerRef = useRef<number | null>(null)
 
@@ -1732,7 +1740,13 @@ function ControlPanel({
     try {
       const promptText = promptDraft.trim()
       if (!promptText) {
-        throw new Error('请先输入提示词。')
+        throw new Error(isChatStudio ? '请先输入聊天内容。' : '请先输入提示词。')
+      }
+
+      if (isChatStudio) {
+        await state.startChatRun({ promptText })
+        addLog('[AI Studio] 已发送聊天请求')
+        return
       }
 
       if (isVideoStudio) {
@@ -1826,7 +1840,7 @@ function ControlPanel({
   return (
     <div className="relative z-30 flex min-w-0 items-end gap-2 overflow-x-auto overflow-y-visible pb-0.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
       <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
-        {isVideoStudio ? (
+        {isChatStudio ? null : isVideoStudio ? (
           <>
             <label className="flex w-[104px] min-w-[104px] shrink-0 flex-col gap-1">
               <span className={CONTROL_FIELD_LABEL_CLASS}>模式</span>
@@ -1942,42 +1956,46 @@ function ControlPanel({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
-        <div
-          ref={poolTriggerRef}
-          className="relative z-[120] shrink-0"
-          onMouseEnter={openPoolPopover}
-          onMouseLeave={scheduleClosePoolPopover}
-          onFocusCapture={openPoolPopover}
-          onBlurCapture={scheduleClosePoolPopover}
-        >
-          <Button
-            type="button"
-            className={cn(actionButtonClass, 'gap-1.5')}
-            onClick={() => void handleSendPool()}
-            disabled={state.pooledOutputCount <= 0}
-          >
-            <Send className="h-3.5 w-3.5" />
-            <span className="max-[1320px]:hidden">{sendPoolButtonText}</span>
-            {state.pooledOutputCount > 0 ? (
-              <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
-                {state.pooledOutputCount}
-              </span>
-            ) : null}
-          </Button>
-        </div>
+        {!isChatStudio ? (
+          <>
+            <div
+              ref={poolTriggerRef}
+              className="relative z-[120] shrink-0"
+              onMouseEnter={openPoolPopover}
+              onMouseLeave={scheduleClosePoolPopover}
+              onFocusCapture={openPoolPopover}
+              onBlurCapture={scheduleClosePoolPopover}
+            >
+              <Button
+                type="button"
+                className={cn(actionButtonClass, 'gap-1.5')}
+                onClick={() => void handleSendPool()}
+                disabled={state.pooledOutputCount <= 0}
+              >
+                <Send className="h-3.5 w-3.5" />
+                <span className="max-[1320px]:hidden">{sendPoolButtonText}</span>
+                {state.pooledOutputCount > 0 ? (
+                  <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
+                    {state.pooledOutputCount}
+                  </span>
+                ) : null}
+              </Button>
+            </div>
 
-        <PooledOutputPopover
-          anchorRef={poolTriggerRef}
-          open={state.pooledOutputCount > 0 && isPoolPopoverOpen}
-          assets={state.pooledOutputAssets}
-          showRemixShortcut={canStartPooledRemix}
-          onStartRemix={() => void handleStartRemix()}
-          onRemove={(targetAsset) =>
-            void state.toggleDispatchOutputPoolForTask(targetAsset.taskId, targetAsset.id)
-          }
-          onMouseEnter={openPoolPopover}
-          onMouseLeave={scheduleClosePoolPopover}
-        />
+            <PooledOutputPopover
+              anchorRef={poolTriggerRef}
+              open={state.pooledOutputCount > 0 && isPoolPopoverOpen}
+              assets={state.pooledOutputAssets}
+              showRemixShortcut={canStartPooledRemix}
+              onStartRemix={() => void handleStartRemix()}
+              onRemove={(targetAsset) =>
+                void state.toggleDispatchOutputPoolForTask(targetAsset.taskId, targetAsset.id)
+              }
+              onMouseEnter={openPoolPopover}
+              onMouseLeave={scheduleClosePoolPopover}
+            />
+          </>
+        ) : null}
 
         <Button
           type="button"
@@ -1989,10 +2007,14 @@ function ControlPanel({
             }
             void handleGenerate()
           }}
-          disabled={primaryActionState.disabled}
+          disabled={isChatStudio ? state.isChatRunning : primaryActionState.disabled}
         >
-          <ArrowUp className="h-3.5 w-3.5" />
-          <span className="max-[1320px]:hidden">{primaryActionState.actionLabel}</span>
+          {isChatStudio ? (
+            <MessageSquare className="h-3.5 w-3.5" />
+          ) : (
+            <ArrowUp className="h-3.5 w-3.5" />
+          )}
+          <span className="max-[1320px]:hidden">{primaryActionLabel}</span>
         </Button>
       </div>
     </div>

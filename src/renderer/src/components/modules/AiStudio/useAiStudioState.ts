@@ -1280,7 +1280,7 @@ function coerceTemplateRecord(template: unknown): AiStudioTemplateRecord {
   return {
     id: String(record.id ?? ''),
     provider: typeof record.provider === 'string' ? record.provider : 'grsai',
-    capability: record.capability === 'video' ? 'video' : 'image',
+    capability: record.capability === 'video' ? 'video' : record.capability === 'chat' ? 'chat' : 'image',
     name: typeof record.name === 'string' ? record.name : '',
     promptText: typeof record.promptText === 'string' ? record.promptText : '',
     config:
@@ -1387,6 +1387,9 @@ const useAiStudioState = () => {
   )
   const [statusFilter, setStatusFilter] = useState<AiStudioTaskStatusFilter>('all')
   const [studioCapability, setStudioCapabilityState] = useState<AiStudioCapability>('image')
+  const [chatResultText, setChatResultText] = useState('')
+  const [chatError, setChatError] = useState('')
+  const [isChatRunning, setIsChatRunning] = useState(false)
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [projectScopeId, setProjectScopeId] = useState<string | null>(null)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
@@ -1792,6 +1795,18 @@ const useAiStudioState = () => {
     (task?: Pick<AiStudioTaskRecord, 'provider' | 'model'> | null) =>
       resolveImageProviderSelection(task?.provider, task?.model),
     [resolveImageProviderSelection]
+  )
+  const resolveChatProviderSelection = useCallback(
+    (providerName?: string | null, modelName?: string | null) =>
+      resolveAiTaskProviderSelection(providerProfiles, {
+        capability: 'chat',
+        taskProviderName: providerName,
+        taskModelName: modelName,
+        fallbackProviderId: aiConfig.aiRuntimeDefaults?.chatProviderId ?? null,
+        fallbackProviderName: aiConfig.aiProvider,
+        fallbackModelName: ''
+      }),
+    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.chatProviderId, providerProfiles]
   )
   const resolveVideoProviderSelection = useCallback(
     (providerName?: string | null, modelName?: string | null, endpointPath?: string | null) => {
@@ -3183,7 +3198,7 @@ const useAiStudioState = () => {
   const sendPooledOutputsToWorkshop = useCallback(async () => {
     const plan = buildPoolDispatchPlan({
       action: 'workshop',
-      studioCapability,
+      studioCapability: studioCapability === 'video' ? 'video' : 'image',
       assets: pooledOutputAssets
     })
 
@@ -3233,7 +3248,7 @@ const useAiStudioState = () => {
   const sendPooledOutputsToVideoComposer = useCallback(async () => {
     const plan = buildPoolDispatchPlan({
       action: 'remix',
-      studioCapability,
+      studioCapability: studioCapability === 'video' ? 'video' : 'image',
       assets: pooledOutputAssets
     })
 
@@ -4977,6 +4992,56 @@ const useAiStudioState = () => {
     [capabilityTaskViews]
   )
 
+  const startChatRun = useCallback(
+    async (payload: { promptText: string }) => {
+      const promptText = String(payload.promptText ?? '').trim()
+      if (!promptText) {
+        throw new Error('[AI Studio] 请先输入聊天内容。')
+      }
+
+      const selection = resolveChatProviderSelection('', '')
+      if (!selection.providerProfile) {
+        throw new Error('[AI Studio] 请先在设置页配置聊天供应商。')
+      }
+      if (!selection.apiKey.trim()) {
+        throw new Error('[AI Studio] 请先填写聊天供应商 API Key。')
+      }
+      if (!selection.modelName.trim()) {
+        throw new Error('[AI Studio] 请先配置聊天模型。')
+      }
+      if (!selection.endpointPath.trim()) {
+        throw new Error('[AI Studio] 请先配置聊天模型 Endpoint。')
+      }
+
+      setIsChatRunning(true)
+      setChatError('')
+      setChatResultText('')
+      try {
+        const result = (await window.api.cms.ai.task.run({
+          capability: 'chat',
+          input: {
+            prompt: promptText
+          }
+        })) as {
+          outputText?: unknown
+        }
+        const outputText = String(result?.outputText ?? '').trim()
+        if (!outputText) {
+          throw new Error('[AI Studio] 聊天接口未返回可用文本结果。')
+        }
+        setChatResultText(outputText)
+        return result
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setChatError(message)
+        throw error
+      } finally {
+        setIsChatRunning(false)
+      }
+    },
+    [resolveChatProviderSelection]
+  )
+
   return {
     studioCapability,
     setStudioCapability,
@@ -5021,6 +5086,9 @@ const useAiStudioState = () => {
     primaryImagePath,
     referenceImagePaths,
     exceptionCount,
+    chatResultText,
+    chatError,
+    isChatRunning,
     isLoading,
     isImporting,
     interruptingTaskIds,
@@ -5073,6 +5141,7 @@ const useAiStudioState = () => {
     setAspectRatio,
     setImageProvider,
     setImageModel,
+    startChatRun,
     setModel,
     setTemplateId,
     saveTemplate,

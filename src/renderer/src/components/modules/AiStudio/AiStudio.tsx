@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { ArrowLeft, ImageIcon, Video } from 'lucide-react'
+import { ArrowLeft, ImageIcon, MessageSquare, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
 import { generateManifest } from '@renderer/lib/cms-engine'
@@ -186,6 +186,19 @@ function AiStudioCanvas({
               >
                 <Video className="h-4 w-4" />
                 视频
+              </button>
+              <button
+                type="button"
+                onClick={() => state.setStudioCapability('chat')}
+                className={cn(
+                  'inline-flex h-8 items-center gap-2 rounded-[14px] border px-3 text-[13px] font-medium transition',
+                  state.studioCapability === 'chat'
+                    ? 'border-transparent bg-zinc-900 text-white'
+                    : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:text-zinc-900'
+                )}
+              >
+                <MessageSquare className="h-4 w-4" />
+                会话
               </button>
             </div>
 
@@ -703,10 +716,8 @@ function AiStudio(): React.JSX.Element {
     >
       {noteSidebarNode}
 
-      <div
-        className="sticky top-0 z-20 shrink-0 bg-transparent px-5 py-4 text-zinc-950"
-      >
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
+      <div className="sticky top-0 z-20 shrink-0 bg-transparent px-5 py-4 text-zinc-950">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -724,7 +735,7 @@ function AiStudio(): React.JSX.Element {
             </div>
           </div>
 
-          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-3">
+          <div className="flex min-w-0 items-start justify-between gap-3 md:ml-auto md:w-auto md:max-w-[48%] md:justify-end">
             <input
               value={projectNameDraft}
               onChange={(event) => setProjectNameDraft(event.target.value)}
@@ -740,14 +751,14 @@ function AiStudio(): React.JSX.Element {
                 }
               }}
               placeholder="输入项目名"
-              className="h-11 w-[180px] border-0 bg-transparent px-0 text-right text-[24px] font-semibold tracking-[-0.04em] text-zinc-950 outline-none transition placeholder:text-zinc-350 sm:w-[220px] lg:w-[260px]"
+              className="h-11 min-w-0 flex-1 border-0 bg-transparent px-0 text-left text-[22px] font-semibold tracking-[-0.04em] text-zinc-950 outline-none transition placeholder:text-zinc-350 sm:text-[24px] md:max-w-[260px] md:text-right"
               style={{ fontFamily: '"Iowan Old Style", "Noto Serif SC", "Songti SC", serif' }}
             />
             {!noteSidebarOpen ? (
               <button
                 type="button"
                 onClick={() => setNoteSidebarOpen(true)}
-                className="ml-3 inline-flex h-11 w-11 items-center justify-center rounded-full border border-zinc-200 bg-white/92 text-zinc-600 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-950"
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white/92 text-zinc-600 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:border-zinc-300 hover:text-zinc-950"
                 aria-label="打开图文创作中心"
                 title="打开图文创作中心"
               >

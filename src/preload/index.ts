@@ -375,7 +375,7 @@ type AiStudioImportedFolder = {
 type AiStudioTemplateRecord = {
   id: string
   provider: string
-  capability: 'image' | 'video'
+  capability: 'image' | 'video' | 'chat'
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -1139,12 +1139,12 @@ const api = {
         }> => ipcRenderer.invoke('cms.aiStudio.provider.testConnection', payload)
       },
       template: {
-        list: (payload?: { capability?: 'image' | 'video' }): Promise<AiStudioTemplateRecord[]> =>
+        list: (payload?: { capability?: 'image' | 'video' | 'chat' }): Promise<AiStudioTemplateRecord[]> =>
           ipcRenderer.invoke('cms.aiStudio.template.list', payload),
         upsert: (payload: {
           id?: string
           provider?: string
-          capability?: 'image' | 'video'
+          capability?: 'image' | 'video' | 'chat'
           name: string
           promptText?: string
           config?: Record<string, unknown>

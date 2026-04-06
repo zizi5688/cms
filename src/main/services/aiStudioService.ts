@@ -29,7 +29,7 @@ import { SqliteService } from './sqliteService'
 export type AiStudioTemplateRecord = {
   id: string
   provider: string
-  capability: 'image' | 'video'
+  capability: 'image' | 'video' | 'chat'
   name: string
   promptText: string
   config: Record<string, unknown>
@@ -784,17 +784,7 @@ function buildGeminiGenerateContentPayload(payload: {
   urls: string[]
   referenceCount: number
 }): Record<string, unknown> {
-  const parts: Array<Record<string, unknown>> = [
-    {
-      text: buildImagePromptDirective({
-        prompt: payload.prompt,
-        aspectRatio: payload.aspectRatio,
-        imageSize: payload.imageSize,
-        outputCount: payload.outputCount,
-        referenceCount: payload.referenceCount
-      })
-    }
-  ]
+  const parts: Array<Record<string, unknown>> = []
 
   for (const url of payload.urls) {
     const parsed = parseDataUrl(url)
@@ -807,6 +797,16 @@ function buildGeminiGenerateContentPayload(payload: {
     })
   }
 
+  parts.push({
+    text: buildImagePromptDirective({
+      prompt: payload.prompt,
+      aspectRatio: payload.aspectRatio,
+      imageSize: payload.imageSize,
+      outputCount: payload.outputCount,
+      referenceCount: payload.referenceCount
+    })
+  })
+
   return {
     contents: [
       {
@@ -816,7 +816,8 @@ function buildGeminiGenerateContentPayload(payload: {
     ],
     generationConfig: buildGeminiGenerationConfig({
       aspectRatio: payload.aspectRatio,
-      imageSize: payload.imageSize
+      imageSize: payload.imageSize,
+      candidateCount: payload.outputCount
     })
   }
 }
@@ -1309,8 +1310,10 @@ type AiStudioVideoMetadataRecord = {
   outputCount: number
 }
 
-function normalizeTemplateCapability(value: unknown): 'image' | 'video' {
-  return value === 'video' ? 'video' : 'image'
+function normalizeTemplateCapability(value: unknown): 'image' | 'video' | 'chat' {
+  if (value === 'video') return 'video'
+  if (value === 'chat') return 'chat'
+  return 'image'
 }
 
 function readTaskCapability(task: Pick<AiStudioTaskRecord, 'metadata'>): 'image' | 'video' {
@@ -1618,7 +1621,7 @@ export class AiStudioService {
 
   private getTemplateByProviderAndName(
     provider: string,
-    capability: 'image' | 'video',
+    capability: 'image' | 'video' | 'chat',
     name: string
   ): AiStudioTemplateRecord | null {
     const normalizedProvider = normalizeText(provider)
@@ -2340,7 +2343,7 @@ export class AiStudioService {
 
   async submitImageRun(taskId: string): Promise<AiStudioRunExecutionResult> {
     const task = this.getTaskOrThrow(taskId)
-    const config = this.getProviderConfig(task, 'video')
+    const config = this.getProviderConfig(task, 'image')
     const context = await this.buildSubmitContext(taskId)
     const priceSnapshot = await this.resolvePriceSnapshot(context.model)
     const submitApiPath = config.endpointPath || GRSAI_DRAW_PATH
@@ -2878,7 +2881,7 @@ export class AiStudioService {
     return this.getRunById(normalizedRunId)
   }
 
-  listTemplates(capability: 'image' | 'video' = 'image'): AiStudioTemplateRecord[] {
+  listTemplates(capability: 'image' | 'video' | 'chat' = 'image'): AiStudioTemplateRecord[] {
     const normalizedCapability = normalizeTemplateCapability(capability)
     const rows = this.db
       .prepare(
@@ -2904,7 +2907,7 @@ export class AiStudioService {
   upsertTemplate(input: {
     id?: string
     provider?: string
-    capability?: 'image' | 'video'
+    capability?: 'image' | 'video' | 'chat'
     name: string
     promptText?: string
     config?: Record<string, unknown>

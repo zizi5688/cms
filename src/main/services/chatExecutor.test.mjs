@@ -77,7 +77,7 @@ test('executeChatTask throws a unified error when the route protocol is unsuppor
       executeChatTask({
         route: {
           ...ROUTE,
-          protocol: 'google-genai'
+          protocol: 'anthropic'
         },
         request: {
           capability: 'chat',
@@ -86,4 +86,76 @@ test('executeChatTask throws a unified error when the route protocol is unsuppor
       }),
     /AI_CHAT_PROTOCOL_UNSUPPORTED/
   )
+})
+
+test('createChatCompletionPayload builds Gemini generateContent payloads', () => {
+  const payload = createChatCompletionPayload(
+    {
+      ...ROUTE,
+      endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+      protocol: 'google-genai'
+    },
+    {
+      capability: 'chat',
+      input: {
+        messages: [
+          { role: 'user', content: '你好' },
+          { role: 'assistant', content: '你好，我在。' }
+        ]
+      }
+    }
+  )
+
+  assert.deepEqual(payload, {
+    contents: [
+      { role: 'user', parts: [{ text: '你好' }] },
+      { role: 'model', parts: [{ text: '你好，我在。' }] }
+    ]
+  })
+})
+
+test('executeChatTask extracts text from Gemini candidates', async () => {
+  const result = await executeChatTask(
+    {
+      route: {
+        ...ROUTE,
+        baseUrl: 'http://127.0.0.1:4174',
+        apiKey: 'local-dev-secret',
+        modelName: 'gemini-web-chat',
+        endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+        protocol: 'google-genai'
+      },
+      request: {
+        capability: 'chat',
+        input: {
+          prompt: '帮我写一句问候'
+        }
+      }
+    },
+    async (url, init) => {
+      assert.equal(url, 'http://127.0.0.1:4174/v1beta/models/gemini-web-chat:generateContent')
+      assert.equal(init.headers.Authorization, 'Bearer local-dev-secret')
+      assert.deepEqual(JSON.parse(init.body), {
+        contents: [{ role: 'user', parts: [{ text: '帮我写一句问候' }] }]
+      })
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            candidates: [
+              {
+                content: {
+                  role: 'model',
+                  parts: [{ text: '你好，欢迎回来。' }]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  )
+
+  assert.equal(result.outputText, '你好，欢迎回来。')
 })
