@@ -66,6 +66,10 @@ function parseCsv(csvText: string): CsvRow[] {
   return parsed.data.filter(isMeaningfulCsvRow)
 }
 
+export function countManifestCsvRows(csvText: string): number {
+  return parseCsv(csvText).length
+}
+
 function createId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -177,6 +181,47 @@ export function generateVideoManifest(csvText: string, videoPath: string | strin
       assignedImages: [],
       mediaType: 'video',
       videoPath: selectedVideoPath,
+      status: 'idle',
+      log: ''
+    }
+  })
+}
+
+export function generateOneToOneVideoManifest(
+  csvText: string,
+  videoPaths: string | string[]
+): Task[] {
+  const normalizedVideoPaths = Array.from(
+    new Set(
+      (Array.isArray(videoPaths) ? videoPaths : [videoPaths])
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+    )
+  )
+  if (normalizedVideoPaths.length === 0) {
+    throw new Error('视频路径为空，无法生成任务。')
+  }
+
+  const rows = parseCsv(csvText)
+  if (rows.length === 0) {
+    throw new Error('CSV 内容为空或无法解析。')
+  }
+
+  const pairedCount = Math.min(rows.length, normalizedVideoPaths.length)
+
+  return rows.slice(0, pairedCount).map((row, index) => {
+    const title = normalizeLineBreaks(getStringField(row, ['title', '标题'], ['title'])).trim()
+    const body = normalizeLineBreaks(
+      getStringField(row, ['body', '正文', 'content'], ['body', 'content', '正文'])
+    ).trim()
+
+    return {
+      id: createId(),
+      title,
+      body,
+      assignedImages: [],
+      mediaType: 'video',
+      videoPath: normalizedVideoPaths[index],
       status: 'idle',
       log: ''
     }

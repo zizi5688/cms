@@ -4,7 +4,7 @@ import type * as React from 'react'
 import { ArrowLeft, ImageIcon, MessageSquare, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
-import { generateManifest } from '@renderer/lib/cms-engine'
+import { countManifestCsvRows, generateManifest } from '@renderer/lib/cms-engine'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
 
@@ -20,6 +20,7 @@ import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './Note
 import { ResultPanel } from './ResultPanel'
 import { TaskQueue } from './TaskQueue'
 import { normalizeNoteSidebarConstraints } from './noteSidebarHelpers'
+import { buildGeneratedVideoNotePreviewTasks } from './videoNotePreviewHelpers'
 import {
   buildProjectCardSummaries,
   formatProjectUpdatedAt,
@@ -28,6 +29,11 @@ import {
   type AiStudioTrackedProjectEntry
 } from './projectViewHelpers'
 import { readTaskCapability, useAiStudioState } from './useAiStudioState'
+import {
+  isVideoComposerImageFile,
+  isVideoComposerVideoFile,
+  useVideoComposerController
+} from '../useVideoComposerController'
 
 const AI_STUDIO_CANVAS_SURFACE_CLASS =
   'bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,244,245,0.96))]'
@@ -261,6 +267,9 @@ function AiStudio(): React.JSX.Element {
   )
   const [isCreatingProject, setIsCreatingProject] = useState(false)
   const previousActiveModuleRef = useRef(activeModule)
+  const videoComposer = useVideoComposerController({
+    logPrefix: '[AI Studio][视频笔记]'
+  })
 
   const resetNoteSidebarState = useCallback((): void => {
     setNoteSidebarOpen(false)
@@ -275,7 +284,8 @@ function AiStudio(): React.JSX.Element {
     setNoteUploadedMaterialPaths([])
     setNoteCanvasMode('result')
     setSelectedBatchPickAssetIds([])
-  }, [])
+    videoComposer.resetComposer()
+  }, [videoComposer])
 
   const noteMaterials = useMemo(() => {
     const now = Date.now()
@@ -299,6 +309,20 @@ function AiStudio(): React.JSX.Element {
     }))
     return [...uploaded, ...pooled]
   }, [noteUploadedMaterialPaths, state.pooledOutputAssets])
+  const pooledVideoNoteMediaPaths = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          state.pooledOutputAssets
+            .map((asset) => String(asset.filePath ?? '').trim())
+            .filter(
+              (filePath) =>
+                isVideoComposerImageFile(filePath) || isVideoComposerVideoFile(filePath)
+            )
+        )
+      ),
+    [state.pooledOutputAssets]
+  )
 
   const batchPickAssets = useMemo(
     () => buildBatchPickAssets(state.historyTasks),
@@ -433,6 +457,102 @@ function AiStudio(): React.JSX.Element {
     }
   }
 
+  const prepareGeneratedVideoPreviewAssets = useCallback(
+    async (videoPaths: string[]) => {
+      const normalizedVideoPaths = Array.from(
+        new Set(videoPaths.map((item) => String(item ?? '').trim()).filter(Boolean))
+      )
+
+      return Promise.all(
+        normalizedVideoPaths.map(async (videoPath) => {
+          let previewPath = ''
+          let coverImagePath = ''
+
+          try {
+            const prepared = await window.electronAPI.prepareVideoPreview(videoPath)
+            previewPath = String(prepared.previewPath ?? '').trim()
+          } catch {
+            previewPath = ''
+          }
+
+          try {
+            coverImagePath = String(
+              await window.electronAPI.captureVideoFrame(videoPath, 0.05)
+            ).trim()
+          } catch {
+            coverImagePath = ''
+          }
+
+          return {
+            videoPath,
+            previewPath: previewPath || undefined,
+            coverImagePath: coverImagePath || undefined
+          }
+        })
+      )
+    },
+    []
+  )
+
+  const handleGenerateVideoNotePreview = useCallback(async (): Promise<void> => {
+    if (!noteCsvDraft.trim()) {
+      window.alert('请先输入 CSV 格式文案。')
+      return
+    }
+
+    let csvRowCount = 0
+    try {
+      csvRowCount = countManifestCsvRows(noteCsvDraft)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 视频笔记 CSV 解析失败：${message}`)
+      window.alert(message)
+      return
+    }
+
+    const requestedCount = Math.max(1, Math.min(20, Math.floor(Number(videoComposer.batchCount) || 1)))
+    if (csvRowCount < requestedCount) {
+      window.alert(`CSV 行数(${csvRowCount})少于本次生成数量(${requestedCount})，请补全文案或降低生成数量。`)
+      return
+    }
+
+    if (videoComposer.sourceMediaCount === 0) {
+      window.alert('请先导入至少一项图片或视频素材。')
+      return
+    }
+
+    setIsGeneratingNotePreview(true)
+    try {
+      const result = await videoComposer.startGenerate()
+      if (!result || result.outputs.length === 0) {
+        if (result && result.failedCount > 0) {
+          window.alert('本轮视频生成失败，请检查参数或素材后重试。')
+        }
+        return
+      }
+
+      const previewAssets = await prepareGeneratedVideoPreviewAssets(result.outputs)
+      const nextTasks = buildGeneratedVideoNotePreviewTasks(noteCsvDraft, previewAssets)
+      if (nextTasks.length === 0) {
+        window.alert('已生成视频，但未能构建视频笔记结果，请检查 CSV 与输出数量。')
+        return
+      }
+
+      setNotePreviewTasks(nextTasks)
+      setNoteSidebarPhase('preview')
+      addLog(`[AI Studio] 已生成 ${nextTasks.length} 组视频笔记预览。`)
+      if (result.failedCount > 0) {
+        addLog(`[AI Studio] 视频笔记生成存在失败项：${result.failedCount} 条，已保留成功结果进入预览。`)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 视频笔记预览生成失败：${message}`)
+      window.alert(message)
+    } finally {
+      setIsGeneratingNotePreview(false)
+    }
+  }, [addLog, noteCsvDraft, prepareGeneratedVideoPreviewAssets, videoComposer])
+
   const handleDispatchNotePreview = async (selectedTaskIds: string[]): Promise<void> => {
     const tasksToDispatch =
       selectedTaskIds.length > 0
@@ -524,6 +644,8 @@ function AiStudio(): React.JSX.Element {
       maxReuseDraft={noteMaxReuseDraft}
       isGenerating={isGeneratingNotePreview}
       previewTasks={notePreviewTasks}
+      videoComposer={videoComposer}
+      pooledMediaPaths={pooledVideoNoteMediaPaths}
       onOpenChange={setNoteSidebarOpen}
       onModeChange={(mode) => {
         setNoteSidebarMode(mode)
@@ -536,7 +658,11 @@ function AiStudio(): React.JSX.Element {
       onMinImagesChange={setNoteMinImagesDraft}
       onMaxImagesChange={setNoteMaxImagesDraft}
       onMaxReuseChange={setNoteMaxReuseDraft}
-      onGenerate={() => void handleGenerateNotePreview()}
+      onGenerate={() =>
+        void (noteSidebarMode === 'video-note'
+          ? handleGenerateVideoNotePreview()
+          : handleGenerateNotePreview())
+      }
       onRegenerate={() => {
         setNoteSidebarPhase('editing')
         setNotePreviewTasks([])
