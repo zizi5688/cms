@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { ArrowLeft, ImageIcon, MessageSquare, Video } from 'lucide-react'
+import { ArrowLeft, ImageIcon, MessageSquare, Sparkles, Video } from 'lucide-react'
 
 import { Card } from '@renderer/components/ui/card'
 import { countManifestCsvRows, generateManifest } from '@renderer/lib/cms-engine'
@@ -35,8 +35,7 @@ import {
   useVideoComposerController
 } from '../useVideoComposerController'
 
-const AI_STUDIO_CANVAS_SURFACE_CLASS =
-  'bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,244,245,0.96))]'
+const AI_STUDIO_CANVAS_SURFACE_CLASS = 'bg-[#fbfbfc]'
 const AI_STUDIO_TRACKED_PROJECTS_STORAGE_KEY = 'cms.aiStudio.trackedProjects.v1'
 const AI_STUDIO_PROJECT_HEADER_SURFACE_CLASS = AI_STUDIO_CANVAS_SURFACE_CLASS
 
@@ -135,7 +134,8 @@ function AiStudioCanvas({
   return (
     <Card
       className={cn(
-        'relative flex h-full min-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-[34px] border border-zinc-200/80 bg-transparent text-zinc-950 shadow-[0_30px_100px_rgba(15,23,42,0.08)] backdrop-blur',
+        'relative flex h-full min-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-[34px] border border-zinc-200/80 text-zinc-950 shadow-[0_30px_100px_rgba(15,23,42,0.08)] backdrop-blur',
+        AI_STUDIO_CANVAS_SURFACE_CLASS,
         className
       )}
     >
@@ -316,8 +316,7 @@ function AiStudio(): React.JSX.Element {
           state.pooledOutputAssets
             .map((asset) => String(asset.filePath ?? '').trim())
             .filter(
-              (filePath) =>
-                isVideoComposerImageFile(filePath) || isVideoComposerVideoFile(filePath)
+              (filePath) => isVideoComposerImageFile(filePath) || isVideoComposerVideoFile(filePath)
             )
         )
       ),
@@ -457,42 +456,39 @@ function AiStudio(): React.JSX.Element {
     }
   }
 
-  const prepareGeneratedVideoPreviewAssets = useCallback(
-    async (videoPaths: string[]) => {
-      const normalizedVideoPaths = Array.from(
-        new Set(videoPaths.map((item) => String(item ?? '').trim()).filter(Boolean))
-      )
+  const prepareGeneratedVideoPreviewAssets = useCallback(async (videoPaths: string[]) => {
+    const normalizedVideoPaths = Array.from(
+      new Set(videoPaths.map((item) => String(item ?? '').trim()).filter(Boolean))
+    )
 
-      return Promise.all(
-        normalizedVideoPaths.map(async (videoPath) => {
-          let previewPath = ''
-          let coverImagePath = ''
+    return Promise.all(
+      normalizedVideoPaths.map(async (videoPath) => {
+        let previewPath = ''
+        let coverImagePath = ''
 
-          try {
-            const prepared = await window.electronAPI.prepareVideoPreview(videoPath)
-            previewPath = String(prepared.previewPath ?? '').trim()
-          } catch {
-            previewPath = ''
-          }
+        try {
+          const prepared = await window.electronAPI.prepareVideoPreview(videoPath)
+          previewPath = String(prepared.previewPath ?? '').trim()
+        } catch {
+          previewPath = ''
+        }
 
-          try {
-            coverImagePath = String(
-              await window.electronAPI.captureVideoFrame(videoPath, 0.05)
-            ).trim()
-          } catch {
-            coverImagePath = ''
-          }
+        try {
+          coverImagePath = String(
+            await window.electronAPI.captureVideoFrame(videoPath, 0.05)
+          ).trim()
+        } catch {
+          coverImagePath = ''
+        }
 
-          return {
-            videoPath,
-            previewPath: previewPath || undefined,
-            coverImagePath: coverImagePath || undefined
-          }
-        })
-      )
-    },
-    []
-  )
+        return {
+          videoPath,
+          previewPath: previewPath || undefined,
+          coverImagePath: coverImagePath || undefined
+        }
+      })
+    )
+  }, [])
 
   const handleGenerateVideoNotePreview = useCallback(async (): Promise<void> => {
     if (!noteCsvDraft.trim()) {
@@ -510,9 +506,14 @@ function AiStudio(): React.JSX.Element {
       return
     }
 
-    const requestedCount = Math.max(1, Math.min(20, Math.floor(Number(videoComposer.batchCount) || 1)))
+    const requestedCount = Math.max(
+      1,
+      Math.min(20, Math.floor(Number(videoComposer.batchCount) || 1))
+    )
     if (csvRowCount < requestedCount) {
-      window.alert(`CSV 行数(${csvRowCount})少于本次生成数量(${requestedCount})，请补全文案或降低生成数量。`)
+      window.alert(
+        `CSV 行数(${csvRowCount})少于本次生成数量(${requestedCount})，请补全文案或降低生成数量。`
+      )
       return
     }
 
@@ -542,7 +543,9 @@ function AiStudio(): React.JSX.Element {
       setNoteSidebarPhase('preview')
       addLog(`[AI Studio] 已生成 ${nextTasks.length} 组视频笔记预览。`)
       if (result.failedCount > 0) {
-        addLog(`[AI Studio] 视频笔记生成存在失败项：${result.failedCount} 条，已保留成功结果进入预览。`)
+        addLog(
+          `[AI Studio] 视频笔记生成存在失败项：${result.failedCount} 条，已保留成功结果进入预览。`
+        )
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -888,7 +891,7 @@ function AiStudio(): React.JSX.Element {
                 aria-label="打开图文创作中心"
                 title="打开图文创作中心"
               >
-                <ImageIcon className="h-4 w-4" />
+                <Sparkles className="h-4 w-4" />
               </button>
             ) : null}
           </div>

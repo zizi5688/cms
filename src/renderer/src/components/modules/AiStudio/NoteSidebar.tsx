@@ -4,7 +4,6 @@ import type * as React from 'react'
 import {
   Check,
   ChevronLeft,
-  Clapperboard,
   Image as ImageIcon,
   Loader2,
   Music4,
@@ -87,6 +86,11 @@ type NoteSidebarProductRecord = {
   productUrl: string
   accountId: string
 }
+
+const NOTE_SIDEBAR_BASE_SURFACE_CLASS = 'bg-[#fbfbfc]'
+const NOTE_SIDEBAR_CARD_SURFACE_CLASS =
+  'border border-zinc-200/65 bg-[#fbfbfc] shadow-[0_18px_36px_rgba(15,23,42,0.035)]'
+const NOTE_SIDEBAR_SUBTLE_SURFACE_CLASS = 'border border-zinc-200/80 bg-[#fbfbfc]'
 
 function isSupportedImagePath(filePath: string): boolean {
   return /\.(jpg|jpeg|png|webp|heic)$/i.test(String(filePath ?? '').trim())
@@ -821,7 +825,9 @@ function PreviewEditorModal({
                     playsInline
                   />
                 ) : (
-                  <div className="text-[12px] tracking-[0.04em] text-zinc-400">当前视频不可预览</div>
+                  <div className="text-[12px] tracking-[0.04em] text-zinc-400">
+                    当前视频不可预览
+                  </div>
                 )}
               </div>
               <div className="flex flex-col gap-3">
@@ -844,7 +850,9 @@ function PreviewEditorModal({
                 </div>
                 <div className="border border-zinc-200/80 bg-white p-3 text-[11px] leading-5 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.035)]">
                   <div className="text-[10px] tracking-[0.08em] text-zinc-400">视频信息</div>
-                  <div className="mt-3 break-all">{String(task.videoPath ?? '').trim() || '未记录视频路径'}</div>
+                  <div className="mt-3 break-all">
+                    {String(task.videoPath ?? '').trim() || '未记录视频路径'}
+                  </div>
                 </div>
               </div>
             </div>
@@ -975,19 +983,23 @@ function VideoNoteEditor({
     : videoComposer.sourceMediaCount > 0
       ? `已载入素材 · 图片 ${videoComposer.sourceImages.length} 张 / 视频 ${videoComposer.sourceVideos.length} 条`
       : '未选择素材'
-  const isRandomBgmMode =
-    videoComposer.selectedBgmValue === VIDEO_COMPOSER_RANDOM_BGM_VALUE
+  const isRandomBgmMode = videoComposer.selectedBgmValue === VIDEO_COMPOSER_RANDOM_BGM_VALUE
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
       <div className="min-h-0 flex-1 overflow-y-auto pt-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         <div className="space-y-3 pb-4">
-          <section className="rounded-[22px] border border-zinc-200/65 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,247,250,0.92))] px-4 py-4 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
+          <section className={cn('rounded-[22px] px-4 py-4', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[13px] font-medium text-zinc-800">素材输入</div>
               </div>
-              <div className="rounded-full border border-zinc-200/80 bg-white/90 px-3 py-1 text-[11px] text-zinc-500">
+              <div
+                className={cn(
+                  'rounded-full px-3 py-1 text-[11px] text-zinc-500',
+                  NOTE_SIDEBAR_SUBTLE_SURFACE_CLASS
+                )}
+              >
                 {videoComposer.sourceMediaCount} 项
               </div>
             </div>
@@ -1046,7 +1058,7 @@ function VideoNoteEditor({
                 </Button>
               ) : null}
             </div>
-            <div className="mt-3 rounded-[18px] border border-dashed border-zinc-200 bg-white/85 px-3 py-3 text-[11px] leading-5 text-zinc-500">
+            <div className="mt-3 rounded-[18px] border border-dashed border-zinc-200 bg-[#fbfbfc] px-3 py-3 text-[11px] leading-5 text-zinc-500">
               {sourceSummary}
             </div>
             {videoComposer.error ? (
@@ -1054,7 +1066,7 @@ function VideoNoteEditor({
             ) : null}
           </section>
 
-          <section className="rounded-[22px] border border-zinc-200/65 bg-white/90 px-4 py-4 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
+          <section className={cn('rounded-[22px] px-4 py-4', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[13px] font-medium text-zinc-800">模板参数</div>
@@ -1184,7 +1196,9 @@ function VideoNoteEditor({
                   </select>
                 </label>
                 <label className="flex flex-col gap-1">
-                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">转场时长（秒）</span>
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">
+                    转场时长（秒）
+                  </span>
                   <Input
                     value={videoComposer.template.transitionDurationSec}
                     onChange={(event) =>
@@ -1197,7 +1211,9 @@ function VideoNoteEditor({
                   />
                 </label>
                 <label className="flex flex-col gap-1">
-                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">BGM 音量（0-2）</span>
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">
+                    BGM 音量（0-2）
+                  </span>
                   <Input
                     value={videoComposer.template.bgmVolume}
                     onChange={(event) =>
@@ -1210,7 +1226,7 @@ function VideoNoteEditor({
             </details>
           </section>
 
-          <section className="rounded-[22px] border border-zinc-200/65 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(247,250,252,0.94))] px-4 py-4 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
+          <section className={cn('rounded-[22px] px-4 py-4', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[13px] font-medium text-zinc-800">生成控制</div>
@@ -1292,7 +1308,7 @@ function VideoNoteEditor({
                     打开 BGM
                   </Button>
                 ) : (
-                  <div className="flex h-8 items-center justify-center rounded-full border border-dashed border-zinc-200/80 bg-white/65 px-3 text-[11px] text-zinc-400">
+                  <div className="flex h-8 items-center justify-center rounded-full border border-dashed border-zinc-200/80 bg-[#fbfbfc] px-3 text-[11px] text-zinc-400">
                     <Music4 className="mr-1.5 h-3.5 w-3.5" />
                     音乐跟随列表
                   </div>
@@ -1340,31 +1356,28 @@ function VideoNoteEditor({
             </div>
           </section>
 
-          <section className="rounded-[22px] border border-zinc-200/65 bg-white/90 px-4 py-4 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[13px] font-medium text-zinc-800">视频笔记文案</div>
+          <div className="space-y-2">
+            <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">视频笔记</div>
+            <section className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+              <Textarea
+                value={csvDraft}
+                onChange={(event) => onCsvChange(event.target.value)}
+                placeholder="输入 CSV 格式文案"
+                className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
+              />
+
+              <div className="mt-3 flex items-end justify-end gap-3 pt-2">
+                <Button
+                  type="button"
+                  onClick={onGenerate}
+                  disabled={!videoComposer.canGenerate}
+                  className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-400"
+                >
+                  {videoComposer.isGenerating ? '生成中' : '开始生成'}
+                </Button>
               </div>
-              <div className="inline-flex h-8 items-center gap-2 rounded-full border border-zinc-200/80 bg-zinc-50/90 px-3 text-[11px] text-zinc-500">
-                <Clapperboard className="h-3.5 w-3.5" />
-                CSV 顺序配对
-              </div>
-            </div>
-            <Textarea
-              value={csvDraft}
-              onChange={(event) => onCsvChange(event.target.value)}
-              placeholder="输入 CSV 格式文案，生成后会按顺序和视频一一配对"
-              className="mt-3 min-h-[104px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
-            />
-            <Button
-              type="button"
-              onClick={onGenerate}
-              disabled={!videoComposer.canGenerate}
-              className="mt-4 h-11 w-full rounded-full border border-transparent bg-zinc-900 text-[12px] font-medium tracking-[0.02em] text-white shadow-[0_16px_30px_rgba(15,23,42,0.12)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-400"
-            >
-              {videoComposer.isGenerating ? '生成中...' : '开始生成'}
-            </Button>
-          </section>
+            </section>
+          </div>
         </div>
       </div>
     </div>
@@ -1571,7 +1584,12 @@ function NoteSidebar({
 
   return (
     <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
-      <aside className="pointer-events-auto flex h-full w-full flex-col bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(249,250,251,0.95))] shadow-[-18px_0_48px_rgba(15,23,42,0.04)] backdrop-blur-[18px]">
+      <aside
+        className={cn(
+          'pointer-events-auto flex h-full w-full flex-col overflow-hidden shadow-[-18px_0_48px_rgba(15,23,42,0.04)]',
+          NOTE_SIDEBAR_BASE_SURFACE_CLASS
+        )}
+      >
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
           <div className="text-[14px] font-medium tracking-[0.02em] text-zinc-800">创作中心</div>
           <div className="flex items-center gap-2">
@@ -1687,7 +1705,7 @@ function NoteSidebar({
               {phase === 'editing' ? (
                 <div className="space-y-2">
                   <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
-                  <div className="rounded-[22px] border border-zinc-200/65 bg-white/88 px-4 py-3 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
+                  <div className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
                     <Textarea
                       value={csvDraft}
                       onChange={(event) => onCsvChange(event.target.value)}
