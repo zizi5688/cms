@@ -45,6 +45,7 @@ import {
 
 export type NoteSidebarMode = 'image-note' | 'video-note'
 export type NoteSidebarPhase = 'editing' | 'preview'
+type ImageNoteEntryMode = 'smart' | 'manual'
 
 type NoteDispatchProgressState = {
   phase: 'start' | 'progress' | 'done'
@@ -1500,6 +1501,7 @@ function NoteSidebar({
   const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
   const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
   const [isDispatchSettingsOpen, setIsDispatchSettingsOpen] = useState(false)
+  const [imageNoteEntryMode, setImageNoteEntryMode] = useState<ImageNoteEntryMode>('smart')
   const [accounts, setAccounts] = useState<NoteSidebarAccountRecord[]>([])
   const [products, setProducts] = useState<NoteSidebarProductRecord[]>([])
   const [isLoadingDispatchAccounts, setIsLoadingDispatchAccounts] = useState(false)
@@ -1526,6 +1528,12 @@ function NoteSidebar({
     showPreview && activePreviewTaskId
       ? (previewTasks.find((task) => task.id === activePreviewTaskId) ?? null)
       : null
+  const isManualImageNoteEntry = imageNoteEntryMode === 'manual'
+  const imageNoteTextareaPlaceholder = isManualImageNoteEntry
+    ? '输入 CSV 格式文案'
+    : '输入额外说明提示词'
+  const imageNoteGenerateButtonLabel = isManualImageNoteEntry ? '生成笔记' : '智能生成'
+  const imageNoteEntryToggleLabel = isManualImageNoteEntry ? '智能生成' : '手动录入'
 
   useEffect(() => {
     if (!showPreview) {
@@ -1678,6 +1686,10 @@ function NoteSidebar({
     setIsDispatchSettingsOpen(false)
   }
 
+  const handleImageNoteEntryModeToggle = (): void => {
+    setImageNoteEntryMode((current) => (current === 'manual' ? 'smart' : 'manual'))
+  }
+
   return (
     <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
       <aside
@@ -1811,12 +1823,21 @@ function NoteSidebar({
             <div className="mt-1 shrink-0 bg-transparent px-1 pt-1">
               {phase === 'editing' ? (
                 <div className="space-y-2">
-                  <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
+                  <div className="flex items-center justify-between px-1">
+                    <div className="text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
+                    <button
+                      type="button"
+                      onClick={handleImageNoteEntryModeToggle}
+                      className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                    >
+                      {imageNoteEntryToggleLabel}
+                    </button>
+                  </div>
                   <div className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
                     <Textarea
                       value={csvDraft}
                       onChange={(event) => onCsvChange(event.target.value)}
-                      placeholder="输入 CSV 格式文案"
+                      placeholder={imageNoteTextareaPlaceholder}
                       className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
                     />
 
@@ -1857,7 +1878,7 @@ function NoteSidebar({
                           disabled={isGenerating}
                           className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:opacity-60"
                         >
-                          {isGenerating ? '生成中' : '生成笔记'}
+                          {isGenerating ? '生成中' : imageNoteGenerateButtonLabel}
                         </Button>
                       </div>
                     </div>
