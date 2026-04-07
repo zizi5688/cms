@@ -26,6 +26,7 @@ import { runWithConcurrencyLimit } from './parallelRunHelpers'
 import type { PreviewSlotRuntimeState } from './previewSlotHelpers'
 import { claimVideoRetrySlot, releaseVideoRetrySlot } from './videoPreviewActions'
 import {
+  bindMasterGeneratedAssetsToSlots,
   bindMasterGeneratedAssetToSlot,
   buildSkippedMasterCleanupAssets
 } from './masterCleanupHelpers'
@@ -33,6 +34,7 @@ import { findAbandonedPreSubmitTaskIds } from './staleTaskRecoveryHelpers'
 import {
   buildQueuedPreviewSlotRuntimeStates,
   prepareWorkflowForMasterRun,
+  resolveMasterWorkflowExecutionMode,
   resolveMasterWorkflowConcurrency,
   summarizeMasterSlotResults
 } from './workflowRunHelpers'
@@ -4282,6 +4284,11 @@ const useAiStudioState = () => {
         primaryImagePath: workingTask.primaryImagePath ?? null,
         referenceImagePaths: workingTask.referenceImagePaths
       })
+      const executionMode = resolveMasterWorkflowExecutionMode({
+        requestedCount: workflow.masterStage.requestedCount,
+        modelName: effectiveModel,
+        endpointPath: sourceProviderSelection.endpointPath
+      })
 
       let task = await updateTaskPatch(workingTask.id, {
         templateId: effectiveTemplateId,
@@ -4289,7 +4296,10 @@ const useAiStudioState = () => {
           sourceProviderSelection.providerName || normalizeAiProviderValue(workingTask.provider),
         promptExtra: effectivePromptText,
         model: effectiveModel,
-        outputCount: 1,
+        outputCount:
+          executionMode === 'single_run_multi_output'
+            ? workflow.masterStage.requestedCount
+            : 1,
         status: 'running',
         remoteTaskId: null,
         latestRunId: null,
@@ -4327,163 +4337,295 @@ const useAiStudioState = () => {
       )
 
       try {
-        const slotResults = await runWithConcurrencyLimit(
-          sequenceIndexes,
-          resolveMasterWorkflowConcurrency(
-            sequenceIndexes.length,
-            AI_STUDIO_MASTER_CLEAN_CONCURRENCY
-          ),
-          async (sequenceIndex) => {
-            if (isTaskInterruptRequested(task.id)) {
-              patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                status: 'failed',
-                message: AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-              })
-              return {
-                sequenceIndex,
-                generated: false,
-                cleaned: false,
-                cleanFailed: false,
-                failure: makeWorkflowFailureRecord(
-                  'master-generate',
-                  sequenceIndex,
-                  AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-                )
-              }
-            }
-
+        const runSingleMasterSlot = async (sequenceIndex: number) => {
+          if (isTaskInterruptRequested(task.id)) {
             patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-              status: 'generating',
-              message: '结果生成中'
+              status: 'failed',
+              message: AI_STUDIO_TASK_INTERRUPTED_MESSAGE
             })
-
-            try {
-              const result = await executeRunToTerminal(task.id)
-              const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
-
-              if (result.status === 'succeeded' && outputAssets.length > 0) {
-                const relabeled = await upsertAssetsRemote(
-                  outputAssets.slice(0, 1).map((asset) => ({
-                    id: asset.id,
-                    taskId: task.id,
-                    runId: asset.runId,
-                    kind: 'output',
-                    role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-                    filePath: asset.filePath,
-                    previewPath: asset.previewPath,
-                    originPath: asset.originPath,
-                    selected: asset.selected,
-                    sortOrder: sequenceIndex - 1,
-                    metadata: {
-                      ...(asset.metadata ?? {}),
-                      stage: 'master',
-                      sequenceIndex,
-                      outputIndex: 0,
-                      watermarkStatus: 'pending'
-                    }
-                  }))
-                )
-                const rawAsset = relabeled[0]
-                if (!rawAsset) {
-                  const message = '结果生成失败'
-                  patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                    status: 'failed',
-                    message
-                  })
-                  return {
-                    sequenceIndex,
-                    generated: false,
-                    cleaned: false,
-                    cleanFailed: false,
-                    failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
-                      runId: result.run?.id
-                    })
-                  }
-                }
-
-                try {
-                  await processMasterCleanup({ id: task.id }, rawAsset, sequenceIndex)
-                  patchPreviewSlotRuntimeState(task.id, sequenceIndex, null)
-                  return {
-                    sequenceIndex,
-                    generated: true,
-                    cleaned: true,
-                    cleanFailed: false,
-                    failure: null
-                  }
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : String(error)
-                  await upsertAssetsRemote([
-                    {
-                      id: rawAsset.id,
-                      taskId: task.id,
-                      runId: rawAsset.runId,
-                      kind: 'output',
-                      role: AI_STUDIO_MASTER_OUTPUT_ROLE,
-                      filePath: rawAsset.filePath,
-                      previewPath: rawAsset.previewPath,
-                      originPath: rawAsset.originPath,
-                      selected: rawAsset.selected,
-                      sortOrder: rawAsset.sortOrder,
-                      metadata: {
-                        ...(rawAsset.metadata ?? {}),
-                        stage: 'master',
-                        sequenceIndex,
-                        watermarkStatus: 'failed'
-                      }
-                    }
-                  ])
-                  patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                    status: 'failed',
-                    message
-                  })
-                  return {
-                    sequenceIndex,
-                    generated: true,
-                    cleaned: false,
-                    cleanFailed: true,
-                    failure: makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
-                      assetId: rawAsset.id
-                    })
-                  }
-                }
-              }
-
-              const message = result.run?.errorMessage || '结果生成失败'
-              patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                status: 'failed',
-                message
-              })
-              return {
+            return {
+              sequenceIndex,
+              generated: false,
+              cleaned: false,
+              cleanFailed: false,
+              failure: makeWorkflowFailureRecord(
+                'master-generate',
                 sequenceIndex,
-                generated: false,
-                cleaned: false,
-                cleanFailed: false,
-                failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
-                  runId: result.run?.id
-                })
-              }
-            } catch (error) {
-              const interrupted = isTaskInterruptedError(error)
-              const message = interrupted
-                ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
-                : error instanceof Error
-                  ? error.message
-                  : String(error)
-              patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
-                status: 'failed',
-                message
-              })
-              return {
-                sequenceIndex,
-                generated: false,
-                cleaned: false,
-                cleanFailed: false,
-                failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message)
-              }
+                AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+              )
             }
           }
-        )
+
+          patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+            status: 'generating',
+            message: '结果生成中'
+          })
+
+          try {
+            const result = await executeRunToTerminal(task.id)
+            const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+
+            if (result.status === 'succeeded' && outputAssets.length > 0) {
+              const relabeled = await upsertAssetsRemote(
+                outputAssets.slice(0, 1).map((asset) => ({
+                  id: asset.id,
+                  taskId: task.id,
+                  runId: asset.runId,
+                  kind: 'output',
+                  role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                  filePath: asset.filePath,
+                  previewPath: asset.previewPath,
+                  originPath: asset.originPath,
+                  selected: asset.selected,
+                  sortOrder: sequenceIndex - 1,
+                  metadata: {
+                    ...(asset.metadata ?? {}),
+                    stage: 'master',
+                    sequenceIndex,
+                    outputIndex: 0,
+                    watermarkStatus: 'pending'
+                  }
+                }))
+              )
+              const rawAsset = relabeled[0]
+              if (!rawAsset) {
+                const message = '结果生成失败'
+                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                  status: 'failed',
+                  message
+                })
+                return {
+                  sequenceIndex,
+                  generated: false,
+                  cleaned: false,
+                  cleanFailed: false,
+                  failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
+                    runId: result.run?.id
+                  })
+                }
+              }
+
+              try {
+                await processMasterCleanup({ id: task.id }, rawAsset, sequenceIndex)
+                patchPreviewSlotRuntimeState(task.id, sequenceIndex, null)
+                return {
+                  sequenceIndex,
+                  generated: true,
+                  cleaned: true,
+                  cleanFailed: false,
+                  failure: null
+                }
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                await upsertAssetsRemote([
+                  {
+                    id: rawAsset.id,
+                    taskId: task.id,
+                    runId: rawAsset.runId,
+                    kind: 'output',
+                    role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                    filePath: rawAsset.filePath,
+                    previewPath: rawAsset.previewPath,
+                    originPath: rawAsset.originPath,
+                    selected: rawAsset.selected,
+                    sortOrder: rawAsset.sortOrder,
+                    metadata: {
+                      ...(rawAsset.metadata ?? {}),
+                      stage: 'master',
+                      sequenceIndex,
+                      watermarkStatus: 'failed'
+                    }
+                  }
+                ])
+                patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                  status: 'failed',
+                  message
+                })
+                return {
+                  sequenceIndex,
+                  generated: true,
+                  cleaned: false,
+                  cleanFailed: true,
+                  failure: makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
+                    assetId: rawAsset.id
+                  })
+                }
+              }
+            }
+
+            const message = result.run?.errorMessage || '结果生成失败'
+            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+              status: 'failed',
+              message
+            })
+            return {
+              sequenceIndex,
+              generated: false,
+              cleaned: false,
+              cleanFailed: false,
+              failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
+                runId: result.run?.id
+              })
+            }
+          } catch (error) {
+            const interrupted = isTaskInterruptedError(error)
+            const message = interrupted
+              ? AI_STUDIO_TASK_INTERRUPTED_MESSAGE
+              : error instanceof Error
+                ? error.message
+                : String(error)
+            patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+              status: 'failed',
+              message
+            })
+            return {
+              sequenceIndex,
+              generated: false,
+              cleaned: false,
+              cleanFailed: false,
+              failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message)
+            }
+          }
+        }
+
+        const slotResults =
+          executionMode === 'single_run_multi_output'
+            ? await (async () => {
+                for (const sequenceIndex of sequenceIndexes) {
+                  patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                    status: 'generating',
+                    message: '结果生成中'
+                  })
+                }
+
+                if (isTaskInterruptRequested(task.id)) {
+                  throw createTaskInterruptedError()
+                }
+
+                const result = await executeRunToTerminal(task.id)
+                const outputAssets = (result.outputs ?? []).map(coerceAssetRecord)
+
+                if (result.status !== 'succeeded' || outputAssets.length === 0) {
+                  const message = result.run?.errorMessage || '结果生成失败'
+                  return sequenceIndexes.map((sequenceIndex) => {
+                    patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                      status: 'failed',
+                      message
+                    })
+                    return {
+                      sequenceIndex,
+                      generated: false,
+                      cleaned: false,
+                      cleanFailed: false,
+                      failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
+                        runId: result.run?.id
+                      })
+                    }
+                  })
+                }
+
+                const relabeledRawAssets = await upsertAssetsRemote(
+                  bindMasterGeneratedAssetsToSlots(
+                    outputAssets.slice(0, sequenceIndexes.length).map((asset) => ({
+                      ...asset,
+                      taskId: task.id
+                    })),
+                    sequenceIndexes.map(() => null)
+                  )
+                )
+
+                const availableCount = relabeledRawAssets.length
+                const insufficientMessage =
+                  availableCount < sequenceIndexes.length
+                    ? `[AI Studio] Flow 实际只返回 ${availableCount}/${sequenceIndexes.length} 张结果。`
+                    : ''
+
+                const results = [] as Array<{
+                  sequenceIndex: number
+                  generated: boolean
+                  cleaned: boolean
+                  cleanFailed: boolean
+                  failure: AiStudioWorkflowFailureRecord | null
+                }>
+
+                for (const sequenceIndex of sequenceIndexes) {
+                  const rawAsset = relabeledRawAssets[sequenceIndex - 1] ?? null
+                  if (!rawAsset) {
+                    const message = insufficientMessage || '结果生成失败'
+                    patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                      status: 'failed',
+                      message
+                    })
+                    results.push({
+                      sequenceIndex,
+                      generated: false,
+                      cleaned: false,
+                      cleanFailed: false,
+                      failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
+                        runId: result.run?.id
+                      })
+                    })
+                    continue
+                  }
+
+                  try {
+                    await processMasterCleanup({ id: task.id }, rawAsset, sequenceIndex)
+                    patchPreviewSlotRuntimeState(task.id, sequenceIndex, null)
+                    results.push({
+                      sequenceIndex,
+                      generated: true,
+                      cleaned: true,
+                      cleanFailed: false,
+                      failure: null
+                    })
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    await upsertAssetsRemote([
+                      {
+                        id: rawAsset.id,
+                        taskId: task.id,
+                        runId: rawAsset.runId,
+                        kind: 'output',
+                        role: AI_STUDIO_MASTER_OUTPUT_ROLE,
+                        filePath: rawAsset.filePath,
+                        previewPath: rawAsset.previewPath,
+                        originPath: rawAsset.originPath,
+                        selected: rawAsset.selected,
+                        sortOrder: rawAsset.sortOrder,
+                        metadata: {
+                          ...(rawAsset.metadata ?? {}),
+                          stage: 'master',
+                          sequenceIndex,
+                          watermarkStatus: 'failed'
+                        }
+                      }
+                    ])
+                    patchPreviewSlotRuntimeState(task.id, sequenceIndex, {
+                      status: 'failed',
+                      message
+                    })
+                    results.push({
+                      sequenceIndex,
+                      generated: true,
+                      cleaned: false,
+                      cleanFailed: true,
+                      failure: makeWorkflowFailureRecord('master-clean', sequenceIndex, message, {
+                        assetId: rawAsset.id
+                      })
+                    })
+                  }
+                }
+
+                return results
+              })()
+            : await runWithConcurrencyLimit(
+                sequenceIndexes,
+                resolveMasterWorkflowConcurrency(
+                  sequenceIndexes.length,
+                  AI_STUDIO_MASTER_CLEAN_CONCURRENCY
+                ),
+                runSingleMasterSlot
+              )
 
         const finalizedTaskRecord = (await loadLatestTaskRecord(task.id)) ?? task
         const finalizedWorkflow = readWorkflowMetadata(finalizedTaskRecord)

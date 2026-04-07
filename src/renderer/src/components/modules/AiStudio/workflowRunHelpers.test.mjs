@@ -5,6 +5,7 @@ import {
   buildQueuedPreviewSlotRuntimeStates,
   computePreviewTargetCount,
   prepareWorkflowForMasterRun,
+  resolveMasterWorkflowExecutionMode,
   resolveMasterWorkflowConcurrency,
   summarizeMasterSlotResults
 } from './workflowRunHelpers.ts'
@@ -79,6 +80,26 @@ test('buildQueuedPreviewSlotRuntimeStates seeds every requested image slot as qu
 test('resolveMasterWorkflowConcurrency caps parallel image generation at ten tasks', () => {
   assert.equal(resolveMasterWorkflowConcurrency(3), 3)
   assert.equal(resolveMasterWorkflowConcurrency(12), 10)
+})
+
+test('resolveMasterWorkflowExecutionMode switches flow-web-api master generation to a single multi-output run', () => {
+  assert.equal(
+    resolveMasterWorkflowExecutionMode({
+      requestedCount: 2,
+      modelName: 'flow-web-image',
+      endpointPath: '/v1beta/models/flow-web-image:generateContent'
+    }),
+    'single_run_multi_output'
+  )
+
+  assert.equal(
+    resolveMasterWorkflowExecutionMode({
+      requestedCount: 2,
+      modelName: 'gemini-2.5-flash-image-preview',
+      endpointPath: '/v1beta/models/gemini-2.5-flash-image-preview:generateContent'
+    }),
+    'parallel_single_output'
+  )
 })
 
 test('summarizeMasterSlotResults keeps success and failure counts aligned with slot outcomes', () => {

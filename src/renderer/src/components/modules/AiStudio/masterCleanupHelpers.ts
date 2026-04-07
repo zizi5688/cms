@@ -17,6 +17,15 @@ type MasterSlotBindingLike = Pick<
   'id' | 'taskId' | 'sortOrder' | 'selected'
 > | null
 
+export function bindMasterGeneratedAssetsToSlots(
+  rawAssets: MasterCleanupAssetLike[],
+  existingSlotBindings: MasterSlotBindingLike[]
+): MasterCleanupAssetLike[] {
+  return rawAssets.map((rawAsset, index) =>
+    bindMasterGeneratedAssetToSlot(rawAsset, index + 1, existingSlotBindings[index] ?? null)
+  )
+}
+
 export function bindMasterGeneratedAssetToSlot(
   rawAsset: MasterCleanupAssetLike,
   sequenceIndex: number,

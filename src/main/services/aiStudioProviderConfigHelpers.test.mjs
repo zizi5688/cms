@@ -156,3 +156,64 @@ test('resolveAiStudioProviderConfig still allows explicit task provider and mode
   assert.equal(resolved.provider, 'grsai')
   assert.equal(resolved.defaultImageModel, 'nano-banana')
 })
+
+test('resolveAiStudioProviderConfig normalizes local gateway flow image endpoint typos back to Gemini generateContent', () => {
+  const resolved = resolveAiStudioProviderConfig(
+    {
+      ...CONFIG,
+      providerProfiles: [
+        ...CONFIG.providerProfiles,
+        {
+          id: 'provider-local',
+          providerName: 'Local',
+          baseUrl: 'http://127.0.0.1:4174',
+          apiKey: 'local-dev-secret',
+          enabled: true,
+          source: 'custom',
+          capabilities: {
+            chat: { enabled: false, defaultModelId: null, models: [] },
+            image: {
+              enabled: true,
+              defaultModelId: 'model-flow-image',
+              models: [
+                {
+                  id: 'model-flow-image',
+                  modelName: 'flow-web-image',
+                  endpointPath: '/v1beta/models/flow-web-image:generateContentf',
+                  protocol: 'openai',
+                  enabled: true
+                }
+              ]
+            },
+            video: { enabled: false, defaultModelId: null, models: [] }
+          },
+          models: [
+            {
+              id: 'model-flow-image',
+              modelName: 'flow-web-image',
+              endpointPath: '/v1beta/models/flow-web-image:generateContentf',
+              protocol: 'openai',
+              enabled: true
+            }
+          ],
+          defaultModelId: 'model-flow-image'
+        }
+      ],
+      aiRuntimeDefaults: {
+        ...CONFIG.aiRuntimeDefaults,
+        imageProviderId: 'provider-local'
+      }
+    },
+    {
+      provider: '',
+      model: '',
+      metadata: {}
+    },
+    'image'
+  )
+
+  assert.equal(resolved.provider, 'Local')
+  assert.equal(resolved.baseUrl, 'http://127.0.0.1:4174')
+  assert.equal(resolved.defaultImageModel, 'flow-web-image')
+  assert.equal(resolved.endpointPath, '/v1beta/models/flow-web-image:generateContent')
+})

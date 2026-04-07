@@ -55,12 +55,22 @@ export type MasterSlotResult<TFailure = unknown> = {
   failure: TFailure | null
 }
 
+export type MasterWorkflowExecutionMode =
+  | 'parallel_single_output'
+  | 'single_run_multi_output'
+
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)))
 }
 
 function normalizeRequestedCount(value: number, fallback = 1): number {
   return Math.max(1, Math.floor(Number(value) || fallback || 1))
+}
+
+function normalizeFlowIdentifier(value: string | null | undefined): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
 }
 
 export function resolveMasterWorkflowConcurrency(
@@ -71,6 +81,25 @@ export function resolveMasterWorkflowConcurrency(
     normalizeRequestedCount(requestedCount),
     normalizeRequestedCount(maxConcurrency)
   )
+}
+
+export function resolveMasterWorkflowExecutionMode(input: {
+  requestedCount: number
+  modelName?: string | null
+  endpointPath?: string | null
+}): MasterWorkflowExecutionMode {
+  const requestedCount = normalizeRequestedCount(input.requestedCount)
+  if (requestedCount <= 1) {
+    return 'parallel_single_output'
+  }
+
+  const normalizedModelName = normalizeFlowIdentifier(input.modelName)
+  const normalizedEndpointPath = normalizeFlowIdentifier(input.endpointPath)
+  const isFlowWebApi =
+    normalizedModelName === 'flow-web-image' ||
+    normalizedEndpointPath === '/v1beta/models/flow-web-image:generatecontent'
+
+  return isFlowWebApi ? 'single_run_multi_output' : 'parallel_single_output'
 }
 
 export function prepareWorkflowForMasterRun<T extends WorkflowLike>(

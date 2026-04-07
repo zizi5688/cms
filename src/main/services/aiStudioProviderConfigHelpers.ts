@@ -67,6 +67,34 @@ function sanitizeBaseUrl(baseUrl: string): string {
   return normalized || GRSAI_DEFAULT_BASE_URL
 }
 
+function isLoopbackGatewayBaseUrl(baseUrl: string): boolean {
+  const normalized = sanitizeBaseUrl(baseUrl).toLowerCase()
+  return (
+    normalized === 'http://127.0.0.1:4174' ||
+    normalized === 'http://localhost:4174' ||
+    normalized === 'http://0.0.0.0:4174'
+  )
+}
+
+function normalizeLocalGatewayEndpointPath(
+  capability: AiCapability,
+  baseUrl: string,
+  modelName: string,
+  endpointPath: string
+): string {
+  if (!isLoopbackGatewayBaseUrl(baseUrl)) return endpointPath
+
+  const normalizedModel = normalizeText(modelName).toLowerCase()
+  if (capability === 'image' && normalizedModel === 'flow-web-image') {
+    return '/v1beta/models/flow-web-image:generateContent'
+  }
+  if (capability === 'chat' && normalizedModel === 'gemini-web-chat') {
+    return '/v1beta/models/gemini-web-chat:generateContent'
+  }
+
+  return endpointPath
+}
+
 function shouldTaskPreferRuntimeDefault(
   task: AiStudioTaskProviderInput | null | undefined,
   capability: AiCapability
@@ -167,10 +195,19 @@ export function resolveAiStudioProviderConfig(
     : null
 
   if (taskProviderName && !taskProviderProfile) {
+    const baseUrl = sanitizeBaseUrl(fallback.baseUrl)
+    const defaultImageModel = resolveConfiguredModel(taskModelName, fallback.defaultImageModel)
     return {
       ...fallback,
       provider: taskProviderName,
-      defaultImageModel: resolveConfiguredModel(taskModelName, fallback.defaultImageModel)
+      baseUrl,
+      defaultImageModel,
+      endpointPath: normalizeLocalGatewayEndpointPath(
+        capability,
+        baseUrl,
+        defaultImageModel,
+        normalizeText(fallback.endpointPath)
+      )
     }
   }
 
@@ -181,10 +218,19 @@ export function resolveAiStudioProviderConfig(
     findFirstProviderForCapability(providerProfiles, capability)
 
   if (!activeProvider) {
+    const baseUrl = sanitizeBaseUrl(fallback.baseUrl)
+    const defaultImageModel = resolveConfiguredModel(taskModelName, fallback.defaultImageModel)
     return {
       ...fallback,
       provider: taskProviderName || fallback.provider,
-      defaultImageModel: resolveConfiguredModel(taskModelName, fallback.defaultImageModel)
+      baseUrl,
+      defaultImageModel,
+      endpointPath: normalizeLocalGatewayEndpointPath(
+        capability,
+        baseUrl,
+        defaultImageModel,
+        normalizeText(fallback.endpointPath)
+      )
     }
   }
 
@@ -194,15 +240,23 @@ export function resolveAiStudioProviderConfig(
     taskModelName || fallback.defaultImageModel
   )
 
+  const baseUrl = sanitizeBaseUrl(activeProvider.baseUrl || fallback.baseUrl)
+  const defaultImageModel = resolveConfiguredModel(
+    modelProfile?.modelName ?? taskModelName,
+    fallback.defaultImageModel
+  )
+
   return {
     provider: activeProvider.providerName,
-    baseUrl: sanitizeBaseUrl(activeProvider.baseUrl || fallback.baseUrl),
+    baseUrl,
     apiKey: normalizeText(activeProvider.apiKey) || fallback.apiKey,
-    defaultImageModel: resolveConfiguredModel(
-      modelProfile?.modelName ?? taskModelName,
-      fallback.defaultImageModel
+    defaultImageModel,
+    endpointPath: normalizeLocalGatewayEndpointPath(
+      capability,
+      baseUrl,
+      defaultImageModel,
+      normalizeText(modelProfile?.endpointPath) || fallback.endpointPath
     ),
-    endpointPath: normalizeText(modelProfile?.endpointPath) || fallback.endpointPath,
     providerProfiles: fallback.providerProfiles
   }
 }
