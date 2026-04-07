@@ -30,6 +30,11 @@ import {
   AI_STUDIO_NOTE_MATERIAL_DRAG_MIME,
   parseNoteMaterialDragPayload
 } from './noteMaterialDragPayload'
+import {
+  collectDispatchableNotePreviewTaskIds,
+  countUndispatchedNotePreviewTasks,
+  isNotePreviewTaskDispatched
+} from './noteSidebarHelpers'
 import type { AiStudioAssetRecord } from './useAiStudioState'
 import {
   VIDEO_COMPOSER_RANDOM_BGM_VALUE,
@@ -40,6 +45,14 @@ import {
 
 export type NoteSidebarMode = 'image-note' | 'video-note'
 export type NoteSidebarPhase = 'editing' | 'preview'
+
+type NoteDispatchProgressState = {
+  phase: 'start' | 'progress' | 'done'
+  processed: number
+  total: number
+  created: number
+  message: string
+}
 
 type NoteSidebarProps = {
   isOpen: boolean
@@ -53,6 +66,7 @@ type NoteSidebarProps = {
   maxImagesDraft: string
   maxReuseDraft: string
   isGenerating?: boolean
+  dispatchProgress?: NoteDispatchProgressState | null
   previewTasks: Task[]
   videoComposer: ReturnType<typeof useVideoComposerController>
   pooledMediaPaths?: string[]
@@ -402,6 +416,7 @@ function PreviewNoteCard({
   const coverPath = imagePaths[0] ?? ''
   const coverSrc = resolveLocalImage(coverPath, workspacePath)
   const isVideoTask = task.mediaType === 'video'
+  const isDispatched = isNotePreviewTaskDispatched(task)
   const productSummary = deriveNoteBoundProductSummary(task)
   const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
   const [draftValue, setDraftValue] = useState('')
@@ -460,15 +475,19 @@ function PreviewNoteCard({
           <button
             type="button"
             onClick={() => {
+              if (isDispatched) return
               onToggleSelect()
             }}
+            disabled={isDispatched}
             className={cn(
               'absolute left-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center border shadow-[0_8px_18px_rgba(15,23,42,0.08)] transition',
-              selected
-                ? 'border-white bg-white text-zinc-950'
-                : 'border-white/80 bg-white/78 text-transparent backdrop-blur-[2px] hover:bg-white'
+              isDispatched
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                : selected
+                  ? 'border-white bg-white text-zinc-950'
+                  : 'border-white/80 bg-white/78 text-transparent backdrop-blur-[2px] hover:bg-white'
             )}
-            aria-label={selected ? '取消选中笔记' : '选中笔记'}
+            aria-label={isDispatched ? '笔记已分发' : selected ? '取消选中笔记' : '选中笔记'}
           >
             <Check className="h-3.5 w-3.5" />
           </button>
@@ -476,32 +495,41 @@ function PreviewNoteCard({
 
         <div className="flex h-[120px] min-w-0 flex-col text-left">
           <div className="flex min-w-0 shrink-0 flex-col items-start gap-2">
-            {editingField === 'title' ? (
-              <Input
-                autoFocus
-                value={draftValue}
-                onChange={(event) => setDraftValue(event.target.value)}
-                onBlur={commitEditor}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    commitEditor()
-                  }
-                  if (event.key === 'Escape') {
-                    setEditingField(null)
-                  }
-                }}
-                className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => openEditor('title')}
-                className="max-w-full text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
-              >
-                <span className="line-clamp-2 break-all">{task.title.trim() || '未命名笔记'}</span>
-              </button>
-            )}
+            <div className="flex w-full items-start justify-between gap-2">
+              {editingField === 'title' ? (
+                <Input
+                  autoFocus
+                  value={draftValue}
+                  onChange={(event) => setDraftValue(event.target.value)}
+                  onBlur={commitEditor}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      commitEditor()
+                    }
+                    if (event.key === 'Escape') {
+                      setEditingField(null)
+                    }
+                  }}
+                  className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => openEditor('title')}
+                  className="max-w-full flex-1 text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
+                >
+                  <span className="line-clamp-2 break-all">
+                    {task.title.trim() || '未命名笔记'}
+                  </span>
+                </button>
+              )}
+              {isDispatched ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] tracking-[0.04em] text-emerald-600">
+                  已分发
+                </span>
+              ) : null}
+            </div>
           </div>
 
           <div className="min-h-0 flex-1 pt-1">
@@ -769,6 +797,60 @@ function DispatchSettingsModal({
               )}
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DispatchProgressOverlay({
+  progress
+}: {
+  progress: NoteDispatchProgressState
+}): React.JSX.Element {
+  const safeTotal = Math.max(progress.total, 1)
+  const percent = Math.max(0, Math.min(100, Math.round((progress.processed / safeTotal) * 100)))
+  const isDone = progress.phase === 'done'
+
+  return (
+    <div className="pointer-events-auto fixed inset-0 z-[140] flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.74),rgba(244,244,245,0.92))] px-6 py-8 backdrop-blur-[14px]">
+      <div className="w-[min(440px,calc(100vw-2.5rem))] rounded-[32px] border border-white/70 bg-[rgba(255,255,255,0.78)] px-8 py-7 shadow-[0_30px_90px_rgba(15,23,42,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]">
+        <div className="flex items-center gap-4">
+          <div
+            className={cn(
+              'flex h-14 w-14 items-center justify-center rounded-full border shadow-[0_16px_38px_rgba(15,23,42,0.08)]',
+              isDone
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                : 'border-zinc-200 bg-white text-zinc-700'
+            )}
+          >
+            {isDone ? <Check className="h-6 w-6" /> : <Loader2 className="h-6 w-6 animate-spin" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[18px] font-semibold tracking-[-0.03em] text-zinc-900">
+              {isDone ? '分发完成' : '正在派发'}
+            </div>
+            <div className="mt-1 text-[12px] leading-6 text-zinc-500">{progress.message}</div>
+          </div>
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-full bg-zinc-200/80">
+          <div
+            className={cn(
+              'h-2 rounded-full transition-all duration-300',
+              isDone ? 'bg-emerald-500' : 'bg-zinc-900'
+            )}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+
+        <div className="mt-3 flex items-center justify-between text-[11px] tracking-[0.04em] text-zinc-400">
+          <span>
+            {isDone
+              ? `已分发 ${progress.created}/${safeTotal}`
+              : `进行中 ${progress.processed}/${safeTotal}`}
+          </span>
+          <span>{percent}%</span>
         </div>
       </div>
     </div>
@@ -1396,6 +1478,7 @@ function NoteSidebar({
   maxImagesDraft,
   maxReuseDraft,
   isGenerating = false,
+  dispatchProgress = null,
   previewTasks,
   videoComposer,
   pooledMediaPaths = [],
@@ -1429,9 +1512,16 @@ function NoteSidebar({
   const showPreview = phase === 'preview'
   const previewTaskIds = useMemo(() => previewTasks.map((task) => task.id), [previewTasks])
   const previewTaskIdsKey = previewTaskIds.join('::')
+  const dispatchablePreviewTaskIds = useMemo(
+    () => collectDispatchableNotePreviewTaskIds(previewTasks),
+    [previewTasks]
+  )
+  const dispatchablePreviewTaskIdsKey = dispatchablePreviewTaskIds.join('::')
+  const undispatchedPreviewTaskCount = countUndispatchedNotePreviewTasks(previewTasks)
+  const isDispatching = dispatchProgress !== null
   const allPreviewSelected =
-    previewTaskIds.length > 0 &&
-    previewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
+    dispatchablePreviewTaskIds.length > 0 &&
+    dispatchablePreviewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
   const activePreviewTask =
     showPreview && activePreviewTaskId
       ? (previewTasks.find((task) => task.id === activePreviewTaskId) ?? null)
@@ -1445,9 +1535,15 @@ function NoteSidebar({
     }
 
     setSelectedPreviewTaskIds((current) =>
-      current.filter((taskId) => previewTaskIds.includes(taskId))
+      current.filter((taskId) => dispatchablePreviewTaskIds.includes(taskId))
     )
-  }, [previewTaskIds, previewTaskIdsKey, showPreview])
+  }, [
+    dispatchablePreviewTaskIds,
+    dispatchablePreviewTaskIdsKey,
+    previewTaskIds,
+    previewTaskIdsKey,
+    showPreview
+  ])
 
   useEffect(() => {
     if (!showPreview || !isDispatchSettingsOpen) return
@@ -1651,26 +1747,37 @@ function NoteSidebar({
               {showPreview ? (
                 <div className="space-y-3 py-2">
                   <div className="flex items-center justify-between px-3">
-                    <div className="text-[11px] tracking-[0.04em] text-zinc-400">生成预览</div>
+                    <div className="text-[11px] tracking-[0.04em] text-zinc-400">
+                      生成预览
+                      {undispatchedPreviewTaskCount > 0
+                        ? ` · 待分发 ${undispatchedPreviewTaskCount} 条`
+                        : ' · 已全部分发'}
+                    </div>
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
-                        onClick={openDispatchSettings}
-                        disabled={selectedPreviewTaskIds.length === 0}
+                        onClick={() => {
+                          setActivePreviewTaskId(null)
+                          onRegenerate()
+                        }}
+                        disabled={isDispatching}
                         className={cn(
                           'inline-flex items-center gap-1 text-[11px] tracking-[0.04em] transition',
-                          selectedPreviewTaskIds.length > 0
+                          !isDispatching
                             ? 'text-zinc-400 hover:text-zinc-700'
                             : 'cursor-not-allowed text-zinc-300'
                         )}
                       >
-                        分发设置
+                        重新生成
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedPreviewTaskIds(allPreviewSelected ? [] : previewTaskIds)
+                          setSelectedPreviewTaskIds(
+                            allPreviewSelected ? [] : dispatchablePreviewTaskIds
+                          )
                         }}
+                        disabled={dispatchablePreviewTaskIds.length === 0 || isDispatching}
                         className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
                       >
                         {allPreviewSelected ? '取消全选' : '全选'}
@@ -1761,20 +1868,23 @@ function NoteSidebar({
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => {
-                      setActivePreviewTaskId(null)
-                      onRegenerate()
-                    }}
+                    onClick={openDispatchSettings}
+                    disabled={selectedPreviewTaskIds.length === 0 || isDispatching}
                     className="h-8 rounded-full border border-zinc-200/70 bg-white/88 px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-700 shadow-[0_10px_24px_rgba(15,23,42,0.03)] transition hover:border-zinc-200 hover:text-zinc-950"
                   >
-                    重新生成
+                    分发设置
                   </Button>
                   <Button
                     type="button"
                     onClick={() => onDispatch(selectedPreviewTaskIds)}
+                    disabled={undispatchedPreviewTaskCount === 0 || isDispatching}
                     className="h-8 rounded-full border border-transparent bg-zinc-900 px-3 text-[11px] font-medium tracking-[0.02em] text-white shadow-[0_12px_26px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800"
                   >
-                    派发到发布工作台
+                    {undispatchedPreviewTaskCount === 0
+                      ? '已全部分发'
+                      : isDispatching
+                        ? '派发中'
+                        : '派发到发布工作台'}
                   </Button>
                 </div>
               )}
@@ -1782,6 +1892,8 @@ function NoteSidebar({
           </div>
         ) : null}
       </aside>
+
+      {dispatchProgress ? <DispatchProgressOverlay progress={dispatchProgress} /> : null}
 
       {activePreviewTask ? (
         <PreviewEditorModal

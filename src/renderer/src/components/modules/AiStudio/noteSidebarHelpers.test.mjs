@@ -4,6 +4,10 @@ import test from 'node:test'
 import {
   buildNoteSidebarPreviewItems,
   buildUploadTasksFromNotePreviewTasks,
+  collectDispatchableNotePreviewTaskIds,
+  countUndispatchedNotePreviewTasks,
+  markNotePreviewTasksDispatched,
+  matchCreatedTasksToNotePreviewTaskIds,
   normalizeNoteSidebarConstraints
 } from './noteSidebarHelpers.ts'
 
@@ -112,4 +116,92 @@ test('buildNoteSidebarPreviewItems exposes multi-image preview metadata for the 
   assert.equal(items[1]?.hasImageShortage, true)
   assert.equal(items[1]?.imageCount, 1)
   assert.equal(items[1]?.log, '图片不足：目标至少 3 张，实际分配 1 张。')
+})
+
+test('collectDispatchableNotePreviewTaskIds ignores dispatched items', () => {
+  assert.deepEqual(
+    collectDispatchableNotePreviewTaskIds([
+      { id: 'task-1', status: 'idle' },
+      { id: 'task-2', status: 'success' },
+      { id: 'task-3', status: 'error' }
+    ]),
+    ['task-1', 'task-3']
+  )
+})
+
+test('markNotePreviewTasksDispatched updates status and appends dispatch log once', () => {
+  const tasks = markNotePreviewTasksDispatched(
+    [
+      {
+        id: 'task-1',
+        title: 'A',
+        body: '正文',
+        assignedImages: ['/tmp/a.png'],
+        mediaType: 'image',
+        status: 'idle',
+        log: ''
+      },
+      {
+        id: 'task-2',
+        title: 'B',
+        body: '正文',
+        assignedImages: ['/tmp/b.png'],
+        mediaType: 'image',
+        status: 'success',
+        log: '已派发到媒体矩阵'
+      }
+    ],
+    ['task-1', 'task-2']
+  )
+
+  assert.equal(tasks[0]?.status, 'success')
+  assert.equal(tasks[0]?.log, '已派发到媒体矩阵')
+  assert.equal(tasks[1]?.log, '已派发到媒体矩阵')
+  assert.equal(countUndispatchedNotePreviewTasks(tasks), 0)
+})
+
+test('matchCreatedTasksToNotePreviewTaskIds pairs created tasks back to preview ids', () => {
+  const sourceTasks = [
+    {
+      id: 'preview-1',
+      accountId: 'acc-1',
+      title: '标题 A',
+      body: '正文 A',
+      assignedImages: ['/tmp/cover-a.png'],
+      mediaType: 'video',
+      productId: 'product-1',
+      videoPath: '/tmp/video-a.mp4',
+      status: 'idle',
+      log: ''
+    },
+    {
+      id: 'preview-2',
+      accountId: 'acc-1',
+      title: '标题 B',
+      body: '正文 B',
+      assignedImages: ['/tmp/cover-b.png'],
+      mediaType: 'video',
+      productId: 'product-2',
+      videoPath: '/tmp/video-b.mp4',
+      status: 'idle',
+      log: ''
+    }
+  ]
+
+  const matchedIds = matchCreatedTasksToNotePreviewTaskIds(sourceTasks, [
+    {
+      id: 'created-2',
+      accountId: 'acc-1',
+      title: '标题 B',
+      body: '正文 B',
+      assignedImages: ['/tmp/cover-b.png'],
+      mediaType: 'video',
+      productId: 'product-2',
+      videoPath: '/tmp/video-b.mp4',
+      status: 'success',
+      log: ''
+    }
+  ])
+
+  assert.deepEqual(matchedIds, ['preview-2'])
 })

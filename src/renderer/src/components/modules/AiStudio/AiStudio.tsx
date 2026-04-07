@@ -19,7 +19,13 @@ import { ControlPanel } from './ControlPanel'
 import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './NoteSidebar'
 import { ResultPanel } from './ResultPanel'
 import { TaskQueue } from './TaskQueue'
-import { normalizeNoteSidebarConstraints } from './noteSidebarHelpers'
+import {
+  countUndispatchedNotePreviewTasks,
+  markNotePreviewTasksDispatched,
+  matchCreatedTasksToNotePreviewTaskIds,
+  normalizeNoteSidebarConstraints,
+  resolveNotePreviewTasksForDispatch
+} from './noteSidebarHelpers'
 import { buildGeneratedVideoNotePreviewTasks } from './videoNotePreviewHelpers'
 import {
   buildProjectCardSummaries,
@@ -70,6 +76,14 @@ const NOTE_SIDEBAR_DEFAULTS = {
 }
 
 type NoteCanvasMode = 'result' | 'batch-pick'
+
+type NoteDispatchProgressState = {
+  phase: 'start' | 'progress' | 'done'
+  processed: number
+  total: number
+  created: number
+  message: string
+}
 
 function AiStudioCanvas({
   state,
@@ -254,6 +268,8 @@ function AiStudio(): React.JSX.Element {
   const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
   const [notePreviewTasks, setNotePreviewTasks] = useState<Task[]>([])
   const [isGeneratingNotePreview, setIsGeneratingNotePreview] = useState(false)
+  const [noteDispatchProgress, setNoteDispatchProgress] =
+    useState<NoteDispatchProgressState | null>(null)
   const [noteUploadedMaterialPaths, setNoteUploadedMaterialPaths] = useState<string[]>([])
   const [noteCanvasMode, setNoteCanvasMode] = useState<NoteCanvasMode>('result')
   const [selectedBatchPickAssetIds, setSelectedBatchPickAssetIds] = useState<string[]>([])
@@ -267,11 +283,21 @@ function AiStudio(): React.JSX.Element {
   )
   const [isCreatingProject, setIsCreatingProject] = useState(false)
   const previousActiveModuleRef = useRef(activeModule)
+  const noteDispatchHideTimeoutRef = useRef<number | null>(null)
   const videoComposer = useVideoComposerController({
     logPrefix: '[AI Studio][视频笔记]'
   })
 
+  const clearNoteDispatchHideTimeout = useCallback((): void => {
+    if (noteDispatchHideTimeoutRef.current === null) return
+    window.clearTimeout(noteDispatchHideTimeoutRef.current)
+    noteDispatchHideTimeoutRef.current = null
+  }, [])
+
+  useEffect(() => clearNoteDispatchHideTimeout, [clearNoteDispatchHideTimeout])
+
   const resetNoteSidebarState = useCallback((): void => {
+    clearNoteDispatchHideTimeout()
     setNoteSidebarOpen(false)
     setNoteSidebarMode(NOTE_SIDEBAR_DEFAULTS.mode)
     setNoteSidebarPhase(NOTE_SIDEBAR_DEFAULTS.phase)
@@ -281,11 +307,12 @@ function AiStudio(): React.JSX.Element {
     setNoteMaxImagesDraft(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
     setNoteMaxReuseDraft(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
     setNotePreviewTasks([])
+    setNoteDispatchProgress(null)
     setNoteUploadedMaterialPaths([])
     setNoteCanvasMode('result')
     setSelectedBatchPickAssetIds([])
     videoComposer.resetComposer()
-  }, [videoComposer])
+  }, [clearNoteDispatchHideTimeout, videoComposer])
 
   const noteMaterials = useMemo(() => {
     const now = Date.now()
@@ -557,12 +584,12 @@ function AiStudio(): React.JSX.Element {
   }, [addLog, noteCsvDraft, prepareGeneratedVideoPreviewAssets, videoComposer])
 
   const handleDispatchNotePreview = async (selectedTaskIds: string[]): Promise<void> => {
-    const tasksToDispatch =
-      selectedTaskIds.length > 0
-        ? notePreviewTasks.filter((task) => selectedTaskIds.includes(task.id))
-        : notePreviewTasks
+    const tasksToDispatch = resolveNotePreviewTasksForDispatch(notePreviewTasks, selectedTaskIds)
 
-    if (tasksToDispatch.length === 0) return
+    if (tasksToDispatch.length === 0) {
+      window.alert('当前没有可分发的笔记。')
+      return
+    }
     const tasksMissingAccount = tasksToDispatch.filter(
       (task) => !String(task.accountId ?? '').trim()
     )
@@ -581,6 +608,14 @@ function AiStudio(): React.JSX.Element {
     }
 
     try {
+      clearNoteDispatchHideTimeout()
+      setNoteDispatchProgress({
+        phase: 'start',
+        processed: 0,
+        total: tasksToDispatch.length,
+        created: 0,
+        message: `开始派发（0/${tasksToDispatch.length}）`
+      })
       unbindProgress = window.api.cms.task.onCreateBatchProgress((payload) => {
         if (!payload) return
         if (payload.requestId !== requestId) return
@@ -591,6 +626,14 @@ function AiStudio(): React.JSX.Element {
           typeof payload.message === 'string'
             ? payload.message
             : `派发处理中（${processed}/${total}）`
+        setNoteDispatchProgress({
+          phase:
+            payload.phase === 'done' ? 'done' : payload.phase === 'start' ? 'start' : 'progress',
+          processed,
+          total,
+          created,
+          message
+        })
         addLog(`[AI Studio] ${message}，已创建 ${created} 条。`)
       })
 
@@ -614,19 +657,73 @@ function AiStudio(): React.JSX.Element {
         { requestId }
       )
 
+      const createdPreviewShadows = created.map((task) => ({
+        id: String(task.id ?? '').trim(),
+        accountId: String(task.accountId ?? '').trim() || undefined,
+        title: String(task.title ?? '').trim(),
+        body: String(task.content ?? '').trim(),
+        assignedImages: Array.isArray(task.images)
+          ? task.images.map((imagePath) => String(imagePath ?? '').trim()).filter(Boolean)
+          : [],
+        mediaType: task.mediaType,
+        productId: String(task.productId ?? '').trim() || undefined,
+        videoPath: String(task.videoPath ?? '').trim() || undefined,
+        log: '',
+        status: 'success' as const
+      }))
+      const dispatchedPreviewTaskIds = matchCreatedTasksToNotePreviewTaskIds(
+        tasksToDispatch,
+        createdPreviewShadows
+      )
+      const resolvedDispatchedPreviewTaskIds =
+        dispatchedPreviewTaskIds.length === 0 && created.length === tasksToDispatch.length
+          ? tasksToDispatch.map((task) => task.id)
+          : dispatchedPreviewTaskIds
+      const nextPreviewTasks = markNotePreviewTasksDispatched(
+        notePreviewTasks,
+        resolvedDispatchedPreviewTaskIds
+      )
+      const remainingUndispatchedCount = countUndispatchedNotePreviewTasks(nextPreviewTasks)
+
       const firstAccountId = String(
         created[0]?.accountId ?? tasksToDispatch[0]?.accountId ?? ''
       ).trim()
       if (firstAccountId) {
         setPreferredAccountId(firstAccountId)
       }
+      setNotePreviewTasks(nextPreviewTasks)
+      setNoteDispatchProgress({
+        phase: 'done',
+        processed: tasksToDispatch.length,
+        total: tasksToDispatch.length,
+        created: created.length,
+        message: `已分发 ${created.length}/${tasksToDispatch.length}`
+      })
+
+      await new Promise<void>((resolve) => {
+        noteDispatchHideTimeoutRef.current = window.setTimeout(() => {
+          noteDispatchHideTimeoutRef.current = null
+          resolve()
+        }, 900)
+      })
+      setNoteDispatchProgress(null)
+
+      if (remainingUndispatchedCount > 0) {
+        addLog(
+          `[AI Studio] 已派发 ${created.length}/${tasksToDispatch.length} 条预览任务，剩余 ${remainingUndispatchedCount} 条待分发。`
+        )
+        return
+      }
+
       setSelectedPublishTaskIds(created.map((task) => String(task.id ?? '').trim()).filter(Boolean))
       setActiveModule('autopublish')
       resetNoteSidebarState()
-      addLog(`[AI Studio] 已将 ${created.length} 组图文笔记直接派发到媒体矩阵队列。`)
+      addLog(`[AI Studio] 已将 ${created.length} 组笔记全部派发到媒体矩阵队列。`)
     } catch (error) {
+      clearNoteDispatchHideTimeout()
+      setNoteDispatchProgress(null)
       const message = error instanceof Error ? error.message : String(error)
-      addLog(`[AI Studio] 图文笔记派发失败：${message}`)
+      addLog(`[AI Studio] 笔记派发失败：${message}`)
       window.alert(message)
     } finally {
       unbindProgress()
@@ -646,6 +743,7 @@ function AiStudio(): React.JSX.Element {
       maxImagesDraft={noteMaxImagesDraft}
       maxReuseDraft={noteMaxReuseDraft}
       isGenerating={isGeneratingNotePreview}
+      dispatchProgress={noteDispatchProgress}
       previewTasks={notePreviewTasks}
       videoComposer={videoComposer}
       pooledMediaPaths={pooledVideoNoteMediaPaths}
