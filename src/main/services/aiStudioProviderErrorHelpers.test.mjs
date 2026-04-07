@@ -22,6 +22,46 @@ test('normalizeAiStudioProviderFailureMessage rewrites 502 gateway html into a c
   )
 })
 
+test('normalizeAiStudioProviderFailureMessage reads top-level payload.error strings', () => {
+  assert.equal(
+    normalizeAiStudioProviderFailureMessage({
+      statusCode: 500,
+      payload: {
+        error: 'Gateway returned a structured top-level error.'
+      },
+      fallback: '[AI Studio] AI 服务请求失败。'
+    }),
+    'Gateway returned a structured top-level error.'
+  )
+})
+
+test('normalizeAiStudioProviderFailureMessage rewrites Flow protection budget exhaustion ahead of generic 502 handling', () => {
+  assert.equal(
+    normalizeAiStudioProviderFailureMessage({
+      statusCode: 502,
+      payload: {
+        error:
+          'FLOW_PROTECTION_TIMEOUT: Flow unusual activity protection triggered. Automatic recovery exceeded the 180 second request budget.'
+      },
+      fallback: '[AI Studio] AI 服务网关异常（502），请稍后重试。'
+    }),
+    '[AI Studio] Flow 命中风控，已在 180 秒内尝试自动恢复，但仍未恢复，请稍后重试。'
+  )
+})
+
+test('normalizeAiStudioProviderFailureMessage rewrites Flow request budget exhaustion into a user-facing timeout', () => {
+  assert.equal(
+    normalizeAiStudioProviderFailureMessage({
+      statusCode: 500,
+      payload: {
+        error: 'FLOW_REQUEST_TIMEOUT: Flow high-resolution download recovery exceeded the 180 second request budget.'
+      },
+      fallback: '[AI Studio] AI 服务请求失败。'
+    }),
+    '[AI Studio] Flow 在 180 秒内未完成本次结果回收，请稍后重试。'
+  )
+})
+
 test('normalizeAiStudioProviderFailureMessage rewrites channel exhaustion into a user-facing retry hint', () => {
   assert.equal(
     normalizeAiStudioProviderFailureMessage({

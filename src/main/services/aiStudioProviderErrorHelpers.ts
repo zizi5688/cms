@@ -24,6 +24,7 @@ function extractPayloadMessage(payload: Record<string, unknown> | null | undefin
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)
       : null
+  const topLevelErrorMessage = normalizeText(payload.error)
   const error =
     payload.error && typeof payload.error === 'object'
       ? (payload.error as Record<string, unknown>)
@@ -32,6 +33,7 @@ function extractPayloadMessage(payload: Record<string, unknown> | null | undefin
   return (
     normalizeText(data?.message) ||
     normalizeText(data?.error) ||
+    topLevelErrorMessage ||
     normalizeText(payload.message) ||
     normalizeText(payload.msg) ||
     normalizeText(error?.message) ||
@@ -50,6 +52,23 @@ export function normalizeAiStudioProviderFailureMessage(input: {
   const fallback = normalizeText(input.fallback)
   const requestId = extractRequestId(payloadMessage)
   const requestIdSuffix = requestId ? `（request id: ${requestId}）` : ''
+  const requestTimeoutSeconds = Math.floor(AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS / 1000)
+
+  if (/FLOW_PROTECTION_TIMEOUT/i.test(payloadMessage)) {
+    return `[AI Studio] Flow 命中风控，已在 ${requestTimeoutSeconds} 秒内尝试自动恢复，但仍未恢复，请稍后重试。`
+  }
+
+  if (/FLOW_REQUEST_TIMEOUT/i.test(payloadMessage)) {
+    return `[AI Studio] Flow 在 ${requestTimeoutSeconds} 秒内未完成本次结果回收，请稍后重试。`
+  }
+
+  if (
+    /Flow unusual activity protection triggered|we noticed some unusual activity|Flow rate limit protection triggered|Flow access protection triggered/i.test(
+      payloadMessage
+    )
+  ) {
+    return '[AI Studio] Flow 当前命中风控，请稍后重试。'
+  }
 
   if (statusCode === 502 || /502\s+Bad\s+Gateway/i.test(payloadMessage)) {
     return '[AI Studio] AI 服务网关异常（502），请稍后重试。'

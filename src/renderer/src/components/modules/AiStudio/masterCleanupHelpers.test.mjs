@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  bindMasterGeneratedAssetsToSlots,
   bindMasterGeneratedAssetToSlot,
   buildSkippedMasterCleanupAssets
 } from './masterCleanupHelpers.ts'
@@ -151,4 +152,91 @@ test('bindMasterGeneratedAssetToSlot falls back to the provider asset id when th
   assert.equal(nextRawAsset.sortOrder, 2)
   assert.equal(nextRawAsset.role, 'master-raw')
   assert.equal(nextRawAsset.metadata.sequenceIndex, 3)
+})
+
+test('bindMasterGeneratedAssetsToSlots preserves per-slot bindings across a single multi-output provider response', () => {
+  const nextRawAssets = bindMasterGeneratedAssetsToSlots(
+    [
+      {
+        id: 'provider-asset-1',
+        taskId: 'task-1',
+        runId: 'run-10',
+        kind: 'output',
+        role: 'ignored-provider-role',
+        filePath: '/tmp/output-001.png',
+        previewPath: '/tmp/output-001.preview.png',
+        originPath: 'https://example.com/output-001.png',
+        selected: false,
+        sortOrder: 7,
+        metadata: {
+          providerTraceId: 'trace-a'
+        }
+      },
+      {
+        id: 'provider-asset-2',
+        taskId: 'task-1',
+        runId: 'run-10',
+        kind: 'output',
+        role: 'ignored-provider-role',
+        filePath: '/tmp/output-002.png',
+        previewPath: '/tmp/output-002.preview.png',
+        originPath: 'https://example.com/output-002.png',
+        selected: false,
+        sortOrder: 8,
+        metadata: {
+          providerTraceId: 'trace-b'
+        }
+      }
+    ],
+    [
+      {
+        id: 'asset-slot-1',
+        taskId: 'task-1',
+        sortOrder: 0,
+        selected: true
+      },
+      null
+    ]
+  )
+
+  assert.deepEqual(nextRawAssets, [
+    {
+      id: 'asset-slot-1',
+      taskId: 'task-1',
+      runId: 'run-10',
+      kind: 'output',
+      role: 'master-raw',
+      filePath: '/tmp/output-001.png',
+      previewPath: '/tmp/output-001.preview.png',
+      originPath: 'https://example.com/output-001.png',
+      selected: true,
+      sortOrder: 0,
+      metadata: {
+        providerTraceId: 'trace-a',
+        stage: 'master',
+        sequenceIndex: 1,
+        outputIndex: 0,
+        watermarkStatus: 'pending'
+      }
+    },
+    {
+      id: 'provider-asset-2',
+      taskId: 'task-1',
+      runId: 'run-10',
+      kind: 'output',
+      role: 'master-raw',
+      filePath: '/tmp/output-002.png',
+      previewPath: '/tmp/output-002.preview.png',
+      originPath: 'https://example.com/output-002.png',
+      selected: false,
+      sortOrder: 1,
+      metadata: {
+        providerTraceId: 'trace-b',
+        stage: 'master',
+        sequenceIndex: 2,
+        outputIndex: 0,
+        watermarkStatus: 'pending'
+      }
+    }
+  ])
 })
