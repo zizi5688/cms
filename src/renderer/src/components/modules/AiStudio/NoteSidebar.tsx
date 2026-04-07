@@ -4,10 +4,11 @@ import type * as React from 'react'
 import {
   Check,
   ChevronLeft,
-  Clapperboard,
   Image as ImageIcon,
   Loader2,
+  Music4,
   PackageSearch,
+  Play,
   Upload,
   Video,
   X
@@ -29,10 +30,29 @@ import {
   AI_STUDIO_NOTE_MATERIAL_DRAG_MIME,
   parseNoteMaterialDragPayload
 } from './noteMaterialDragPayload'
+import {
+  collectDispatchableNotePreviewTaskIds,
+  countUndispatchedNotePreviewTasks,
+  isNotePreviewTaskDispatched
+} from './noteSidebarHelpers'
 import type { AiStudioAssetRecord } from './useAiStudioState'
+import {
+  VIDEO_COMPOSER_RANDOM_BGM_VALUE,
+  fileNameFromPath,
+  fileUrlFromPath,
+  useVideoComposerController
+} from '../useVideoComposerController'
 
 export type NoteSidebarMode = 'image-note' | 'video-note'
 export type NoteSidebarPhase = 'editing' | 'preview'
+
+type NoteDispatchProgressState = {
+  phase: 'start' | 'progress' | 'done'
+  processed: number
+  total: number
+  created: number
+  message: string
+}
 
 type NoteSidebarProps = {
   isOpen: boolean
@@ -46,7 +66,10 @@ type NoteSidebarProps = {
   maxImagesDraft: string
   maxReuseDraft: string
   isGenerating?: boolean
+  dispatchProgress?: NoteDispatchProgressState | null
   previewTasks: Task[]
+  videoComposer: ReturnType<typeof useVideoComposerController>
+  pooledMediaPaths?: string[]
   onOpenChange: (next: boolean) => void
   onModeChange: (mode: NoteSidebarMode) => void
   onCsvChange: (value: string) => void
@@ -77,6 +100,11 @@ type NoteSidebarProductRecord = {
   productUrl: string
   accountId: string
 }
+
+const NOTE_SIDEBAR_BASE_SURFACE_CLASS = 'bg-[#fbfbfc]'
+const NOTE_SIDEBAR_CARD_SURFACE_CLASS =
+  'border border-zinc-200/65 bg-[#fbfbfc] shadow-[0_18px_36px_rgba(15,23,42,0.035)]'
+const NOTE_SIDEBAR_SUBTLE_SURFACE_CLASS = 'border border-zinc-200/80 bg-[#fbfbfc]'
 
 function isSupportedImagePath(filePath: string): boolean {
   return /\.(jpg|jpeg|png|webp|heic)$/i.test(String(filePath ?? '').trim())
@@ -387,6 +415,8 @@ function PreviewNoteCard({
   const imagePaths = task.assignedImages.filter(Boolean)
   const coverPath = imagePaths[0] ?? ''
   const coverSrc = resolveLocalImage(coverPath, workspacePath)
+  const isVideoTask = task.mediaType === 'video'
+  const isDispatched = isNotePreviewTaskDispatched(task)
   const productSummary = deriveNoteBoundProductSummary(task)
   const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
   const [draftValue, setDraftValue] = useState('')
@@ -417,34 +447,47 @@ function PreviewNoteCard({
             className="relative block overflow-hidden border border-zinc-200/80 bg-zinc-50 transition hover:border-sky-200 hover:shadow-[0_0_0_1px_rgba(125,211,252,0.26)]"
           >
             {coverSrc ? (
-              <img
-                src={coverSrc}
-                alt={basename(coverPath)}
-                className="block aspect-[4/5] w-full bg-zinc-100 object-cover"
-                draggable={false}
-                loading="lazy"
-              />
+              <div className="relative">
+                <img
+                  src={coverSrc}
+                  alt={basename(coverPath)}
+                  className="block aspect-[4/5] w-full bg-zinc-100 object-cover"
+                  draggable={false}
+                  loading="lazy"
+                />
+                {isVideoTask ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(15,23,42,0.02),rgba(15,23,42,0.28))]">
+                    <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/70 bg-white/18 text-white backdrop-blur-[6px]">
+                      <Play className="h-3.5 w-3.5 fill-current" />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : (
               <div className="flex aspect-[4/5] w-full items-center justify-center bg-zinc-50 text-[10px] tracking-[0.04em] text-zinc-400">
-                暂无封面
+                {isVideoTask ? '暂无视频封面' : '暂无封面'}
               </div>
             )}
             <div className="absolute bottom-2 right-2 inline-flex h-5 items-center justify-center border border-white/90 bg-zinc-950/34 px-1.5 text-[10px] font-medium tracking-[0.02em] text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)] backdrop-blur-[4px]">
-              {imagePaths.length}张
+              {isVideoTask ? '视频' : `${imagePaths.length}张`}
             </div>
           </button>
           <button
             type="button"
             onClick={() => {
+              if (isDispatched) return
               onToggleSelect()
             }}
+            disabled={isDispatched}
             className={cn(
               'absolute left-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center border shadow-[0_8px_18px_rgba(15,23,42,0.08)] transition',
-              selected
-                ? 'border-white bg-white text-zinc-950'
-                : 'border-white/80 bg-white/78 text-transparent backdrop-blur-[2px] hover:bg-white'
+              isDispatched
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                : selected
+                  ? 'border-white bg-white text-zinc-950'
+                  : 'border-white/80 bg-white/78 text-transparent backdrop-blur-[2px] hover:bg-white'
             )}
-            aria-label={selected ? '取消选中笔记' : '选中笔记'}
+            aria-label={isDispatched ? '笔记已分发' : selected ? '取消选中笔记' : '选中笔记'}
           >
             <Check className="h-3.5 w-3.5" />
           </button>
@@ -452,32 +495,41 @@ function PreviewNoteCard({
 
         <div className="flex h-[120px] min-w-0 flex-col text-left">
           <div className="flex min-w-0 shrink-0 flex-col items-start gap-2">
-            {editingField === 'title' ? (
-              <Input
-                autoFocus
-                value={draftValue}
-                onChange={(event) => setDraftValue(event.target.value)}
-                onBlur={commitEditor}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    commitEditor()
-                  }
-                  if (event.key === 'Escape') {
-                    setEditingField(null)
-                  }
-                }}
-                className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => openEditor('title')}
-                className="max-w-full text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
-              >
-                <span className="line-clamp-2 break-all">{task.title.trim() || '未命名笔记'}</span>
-              </button>
-            )}
+            <div className="flex w-full items-start justify-between gap-2">
+              {editingField === 'title' ? (
+                <Input
+                  autoFocus
+                  value={draftValue}
+                  onChange={(event) => setDraftValue(event.target.value)}
+                  onBlur={commitEditor}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      commitEditor()
+                    }
+                    if (event.key === 'Escape') {
+                      setEditingField(null)
+                    }
+                  }}
+                  className="h-7 w-full rounded-none border-zinc-200 bg-white px-2 text-[12px] font-medium tracking-[0.02em] text-zinc-800 placeholder:text-zinc-300 shadow-[0_0_0_1px_rgba(255,255,255,0.6)] focus-visible:border-sky-200 focus-visible:ring-1 focus-visible:ring-sky-100"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => openEditor('title')}
+                  className="max-w-full flex-1 text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
+                >
+                  <span className="line-clamp-2 break-all">
+                    {task.title.trim() || '未命名笔记'}
+                  </span>
+                </button>
+              )}
+              {isDispatched ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] tracking-[0.04em] text-emerald-600">
+                  已分发
+                </span>
+              ) : null}
+            </div>
           </div>
 
           <div className="min-h-0 flex-1 pt-1">
@@ -751,6 +803,60 @@ function DispatchSettingsModal({
   )
 }
 
+function DispatchProgressOverlay({
+  progress
+}: {
+  progress: NoteDispatchProgressState
+}): React.JSX.Element {
+  const safeTotal = Math.max(progress.total, 1)
+  const percent = Math.max(0, Math.min(100, Math.round((progress.processed / safeTotal) * 100)))
+  const isDone = progress.phase === 'done'
+
+  return (
+    <div className="pointer-events-auto fixed inset-0 z-[140] flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.74),rgba(244,244,245,0.92))] px-6 py-8 backdrop-blur-[14px]">
+      <div className="w-[min(440px,calc(100vw-2.5rem))] rounded-[32px] border border-white/70 bg-[rgba(255,255,255,0.78)] px-8 py-7 shadow-[0_30px_90px_rgba(15,23,42,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]">
+        <div className="flex items-center gap-4">
+          <div
+            className={cn(
+              'flex h-14 w-14 items-center justify-center rounded-full border shadow-[0_16px_38px_rgba(15,23,42,0.08)]',
+              isDone
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                : 'border-zinc-200 bg-white text-zinc-700'
+            )}
+          >
+            {isDone ? <Check className="h-6 w-6" /> : <Loader2 className="h-6 w-6 animate-spin" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[18px] font-semibold tracking-[-0.03em] text-zinc-900">
+              {isDone ? '分发完成' : '正在派发'}
+            </div>
+            <div className="mt-1 text-[12px] leading-6 text-zinc-500">{progress.message}</div>
+          </div>
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-full bg-zinc-200/80">
+          <div
+            className={cn(
+              'h-2 rounded-full transition-all duration-300',
+              isDone ? 'bg-emerald-500' : 'bg-zinc-900'
+            )}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+
+        <div className="mt-3 flex items-center justify-between text-[11px] tracking-[0.04em] text-zinc-400">
+          <span>
+            {isDone
+              ? `已分发 ${progress.created}/${safeTotal}`
+              : `进行中 ${progress.processed}/${safeTotal}`}
+          </span>
+          <span>{percent}%</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PreviewEditorModal({
   task,
   onClose,
@@ -763,6 +869,10 @@ function PreviewEditorModal({
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
   const imagePaths = task.assignedImages.filter(Boolean)
+  const isVideoTask = task.mediaType === 'video'
+  const videoPreviewPath = String(task.videoPreviewPath ?? task.videoPath ?? '').trim()
+  const videoCoverPath = imagePaths[0] ?? ''
+  const videoCoverSrc = videoCoverPath ? resolveLocalImage(videoCoverPath, workspacePath) : ''
 
   return (
     <div className="pointer-events-auto fixed inset-0 z-[80] flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.72),rgba(244,244,245,0.92))] px-6 py-8">
@@ -785,7 +895,50 @@ function PreviewEditorModal({
         </div>
 
         <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden px-5 py-5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-          {imagePaths.length > 0 ? (
+          {isVideoTask ? (
+            <div className="grid h-full min-h-[260px] gap-4 lg:grid-cols-[minmax(0,1.3fr)_280px]">
+              <div className="flex min-h-[260px] items-center justify-center border border-zinc-200/80 bg-black/90">
+                {videoPreviewPath ? (
+                  <video
+                    src={fileUrlFromPath(videoPreviewPath)}
+                    className="h-full max-h-[520px] w-full object-contain"
+                    controls
+                    preload="metadata"
+                    playsInline
+                  />
+                ) : (
+                  <div className="text-[12px] tracking-[0.04em] text-zinc-400">
+                    当前视频不可预览
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col gap-3">
+                <div className="border border-zinc-200/80 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.035)]">
+                  <div className="text-[10px] tracking-[0.08em] text-zinc-400">视频封面</div>
+                  <div className="mt-3 overflow-hidden border border-zinc-200 bg-zinc-50">
+                    {videoCoverSrc ? (
+                      <img
+                        src={videoCoverSrc}
+                        alt={basename(videoCoverPath)}
+                        className="block aspect-[4/5] w-full object-cover"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="flex aspect-[4/5] items-center justify-center text-[11px] text-zinc-400">
+                        暂无封面
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="border border-zinc-200/80 bg-white p-3 text-[11px] leading-5 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.035)]">
+                  <div className="text-[10px] tracking-[0.08em] text-zinc-400">视频信息</div>
+                  <div className="mt-3 break-all">
+                    {String(task.videoPath ?? '').trim() || '未记录视频路径'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : imagePaths.length > 0 ? (
             <div className="flex min-w-max gap-4">
               {imagePaths.map((filePath, index) => {
                 const src = resolveLocalImage(filePath, workspacePath)
@@ -845,7 +998,7 @@ function PreviewEditorModal({
             </div>
           ) : (
             <div className="flex h-full min-h-[260px] items-center justify-center border border-dashed border-zinc-200 bg-zinc-50 text-[12px] tracking-[0.04em] text-zinc-400">
-              当前笔记已无图片
+              {isVideoTask ? '当前视频笔记暂无可预览内容' : '当前笔记已无图片'}
             </div>
           )}
         </div>
@@ -888,12 +1041,426 @@ function LabeledMiniField({
   )
 }
 
-function VideoModePlaceholder(): React.JSX.Element {
+function VideoNoteEditor({
+  csvDraft,
+  onCsvChange,
+  onGenerate,
+  videoComposer,
+  pooledMediaPaths
+}: {
+  csvDraft: string
+  onCsvChange: (value: string) => void
+  onGenerate: () => void
+  videoComposer: ReturnType<typeof useVideoComposerController>
+  pooledMediaPaths: string[]
+}): React.JSX.Element {
+  const revealInFolder = async (filePath: string): Promise<void> => {
+    const normalized = String(filePath ?? '').trim()
+    if (!normalized) return
+    await window.electronAPI.shellShowItemInFolder(normalized)
+  }
+
+  const sourceSummary = videoComposer.sourceRootPath
+    ? `${videoComposer.sourceRootPath} · 图片 ${videoComposer.sourceImages.length} 张 / 视频 ${videoComposer.sourceVideos.length} 条`
+    : videoComposer.sourceMediaCount > 0
+      ? `已载入素材 · 图片 ${videoComposer.sourceImages.length} 张 / 视频 ${videoComposer.sourceVideos.length} 条`
+      : '未选择素材'
+  const isRandomBgmMode = videoComposer.selectedBgmValue === VIDEO_COMPOSER_RANDOM_BGM_VALUE
+
   return (
-    <div className="flex flex-1 items-center justify-center px-6 pb-8">
-      <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-4 py-2 text-[12px] text-zinc-500">
-        <Clapperboard className="h-4 w-4" />
-        视频笔记稍后接入
+    <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+      <div className="min-h-0 flex-1 overflow-y-auto pt-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+        <div className="space-y-3 pb-4">
+          <section className={cn('rounded-[22px] px-4 py-4', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-medium text-zinc-800">素材输入</div>
+              </div>
+              <div
+                className={cn(
+                  'rounded-full px-3 py-1 text-[11px] text-zinc-500',
+                  NOTE_SIDEBAR_SUBTLE_SURFACE_CLASS
+                )}
+              >
+                {videoComposer.sourceMediaCount} 项
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {pooledMediaPaths.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    videoComposer.loadSourceMedia(pooledMediaPaths, '', '已导入当前素材池')
+                  }
+                  className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                >
+                  导入当前素材池
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void videoComposer.handlePickMediaFolder()}
+                disabled={videoComposer.isGenerating || videoComposer.isScanningRoot}
+                className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              >
+                {videoComposer.isScanningRoot ? '扫描中' : '选择文件夹'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void videoComposer.handlePickMediaFiles()}
+                disabled={videoComposer.isGenerating || videoComposer.isScanningRoot}
+                className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              >
+                选择文件
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={videoComposer.clearSources}
+                disabled={
+                  videoComposer.isGenerating ||
+                  videoComposer.isScanningRoot ||
+                  videoComposer.sourceMediaCount === 0
+                }
+                className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              >
+                清空
+              </Button>
+              {videoComposer.sourceRootPath ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void revealInFolder(videoComposer.sourceRootPath)}
+                  className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                >
+                  打开目录
+                </Button>
+              ) : null}
+            </div>
+            <div className="mt-3 rounded-[18px] border border-dashed border-zinc-200 bg-[#fbfbfc] px-3 py-3 text-[11px] leading-5 text-zinc-500">
+              {sourceSummary}
+            </div>
+            {videoComposer.error ? (
+              <div className="mt-2 text-[11px] text-rose-500">{videoComposer.error}</div>
+            ) : null}
+          </section>
+
+          <section className={cn('rounded-[22px] px-4 py-4', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-medium text-zinc-800">模板参数</div>
+              </div>
+              <div className="text-[10px] tracking-[0.04em] text-zinc-400">
+                最近保存：{videoComposer.templateSavedAt > 0 ? '已保存' : '未保存'}
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={videoComposer.handleSaveTemplate}
+                className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              >
+                保存模板
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={videoComposer.handleLoadTemplate}
+                className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              >
+                加载模板
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={videoComposer.handleResetTemplate}
+                className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              >
+                恢复默认
+              </Button>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] tracking-[0.04em] text-zinc-400">模板名称</span>
+                <Input
+                  value={videoComposer.template.name ?? ''}
+                  onChange={(event) =>
+                    videoComposer.setTemplate((prev) => ({ ...prev, name: event.target.value }))
+                  }
+                  className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] tracking-[0.04em] text-zinc-400">总时长（秒）</span>
+                <Input
+                  value={videoComposer.template.totalDurationSec}
+                  onChange={(event) =>
+                    videoComposer.updateTemplateNumber('totalDurationSec', event.target.value)
+                  }
+                  className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] tracking-[0.04em] text-zinc-400">图片最小数</span>
+                <Input
+                  value={videoComposer.template.imageCountMin}
+                  onChange={(event) =>
+                    videoComposer.updateTemplateNumber('imageCountMin', event.target.value)
+                  }
+                  className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] tracking-[0.04em] text-zinc-400">图片最大数</span>
+                <Input
+                  value={videoComposer.template.imageCountMax}
+                  onChange={(event) =>
+                    videoComposer.updateTemplateNumber('imageCountMax', event.target.value)
+                  }
+                  className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                />
+              </label>
+            </div>
+            <details className="mt-3 rounded-[18px] border border-zinc-200 bg-zinc-50/90 px-3 py-3">
+              <summary className="cursor-pointer text-[11px] font-medium tracking-[0.04em] text-zinc-700">
+                高级渲染设置
+              </summary>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">宽度</span>
+                  <Input
+                    value={videoComposer.template.width}
+                    onChange={(event) =>
+                      videoComposer.updateTemplateNumber('width', event.target.value)
+                    }
+                    className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">高度</span>
+                  <Input
+                    value={videoComposer.template.height}
+                    onChange={(event) =>
+                      videoComposer.updateTemplateNumber('height', event.target.value)
+                    }
+                    className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">FPS</span>
+                  <Input
+                    value={videoComposer.template.fps}
+                    onChange={(event) =>
+                      videoComposer.updateTemplateNumber('fps', event.target.value)
+                    }
+                    className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">转场</span>
+                  <select
+                    value={videoComposer.template.transitionType}
+                    onChange={(event) =>
+                      videoComposer.setTemplate((prev) => ({
+                        ...prev,
+                        transitionType: event.target.value as VideoTemplateTransition
+                      }))
+                    }
+                    className="h-8 rounded-none border border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 outline-none transition focus:border-zinc-300 focus:ring-2 focus:ring-zinc-100"
+                  >
+                    <option value="none">none</option>
+                    <option value="fade">fade</option>
+                    <option value="slideleft">slideleft</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">
+                    转场时长（秒）
+                  </span>
+                  <Input
+                    value={videoComposer.template.transitionDurationSec}
+                    onChange={(event) =>
+                      videoComposer.updateTemplateNumber(
+                        'transitionDurationSec',
+                        event.target.value
+                      )
+                    }
+                    className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">
+                    BGM 音量（0-2）
+                  </span>
+                  <Input
+                    value={videoComposer.template.bgmVolume}
+                    onChange={(event) =>
+                      videoComposer.updateTemplateNumber('bgmVolume', event.target.value)
+                    }
+                    className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                  />
+                </label>
+              </div>
+            </details>
+          </section>
+
+          <section className={cn('rounded-[22px] px-4 py-4', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-medium text-zinc-800">生成控制</div>
+              </div>
+              <div className="rounded-full border border-zinc-200/80 bg-white/90 px-3 py-1 text-[11px] text-zinc-500">
+                输出 {videoComposer.outputSizeLabel}
+              </div>
+            </div>
+            <div className="mt-3 space-y-2">
+              <select
+                value={videoComposer.selectedBgmValue}
+                onChange={(event) => videoComposer.setBgmSelectionValue(event.target.value)}
+                disabled={
+                  videoComposer.isGenerating ||
+                  videoComposer.isSyncingHotMusic ||
+                  videoComposer.isLoadingBgmList ||
+                  videoComposer.bgmOptions.length === 0
+                }
+                className="h-9 w-full rounded-none border border-zinc-200 bg-white px-3 text-[12px] text-zinc-700 outline-none transition focus:border-zinc-300 focus:ring-2 focus:ring-zinc-100"
+              >
+                {videoComposer.bgmOptions.length === 0 ? (
+                  <option value="">暂无可用音乐</option>
+                ) : (
+                  <option value={VIDEO_COMPOSER_RANDOM_BGM_VALUE}>随机一首背景音乐</option>
+                )}
+                {videoComposer.bgmOptions.map((filePath) => (
+                  <option key={filePath} value={filePath}>
+                    {fileNameFromPath(filePath)}
+                  </option>
+                ))}
+              </select>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void videoComposer.handleSyncHotMusic()}
+                  disabled={videoComposer.isGenerating || videoComposer.isSyncingHotMusic}
+                  className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                >
+                  {videoComposer.isSyncingHotMusic ? '刷新中' : '刷新音乐榜'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void videoComposer.loadHotMusicBgmOptions()}
+                  disabled={
+                    videoComposer.isGenerating ||
+                    videoComposer.isSyncingHotMusic ||
+                    videoComposer.isLoadingBgmList
+                  }
+                  className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                >
+                  {videoComposer.isLoadingBgmList ? '刷新中' : '本地列表'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    videoComposer.setBgmSelectionValue(VIDEO_COMPOSER_RANDOM_BGM_VALUE)
+                  }
+                  disabled={
+                    videoComposer.isGenerating ||
+                    videoComposer.bgmOptions.length === 0 ||
+                    isRandomBgmMode
+                  }
+                  className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                >
+                  设为随机
+                </Button>
+                {videoComposer.selectedBgmValue &&
+                videoComposer.selectedBgmValue !== VIDEO_COMPOSER_RANDOM_BGM_VALUE ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void revealInFolder(videoComposer.selectedBgmValue)}
+                    className="h-8 rounded-full border-zinc-200/80 bg-white/92 px-3 text-[11px] text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+                  >
+                    打开 BGM
+                  </Button>
+                ) : (
+                  <div className="flex h-8 items-center justify-center rounded-full border border-dashed border-zinc-200/80 bg-[#fbfbfc] px-3 text-[11px] text-zinc-400">
+                    <Music4 className="mr-1.5 h-3.5 w-3.5" />
+                    音乐跟随列表
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">本次生成数量</span>
+                  <Input
+                    value={videoComposer.batchCount}
+                    onChange={(event) => videoComposer.setBatchCount(event.target.value)}
+                    className="h-8 rounded-none border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 focus-visible:ring-zinc-300"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] tracking-[0.04em] text-zinc-400">输出尺寸比例</span>
+                  <select
+                    value={videoComposer.outputAspect}
+                    onChange={(event) =>
+                      videoComposer.setOutputAspect(event.target.value as '9:16' | '3:4')
+                    }
+                    className="h-8 rounded-none border border-zinc-200 bg-white px-2 text-[11px] text-zinc-700 outline-none transition focus:border-zinc-300 focus:ring-2 focus:ring-zinc-100"
+                  >
+                    <option value="9:16">9:16（1080x1920）</option>
+                    <option value="3:4">3:4（1080x1440）</option>
+                  </select>
+                </label>
+              </div>
+
+              {videoComposer.isGenerating ? (
+                <div className="space-y-2 pt-1">
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-200">
+                    <div
+                      className="h-full rounded-full bg-zinc-900 transition-all duration-150"
+                      style={{ width: `${videoComposer.generateProgressPercent}%` }}
+                    />
+                  </div>
+                  <div className="text-[11px] text-zinc-500">
+                    {videoComposer.generateProgressText ||
+                      `总进度：${videoComposer.generateProgressPercent}%`}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <div className="space-y-2">
+            <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">视频笔记</div>
+            <section className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+              <Textarea
+                value={csvDraft}
+                onChange={(event) => onCsvChange(event.target.value)}
+                placeholder="输入 CSV 格式文案"
+                className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
+              />
+
+              <div className="mt-3 flex items-end justify-end gap-3 pt-2">
+                <Button
+                  type="button"
+                  onClick={onGenerate}
+                  disabled={!videoComposer.canGenerate}
+                  className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-400"
+                >
+                  {videoComposer.isGenerating ? '生成中' : '开始生成'}
+                </Button>
+              </div>
+            </section>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -911,7 +1478,10 @@ function NoteSidebar({
   maxImagesDraft,
   maxReuseDraft,
   isGenerating = false,
+  dispatchProgress = null,
   previewTasks,
+  videoComposer,
+  pooledMediaPaths = [],
   onOpenChange,
   onModeChange,
   onCsvChange,
@@ -939,12 +1509,19 @@ function NoteSidebar({
   const preferredAccountId = useCmsStore((store) => store.preferredAccountId)
   const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
   const isImageMode = mode === 'image-note'
-  const showPreview = isImageMode && phase === 'preview'
+  const showPreview = phase === 'preview'
   const previewTaskIds = useMemo(() => previewTasks.map((task) => task.id), [previewTasks])
   const previewTaskIdsKey = previewTaskIds.join('::')
+  const dispatchablePreviewTaskIds = useMemo(
+    () => collectDispatchableNotePreviewTaskIds(previewTasks),
+    [previewTasks]
+  )
+  const dispatchablePreviewTaskIdsKey = dispatchablePreviewTaskIds.join('::')
+  const undispatchedPreviewTaskCount = countUndispatchedNotePreviewTasks(previewTasks)
+  const isDispatching = dispatchProgress !== null
   const allPreviewSelected =
-    previewTaskIds.length > 0 &&
-    previewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
+    dispatchablePreviewTaskIds.length > 0 &&
+    dispatchablePreviewTaskIds.every((taskId) => selectedPreviewTaskIds.includes(taskId))
   const activePreviewTask =
     showPreview && activePreviewTaskId
       ? (previewTasks.find((task) => task.id === activePreviewTaskId) ?? null)
@@ -958,9 +1535,15 @@ function NoteSidebar({
     }
 
     setSelectedPreviewTaskIds((current) =>
-      current.filter((taskId) => previewTaskIds.includes(taskId))
+      current.filter((taskId) => dispatchablePreviewTaskIds.includes(taskId))
     )
-  }, [previewTaskIds, previewTaskIdsKey, showPreview])
+  }, [
+    dispatchablePreviewTaskIds,
+    dispatchablePreviewTaskIdsKey,
+    previewTaskIds,
+    previewTaskIdsKey,
+    showPreview
+  ])
 
   useEffect(() => {
     if (!showPreview || !isDispatchSettingsOpen) return
@@ -1097,7 +1680,12 @@ function NoteSidebar({
 
   return (
     <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
-      <aside className="pointer-events-auto flex h-full w-full flex-col bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(249,250,251,0.95))] shadow-[-18px_0_48px_rgba(15,23,42,0.04)] backdrop-blur-[18px]">
+      <aside
+        className={cn(
+          'pointer-events-auto flex h-full w-full flex-col overflow-hidden shadow-[-18px_0_48px_rgba(15,23,42,0.04)]',
+          NOTE_SIDEBAR_BASE_SURFACE_CLASS
+        )}
+      >
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
           <div className="text-[14px] font-medium tracking-[0.02em] text-zinc-800">创作中心</div>
           <div className="flex items-center gap-2">
@@ -1121,9 +1709,17 @@ function NoteSidebar({
           </div>
         </div>
 
-        {mode === 'video-note' ? <VideoModePlaceholder /> : null}
+        {mode === 'video-note' && phase === 'editing' ? (
+          <VideoNoteEditor
+            csvDraft={csvDraft}
+            onCsvChange={onCsvChange}
+            onGenerate={onGenerate}
+            videoComposer={videoComposer}
+            pooledMediaPaths={pooledMediaPaths}
+          />
+        ) : null}
 
-        {isImageMode ? (
+        {isImageMode || showPreview ? (
           <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
             <div className="min-h-0 flex-1 overflow-y-auto pt-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
               {phase === 'editing' ? (
@@ -1151,26 +1747,37 @@ function NoteSidebar({
               {showPreview ? (
                 <div className="space-y-3 py-2">
                   <div className="flex items-center justify-between px-3">
-                    <div className="text-[11px] tracking-[0.04em] text-zinc-400">生成预览</div>
+                    <div className="text-[11px] tracking-[0.04em] text-zinc-400">
+                      生成预览
+                      {undispatchedPreviewTaskCount > 0
+                        ? ` · 待分发 ${undispatchedPreviewTaskCount} 条`
+                        : ' · 已全部分发'}
+                    </div>
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
-                        onClick={openDispatchSettings}
-                        disabled={selectedPreviewTaskIds.length === 0}
+                        onClick={() => {
+                          setActivePreviewTaskId(null)
+                          onRegenerate()
+                        }}
+                        disabled={isDispatching}
                         className={cn(
                           'inline-flex items-center gap-1 text-[11px] tracking-[0.04em] transition',
-                          selectedPreviewTaskIds.length > 0
+                          !isDispatching
                             ? 'text-zinc-400 hover:text-zinc-700'
                             : 'cursor-not-allowed text-zinc-300'
                         )}
                       >
-                        分发设置
+                        重新生成
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedPreviewTaskIds(allPreviewSelected ? [] : previewTaskIds)
+                          setSelectedPreviewTaskIds(
+                            allPreviewSelected ? [] : dispatchablePreviewTaskIds
+                          )
                         }}
+                        disabled={dispatchablePreviewTaskIds.length === 0 || isDispatching}
                         className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
                       >
                         {allPreviewSelected ? '取消全选' : '全选'}
@@ -1205,7 +1812,7 @@ function NoteSidebar({
               {phase === 'editing' ? (
                 <div className="space-y-2">
                   <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">图文笔记</div>
-                  <div className="rounded-[22px] border border-zinc-200/65 bg-white/88 px-4 py-3 shadow-[0_18px_36px_rgba(15,23,42,0.035)] backdrop-blur-[14px]">
+                  <div className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
                     <Textarea
                       value={csvDraft}
                       onChange={(event) => onCsvChange(event.target.value)}
@@ -1261,20 +1868,23 @@ function NoteSidebar({
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => {
-                      setActivePreviewTaskId(null)
-                      onRegenerate()
-                    }}
+                    onClick={openDispatchSettings}
+                    disabled={selectedPreviewTaskIds.length === 0 || isDispatching}
                     className="h-8 rounded-full border border-zinc-200/70 bg-white/88 px-3 text-[11px] font-medium tracking-[0.02em] text-zinc-700 shadow-[0_10px_24px_rgba(15,23,42,0.03)] transition hover:border-zinc-200 hover:text-zinc-950"
                   >
-                    重新生成
+                    分发设置
                   </Button>
                   <Button
                     type="button"
                     onClick={() => onDispatch(selectedPreviewTaskIds)}
+                    disabled={undispatchedPreviewTaskCount === 0 || isDispatching}
                     className="h-8 rounded-full border border-transparent bg-zinc-900 px-3 text-[11px] font-medium tracking-[0.02em] text-white shadow-[0_12px_26px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800"
                   >
-                    派发到发布工作台
+                    {undispatchedPreviewTaskCount === 0
+                      ? '已全部分发'
+                      : isDispatching
+                        ? '派发中'
+                        : '派发到发布工作台'}
                   </Button>
                 </div>
               )}
@@ -1282,6 +1892,8 @@ function NoteSidebar({
           </div>
         ) : null}
       </aside>
+
+      {dispatchProgress ? <DispatchProgressOverlay progress={dispatchProgress} /> : null}
 
       {activePreviewTask ? (
         <PreviewEditorModal
