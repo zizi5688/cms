@@ -41,11 +41,11 @@ test('normalizeAiStudioProviderFailureMessage rewrites Flow protection budget ex
       statusCode: 502,
       payload: {
         error:
-          'FLOW_PROTECTION_TIMEOUT: Flow unusual activity protection triggered. Automatic recovery exceeded the 180 second request budget.'
+          'FLOW_PROTECTION_TIMEOUT: Flow unusual activity protection triggered. Automatic recovery exceeded the 300 second request budget.'
       },
       fallback: '[AI Studio] AI 服务网关异常（502），请稍后重试。'
     }),
-    '[AI Studio] Flow 命中风控，已在 180 秒内尝试自动恢复，但仍未恢复，请稍后重试。'
+    '[AI Studio] Flow 命中风控，已在 300 秒内尝试自动恢复，但仍未恢复，请稍后重试。'
   )
 })
 
@@ -54,11 +54,11 @@ test('normalizeAiStudioProviderFailureMessage rewrites Flow request budget exhau
     normalizeAiStudioProviderFailureMessage({
       statusCode: 500,
       payload: {
-        error: 'FLOW_REQUEST_TIMEOUT: Flow high-resolution download recovery exceeded the 180 second request budget.'
+        error: 'FLOW_REQUEST_TIMEOUT: Flow high-resolution download recovery exceeded the 300 second request budget.'
       },
       fallback: '[AI Studio] AI 服务请求失败。'
     }),
-    '[AI Studio] Flow 在 180 秒内未完成本次结果回收，请稍后重试。'
+    '[AI Studio] Flow 在 300 秒内未完成本次结果回收，请稍后重试。'
   )
 })
 
@@ -95,8 +95,8 @@ test('normalizeAiStudioProviderTransportErrorMessage rewrites connection resets'
   )
 })
 
-test('resolveAiStudioProviderRequestTimeoutMs uses a 180 second default for image requests and allows disabling the timeout', () => {
-  assert.equal(AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS, 180_000)
-  assert.equal(resolveAiStudioProviderRequestTimeoutMs(undefined), 180_000)
+test('resolveAiStudioProviderRequestTimeoutMs uses a 300 second default for image requests and allows disabling the timeout', () => {
+  assert.equal(AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS, 300_000)
+  assert.equal(resolveAiStudioProviderRequestTimeoutMs(undefined), 300_000)
   assert.equal(resolveAiStudioProviderRequestTimeoutMs(null), null)
 })
