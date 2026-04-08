@@ -9,6 +9,13 @@ import ffprobeStaticImport from 'ffprobe-static'
 
 import { prepareGeminiInlineImageFromPath } from './aiStudioGeminiInlineImageHelpers'
 import {
+  AI_STUDIO_FLOW_TASK_POLL_PATH,
+  AI_STUDIO_FLOW_TASK_SUBMIT_PATH,
+  buildAiStudioAsyncFlowSubmitPayload,
+  isAiStudioAsyncFlowRoute,
+  normalizeAiStudioAsyncFlowTaskPayload
+} from './aiStudioFlowTaskHelpers'
+import {
   AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS,
   normalizeAiStudioProviderFailureMessage,
   normalizeAiStudioProviderTransportErrorMessage,
@@ -2375,6 +2382,10 @@ export class AiStudioService {
     const submitApiPath = config.endpointPath || GRSAI_DRAW_PATH
     const looksLikeChatCompletions = isChatCompletionsPath(submitApiPath)
     const looksLikeGeminiGenerateContent = isGeminiGenerateContentPath(submitApiPath)
+    const usesAsyncFlowTask = isAiStudioAsyncFlowRoute({
+      model: context.model,
+      endpointPath: submitApiPath
+    })
 
     await this.appendImageDebugLog('image.submit.context', {
       taskId,
@@ -2391,20 +2402,29 @@ export class AiStudioService {
     })
 
     try {
-      const response = await this.requestProvider(submitApiPath, context.requestPayload, {
+      const response = await this.requestProvider(
+        usesAsyncFlowTask ? AI_STUDIO_FLOW_TASK_SUBMIT_PATH : submitApiPath,
+        usesAsyncFlowTask
+          ? buildAiStudioAsyncFlowSubmitPayload({
+              model: context.model,
+              requestPayload: context.requestPayload
+            })
+          : context.requestPayload,
+        {
         providerConfig: config,
         debugLogKind: 'image',
         debugContext: {
-          flow: 'image-submit',
+          flow: usesAsyncFlowTask ? 'image-submit-async-task' : 'image-submit',
           taskId,
           model: context.model,
-          submitPath: submitApiPath
+          submitPath: usesAsyncFlowTask ? AI_STUDIO_FLOW_TASK_SUBMIT_PATH : submitApiPath
         }
-      })
+      }
+      )
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       const directResultItems = extractResultItems(response.payload)
 
-      if (directResultItems.length > 0) {
+      if (!usesAsyncFlowTask && directResultItems.length > 0) {
         const run = await this.recordRunAttempt({
           taskId,
           provider: config.provider,
@@ -2461,7 +2481,8 @@ export class AiStudioService {
       await this.appendImageDebugLog('image.submit.accepted', {
         taskId,
         runId: run.id,
-        remoteTaskId
+        remoteTaskId,
+        asyncTask: usesAsyncFlowTask
       })
 
       return toExecutionResult(
@@ -2861,9 +2882,37 @@ export class AiStudioService {
       throw new Error('[AI Studio] 当前运行缺少远端任务 ID。')
     }
 
-    const response = await this.requestProvider(GRSAI_RESULT_PATH, { id: existingRun.remoteTaskId })
-    const status = extractResultStatus(response.payload, existingRun.status)
-    const errorMessage = status === 'failed' ? extractFailureReason(response.payload) : null
+    const providerConfig = this.getProviderConfig(task, 'image')
+    const requestSnapshot = asObject(existingRun.requestPayload)
+    const usesAsyncFlowTask = isAiStudioAsyncFlowRoute({
+      model: normalizeText(requestSnapshot.model) || task.model,
+      endpointPath:
+        normalizeText(requestSnapshot.endpointPath) ||
+        providerConfig.endpointPath ||
+        GRSAI_DRAW_PATH
+    })
+    const response = await this.requestProvider(
+      usesAsyncFlowTask ? AI_STUDIO_FLOW_TASK_POLL_PATH : GRSAI_RESULT_PATH,
+      usesAsyncFlowTask ? { taskId: existingRun.remoteTaskId } : { id: existingRun.remoteTaskId },
+      usesAsyncFlowTask
+        ? {
+            method: 'GET',
+            providerConfig,
+            debugLogKind: 'image',
+            debugContext: {
+              flow: 'image-poll-async-task',
+              taskId,
+              runId: existingRun.id,
+              remoteTaskId: existingRun.remoteTaskId
+            }
+          }
+        : undefined
+    )
+    const normalizedResponsePayload = usesAsyncFlowTask
+      ? normalizeAiStudioAsyncFlowTaskPayload(response.payload)
+      : response.payload
+    const status = extractResultStatus(normalizedResponsePayload, existingRun.status)
+    const errorMessage = status === 'failed' ? extractFailureReason(normalizedResponsePayload) : null
 
     const run = await this.recordRunAttempt({
       runId: existingRun.id,
@@ -2874,14 +2923,18 @@ export class AiStudioService {
       priceMinSnapshot: existingRun.priceMinSnapshot,
       priceMaxSnapshot: existingRun.priceMaxSnapshot,
       requestPayload: existingRun.requestPayload,
-      responsePayload: response.payload,
+      responsePayload: normalizedResponsePayload,
       errorMessage,
       finishedAt: status === 'succeeded' || status === 'failed' ? Date.now() : null
     })
 
     const outputs =
       status === 'succeeded'
-        ? await this.downloadOutputs({ taskId, runId: run.id, responsePayload: response.payload })
+        ? await this.downloadOutputs({
+            taskId,
+            runId: run.id,
+            responsePayload: normalizedResponsePayload
+          })
         : this.listAssets({ taskId, runId: run.id, kind: 'output' })
 
     return toExecutionResult(this.getTaskOrThrow(taskId), run, outputs)

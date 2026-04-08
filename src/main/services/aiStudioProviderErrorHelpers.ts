@@ -1,4 +1,4 @@
-export const AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS = 180_000
+export const AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS = 300_000
 
 export function resolveAiStudioProviderRequestTimeoutMs(timeoutMs?: number | null): number | null {
   if (timeoutMs === null) return null
