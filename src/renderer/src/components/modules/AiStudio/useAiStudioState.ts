@@ -5185,8 +5185,11 @@ const useAiStudioState = () => {
   )
 
   const startChatRun = useCallback(
-    async (payload: { promptText: string }) => {
+    async (payload: { promptText: string; imagePaths?: string[] }) => {
       const promptText = String(payload.promptText ?? '').trim()
+      const imagePaths = Array.isArray(payload.imagePaths)
+        ? payload.imagePaths.map((item) => String(item ?? '').trim()).filter(Boolean)
+        : []
       if (!promptText) {
         throw new Error('[AI Studio] 请先输入聊天内容。')
       }
@@ -5212,7 +5215,8 @@ const useAiStudioState = () => {
         const result = (await window.api.cms.ai.task.run({
           capability: 'chat',
           input: {
-            prompt: promptText
+            prompt: promptText,
+            imagePaths
           }
         })) as {
           outputText?: unknown

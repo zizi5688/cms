@@ -1,10 +1,26 @@
+import { readFile } from 'node:fs/promises'
+import { basename, extname } from 'node:path'
+
 import type { AiTaskRequest } from './aiTaskDispatcher.ts'
 import type { ResolvedAiRoute } from './aiRouter.ts'
+import { prepareGeminiInlineImageFromPath } from './aiStudioGeminiInlineImageHelpers.ts'
 
 type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
 }
+
+type ChatMessageContentPart =
+  | {
+      type: 'text'
+      text: string
+    }
+  | {
+      type: 'image_url'
+      image_url: {
+        url: string
+      }
+    }
 
 type ChatExecutorInput = {
   route: ResolvedAiRoute
@@ -38,6 +54,52 @@ export class ChatExecutorError extends Error {
 
 function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function getErrorLikeRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+}
+
+function isLoopbackRequestUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      url.hostname === '127.0.0.1' ||
+      url.hostname === 'localhost' ||
+      url.hostname === '0.0.0.0' ||
+      url.hostname === '::1' ||
+      url.hostname === '[::1]'
+    )
+  } catch {
+    return /^https?:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]|::1)(?::\d+)?(?:\/|$)/i.test(
+      normalizeText(value)
+    )
+  }
+}
+
+function describeNetworkFailure(error: unknown): string {
+  const record = getErrorLikeRecord(error)
+  const cause = getErrorLikeRecord(record.cause)
+  const details = [
+    normalizeText(record.message),
+    normalizeText(cause.message),
+    normalizeText(cause.code),
+    normalizeText(cause.errno),
+    normalizeText(cause.address),
+    cause.port !== undefined && cause.port !== null ? String(cause.port) : ''
+  ].filter(Boolean)
+
+  return Array.from(new Set(details)).join(' | ')
+}
+
+function createFetchFailureMessage(requestUrl: string, error: unknown): string {
+  const endpointLabel = isLoopbackRequestUrl(requestUrl) ? '本地网关' : 'AI 提供方'
+  const guidance = isLoopbackRequestUrl(requestUrl)
+    ? '请检查本地网关是否仍在运行，并确认相关端口可访问。'
+    : '请检查供应商地址、网络连接或代理配置。'
+  const detail = describeNetworkFailure(error)
+
+  return `${endpointLabel}请求失败：${requestUrl}。${guidance}${detail ? ` 底层错误：${detail}` : ''}`
 }
 
 function buildProviderUrl(baseUrl: string, endpointPath: string): string {
@@ -79,6 +141,85 @@ function resolveMessages(input: unknown): ChatMessage[] {
   throw new ChatExecutorError('AI_CHAT_INPUT_INVALID', 'Chat input requires messages[] or prompt.')
 }
 
+function parseDataUrl(value: string): { mimeType: string; data: string } | null {
+  const match = normalizeText(value).match(/^data:([^;,]+)?;base64,(.+)$/i)
+  if (!match) return null
+  return {
+    mimeType: normalizeText(match[1]) || 'image/jpeg',
+    data: normalizeText(match[2])
+  }
+}
+
+function inferMimeType(filePath: string): string {
+  const ext = extname(filePath).toLowerCase().replace('.', '')
+  if (ext === 'png') return 'image/png'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'bmp') return 'image/bmp'
+  if (ext === 'avif') return 'image/avif'
+  return 'image/jpeg'
+}
+
+async function filePathToDataUrl(filePath: string): Promise<string> {
+  const normalized = normalizeText(filePath)
+  if (!normalized) throw new ChatExecutorError('AI_CHAT_IMAGE_INVALID', 'Image path is empty.')
+  const buffer = await readFile(normalized)
+  if (!buffer || buffer.length <= 0) {
+    throw new ChatExecutorError('AI_CHAT_IMAGE_INVALID', `Image is empty: ${basename(normalized)}`)
+  }
+  return `data:${inferMimeType(normalized)};base64,${buffer.toString('base64')}`
+}
+
+function resolveImageUrls(input: unknown): string[] {
+  const record = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  return Array.isArray(record.imageUrls)
+    ? record.imageUrls.map((item) => normalizeText(item)).filter(Boolean)
+    : []
+}
+
+async function normalizeChatRequestInput(
+  route: ResolvedAiRoute,
+  request: AiTaskRequest
+): Promise<AiTaskRequest> {
+  const input = request.input && typeof request.input === 'object' ? (request.input as Record<string, unknown>) : {}
+  const imagePaths = Array.isArray(input.imagePaths)
+    ? input.imagePaths.map((item) => normalizeText(item)).filter(Boolean)
+    : []
+
+  if (imagePaths.length === 0) return request
+
+  const imageUrls = await Promise.all(
+    imagePaths.map((filePath) =>
+      isGeminiGenerateContentRoute(route)
+        ? prepareGeminiInlineImageFromPath(filePath).then((result) => result.dataUrl)
+        : filePathToDataUrl(filePath)
+    )
+  )
+
+  return {
+    ...request,
+    input: {
+      ...input,
+      imageUrls: [...resolveImageUrls(input), ...imageUrls]
+    }
+  }
+}
+
+function buildOpenAiMessageContent(
+  message: ChatMessage,
+  imageUrls: string[],
+  attachImages: boolean
+): string | ChatMessageContentPart[] {
+  if (!attachImages || imageUrls.length === 0) return message.content
+  return [
+    { type: 'text', text: message.content },
+    ...imageUrls.map((url) => ({
+      type: 'image_url' as const,
+      image_url: { url }
+    }))
+  ]
+}
+
 function pickNumeric(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -90,9 +231,18 @@ function isGeminiGenerateContentRoute(route: ResolvedAiRoute): boolean {
 
 function createOpenAiChatPayload(route: ResolvedAiRoute, request: AiTaskRequest): Record<string, unknown> {
   const input = request.input && typeof request.input === 'object' ? (request.input as Record<string, unknown>) : {}
+  const imageUrls = resolveImageUrls(input)
+  let attachedImageCount = 0
   return {
     model: route.modelName,
-    messages: resolveMessages(input),
+    messages: resolveMessages(input).map((message) => {
+      const shouldAttachImages = message.role === 'user' && attachedImageCount === 0 && imageUrls.length > 0
+      if (shouldAttachImages) attachedImageCount += 1
+      return {
+        role: message.role,
+        content: buildOpenAiMessageContent(message, imageUrls, shouldAttachImages)
+      }
+    }),
     ...(pickNumeric(input, 'temperature') !== undefined
       ? { temperature: pickNumeric(input, 'temperature') }
       : {}),
@@ -104,11 +254,31 @@ function createOpenAiChatPayload(route: ResolvedAiRoute, request: AiTaskRequest)
 }
 
 function createGeminiChatPayload(request: AiTaskRequest): Record<string, unknown> {
+  const imageUrls = resolveImageUrls(request.input)
+  let attachedImageCount = 0
   return {
-    contents: resolveMessages(request.input).map((message) => ({
-      role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }]
-    }))
+    contents: resolveMessages(request.input).map((message) => {
+      const shouldAttachImages =
+        message.role === 'user' && attachedImageCount === 0 && imageUrls.length > 0
+      if (shouldAttachImages) attachedImageCount += 1
+      return {
+        role: message.role === 'assistant' ? 'model' : 'user',
+        parts: shouldAttachImages
+          ? [
+              ...imageUrls
+                .map((url) => parseDataUrl(url))
+                .filter((item): item is { mimeType: string; data: string } => Boolean(item))
+                .map((item) => ({
+                  inlineData: {
+                    mimeType: item.mimeType,
+                    data: item.data
+                  }
+                })),
+              { text: message.content }
+            ]
+          : [{ text: message.content }]
+      }
+    })
   }
 }
 
@@ -200,18 +370,35 @@ export async function executeChatTask(
   outputText: string
   response: Record<string, unknown>
 }> {
-  const payload = createChatCompletionPayload(input.route, input.request)
+  const normalizedRequest = await normalizeChatRequestInput(input.route, input.request)
+  const payload = createChatCompletionPayload(input.route, normalizedRequest)
   const requestUrl = buildProviderUrl(input.route.baseUrl, input.route.endpointPath)
-  const response = await fetchImpl(requestUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${input.route.apiKey}`
-    },
-    body: JSON.stringify(payload)
-  })
-  const body = await response.json()
+  let response: Awaited<ReturnType<FetchLike>>
+  try {
+    response = await fetchImpl(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${input.route.apiKey}`
+      },
+      body: JSON.stringify(payload)
+    })
+  } catch (error) {
+    throw new ChatExecutorError('AI_CHAT_NETWORK_ERROR', createFetchFailureMessage(requestUrl, error))
+  }
+
+  let body: Record<string, unknown>
+  try {
+    body = await response.json()
+  } catch (error) {
+    const detail = describeNetworkFailure(error)
+    throw new ChatExecutorError(
+      'AI_CHAT_RESPONSE_INVALID',
+      `提供方响应解析失败：${requestUrl}${detail ? `。底层错误：${detail}` : ''}`,
+      response.status
+    )
+  }
 
   if (!response.ok) {
     const message =

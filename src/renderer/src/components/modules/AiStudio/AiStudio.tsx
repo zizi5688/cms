@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
+import { flushSync } from 'react-dom'
 
 import { ArrowLeft, ImageIcon, MessageSquare, Sparkles, Video } from 'lucide-react'
 
@@ -16,8 +17,17 @@ import {
 } from './batchPickHelpers'
 import { AiStudioProjectLanding } from './AiStudioProjectLanding'
 import { ControlPanel } from './ControlPanel'
-import { NoteSidebar, type NoteSidebarMode, type NoteSidebarPhase } from './NoteSidebar'
+import {
+  NoteSidebar,
+  type ImageNoteEntryMode,
+  type NoteSidebarMode,
+  type NoteSidebarPhase
+} from './NoteSidebar'
 import { ResultPanel } from './ResultPanel'
+import {
+  buildSmartNoteChatInput,
+  extractCsvFromSmartNoteResponse
+} from './smartNoteGenerationHelpers'
 import { TaskQueue } from './TaskQueue'
 import {
   countUndispatchedNotePreviewTasks,
@@ -69,6 +79,7 @@ const NOTE_SIDEBAR_DEFAULTS = {
   mode: 'image-note' as NoteSidebarMode,
   phase: 'editing' as NoteSidebarPhase,
   csvDraft: '',
+  smartPromptDraft: '',
   groupCountDraft: '1',
   minImagesDraft: '3',
   maxImagesDraft: '5',
@@ -260,6 +271,9 @@ function AiStudio(): React.JSX.Element {
     NOTE_SIDEBAR_DEFAULTS.phase
   )
   const [noteCsvDraft, setNoteCsvDraft] = useState(NOTE_SIDEBAR_DEFAULTS.csvDraft)
+  const [noteSmartPromptDraft, setNoteSmartPromptDraft] = useState(
+    NOTE_SIDEBAR_DEFAULTS.smartPromptDraft
+  )
   const [noteGroupCountDraft, setNoteGroupCountDraft] = useState(
     NOTE_SIDEBAR_DEFAULTS.groupCountDraft
   )
@@ -302,6 +316,7 @@ function AiStudio(): React.JSX.Element {
     setNoteSidebarMode(NOTE_SIDEBAR_DEFAULTS.mode)
     setNoteSidebarPhase(NOTE_SIDEBAR_DEFAULTS.phase)
     setNoteCsvDraft(NOTE_SIDEBAR_DEFAULTS.csvDraft)
+    setNoteSmartPromptDraft(NOTE_SIDEBAR_DEFAULTS.smartPromptDraft)
     setNoteGroupCountDraft(NOTE_SIDEBAR_DEFAULTS.groupCountDraft)
     setNoteMinImagesDraft(NOTE_SIDEBAR_DEFAULTS.minImagesDraft)
     setNoteMaxImagesDraft(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
@@ -445,38 +460,83 @@ function AiStudio(): React.JSX.Element {
     previousActiveModuleRef.current = activeModule
   }, [activeModule])
 
-  const handleGenerateNotePreview = async (): Promise<void> => {
+  const buildImageNotePreviewTasksFromCsv = (csvText: string): Task[] => {
     const materialPaths = Array.from(
       new Set(noteMaterials.map((asset) => String(asset.filePath ?? '').trim()).filter(Boolean))
     )
 
     if (materialPaths.length === 0) {
       window.alert('请先从结果区加入至少一张图到图池。')
-      return
+      return []
     }
 
-    if (!noteCsvDraft.trim()) {
+    if (!String(csvText ?? '').trim()) {
       window.alert('请先输入 CSV 格式文案。')
-      return
+      return []
     }
 
+    return generateManifest(csvText, materialPaths, {
+      ...normalizeNoteSidebarConstraints({
+        groupCount: noteGroupCountDraft,
+        minImages: noteMinImagesDraft,
+        maxImages: noteMaxImagesDraft,
+        maxReuse: noteMaxReuseDraft
+      }),
+      bestEffort: true
+    })
+  }
+
+  const generateImageNotePreviewFromCsv = async (csvText: string): Promise<void> => {
     setIsGeneratingNotePreview(true)
     try {
-      const nextTasks = generateManifest(noteCsvDraft, materialPaths, {
-        ...normalizeNoteSidebarConstraints({
-          groupCount: noteGroupCountDraft,
-          minImages: noteMinImagesDraft,
-          maxImages: noteMaxImagesDraft,
-          maxReuse: noteMaxReuseDraft
-        }),
-        bestEffort: true
-      })
+      const nextTasks = buildImageNotePreviewTasksFromCsv(csvText)
+      if (nextTasks.length === 0) return
       setNotePreviewTasks(nextTasks)
       setNoteSidebarPhase('preview')
       addLog(`[AI Studio] 已生成 ${nextTasks.length} 组图文笔记预览。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 图文笔记预览生成失败：${message}`)
+      flushSync(() => {
+        setIsGeneratingNotePreview(false)
+      })
+      window.alert(message)
+    } finally {
+      setIsGeneratingNotePreview(false)
+    }
+  }
+
+  const handleGenerateNotePreview = async (): Promise<void> => {
+    await generateImageNotePreviewFromCsv(noteCsvDraft)
+  }
+
+  const handleGenerateSmartNotePreview = async (): Promise<void> => {
+    setIsGeneratingNotePreview(true)
+    try {
+      const chatInput = buildSmartNoteChatInput({
+        userExtraPrompt: noteSmartPromptDraft,
+        groupCount: Number(noteGroupCountDraft)
+      })
+      addLog('[AI Studio] 已发送图文智能生成请求（临时降级为纯文字模式，不附带参考图）。')
+      const result = (await state.startChatRun({
+        promptText: chatInput.prompt,
+        imagePaths: chatInput.imagePaths
+      })) as {
+        outputText?: unknown
+      }
+      const csvText = extractCsvFromSmartNoteResponse(String(result?.outputText ?? ''))
+      setNoteCsvDraft(csvText)
+      const nextTasks = buildImageNotePreviewTasksFromCsv(csvText)
+      if (nextTasks.length === 0) return
+      setNotePreviewTasks(nextTasks)
+      setNoteSidebarPhase('preview')
+      addLog(`[AI Studio] 智能生成已返回 CSV，并生成 ${nextTasks.length} 组图文笔记预览。`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 图文智能生成失败：${message}`)
+      flushSync(() => {
+        setIsGeneratingNotePreview(false)
+      })
       window.alert(message)
     } finally {
       setIsGeneratingNotePreview(false)
@@ -577,6 +637,9 @@ function AiStudio(): React.JSX.Element {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 视频笔记预览生成失败：${message}`)
+      flushSync(() => {
+        setIsGeneratingNotePreview(false)
+      })
       window.alert(message)
     } finally {
       setIsGeneratingNotePreview(false)
@@ -738,6 +801,7 @@ function AiStudio(): React.JSX.Element {
       canvasMode={noteCanvasMode}
       materials={noteMaterials}
       csvDraft={noteCsvDraft}
+      smartPromptDraft={noteSmartPromptDraft}
       groupCountDraft={noteGroupCountDraft}
       minImagesDraft={noteMinImagesDraft}
       maxImagesDraft={noteMaxImagesDraft}
@@ -755,15 +819,20 @@ function AiStudio(): React.JSX.Element {
         setSelectedBatchPickAssetIds([])
       }}
       onCsvChange={setNoteCsvDraft}
+      onSmartPromptChange={setNoteSmartPromptDraft}
       onGroupCountChange={setNoteGroupCountDraft}
       onMinImagesChange={setNoteMinImagesDraft}
       onMaxImagesChange={setNoteMaxImagesDraft}
       onMaxReuseChange={setNoteMaxReuseDraft}
-      onGenerate={() =>
+      onGenerate={(payload) => {
+        const imageNoteEntryMode: ImageNoteEntryMode =
+          payload?.imageNoteEntryMode === 'manual' ? 'manual' : 'smart'
         void (noteSidebarMode === 'video-note'
           ? handleGenerateVideoNotePreview()
-          : handleGenerateNotePreview())
-      }
+          : imageNoteEntryMode === 'manual'
+            ? handleGenerateNotePreview()
+            : handleGenerateSmartNotePreview())
+      }}
       onRegenerate={() => {
         setNoteSidebarPhase('editing')
         setNotePreviewTasks([])
