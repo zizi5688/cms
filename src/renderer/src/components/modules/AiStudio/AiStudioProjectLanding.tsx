@@ -59,10 +59,10 @@ function ProjectPreview({
   thumbnailPaths: string[]
   workspacePath?: string
 }): React.JSX.Element {
-  const slots = Array.from({ length: 4 }, (_, index) => thumbnailPaths[index] ?? null)
+  const slots = Array.from({ length: 2 }, (_, index) => thumbnailPaths[index] ?? null)
 
   return (
-    <div className="grid aspect-[3/4] grid-cols-2 gap-2 rounded-[12px] bg-white/80 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+    <div className="grid aspect-[8/5] grid-cols-2 gap-2 rounded-[12px] bg-white/80 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
       {slots.map((path, index) => (
         <ThumbnailTile
           key={`${title}:${index}:${path ?? 'empty'}`}
