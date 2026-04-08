@@ -51,6 +51,7 @@ import {
   buildProjectCardSummaries,
   formatProjectUpdatedAt,
   normalizeTrackedProjects,
+  removeTrackedProjects,
   upsertTrackedProject,
   type AiStudioTrackedProjectEntry
 } from './projectViewHelpers'
@@ -1231,6 +1232,55 @@ function AiStudio(): React.JSX.Element {
     [addLog, state]
   )
 
+  const handleDeleteProject = useCallback(
+    async (taskId: string, title: string): Promise<void> => {
+      const normalizedTaskId = String(taskId ?? '').trim()
+      const normalizedTitle = String(title ?? '').trim() || '未命名项目'
+      if (!normalizedTaskId) return
+
+      const confirmMessage = `确认删除项目「${normalizedTitle}」吗？`
+      let confirmed = false
+      try {
+        const result = await window.electronAPI.showMessageBox({
+          type: 'warning',
+          title: '确认删除项目',
+          message: confirmMessage,
+          detail: '项目目录、素材和已生成结果都会移到系统回收站，项目记录也会一并移除。',
+          buttons: ['删除', '取消'],
+          defaultId: 1,
+          cancelId: 1
+        })
+        confirmed = result.response === 0
+      } catch {
+        confirmed = window.confirm(confirmMessage)
+      }
+
+      if (!confirmed) return
+
+      try {
+        const result = await window.api.cms.aiStudio.task.deleteProject({
+          taskId: normalizedTaskId
+        })
+        const deletedTaskIds =
+          Array.isArray(result.deletedTaskIds) && result.deletedTaskIds.length > 0
+            ? result.deletedTaskIds
+            : [normalizedTaskId]
+
+        if (state.currentProjectId && deletedTaskIds.includes(state.currentProjectId)) {
+          handleReturnToLanding()
+        }
+
+        setTrackedProjects((current) => removeTrackedProjects(current, deletedTaskIds))
+        await state.refresh()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        addLog(`[AI Studio] 删除项目失败：${message}`)
+        window.alert(message)
+      }
+    },
+    [addLog, handleReturnToLanding, state]
+  )
+
   const handleSaveProjectName = useCallback(async (): Promise<void> => {
     if (!state.currentProjectId) return
     const normalizedDraft = projectNameDraft.trim()
@@ -1268,6 +1318,9 @@ function AiStudio(): React.JSX.Element {
         onCreateProject={handleCreateProject}
         onOpenProject={handleOpenProject}
         onRenameProject={handleRenameProject}
+        onDeleteProject={(taskId, title) => {
+          void handleDeleteProject(taskId, title)
+        }}
         onToggleMode={setLandingMode}
       />
     )

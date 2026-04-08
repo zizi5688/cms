@@ -1220,6 +1220,13 @@ const api = {
         }): Promise<AiStudioTaskRecord> => ipcRenderer.invoke('cms.aiStudio.task.update', payload),
         delete: (payload: { taskId: string } | string): Promise<{ success: boolean }> =>
           ipcRenderer.invoke('cms.aiStudio.task.delete', payload),
+        deleteProject: (payload: { taskId: string } | string): Promise<{
+          success: boolean
+          projectId: string
+          projectName: string
+          projectPath: string | null
+          deletedTaskIds: string[]
+        }> => ipcRenderer.invoke('cms.aiStudio.task.deleteProject', payload),
         ensureRunDirectory: (payload: {
           taskId: string
           runIndex?: number

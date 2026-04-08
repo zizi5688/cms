@@ -1071,6 +1071,13 @@ declare global {
             }
           }) => Promise<AiStudioTaskRecord>
           delete: (payload: { taskId: string } | string) => Promise<{ success: boolean }>
+          deleteProject: (payload: { taskId: string } | string) => Promise<{
+            success: boolean
+            projectId: string
+            projectName: string
+            projectPath: string | null
+            deletedTaskIds: string[]
+          }>
           ensureRunDirectory: (payload: { taskId: string; runIndex?: number }) => Promise<{
             taskId: string
             runIndex: number

@@ -4496,6 +4496,33 @@ app.whenReady().then(async () => {
     return aiStudioService.deleteTask(taskId)
   })
 
+  ipcMain.handle('cms.aiStudio.task.deleteProject', async (_event, payload: unknown) => {
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const taskId =
+      typeof payload === 'string'
+        ? payload.trim()
+        : typeof body.taskId === 'string'
+          ? body.taskId.trim()
+          : ''
+    if (!taskId) throw new Error('[AI Studio] taskId 不能为空。')
+
+    const plan = aiStudioService.resolveProjectDeletionPlan(taskId)
+    const projectPath = typeof plan.projectPath === 'string' ? resolve(plan.projectPath) : ''
+
+    if (projectPath && existsSync(projectPath)) {
+      await shell.trashItem(projectPath)
+    }
+
+    const deletion = aiStudioService.deleteTasks(plan.taskIds)
+    return {
+      success: deletion.success,
+      projectId: plan.projectId,
+      projectName: plan.projectName,
+      projectPath: plan.projectPath,
+      deletedTaskIds: deletion.deletedTaskIds
+    }
+  })
+
   ipcMain.handle('cms.aiStudio.task.ensureRunDirectory', async (_event, payload: unknown) => {
     const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const taskId = typeof body.taskId === 'string' ? body.taskId : ''

@@ -1,6 +1,6 @@
 import * as React from 'react'
 
-import { ChevronLeft, ChevronRight, FolderOpen, Plus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FolderOpen, Plus, Trash2 } from 'lucide-react'
 
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
@@ -20,6 +20,7 @@ type AiStudioProjectLandingProps = {
   onCreateProject: () => void
   onOpenProject: (taskId: string) => void
   onRenameProject: (taskId: string, nextTitle: string) => void
+  onDeleteProject: (taskId: string, title: string) => void
   onToggleMode: (mode: 'recent' | 'all') => void
 }
 
@@ -61,7 +62,7 @@ function ProjectPreview({
   const slots = Array.from({ length: 4 }, (_, index) => thumbnailPaths[index] ?? null)
 
   return (
-    <div className="grid aspect-[16/10] grid-cols-2 gap-2 rounded-[12px] bg-white/80 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+    <div className="grid aspect-[3/4] grid-cols-2 gap-2 rounded-[12px] bg-white/80 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
       {slots.map((path, index) => (
         <ThumbnailTile
           key={`${title}:${index}:${path ?? 'empty'}`}
@@ -153,12 +154,14 @@ function ProjectCard({
   card,
   workspacePath,
   onOpen,
-  onRename
+  onRename,
+  onDelete
 }: {
   card: AiStudioProjectCardSummary
   workspacePath?: string
   onOpen: (taskId: string) => void
   onRename: (taskId: string, nextTitle: string) => void
+  onDelete: (taskId: string, title: string) => void
 }): React.JSX.Element {
   const [isEditingName, setIsEditingName] = React.useState(false)
   const [draftTitle, setDraftTitle] = React.useState(card.title)
@@ -223,14 +226,29 @@ function ProjectCard({
           )}
           <div className="mt-1.5 text-[12px] text-zinc-500">更新于 {card.updatedLabel}</div>
         </div>
-        <button
-          type="button"
-          onClick={() => onOpen(card.taskId)}
-          className="flex shrink-0 items-center gap-1 rounded-full bg-zinc-100/90 px-2.5 py-1 text-[11px] text-zinc-500 transition hover:bg-zinc-200/80"
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-          {card.outputCount}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onOpen(card.taskId)}
+            className="flex items-center gap-1 rounded-full bg-zinc-100/90 px-2.5 py-1 text-[11px] text-zinc-500 transition hover:bg-zinc-200/80"
+            title="打开项目"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            {card.outputCount}
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDelete(card.taskId, card.title)
+            }}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-100/90 text-zinc-500 transition hover:bg-rose-50 hover:text-rose-600"
+            title="删除项目"
+            aria-label={`删除项目 ${card.title}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -249,6 +267,7 @@ function AiStudioProjectLanding({
   onCreateProject,
   onOpenProject,
   onRenameProject,
+  onDeleteProject,
   onToggleMode
 }: AiStudioProjectLandingProps): React.JSX.Element {
   const title = mode === 'all' ? '全部项目' : '最近项目'
@@ -311,6 +330,7 @@ function AiStudioProjectLanding({
                   workspacePath={workspacePath}
                   onOpen={onOpenProject}
                   onRename={onRenameProject}
+                  onDelete={onDeleteProject}
                 />
               ))
             : null}

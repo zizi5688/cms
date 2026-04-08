@@ -2,16 +2,14 @@ import * as React from 'react'
 
 import {
   ChartColumnBig,
-  Database,
-  Image,
   Rocket,
   Settings,
   Sparkles,
-  Trophy,
-  UploadCloud
+  Trophy
 } from 'lucide-react'
 
 import { cn } from '@renderer/lib/utils'
+import { getVisibleSidebarMenuItems } from './sidebarNavigation'
 
 export type SidebarItemKey =
   | 'aiStudio'
@@ -30,13 +28,10 @@ export interface SidebarProps {
 
 const iconMap = {
   ChartColumnBig,
-  Database,
-  Image,
   Rocket,
   Settings,
   Sparkles,
-  Trophy,
-  UploadCloud
+  Trophy
 } as const
 
 type IconName = keyof typeof iconMap
@@ -47,15 +42,7 @@ type MenuItem = {
   label: string
 }
 
-const menuItems: MenuItem[] = [
-  { id: 'aiStudio', icon: 'Sparkles', label: 'AI素材工作台' },
-  { id: 'material', icon: 'Image', label: '素材处理' },
-  { id: 'workshop', icon: 'Database', label: '数据工坊' },
-  // { id: 'upload', icon: 'UploadCloud', label: '上传管理' },
-  { id: 'autopublish', icon: 'Rocket', label: '媒体矩阵' },
-  { id: 'raceboard', icon: 'Trophy', label: '数据赛马场' },
-  { id: 'heatboard', icon: 'ChartColumnBig', label: '热度看板' }
-]
+const menuItems: MenuItem[] = getVisibleSidebarMenuItems()
 
 const bottomItems: MenuItem[] = [{ id: 'settings', icon: 'Settings', label: '设置' }]
 

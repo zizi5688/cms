@@ -5,6 +5,7 @@ import {
   buildProjectCardSummaries,
   buildProjectThumbnailPaths,
   normalizeTrackedProjects,
+  removeTrackedProjects,
   sliceProjectCards,
   upsertTrackedProject
 } from './projectViewHelpers.ts'
@@ -217,6 +218,18 @@ test('buildProjectThumbnailPaths ignores non-image outputs and respects the limi
     ),
     ['/tmp/c-preview.jpg', '/tmp/b.png']
   )
+})
+
+test('removeTrackedProjects removes deleted project roots and preserves order of remaining entries', () => {
+  const trackedProjects = [
+    { taskId: 'project-a', createdAt: 10, lastOpenedAt: 300 },
+    { taskId: 'project-b', createdAt: 20, lastOpenedAt: 200 },
+    { taskId: 'project-c', createdAt: 30, lastOpenedAt: 100 }
+  ]
+
+  assert.deepEqual(removeTrackedProjects(trackedProjects, ['project-b', 'project-a']), [
+    { taskId: 'project-c', createdAt: 30, lastOpenedAt: 100 }
+  ])
 })
 
 test('sliceProjectCards returns a short recent list without affecting the all view', () => {
