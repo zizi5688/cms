@@ -87,7 +87,8 @@ function App(): React.JSX.Element {
               typeof saved.storageMaintenanceRetainDays === 'number'
                 ? Math.max(1, Math.min(120, Math.floor(saved.storageMaintenanceRetainDays)))
                 : 7,
-            storageArchivePath: saved.storageArchivePath ?? ''
+            storageArchivePath: saved.storageArchivePath ?? '',
+            localGateway: saved.localGateway
           }
           if (isValidWatermarkBox(saved.watermarkBox)) {
             patch.watermarkBox = saved.watermarkBox

@@ -206,6 +206,9 @@ declare global {
     manifestPath: string
   }
 
+  type LocalGatewayConfig = import('../shared/localGatewayTypes').LocalGatewayConfig
+  type LocalGatewayState = import('../shared/localGatewayTypes').LocalGatewayState
+
   type SyncDouyinHotMusicResult = {
     success: boolean
     outputDir: string
@@ -1416,6 +1419,7 @@ declare global {
       watermarkBox: WatermarkBox
       defaultStartTime: string
       defaultInterval: number
+      localGateway: LocalGatewayConfig
     }>
     saveConfig: (patch: {
       aiProvider?: string
@@ -1446,7 +1450,10 @@ declare global {
       watermarkBox?: WatermarkBox
       defaultStartTime?: string
       defaultInterval?: number
+      localGateway?: Partial<LocalGatewayConfig>
     }) => Promise<{ success: true }>
+    getLocalGatewayState: () => Promise<LocalGatewayState>
+    retryStartLocalGateway: () => Promise<LocalGatewayState>
     getStorageMaintenanceState: () => Promise<StorageMaintenanceState>
     runStorageMaintenanceNow: (payload?: {
       reason?: string

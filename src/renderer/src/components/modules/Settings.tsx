@@ -194,6 +194,8 @@ function Settings(): React.JSX.Element {
   const [autoImportScanProgress, setAutoImportScanProgress] =
     useState<AutoImportScanProgress | null>(null)
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
+  const [localGatewayState, setLocalGatewayState] = useState<LocalGatewayState | null>(null)
+  const [isRetryingLocalGateway, setIsRetryingLocalGateway] = useState(false)
   const [storageMaintenanceState, setStorageMaintenanceState] =
     useState<StorageMaintenanceState | null>(null)
   const [isStorageMaintenanceRunningNow, setIsStorageMaintenanceRunningNow] = useState(false)
@@ -316,7 +318,8 @@ function Settings(): React.JSX.Element {
             ),
             storageArchivePath:
               typeof savedTools.storageArchivePath === 'string' ? savedTools.storageArchivePath : '',
-            scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? ''
+            scoutDashboardAutoImportDir: savedTools.scoutDashboardAutoImportDir ?? '',
+            localGateway: savedTools.localGateway
           })
           updatePreferences({
             defaultStartTime: savedTools.defaultStartTime ?? '10:00',
@@ -373,9 +376,23 @@ function Settings(): React.JSX.Element {
     }
   }, [addLog])
 
+  const refreshLocalGatewayState = useCallback(async (): Promise<void> => {
+    if (typeof window.electronAPI.getLocalGatewayState !== 'function') return
+    try {
+      const state = await window.electronAPI.getLocalGatewayState()
+      setLocalGatewayState(state)
+    } catch (error) {
+      addLog(`[本地网关] 读取状态失败：${extractErrorMessage(error)}`)
+    }
+  }, [addLog])
+
   useEffect(() => {
     void refreshStorageMaintenanceState()
   }, [refreshStorageMaintenanceState])
+
+  useEffect(() => {
+    void refreshLocalGatewayState()
+  }, [refreshLocalGatewayState])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -386,6 +403,16 @@ function Settings(): React.JSX.Element {
       window.clearInterval(timer)
     }
   }, [refreshStorageMaintenanceState])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshLocalGatewayState()
+    }, 15_000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [refreshLocalGatewayState])
 
   const changeWorkspace = async (): Promise<void> => {
     try {
@@ -401,6 +428,21 @@ function Settings(): React.JSX.Element {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[工作区] 切换失败：${message}`)
       window.alert(message)
+    }
+  }
+
+  const chooseLocalGatewayBundlePath = async (): Promise<void> => {
+    try {
+      const selected = await window.electronAPI.openDirectory()
+      if (!selected) return
+      updateConfig({
+        localGateway: {
+          ...config.localGateway,
+          bundlePath: selected
+        }
+      })
+    } catch (error) {
+      addLog(`[本地网关] 选择目录失败：${extractErrorMessage(error)}`)
     }
   }
 
@@ -474,6 +516,7 @@ function Settings(): React.JSX.Element {
           storageMaintenanceRetainDays: clampRetainDays(config.storageMaintenanceRetainDays),
           storageArchivePath: config.storageArchivePath.trim(),
           scoutDashboardAutoImportDir: config.scoutDashboardAutoImportDir,
+          localGateway: config.localGateway,
           defaultStartTime: preferences.defaultStartTime,
           defaultInterval: preferences.defaultInterval
         })
@@ -506,10 +549,25 @@ function Settings(): React.JSX.Element {
     config.storageMaintenanceRetainDays,
     config.storageArchivePath,
     config.scoutDashboardAutoImportDir,
+    config.localGateway,
     config.watermarkScriptPath,
     preferences.defaultInterval,
     preferences.defaultStartTime
   ])
+
+  const retryStartLocalGateway = async (): Promise<void> => {
+    if (isRetryingLocalGateway || typeof window.electronAPI.retryStartLocalGateway !== 'function') return
+    setIsRetryingLocalGateway(true)
+    try {
+      const state = await window.electronAPI.retryStartLocalGateway()
+      setLocalGatewayState(state)
+      addLog(`[本地网关] 重试恢复完成：${state.overallStatus}`)
+    } catch (error) {
+      addLog(`[本地网关] 重试恢复失败：${extractErrorMessage(error)}`)
+    } finally {
+      setIsRetryingLocalGateway(false)
+    }
+  }
 
   useEffect(() => {
     const dispose = window.api.cms.scout.dashboard.onAutoImportScanProgress((payload) => {
@@ -1108,6 +1166,138 @@ function Settings(): React.JSX.Element {
               disabled={appUpdateState?.phase !== 'downloaded' || isInstallingAppUpdate}
             >
               {isInstallingAppUpdate ? '准备重启...' : '立即安装并重启'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>本地网关</CardTitle>
+          <CardDescription>
+            管理 CMS 依赖的本地 AI 网关自动恢复状态；当前阶段会优先恢复基础服务，不强制拉起 Chrome/Flow 会话。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-2 text-xs text-zinc-300 md:grid-cols-2">
+            <div>总状态：{localGatewayState?.overallStatus ?? '--'}</div>
+            <div>最近启动：{formatDateTime(localGatewayState?.lastStartedAt ?? null)}</div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">网关目录</div>
+            <Input
+              value={config.localGateway.bundlePath || '(未设置)'}
+              onChange={(event) =>
+                updateConfig({
+                  localGateway: {
+                    ...config.localGateway,
+                    bundlePath: event.target.value
+                  }
+                })
+              }
+              className={config.localGateway.bundlePath ? '' : 'text-zinc-500 italic'}
+            />
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => void chooseLocalGatewayBundlePath()}>
+                选择目录
+              </Button>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <label className="flex items-center gap-2 text-sm text-zinc-200">
+              <input
+                type="checkbox"
+                checked={config.localGateway.enabled}
+                onChange={(event) =>
+                  updateConfig({
+                    localGateway: {
+                      ...config.localGateway,
+                      enabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              启用本地网关管理
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-200">
+              <input
+                type="checkbox"
+                checked={config.localGateway.autoStartOnAppLaunch}
+                onChange={(event) =>
+                  updateConfig({
+                    localGateway: {
+                      ...config.localGateway,
+                      autoStartOnAppLaunch: event.target.checked
+                    }
+                  })
+                }
+              />
+              启动应用时自动恢复
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-200">
+              <input
+                type="checkbox"
+                checked={config.localGateway.startAdminUi}
+                onChange={(event) =>
+                  updateConfig({
+                    localGateway: {
+                      ...config.localGateway,
+                      startAdminUi: event.target.checked
+                    }
+                  })
+                }
+              />
+              同时拉起管理后台
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-200">
+              <input
+                type="checkbox"
+                checked={config.localGateway.startCdpProxy}
+                onChange={(event) =>
+                  updateConfig({
+                    localGateway: {
+                      ...config.localGateway,
+                      startCdpProxy: event.target.checked
+                    }
+                  })
+                }
+              />
+              同时拉起 CDP 代理
+            </label>
+          </div>
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="text-xs text-zinc-400">服务状态</div>
+            <div className="mt-2 flex flex-col gap-1 text-sm text-zinc-200">
+              {(localGatewayState?.services ?? []).map((service) => (
+                <div key={service.name} className="flex items-center justify-between gap-3">
+                  <span>{service.name}</span>
+                  <span className={service.ok ? 'text-emerald-400' : 'text-amber-300'}>
+                    {service.ok ? `ok (${service.port})` : `${service.port} · ${service.message ?? '未就绪'}`}
+                  </span>
+                </div>
+              ))}
+              {localGatewayState?.services?.length ? null : (
+                <div className="text-zinc-500">暂无状态快照。</div>
+              )}
+            </div>
+            {localGatewayState?.lastError ? (
+              <div className="mt-3 text-xs text-rose-300">{localGatewayState.lastError}</div>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void refreshLocalGatewayState()}
+            >
+              刷新状态
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void retryStartLocalGateway()}
+              disabled={isRetryingLocalGateway || !config.localGateway.enabled}
+            >
+              {isRetryingLocalGateway ? '恢复中...' : '重试恢复'}
             </Button>
           </div>
         </CardContent>

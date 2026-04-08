@@ -15,6 +15,7 @@ import sharp from 'sharp'
 import pLimit from 'p-limit'
 import { fileURLToPath } from 'url'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
+import type { LocalGatewayConfig } from '../shared/localGatewayTypes.ts'
 import { AccountManager } from './services/accountManager'
 import { dispatchAiTask, type AiTaskRequest } from './services/aiTaskDispatcher'
 import { executeChatTask } from './services/chatExecutor'
@@ -61,6 +62,11 @@ import { ensureNonEmptyProductSyncResult } from './productSyncGuards'
 import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
 import { StorageMaintenanceService } from './services/storageMaintenanceService'
+import {
+  mergeLocalGatewayConfig,
+  readLocalGatewayConfigFromStore
+} from './services/localGatewayConfig.ts'
+import { LocalGatewayManager } from './services/localGatewayManager.ts'
 import { buildXhsSendKeyEvents } from './xhsInputEvents'
 import {
   pickFileInMacNativeDialog,
@@ -135,6 +141,7 @@ let imageFetchProcessedCount = 0
 let mainWindow: BrowserWindow | null = null
 let sourcingLoginWindow: BrowserWindow | null = null
 let storageMaintenanceService: StorageMaintenanceService | null = null
+let localGatewayManager: LocalGatewayManager | null = null
 const safeFileRecoveredByName = new Map<string, string>()
 const DASHBOARD_AUTO_IMPORT_SCAN_INTERVAL_MS = 5_000
 const DASHBOARD_AUTO_IMPORT_RETRY_DELAY_MS = 15_000
@@ -608,6 +615,7 @@ const configStore = new StoreCtor<{
   storageArchivePath?: string
   scoutDashboardAutoImportDir?: string
   scoutDashboardAutoImportSince?: number
+  localGateway?: LocalGatewayConfig
   watermarkBox: { x: number; y: number; width: number; height: number }
   defaultStartTime?: string
   defaultInterval?: number
@@ -1537,6 +1545,10 @@ app.whenReady().then(async () => {
     }
   })
   storageMaintenanceService.updateSchedule()
+  localGatewayManager = new LocalGatewayManager({
+    store: configStore,
+    logsDir: join(app.getPath('userData'), 'logs', 'local-gateway')
+  })
 
   const assertStorageWritable = (action: string): void => {
     storageMaintenanceService?.assertWritable(action)
@@ -3255,6 +3267,7 @@ app.whenReady().then(async () => {
       cooldownAfterNTasks: Math.max(1, Math.floor(Number(storedQueueConfig?.cooldownAfterNTasks) || 5)),
       cooldownDurationMs: Math.max(0, Math.floor(Number(storedQueueConfig?.cooldownDurationMs) || 300000))
     }
+    const localGateway = readLocalGatewayConfigFromStore(configStore)
 
     return {
       aiProvider: aiState.aiProvider,
@@ -3280,7 +3293,8 @@ app.whenReady().then(async () => {
       storageMaintenanceStartTime,
       storageMaintenanceRetainDays,
       storageArchivePath,
-      queueConfig
+      queueConfig,
+      localGateway
     }
   })
 
@@ -3310,6 +3324,7 @@ app.whenReady().then(async () => {
             storageMaintenanceRetainDays?: number
             storageArchivePath?: string
             scoutDashboardAutoImportDir?: string
+            localGateway?: Partial<LocalGatewayConfig>
             watermarkBox?: { x: number; y: number; width: number; height: number }
             defaultStartTime?: string
             defaultInterval?: number
@@ -3424,6 +3439,12 @@ app.whenReady().then(async () => {
       if (nextDefaultInterval !== undefined && Number.isFinite(nextDefaultInterval)) {
         configStore.set('defaultInterval', Math.max(0, Math.floor(nextDefaultInterval)))
       }
+      if (patch?.localGateway && typeof patch.localGateway === 'object') {
+        const currentLocalGateway = readLocalGatewayConfigFromStore(configStore)
+        const nextLocalGateway = mergeLocalGatewayConfig(currentLocalGateway, patch.localGateway)
+        configStore.set('localGateway', nextLocalGateway)
+        await localGatewayManager?.refreshState()
+      }
       if (patch?.queueConfig && typeof patch.queueConfig === 'object') {
         const qc = patch.queueConfig
         const merged = {
@@ -3456,6 +3477,27 @@ app.whenReady().then(async () => {
       return { success: true }
     }
   )
+
+  ipcMain.handle('local-gateway:get-state', async () => {
+    if (!localGatewayManager) {
+      const localGateway = readLocalGatewayConfigFromStore(configStore)
+      return {
+        overallStatus: localGateway.enabled ? 'failed' : 'disabled',
+        services: [],
+        bundlePath: localGateway.bundlePath,
+        lastStartedAt: null,
+        lastError: '本地网关管理器尚未初始化。'
+      }
+    }
+    return localGatewayManager.refreshState()
+  })
+
+  ipcMain.handle('local-gateway:retry-start', async () => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.retryStart()
+  })
 
   ipcMain.handle('cms.ai.route.resolve', async (_event, payload: { capability?: unknown } | null | undefined) => {
     try {
@@ -4745,6 +4787,7 @@ app.whenReady().then(async () => {
   console.log(`[PowerSave] Blocker started (id=${powerSaveId})`)
 
   void createWindow()
+  void localGatewayManager?.autoStartIfEnabled()
   initAutoUpdate()
 
   app.on('activate', function () {
@@ -4779,6 +4822,12 @@ app.on('before-quit', () => {
     void error
   }
   storageMaintenanceService = null
+  try {
+    localGatewayManager?.dispose()
+  } catch (error) {
+    void error
+  }
+  localGatewayManager = null
   app.quit()
 })
 
