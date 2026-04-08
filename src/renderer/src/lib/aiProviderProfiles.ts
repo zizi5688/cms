@@ -7,6 +7,15 @@ import type {
 } from '../../../shared/ai/aiProviderTypes'
 import { isAiProviderDeleted } from '../../../shared/ai/aiProviderTypes.ts'
 
+export type AiCapabilityRouteOption = {
+  value: string
+  providerId: string
+  providerName: string
+  modelId: string
+  modelName: string
+  label: string
+}
+
 export function normalizeAiProviderValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -74,6 +83,29 @@ function getCapabilityProfile(
     defaultModelId: null,
     models: []
   }
+}
+
+export function buildAiCapabilityRouteOptions(
+  profiles: AiProviderProfile[],
+  capability: AiCapability
+): AiCapabilityRouteOption[] {
+  return profiles
+    .filter((profile) => !isAiProviderDeleted(profile) && profile.enabled)
+    .flatMap((profile) => {
+      const capabilityProfile = getCapabilityProfile(profile, capability)
+      if (!capabilityProfile.enabled) return []
+      return capabilityProfile.models
+        .filter((model) => model.enabled)
+        .map((model) => ({
+          value: `${profile.id}:${model.id}`,
+          providerId: profile.id,
+          providerName: profile.providerName,
+          modelId: model.id,
+          modelName: model.modelName,
+          label: `${profile.providerName} - ${model.modelName}`
+        }))
+    })
+    .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
 }
 
 export function findAiModelProfile(

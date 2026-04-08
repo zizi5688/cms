@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI as toolkitElectronAPI } from '@electron-toolkit/preload'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
+import type {
+  LocalGatewayChromeProfile,
+  LocalGatewayConfig,
+  LocalGatewayInitializationResult,
+  LocalGatewayState
+} from '../shared/localGatewayTypes.ts'
 
 type PublisherResult = { success: boolean; time?: string; error?: string }
 
@@ -1570,6 +1576,7 @@ const electronAPI = {
     watermarkBox: { x: number; y: number; width: number; height: number }
     defaultStartTime: string
     defaultInterval: number
+    localGateway: LocalGatewayConfig
   }> => ipcRenderer.invoke('get-config'),
   saveConfig: (patch: {
     aiProvider?: string
@@ -1600,7 +1607,16 @@ const electronAPI = {
     watermarkBox?: { x: number; y: number; width: number; height: number }
     defaultStartTime?: string
     defaultInterval?: number
+    localGateway?: Partial<LocalGatewayConfig>
   }): Promise<{ success: true }> => ipcRenderer.invoke('save-config', patch),
+  getLocalGatewayState: (): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:get-state'),
+  retryStartLocalGateway: (): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:retry-start'),
+  listLocalGatewayChromeProfiles: (): Promise<LocalGatewayChromeProfile[]> =>
+    ipcRenderer.invoke('local-gateway:list-chrome-profiles'),
+  initializeLocalGateway: (payload?: {
+    smokeImage?: boolean
+  }): Promise<LocalGatewayInitializationResult> =>
+    ipcRenderer.invoke('local-gateway:initialize', payload),
   getStorageMaintenanceState: (): Promise<StorageMaintenanceState> =>
     ipcRenderer.invoke('cms.storage.maintenance.state'),
   runStorageMaintenanceNow: (payload?: {

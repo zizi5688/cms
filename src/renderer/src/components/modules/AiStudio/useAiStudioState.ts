@@ -44,6 +44,10 @@ import {
   createProjectContext,
   getTaskProjectScopeId
 } from './aiStudioProjectHelpers'
+import {
+  DEFAULT_AI_STUDIO_CHILD_OUTPUT_COUNT,
+  DEFAULT_AI_STUDIO_MASTER_OUTPUT_COUNT
+} from './workflowDefaults'
 
 type AiStudioProjectContext = {
   projectId: string
@@ -538,7 +542,7 @@ function createDefaultWorkflowMetadata(
     masterStage: {
       templateId: task.templateId ?? null,
       promptExtra: task.promptExtra ?? '',
-      requestedCount: 3,
+      requestedCount: DEFAULT_AI_STUDIO_MASTER_OUTPUT_COUNT,
       completedCount: 0,
       cleanSuccessCount: 0,
       cleanFailedCount: 0
@@ -546,7 +550,7 @@ function createDefaultWorkflowMetadata(
     childStage: {
       templateId: task.templateId ?? null,
       promptExtra: '',
-      requestedCount: 4,
+      requestedCount: DEFAULT_AI_STUDIO_CHILD_OUTPUT_COUNT,
       variantLines: [],
       completedCount: 0,
       failedCount: 0
@@ -2913,8 +2917,10 @@ const useAiStudioState = () => {
   }, [templateOptions, workflowMeta])
 
   const selectedTemplate = selectedMasterTemplate
-  const masterOutputCount = workflowMeta?.masterStage.requestedCount ?? 3
-  const childOutputCount = workflowMeta?.childStage.requestedCount ?? 4
+  const masterOutputCount =
+    workflowMeta?.masterStage.requestedCount ?? DEFAULT_AI_STUDIO_MASTER_OUTPUT_COUNT
+  const childOutputCount =
+    workflowMeta?.childStage.requestedCount ?? DEFAULT_AI_STUDIO_CHILD_OUTPUT_COUNT
   const masterPromptExtra = workflowMeta?.masterStage.promptExtra ?? ''
   const childPromptExtra = workflowMeta?.childStage.promptExtra ?? ''
   const variantLines = workflowMeta?.childStage.variantLines ?? []
@@ -3654,6 +3660,24 @@ const useAiStudioState = () => {
     },
     [defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch]
   )
+
+  const followImageSettingsDefault = useCallback(async () => {
+    const task = await ensureImageDraftTask()
+    const nextSelection = resolveImageProviderSelection('', '')
+    await updateTaskPatch(task.id, {
+      provider:
+        nextSelection.providerName ||
+        task.provider ||
+        aiConfig.aiProvider ||
+        'grsai',
+      model:
+        nextSelection.modelName ||
+        defaultModel ||
+        task.model ||
+        DEFAULT_GRSAI_IMAGE_MODEL,
+      metadata: writeImageRouteMode(task.metadata, AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT)
+    })
+  }, [aiConfig.aiProvider, defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch])
 
   const setModel = useCallback(
     async (value: string) => {
@@ -5337,6 +5361,7 @@ const useAiStudioState = () => {
     setAspectRatio,
     setImageProvider,
     setImageModel,
+    followImageSettingsDefault,
     startChatRun,
     setModel,
     setTemplateId,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  buildAiCapabilityRouteOptions,
   buildAiConfigPatch,
   buildVideoEndpointPair,
   resolveAiTaskProviderSelection
@@ -165,4 +166,54 @@ test('resolveAiTaskProviderSelection ignores deleted providers when resolving ca
   assert.equal(resolved.providerName, 'allapi')
   assert.equal(resolved.modelProfile, null)
   assert.equal(resolved.modelName, '')
+})
+
+test('buildAiCapabilityRouteOptions lists enabled image models as provider-model labels', () => {
+  const options = buildAiCapabilityRouteOptions([
+    ...PROFILES,
+    {
+      id: 'provider-disabled',
+      providerName: 'disabled',
+      baseUrl: 'https://disabled.example.com',
+      apiKey: 'disabled-key',
+      enabled: false,
+      source: 'custom',
+      capabilities: {
+        chat: { enabled: false, defaultModelId: null, models: [] },
+        image: {
+          enabled: true,
+          defaultModelId: 'model-disabled',
+          models: [
+            {
+              id: 'model-disabled',
+              modelName: 'disabled-image',
+              endpointPath: '/v1/disabled',
+              protocol: 'openai',
+              enabled: true
+            }
+          ]
+        },
+        video: { enabled: false, defaultModelId: null, models: [] }
+      }
+    }
+  ], 'image')
+
+  assert.deepEqual(options, [
+    {
+      value: 'provider-allapi:model-flux-pro',
+      providerId: 'provider-allapi',
+      providerName: 'allapi',
+      modelId: 'model-flux-pro',
+      modelName: 'flux-pro-1.1',
+      label: 'allapi - flux-pro-1.1'
+    },
+    {
+      value: 'provider-allapi:model-jimeng-image',
+      providerId: 'provider-allapi',
+      providerName: 'allapi',
+      modelId: 'model-jimeng-image',
+      modelName: 'jimeng-image-3.0',
+      label: 'allapi - jimeng-image-3.0'
+    }
+  ])
 })

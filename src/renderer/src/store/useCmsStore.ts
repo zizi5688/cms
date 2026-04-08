@@ -4,6 +4,7 @@ import {
   type AiProviderProfile,
   type AiRuntimeDefaults
 } from '../../../shared/ai/aiProviderTypes'
+import type { LocalGatewayConfig } from '../../../shared/localGatewayTypes'
 import { DEFAULT_ACTIVE_MODULE } from '../components/layout/navigationDefaults'
 
 export type TaskStatus = 'idle' | 'uploading' | 'success' | 'error'
@@ -107,6 +108,7 @@ export interface CmsConfig {
   storageArchivePath: string
   scoutDashboardAutoImportDir: string
   watermarkBox: WatermarkBox
+  localGateway: LocalGatewayConfig
 }
 
 export interface CmsState {
@@ -197,7 +199,17 @@ const initialConfig: CmsConfig = {
   storageMaintenanceRetainDays: 7,
   storageArchivePath: '',
   scoutDashboardAutoImportDir: '',
-  watermarkBox: { x: 0.905, y: 0.927, width: 0.055, height: 0.05 }
+  watermarkBox: { x: 0.905, y: 0.927, width: 0.055, height: 0.05 },
+  localGateway: {
+    enabled: false,
+    bundlePath: '/Users/z/Ai 工具/Local AI Gateway',
+    autoStartOnAppLaunch: true,
+    startAdminUi: true,
+    startCdpProxy: true,
+    allowDedicatedChrome: false,
+    chromeProfileDirectory: '',
+    prewarmImageOnLaunch: false
+  }
 }
 
 const initialPreferences: CmsPreferences = {
