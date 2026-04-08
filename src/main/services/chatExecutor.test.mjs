@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createChatCompletionPayload, executeChatTask } from './chatExecutor.ts'
+import { ChatExecutorError, createChatCompletionPayload, executeChatTask } from './chatExecutor.ts'
 
 const ROUTE = {
   providerId: 'provider-openai',
@@ -27,6 +27,26 @@ test('createChatCompletionPayload maps prompt input to a single user message', (
   assert.equal(payload.model, 'gpt-4o-mini')
   assert.deepEqual(payload.messages, [{ role: 'user', content: 'hello router' }])
   assert.equal(payload.temperature, 0.2)
+})
+
+test('createChatCompletionPayload builds openai multimodal content when imageUrls are provided', () => {
+  const payload = createChatCompletionPayload(ROUTE, {
+    capability: 'chat',
+    input: {
+      prompt: '请参考商品图生成文案',
+      imageUrls: ['data:image/png;base64,AAA']
+    }
+  })
+
+  assert.deepEqual(payload.messages, [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: '请参考商品图生成文案' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } }
+      ]
+    }
+  ])
 })
 
 test('executeChatTask sends an openai-compatible chat request and returns the first assistant text', async () => {
@@ -114,6 +134,42 @@ test('createChatCompletionPayload builds Gemini generateContent payloads', () =>
   })
 })
 
+test('createChatCompletionPayload builds Gemini multimodal payloads when imageUrls are provided', () => {
+  const payload = createChatCompletionPayload(
+    {
+      ...ROUTE,
+      endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+      protocol: 'google-genai'
+    },
+    {
+      capability: 'chat',
+      input: {
+        prompt: '请参考商品图生成文案',
+        imageUrls: ['data:image/png;base64,AAA']
+      }
+    }
+  )
+
+  assert.deepEqual(payload, {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'image/png',
+              data: 'AAA'
+            }
+          },
+          {
+            text: '请参考商品图生成文案'
+          }
+        ]
+      }
+    ]
+  })
+})
+
 test('executeChatTask extracts text from Gemini candidates', async () => {
   const result = await executeChatTask(
     {
@@ -158,4 +214,45 @@ test('executeChatTask extracts text from Gemini candidates', async () => {
   )
 
   assert.equal(result.outputText, '你好，欢迎回来。')
+})
+
+test('executeChatTask wraps fetch transport failures with actionable local gateway context', async () => {
+  await assert.rejects(
+    () =>
+      executeChatTask(
+        {
+          route: {
+            ...ROUTE,
+            baseUrl: 'http://127.0.0.1:4174',
+            apiKey: 'local-dev-secret',
+            modelName: 'gemini-web-chat',
+            endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+            protocol: 'google-genai'
+          },
+          request: {
+            capability: 'chat',
+            input: {
+              prompt: '帮我写一句问候'
+            }
+          }
+        },
+        async () => {
+          const error = new TypeError('fetch failed')
+          error.cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:4174'), {
+            code: 'ECONNREFUSED',
+            address: '127.0.0.1',
+            port: 4174
+          })
+          throw error
+        }
+      ),
+    (error) => {
+      assert.equal(error instanceof ChatExecutorError, true)
+      assert.equal(error.code, 'AI_CHAT_NETWORK_ERROR')
+      assert.match(error.message, /127\.0\.0\.1:4174/)
+      assert.match(error.message, /本地网关/)
+      assert.match(error.message, /ECONNREFUSED/)
+      return true
+    }
+  )
 })

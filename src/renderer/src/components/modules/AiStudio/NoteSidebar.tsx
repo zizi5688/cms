@@ -45,7 +45,7 @@ import {
 
 export type NoteSidebarMode = 'image-note' | 'video-note'
 export type NoteSidebarPhase = 'editing' | 'preview'
-type ImageNoteEntryMode = 'smart' | 'manual'
+export type ImageNoteEntryMode = 'smart' | 'manual'
 
 type NoteDispatchProgressState = {
   phase: 'start' | 'progress' | 'done'
@@ -62,6 +62,7 @@ type NoteSidebarProps = {
   canvasMode?: 'result' | 'batch-pick'
   materials: AiStudioAssetRecord[]
   csvDraft: string
+  smartPromptDraft: string
   groupCountDraft: string
   minImagesDraft: string
   maxImagesDraft: string
@@ -74,11 +75,12 @@ type NoteSidebarProps = {
   onOpenChange: (next: boolean) => void
   onModeChange: (mode: NoteSidebarMode) => void
   onCsvChange: (value: string) => void
+  onSmartPromptChange: (value: string) => void
   onGroupCountChange: (value: string) => void
   onMinImagesChange: (value: string) => void
   onMaxImagesChange: (value: string) => void
   onMaxReuseChange: (value: string) => void
-  onGenerate: () => void
+  onGenerate: (payload?: { imageNoteEntryMode?: ImageNoteEntryMode }) => void
   onRegenerate: () => void
   onPreviewTasksChange: (tasks: Task[]) => void
   onDispatch: (selectedTaskIds: string[]) => void
@@ -1474,6 +1476,7 @@ function NoteSidebar({
   canvasMode = 'result',
   materials,
   csvDraft,
+  smartPromptDraft,
   groupCountDraft,
   minImagesDraft,
   maxImagesDraft,
@@ -1486,6 +1489,7 @@ function NoteSidebar({
   onOpenChange,
   onModeChange,
   onCsvChange,
+  onSmartPromptChange,
   onGroupCountChange,
   onMinImagesChange,
   onMaxImagesChange,
@@ -1529,9 +1533,10 @@ function NoteSidebar({
       ? (previewTasks.find((task) => task.id === activePreviewTaskId) ?? null)
       : null
   const isManualImageNoteEntry = imageNoteEntryMode === 'manual'
+  const imageNoteTextareaValue = isManualImageNoteEntry ? csvDraft : smartPromptDraft
   const imageNoteTextareaPlaceholder = isManualImageNoteEntry
     ? '输入 CSV 格式文案'
-    : '输入额外说明提示词'
+    : '输入商品信息和额外说明提示词'
   const imageNoteGenerateButtonLabel = isManualImageNoteEntry ? '生成笔记' : '智能生成'
   const imageNoteEntryToggleLabel = isManualImageNoteEntry ? '智能生成' : '手动录入'
 
@@ -1725,7 +1730,7 @@ function NoteSidebar({
           <VideoNoteEditor
             csvDraft={csvDraft}
             onCsvChange={onCsvChange}
-            onGenerate={onGenerate}
+                  onGenerate={() => onGenerate()}
             videoComposer={videoComposer}
             pooledMediaPaths={pooledMediaPaths}
           />
@@ -1835,11 +1840,20 @@ function NoteSidebar({
                   </div>
                   <div className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
                     <Textarea
-                      value={csvDraft}
-                      onChange={(event) => onCsvChange(event.target.value)}
+                      value={imageNoteTextareaValue}
+                      onChange={(event) =>
+                        isManualImageNoteEntry
+                          ? onCsvChange(event.target.value)
+                          : onSmartPromptChange(event.target.value)
+                      }
                       placeholder={imageNoteTextareaPlaceholder}
                       className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
                     />
+                    {!isManualImageNoteEntry ? (
+                      <div className="mt-2 text-[11px] leading-5 text-zinc-400">
+                        临时降级：当前智能生成不读取参考图，请直接写明商品信息、卖点、场景和语气要求。
+                      </div>
+                    ) : null}
 
                     <div className="mt-3 space-y-2 pt-2">
                       <div className="grid grid-cols-[0.9fr_1.45fr_0.9fr_auto] items-end gap-2">
@@ -1874,7 +1888,7 @@ function NoteSidebar({
                         </LabeledMiniField>
                         <Button
                           type="button"
-                          onClick={onGenerate}
+                          onClick={() => onGenerate({ imageNoteEntryMode })}
                           disabled={isGenerating}
                           className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:opacity-60"
                         >
