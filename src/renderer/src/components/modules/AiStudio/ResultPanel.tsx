@@ -9,6 +9,7 @@ import {
   Check,
   Clapperboard,
   FolderOpen,
+  Heart,
   Image as ImageIcon,
   ImageMinus,
   ImagePlus,
@@ -115,9 +116,7 @@ function renderChatInline(text: string, keyPrefix: string): React.ReactNode[] {
     const [token] = match
     const start = match.index
     if (start > cursor) {
-      nodes.push(
-        <span key={`${keyPrefix}-text-${index}`}>{content.slice(cursor, start)}</span>
-      )
+      nodes.push(<span key={`${keyPrefix}-text-${index}`}>{content.slice(cursor, start)}</span>)
       index += 1
     }
 
@@ -272,13 +271,7 @@ function parseChatBlocks(text: string): ChatBlock[] {
   return blocks
 }
 
-function ChatCodeBlock({
-  language,
-  code
-}: {
-  language: string
-  code: string
-}): React.JSX.Element {
+function ChatCodeBlock({ language, code }: { language: string; code: string }): React.JSX.Element {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = (): void => {
@@ -345,18 +338,28 @@ function ChatRichText({ text }: { text: string }): React.JSX.Element {
         }
         if (block.type === 'bullet-list') {
           return (
-            <ul key={block.id} className="space-y-3 pl-7 text-[15px] leading-8 text-zinc-900 list-disc marker:text-zinc-900">
+            <ul
+              key={block.id}
+              className="space-y-3 pl-7 text-[15px] leading-8 text-zinc-900 list-disc marker:text-zinc-900"
+            >
               {block.items.map((item, index) => (
-                <li key={`${block.id}-${index}`}>{renderChatInline(item, `${block.id}-${index}`)}</li>
+                <li key={`${block.id}-${index}`}>
+                  {renderChatInline(item, `${block.id}-${index}`)}
+                </li>
               ))}
             </ul>
           )
         }
         if (block.type === 'ordered-list') {
           return (
-            <ol key={block.id} className="space-y-3 pl-7 text-[15px] leading-8 text-zinc-900 list-decimal marker:text-zinc-500">
+            <ol
+              key={block.id}
+              className="space-y-3 pl-7 text-[15px] leading-8 text-zinc-900 list-decimal marker:text-zinc-500"
+            >
               {block.items.map((item, index) => (
-                <li key={`${block.id}-${index}`}>{renderChatInline(item, `${block.id}-${index}`)}</li>
+                <li key={`${block.id}-${index}`}>
+                  {renderChatInline(item, `${block.id}-${index}`)}
+                </li>
               ))}
             </ol>
           )
@@ -652,7 +655,9 @@ function ImageLightbox({
   if (!open || !activeAsset || !src || typeof document === 'undefined') return null
 
   const navigate = (direction: 'previous' | 'next'): void => {
-    setActiveIndex((currentIndex) => stepImageLightboxIndex(currentIndex, lightboxAssets.length, direction))
+    setActiveIndex((currentIndex) =>
+      stepImageLightboxIndex(currentIndex, lightboxAssets.length, direction)
+    )
     setZoom(IMAGE_LIGHTBOX_MIN_ZOOM)
   }
 
@@ -729,9 +734,7 @@ function ImageLightbox({
             onWheel={(event) => {
               event.preventDefault()
               setZoom((currentZoom) =>
-                clampImageLightboxZoom(
-                  currentZoom + (event.deltaY < 0 ? 0.15 : -0.15)
-                )
+                clampImageLightboxZoom(currentZoom + (event.deltaY < 0 ? 0.15 : -0.15))
               )
             }}
           >
@@ -802,9 +805,7 @@ function ThreadReferenceThumb({
       </div>
 
       {onUseAsReference ? (
-        <div
-          className="pointer-events-none absolute right-1.5 top-1.5 z-10 opacity-0 transition duration-200 group-hover/thumb:pointer-events-auto group-hover/thumb:opacity-100 group-focus-within/thumb:pointer-events-auto group-focus-within/thumb:opacity-100"
-        >
+        <div className="pointer-events-none absolute right-1.5 top-1.5 z-10 opacity-0 transition duration-200 group-hover/thumb:pointer-events-auto group-hover/thumb:opacity-100 group-focus-within/thumb:pointer-events-auto group-focus-within/thumb:opacity-100">
           <PreviewActionButton
             icon={
               referenceApplied ? (
@@ -949,9 +950,11 @@ function PreviewStageTile({
   onTogglePool,
   pooled,
   onUseAsReference,
+  onFavorite,
   onGenerateVideo,
   onRegenerate,
   referenceApplied,
+  favoriteApplied,
   style
 }: {
   asset?: AiStudioAssetRecord | null
@@ -961,21 +964,25 @@ function PreviewStageTile({
   onTogglePool?: () => void
   pooled?: boolean
   onUseAsReference?: () => void
+  onFavorite?: () => void
   onGenerateVideo?: () => void
   onRegenerate?: () => void
   referenceApplied?: boolean
+  favoriteApplied?: boolean
   style?: React.CSSProperties
 }): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const src = asset ? resolveLocalImage(asset.previewPath ?? asset.filePath, workspacePath) : ''
   const showReferenceAction = Boolean(asset && onUseAsReference)
+  const showFavoriteAction = Boolean(asset && onFavorite)
   const showPoolAction = Boolean(asset && onTogglePool)
   const showGenerateVideoAction = Boolean(asset && onGenerateVideo)
   const showRegenerateAction = Boolean(onRegenerate && (asset || status === 'failed'))
   const surfaceClassNames = resolvePreviewTileSurfaceClassNames('image', status)
-  const [loadedResolution, setLoadedResolution] = useState<{ width: number; height: number } | null>(
-    null
-  )
+  const [loadedResolution, setLoadedResolution] = useState<{
+    width: number
+    height: number
+  } | null>(null)
   const resolutionBadgeLabel = resolveLoadedImageBadgeLabel(loadedResolution)
 
   useEffect(() => {
@@ -1010,12 +1017,19 @@ function PreviewStageTile({
                   const target = event.currentTarget
                   const width = Number(target.naturalWidth)
                   const height = Number(target.naturalHeight)
-                  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                  if (
+                    !Number.isFinite(width) ||
+                    !Number.isFinite(height) ||
+                    width <= 0 ||
+                    height <= 0
+                  ) {
                     setLoadedResolution(null)
                     return
                   }
                   setLoadedResolution((prev) =>
-                    prev && prev.width === width && prev.height === height ? prev : { width, height }
+                    prev && prev.width === width && prev.height === height
+                      ? prev
+                      : { width, height }
                   )
                 }}
               />
@@ -1038,11 +1052,11 @@ function PreviewStageTile({
           </div>
         )}
 
-        {showPoolAction || showReferenceAction ? (
+        {showPoolAction || showReferenceAction || showFavoriteAction ? (
           <div
             className={cn(
               'absolute right-3 top-3 z-10 flex items-center gap-1.5 transition duration-200',
-              pooled || referenceApplied
+              pooled || referenceApplied || favoriteApplied
                 ? 'pointer-events-auto opacity-100'
                 : 'pointer-events-none opacity-0 group-hover/tile:pointer-events-auto group-hover/tile:opacity-100 group-focus-within/tile:pointer-events-auto group-focus-within/tile:opacity-100'
             )}
@@ -1067,6 +1081,16 @@ function PreviewStageTile({
                 label={referenceApplied ? '已作参考图' : '用作参考图'}
                 active={referenceApplied}
                 onClick={onUseAsReference!}
+              />
+            ) : null}
+            {showFavoriteAction ? (
+              <PreviewActionButton
+                icon={
+                  <Heart className="h-3.5 w-3.5" fill={favoriteApplied ? 'currentColor' : 'none'} />
+                }
+                label={favoriteApplied ? '已收藏' : '收藏'}
+                active={favoriteApplied}
+                onClick={onFavorite!}
               />
             ) : null}
           </div>
@@ -1200,6 +1224,15 @@ function HistoryTaskSection({
       ),
     [state.primaryImagePath, state.referenceImagePaths]
   )
+  const currentProjectAssetPaths = useMemo(
+    () =>
+      new Set(
+        state.currentProjectAssetLibrary
+          .map((asset) => String(asset.filePath ?? '').trim())
+          .filter(Boolean)
+      ),
+    [state.currentProjectAssetLibrary]
+  )
   const visibleThreadAssets = useMemo(() => threadAssets.slice(0, 4), [threadAssets])
   const { isReferenceApplied, markReferenceApplied } = useThreadThumbnailAppliedState({
     assets: visibleThreadAssets,
@@ -1325,6 +1358,17 @@ function HistoryTaskSection({
     }
   }
 
+  const handleFavoriteAsset = async (asset: AiStudioAssetRecord): Promise<void> => {
+    try {
+      await state.favoriteProjectAsset(asset)
+      addLog('[AI Studio] 已收藏到项目资产')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 收藏项目资产失败：${message}`)
+      window.alert(message)
+    }
+  }
+
   const handleRegenerate = async (sequenceIndex: number): Promise<void> => {
     try {
       await state.retryMasterGeneration(task.id, sequenceIndex)
@@ -1363,7 +1407,7 @@ function HistoryTaskSection({
     return (
       <section className="flex min-w-0 flex-col gap-4">
         <div className="flex min-w-0 items-start gap-4">
-        <div className="flex gap-2">
+          <div className="flex gap-2">
             {visibleThreadAssets.map((asset) => (
               <ThreadReferenceThumb
                 key={asset.id}
@@ -1467,8 +1511,7 @@ function HistoryTaskSection({
                 style={{ width: previewTileWidth }}
                 onOpen={
                   slot.asset
-                    ? () =>
-                        onOpenAsset(slot.asset as AiStudioAssetRecord, lightboxAssets)
+                    ? () => onOpenAsset(slot.asset as AiStudioAssetRecord, lightboxAssets)
                     : undefined
                 }
                 onTogglePool={
@@ -1480,6 +1523,11 @@ function HistoryTaskSection({
                 onUseAsReference={
                   slot.asset
                     ? () => void handleUseAsReference(slot.asset as AiStudioAssetRecord)
+                    : undefined
+                }
+                onFavorite={
+                  slot.asset
+                    ? () => void handleFavoriteAsset(slot.asset as AiStudioAssetRecord)
                     : undefined
                 }
                 onGenerateVideo={
@@ -1498,6 +1546,9 @@ function HistoryTaskSection({
                 referenceApplied={
                   slot.asset ? currentReferencePaths.has(slot.asset.filePath) : false
                 }
+                favoriteApplied={
+                  slot.asset ? currentProjectAssetPaths.has(slot.asset.filePath) : false
+                }
               />
             ))}
           </div>
@@ -1510,7 +1561,9 @@ function HistoryTaskSection({
               status="ready"
               style={{ width: 'min(248px, 100%)' }}
               onOpen={() => onOpenAsset(currentAiMasterAsset, [currentAiMasterAsset])}
+              onFavorite={() => void handleFavoriteAsset(currentAiMasterAsset)}
               onGenerateVideo={() => void handleGenerateVideo(currentAiMasterAsset)}
+              favoriteApplied={currentProjectAssetPaths.has(currentAiMasterAsset.filePath)}
             />
           </div>
         </div>
@@ -2065,10 +2118,9 @@ function ResultPanel({
   const isChatStudio = state.studioCapability === 'chat'
   const historyTailRef = useRef<HTMLDivElement | null>(null)
   const latestHistoryTask = state.historyTasks[state.historyTasks.length - 1] ?? null
-  const latestRevealHistoryKey =
-    latestHistoryTask
-      ? `${state.studioCapability}:${state.historyTasks.length}:${latestHistoryTask.id}:${latestHistoryTask.updatedAt}`
-      : ''
+  const latestRevealHistoryKey = latestHistoryTask
+    ? `${state.studioCapability}:${state.historyTasks.length}:${latestHistoryTask.id}:${latestHistoryTask.updatedAt}`
+    : ''
   const previousLatestRevealHistoryKeyRef = useRef('')
 
   useLayoutEffect(() => {

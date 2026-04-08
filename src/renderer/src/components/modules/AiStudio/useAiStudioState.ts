@@ -45,6 +45,11 @@ import {
   getTaskProjectScopeId
 } from './aiStudioProjectHelpers'
 import {
+  buildProjectAssetFavoriteUpsert,
+  buildProjectAssetLibraryUpserts,
+  listProjectAssetLibrary
+} from './projectAssetLibraryHelpers'
+import {
   DEFAULT_AI_STUDIO_CHILD_OUTPUT_COUNT,
   DEFAULT_AI_STUDIO_MASTER_OUTPUT_COUNT
 } from './workflowDefaults'
@@ -1309,7 +1314,8 @@ function coerceTemplateRecord(template: unknown): AiStudioTemplateRecord {
   return {
     id: String(record.id ?? ''),
     provider: typeof record.provider === 'string' ? record.provider : 'grsai',
-    capability: record.capability === 'video' ? 'video' : record.capability === 'chat' ? 'chat' : 'image',
+    capability:
+      record.capability === 'video' ? 'video' : record.capability === 'chat' ? 'chat' : 'image',
     name: typeof record.name === 'string' ? record.name : '',
     promptText: typeof record.promptText === 'string' ? record.promptText : '',
     config:
@@ -1692,6 +1698,14 @@ const useAiStudioState = () => {
     () => resolveProjectUpdatedAt(projectTaskViews),
     [projectTaskViews]
   )
+  const currentProjectAssetLibrary = useMemo(
+    () =>
+      listProjectAssetLibrary({
+        projectTaskId: currentProjectId,
+        assets
+      }),
+    [assets, currentProjectId]
+  )
 
   const capabilityTaskViews = useMemo(
     () => projectTaskViews.filter((task) => readTaskCapability(task) === studioCapability),
@@ -1818,7 +1832,12 @@ const useAiStudioState = () => {
         fallbackProviderName: aiConfig.aiProvider,
         fallbackModelName: defaultModel || DEFAULT_GRSAI_IMAGE_MODEL
       }),
-    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.imageProviderId, defaultModel, providerProfiles]
+    [
+      aiConfig.aiProvider,
+      aiConfig.aiRuntimeDefaults?.imageProviderId,
+      defaultModel,
+      providerProfiles
+    ]
   )
   const resolveImageTaskProviderState = useCallback(
     (task?: Pick<AiStudioTaskRecord, 'provider' | 'model' | 'metadata'> | null) =>
@@ -1858,7 +1877,12 @@ const useAiStudioState = () => {
         queryPath: endpointPair.queryPath
       }
     },
-    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.videoProviderId, defaultModel, providerProfiles]
+    [
+      aiConfig.aiProvider,
+      aiConfig.aiRuntimeDefaults?.videoProviderId,
+      defaultModel,
+      providerProfiles
+    ]
   )
 
   const replaceTask = useCallback((nextTask: AiStudioTaskRecord) => {
@@ -2660,7 +2684,10 @@ const useAiStudioState = () => {
   )
 
   const applyInputSelection = useCallback(
-    async (payload: { primaryImagePath: string | null; referenceImagePaths: string[] }) => {
+    async (
+      payload: { primaryImagePath: string | null; referenceImagePaths: string[] },
+      options?: { confirmReset?: boolean }
+    ) => {
       const normalizedPrimary = String(payload.primaryImagePath ?? '').trim() || null
       const normalizedReferences = normalizeReferencePaths(
         payload.referenceImagePaths,
@@ -2689,8 +2716,10 @@ const useAiStudioState = () => {
         currentTask.status === 'failed'
 
       if (needsReset) {
-        const confirmed = await confirmResetGeneratedTask()
-        if (!confirmed) return currentTask
+        if (options?.confirmReset !== false) {
+          const confirmed = await confirmResetGeneratedTask()
+          if (!confirmed) return currentTask
+        }
         const replacement = await createTaskWithInputs({
           primaryImagePath: normalizedPrimary,
           referenceImagePaths: normalizedReferences,
@@ -2852,6 +2881,51 @@ const useAiStudioState = () => {
       return normalized
     },
     [replaceAssets]
+  )
+
+  const addProjectAssetsToLibrary = useCallback(
+    async (filePaths: string[]) => {
+      const projectContext = resolveProjectContext()
+      const projectTaskId = String(
+        projectContext?.projectRootTaskId ?? currentProjectId ?? ''
+      ).trim()
+      if (!projectTaskId) {
+        throw new Error('[AI Studio] 当前项目不存在，无法添加资产。')
+      }
+
+      const writes = buildProjectAssetLibraryUpserts({
+        projectTaskId,
+        filePaths,
+        existingAssets: currentProjectAssetLibrary
+      })
+      if (writes.length === 0) return []
+      return upsertAssetsRemote(writes)
+    },
+    [currentProjectAssetLibrary, currentProjectId, resolveProjectContext, upsertAssetsRemote]
+  )
+
+  const favoriteProjectAsset = useCallback(
+    async (
+      asset: Pick<AiStudioAssetRecord, 'id' | 'taskId' | 'filePath' | 'previewPath' | 'originPath'>
+    ) => {
+      const projectContext = resolveProjectContext()
+      const projectTaskId = String(
+        projectContext?.projectRootTaskId ?? currentProjectId ?? ''
+      ).trim()
+      if (!projectTaskId) {
+        throw new Error('[AI Studio] 当前项目不存在，无法收藏资产。')
+      }
+
+      const write = buildProjectAssetFavoriteUpsert({
+        projectTaskId,
+        asset,
+        existingAssets: currentProjectAssetLibrary
+      })
+      if (!write) return null
+      const saved = await upsertAssetsRemote([write])
+      return saved[0] ?? null
+    },
+    [currentProjectAssetLibrary, currentProjectId, resolveProjectContext, upsertAssetsRemote]
   )
 
   const saveTemplate = useCallback(
@@ -3665,19 +3739,20 @@ const useAiStudioState = () => {
     const task = await ensureImageDraftTask()
     const nextSelection = resolveImageProviderSelection('', '')
     await updateTaskPatch(task.id, {
-      provider:
-        nextSelection.providerName ||
-        task.provider ||
-        aiConfig.aiProvider ||
-        'grsai',
-      model:
-        nextSelection.modelName ||
-        defaultModel ||
-        task.model ||
-        DEFAULT_GRSAI_IMAGE_MODEL,
-      metadata: writeImageRouteMode(task.metadata, AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT)
+      provider: nextSelection.providerName || task.provider || aiConfig.aiProvider || 'grsai',
+      model: nextSelection.modelName || defaultModel || task.model || DEFAULT_GRSAI_IMAGE_MODEL,
+      metadata: writeImageRouteMode(
+        task.metadata,
+        AI_STUDIO_IMAGE_ROUTE_MODE_FOLLOW_SETTINGS_DEFAULT
+      )
     })
-  }, [aiConfig.aiProvider, defaultModel, ensureImageDraftTask, resolveImageProviderSelection, updateTaskPatch])
+  }, [
+    aiConfig.aiProvider,
+    defaultModel,
+    ensureImageDraftTask,
+    resolveImageProviderSelection,
+    updateTaskPatch
+  ])
 
   const setModel = useCallback(
     async (value: string) => {
@@ -4263,10 +4338,7 @@ const useAiStudioState = () => {
           : sourceProviderSelection.modelName || sourceTask.model
       const effectiveModel =
         String(
-          payload?.model ??
-            preferredSourceModel ??
-            defaultModel ??
-            DEFAULT_GRSAI_IMAGE_MODEL
+          payload?.model ?? preferredSourceModel ?? defaultModel ?? DEFAULT_GRSAI_IMAGE_MODEL
         ).trim() || DEFAULT_GRSAI_IMAGE_MODEL
 
       const sourceOutputCount = 'outputAssets' in sourceTask ? sourceTask.outputAssets.length : 0
@@ -4321,9 +4393,7 @@ const useAiStudioState = () => {
         promptExtra: effectivePromptText,
         model: effectiveModel,
         outputCount:
-          executionMode === 'single_run_multi_output'
-            ? workflow.masterStage.requestedCount
-            : 1,
+          executionMode === 'single_run_multi_output' ? workflow.masterStage.requestedCount : 1,
         status: 'running',
         remoteTaskId: null,
         latestRunId: null,
@@ -4541,9 +4611,14 @@ const useAiStudioState = () => {
                       generated: false,
                       cleaned: false,
                       cleanFailed: false,
-                      failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
-                        runId: result.run?.id
-                      })
+                      failure: makeWorkflowFailureRecord(
+                        'master-generate',
+                        sequenceIndex,
+                        message,
+                        {
+                          runId: result.run?.id
+                        }
+                      )
                     }
                   })
                 }
@@ -4585,9 +4660,14 @@ const useAiStudioState = () => {
                       generated: false,
                       cleaned: false,
                       cleanFailed: false,
-                      failure: makeWorkflowFailureRecord('master-generate', sequenceIndex, message, {
-                        runId: result.run?.id
-                      })
+                      failure: makeWorkflowFailureRecord(
+                        'master-generate',
+                        sequenceIndex,
+                        message,
+                        {
+                          runId: result.run?.id
+                        }
+                      )
                     })
                     continue
                   }
@@ -5282,6 +5362,7 @@ const useAiStudioState = () => {
     currentProjectName,
     currentProjectPath,
     currentProjectUpdatedAt,
+    currentProjectAssetLibrary,
     activeTaskId: activeTask?.id ?? activeTaskId,
     activeInputAssets,
     activeOutputAssets,
@@ -5342,6 +5423,9 @@ const useAiStudioState = () => {
     sendSelectedDispatchOutputsToWorkshop,
     sendPooledOutputsToWorkshop,
     sendPooledOutputsToVideoComposer,
+    addProjectAssetsToLibrary,
+    favoriteProjectAsset,
+    applyInputSelection,
     prepareNextDraftTask,
     createFreshProjectTask,
     renameTask,
