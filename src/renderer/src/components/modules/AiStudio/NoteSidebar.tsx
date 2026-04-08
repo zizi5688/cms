@@ -1849,12 +1849,6 @@ function NoteSidebar({
                       placeholder={imageNoteTextareaPlaceholder}
                       className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
                     />
-                    {!isManualImageNoteEntry ? (
-                      <div className="mt-2 text-[11px] leading-5 text-zinc-400">
-                        临时降级：当前智能生成不读取参考图，请直接写明商品信息、卖点、场景和语气要求。
-                      </div>
-                    ) : null}
-
                     <div className="mt-3 space-y-2 pt-2">
                       <div className="grid grid-cols-[0.9fr_1.45fr_0.9fr_auto] items-end gap-2">
                         <LabeledMiniField label="组数">
