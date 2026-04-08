@@ -20,6 +20,7 @@ import { Button } from '@renderer/components/ui/button'
 import geminiLogo from '@renderer/assets/ai-model-logos/gemini.svg'
 import { getAllowedVideoAspectRatios, getAllowedVideoDurations } from '@renderer/lib/aiVideoProfiles'
 import {
+  buildAiCapabilityRouteOptions,
   buildAiConfigPatch,
   findAiModelProfile,
   findAiProviderProfile,
@@ -31,6 +32,7 @@ import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore, type AiModelProfile, type AiProviderProfile } from '@renderer/store/useCmsStore'
+import { applyAiCapabilityDefaultSelection } from '../settings/aiProviderFormHelpers'
 
 import {
   normalizeOutputCountDraftOnBlur,
@@ -1650,31 +1652,35 @@ function ControlPanel({
 }): React.JSX.Element {
   const addLog = useCmsStore((store) => store.addLog)
   const config = useCmsStore((store) => store.config)
+  const updateConfig = useCmsStore((store) => store.updateConfig)
   const task = state.activeTask
   const isVideoStudio = state.studioCapability === 'video'
   const isChatStudio = state.studioCapability === 'chat'
-  const currentImageModel = useMemo(
-    () =>
-      resolveAiTaskProviderSelection(
-        Array.isArray(config.aiProviderProfiles) ? config.aiProviderProfiles : [],
-        {
-          capability: 'image',
-          taskProviderName: task?.provider,
-          taskModelName: task?.model,
-          fallbackProviderId: config.aiRuntimeDefaults?.imageProviderId ?? null,
-          fallbackProviderName: config.aiProvider,
-          fallbackModelName: config.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
-        }
-      ).modelName || DEFAULT_GRSAI_IMAGE_MODEL,
-    [
-      config.aiDefaultImageModel,
-      config.aiProvider,
-      config.aiRuntimeDefaults?.imageProviderId,
-      config.aiProviderProfiles,
-      task?.model,
-      task?.provider
-    ]
+  const providerProfiles = useMemo(
+    () => (Array.isArray(config.aiProviderProfiles) ? config.aiProviderProfiles : []),
+    [config.aiProviderProfiles]
   )
+  const imageRouteOptions = useMemo(
+    () => buildAiCapabilityRouteOptions(providerProfiles, 'image'),
+    [providerProfiles]
+  )
+  const currentImageSelection = useMemo(
+    () =>
+      resolveAiTaskProviderSelection(providerProfiles, {
+        capability: 'image',
+        taskProviderName: '',
+        taskModelName: '',
+        fallbackProviderId: config.aiRuntimeDefaults?.imageProviderId ?? null,
+        fallbackProviderName: config.aiProvider,
+        fallbackModelName: config.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
+      }),
+    [config.aiDefaultImageModel, config.aiProvider, config.aiRuntimeDefaults?.imageProviderId, providerProfiles]
+  )
+  const currentImageModel = currentImageSelection.modelName || DEFAULT_GRSAI_IMAGE_MODEL
+  const currentImageRouteValue =
+    currentImageSelection.providerProfile?.id && currentImageSelection.modelProfile?.id
+      ? `${currentImageSelection.providerProfile.id}:${currentImageSelection.modelProfile.id}`
+      : ''
   const currentVideoMeta = state.videoMeta
   const availableVideoAspectRatioOptions = useMemo(
     () =>
@@ -1786,6 +1792,46 @@ function ControlPanel({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 生成失败：${message}`)
+      window.alert(message)
+    }
+  }
+
+  const handleChangeImageRoute = async (nextValue: string): Promise<void> => {
+    const [providerId, modelId] = String(nextValue ?? '').split(':')
+    if (!providerId || !modelId) return
+
+    try {
+      const result = applyAiCapabilityDefaultSelection(
+        providerProfiles,
+        config.aiRuntimeDefaults,
+        providerId,
+        'image',
+        modelId
+      )
+      const nextSelection = resolveAiTaskProviderSelection(result.profiles, {
+        capability: 'image',
+        taskProviderName: '',
+        taskModelName: '',
+        fallbackProviderId: result.runtimeDefaults.imageProviderId ?? null,
+        fallbackProviderName: config.aiProvider,
+        fallbackModelName: config.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
+      })
+      const nextPatch = buildAiConfigPatch(
+        result.profiles,
+        result.runtimeDefaults,
+        nextSelection.providerName || config.aiProvider,
+        nextSelection.modelName || config.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
+      )
+
+      updateConfig(nextPatch)
+      await window.electronAPI.saveConfig(nextPatch)
+      if (typeof state.followImageSettingsDefault === 'function') {
+        await state.followImageSettingsDefault()
+      }
+      addLog(`[AI Studio] 已切换默认图片路由：${nextSelection.providerName} / ${nextSelection.modelName}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      addLog(`[AI Studio] 切换默认图片路由失败：${message}`)
       window.alert(message)
     }
   }
@@ -1950,6 +1996,24 @@ function ControlPanel({
                 className={fieldClass}
                 disabled={!task}
               />
+            </label>
+            <label className="flex w-[196px] min-w-[196px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>图片模型</span>
+              <select
+                value={currentImageRouteValue}
+                onChange={(event) => void handleChangeImageRoute(event.target.value)}
+                className={fieldClass}
+                disabled={imageRouteOptions.length === 0}
+              >
+                {imageRouteOptions.length === 0 ? (
+                  <option value="">请先在设置中配置图片模型</option>
+                ) : null}
+                {imageRouteOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </label>
           </>
         )}
