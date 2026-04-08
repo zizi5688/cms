@@ -143,6 +143,17 @@ export function upsertTrackedProject(
   ])
 }
 
+export function removeTrackedProjects(
+  entries: AiStudioTrackedProjectEntry[],
+  taskIds: string[]
+): AiStudioTrackedProjectEntry[] {
+  const removedTaskIds = new Set(
+    taskIds.map((taskId) => String(taskId ?? '').trim()).filter(Boolean)
+  )
+  if (removedTaskIds.size === 0) return normalizeTrackedProjects(entries)
+  return normalizeTrackedProjects(entries).filter((entry) => !removedTaskIds.has(entry.taskId))
+}
+
 export function formatProjectUpdatedAt(timestamp: number): string {
   const value = Number(timestamp)
   if (!Number.isFinite(value) || value <= 0) return '--'

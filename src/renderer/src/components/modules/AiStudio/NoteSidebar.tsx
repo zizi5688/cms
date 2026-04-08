@@ -35,6 +35,11 @@ import {
   countUndispatchedNotePreviewTasks,
   isNotePreviewTaskDispatched
 } from './noteSidebarHelpers'
+import {
+  buildVideoNoteEditorViewModel,
+  type VideoNoteEntryMode
+} from './videoNoteEditorHelpers'
+import type { VideoNoteGenerationState } from './videoNoteGenerationOrchestrator'
 import type { AiStudioAssetRecord } from './useAiStudioState'
 import {
   VIDEO_COMPOSER_RANDOM_BGM_VALUE,
@@ -63,10 +68,14 @@ type NoteSidebarProps = {
   materials: AiStudioAssetRecord[]
   csvDraft: string
   smartPromptDraft: string
+  videoSmartPromptDraft: string
   groupCountDraft: string
   minImagesDraft: string
   maxImagesDraft: string
   maxReuseDraft: string
+  videoEntryMode: VideoNoteEntryMode
+  videoGenerationState: VideoNoteGenerationState
+  isVideoGenerateDisabled?: boolean
   isGenerating?: boolean
   dispatchProgress?: NoteDispatchProgressState | null
   previewTasks: Task[]
@@ -76,11 +85,16 @@ type NoteSidebarProps = {
   onModeChange: (mode: NoteSidebarMode) => void
   onCsvChange: (value: string) => void
   onSmartPromptChange: (value: string) => void
+  onVideoSmartPromptChange: (value: string) => void
+  onVideoEntryModeChange: (value: VideoNoteEntryMode) => void
   onGroupCountChange: (value: string) => void
   onMinImagesChange: (value: string) => void
   onMaxImagesChange: (value: string) => void
   onMaxReuseChange: (value: string) => void
-  onGenerate: (payload?: { imageNoteEntryMode?: ImageNoteEntryMode }) => void
+  onGenerate: (payload?: {
+    imageNoteEntryMode?: ImageNoteEntryMode
+    videoNoteEntryMode?: VideoNoteEntryMode
+  }) => void
   onRegenerate: () => void
   onPreviewTasksChange: (tasks: Task[]) => void
   onDispatch: (selectedTaskIds: string[]) => void
@@ -1046,22 +1060,42 @@ function LabeledMiniField({
 
 function VideoNoteEditor({
   csvDraft,
+  smartPromptDraft,
   onCsvChange,
+  onSmartPromptChange,
   onGenerate,
   videoComposer,
-  pooledMediaPaths
+  pooledMediaPaths,
+  entryMode,
+  generationState,
+  isGenerating,
+  isGenerateDisabled,
+  onEntryModeChange
 }: {
   csvDraft: string
+  smartPromptDraft: string
   onCsvChange: (value: string) => void
+  onSmartPromptChange: (value: string) => void
   onGenerate: () => void
   videoComposer: ReturnType<typeof useVideoComposerController>
   pooledMediaPaths: string[]
+  entryMode: VideoNoteEntryMode
+  generationState: VideoNoteGenerationState
+  isGenerating: boolean
+  isGenerateDisabled: boolean
+  onEntryModeChange: (value: VideoNoteEntryMode) => void
 }): React.JSX.Element {
   const revealInFolder = async (filePath: string): Promise<void> => {
     const normalized = String(filePath ?? '').trim()
     if (!normalized) return
     await window.electronAPI.shellShowItemInFolder(normalized)
   }
+  const viewModel = buildVideoNoteEditorViewModel({
+    entryMode,
+    generationState,
+    isGenerating
+  })
+  const textareaValue = entryMode === 'manual' ? csvDraft : smartPromptDraft
 
   const sourceSummary = videoComposer.sourceRootPath
     ? `${videoComposer.sourceRootPath} · 图片 ${videoComposer.sourceImages.length} 张 / 视频 ${videoComposer.sourceVideos.length} 条`
@@ -1442,23 +1476,39 @@ function VideoNoteEditor({
           </section>
 
           <div className="space-y-2">
-            <div className="px-1 text-[11px] tracking-[0.04em] text-zinc-400">视频笔记</div>
+            <div className="flex items-center justify-between px-1">
+              <div className="text-[11px] tracking-[0.04em] text-zinc-400">视频笔记</div>
+              <button
+                type="button"
+                onClick={() => onEntryModeChange(entryMode === 'manual' ? 'smart' : 'manual')}
+                className="text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+              >
+                {viewModel.entryToggleLabel}
+              </button>
+            </div>
             <section className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
               <Textarea
-                value={csvDraft}
-                onChange={(event) => onCsvChange(event.target.value)}
-                placeholder="输入 CSV 格式文案"
+                value={textareaValue}
+                onChange={(event) =>
+                  entryMode === 'manual'
+                    ? onCsvChange(event.target.value)
+                    : onSmartPromptChange(event.target.value)
+                }
+                placeholder={viewModel.textareaPlaceholder}
                 className="min-h-[88px] resize-none border-0 bg-transparent px-0 py-0 text-[12px] leading-6 text-zinc-900 placeholder:text-zinc-400 shadow-none focus-visible:ring-0"
               />
+              {viewModel.statusText ? (
+                <div className="mt-2 text-[11px] leading-5 text-zinc-500">{viewModel.statusText}</div>
+              ) : null}
 
               <div className="mt-3 flex items-end justify-end gap-3 pt-2">
                 <Button
                   type="button"
                   onClick={onGenerate}
-                  disabled={!videoComposer.canGenerate}
+                  disabled={isGenerateDisabled}
                   className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-400"
                 >
-                  {videoComposer.isGenerating ? '生成中' : '开始生成'}
+                  {viewModel.generateButtonLabel}
                 </Button>
               </div>
             </section>
@@ -1477,10 +1527,14 @@ function NoteSidebar({
   materials,
   csvDraft,
   smartPromptDraft,
+  videoSmartPromptDraft,
   groupCountDraft,
   minImagesDraft,
   maxImagesDraft,
   maxReuseDraft,
+  videoEntryMode,
+  videoGenerationState,
+  isVideoGenerateDisabled = false,
   isGenerating = false,
   dispatchProgress = null,
   previewTasks,
@@ -1490,6 +1544,8 @@ function NoteSidebar({
   onModeChange,
   onCsvChange,
   onSmartPromptChange,
+  onVideoSmartPromptChange,
+  onVideoEntryModeChange,
   onGroupCountChange,
   onMinImagesChange,
   onMaxImagesChange,
@@ -1729,10 +1785,17 @@ function NoteSidebar({
         {mode === 'video-note' && phase === 'editing' ? (
           <VideoNoteEditor
             csvDraft={csvDraft}
+            smartPromptDraft={videoSmartPromptDraft}
             onCsvChange={onCsvChange}
-                  onGenerate={() => onGenerate()}
+            onSmartPromptChange={onVideoSmartPromptChange}
+            onGenerate={() => onGenerate({ videoNoteEntryMode: videoEntryMode })}
             videoComposer={videoComposer}
             pooledMediaPaths={pooledMediaPaths}
+            entryMode={videoEntryMode}
+            generationState={videoGenerationState}
+            isGenerating={isGenerating}
+            isGenerateDisabled={isVideoGenerateDisabled}
+            onEntryModeChange={onVideoEntryModeChange}
           />
         ) : null}
 

@@ -4,6 +4,7 @@ import {
   type AiProviderProfile,
   type AiRuntimeDefaults
 } from '../../../shared/ai/aiProviderTypes'
+import { DEFAULT_ACTIVE_MODULE } from '../components/layout/navigationDefaults'
 
 export type TaskStatus = 'idle' | 'uploading' | 'success' | 'error'
 export type ActiveModuleKey =
@@ -214,7 +215,7 @@ const useCmsStore = create<CmsState>((set) => ({
   materialImport: { paths: [], source: null, target: null },
   uploadFiles: [],
   workspacePath: '',
-  activeModule: 'material',
+  activeModule: DEFAULT_ACTIVE_MODULE,
   preferredAccountId: null,
   config: initialConfig,
   preferences: initialPreferences,

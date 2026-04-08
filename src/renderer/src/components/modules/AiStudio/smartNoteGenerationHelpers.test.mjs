@@ -5,6 +5,7 @@ import {
   SMART_NOTE_DEFAULT_PROMPT_TEMPLATE,
   buildSmartNotePrompt,
   buildSmartNoteChatInput,
+  buildVideoSmartNoteChatInput,
   extractCsvFromSmartNoteResponse
 } from './smartNoteGenerationHelpers.ts'
 
@@ -60,5 +61,27 @@ test('buildSmartNoteChatInput rejects blank text input during the temporary down
         groupCount: 3
       }),
     /请先输入商品信息或额外说明提示词/
+  )
+})
+
+test('buildVideoSmartNoteChatInput builds a text-only video-note chat payload', () => {
+  const result = buildVideoSmartNoteChatInput({
+    userExtraPrompt: '突出早八通勤和出片节奏，适配视频笔记',
+    groupCount: 4
+  })
+
+  assert.deepEqual(result.imagePaths, [])
+  assert.match(result.prompt, /突出早八通勤和出片节奏，适配视频笔记/)
+  assert.match(result.prompt, /请基于以上文字信息生成 4 组。/)
+})
+
+test('buildVideoSmartNoteChatInput rejects blank prompt text', () => {
+  assert.throws(
+    () =>
+      buildVideoSmartNoteChatInput({
+        userExtraPrompt: '   ',
+        groupCount: 2
+      }),
+    /请先输入视频笔记的商品信息或额外说明提示词/
   )
 })

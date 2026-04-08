@@ -198,6 +198,17 @@ type DbConnection = {
   transaction: <T extends (...args: unknown[]) => unknown>(fn: T) => T
 }
 
+type AiStudioResolvedProjectContext = {
+  projectId: string
+  projectRootTaskId: string
+  projectName: string
+  projectPath: string | null
+}
+
+export type AiStudioProjectDeletionPlan = AiStudioResolvedProjectContext & {
+  taskIds: string[]
+}
+
 function resolveStaticModule<T>(value: T): T {
   const maybe = value as unknown as { default?: T }
   return (
@@ -1508,6 +1519,21 @@ export class AiStudioService {
     const normalized = normalizeNullableText(dirPath)
     if (!normalized) return
     mkdirSync(normalized, { recursive: true })
+  }
+
+  private resolveTaskProjectContext(
+    task: Pick<AiStudioTaskRecord, 'id' | 'productName' | 'sourceFolderPath' | 'metadata'>
+  ): AiStudioResolvedProjectContext {
+    const metadata = readAiStudioProjectMetadata(task.metadata)
+    const projectId = metadata?.projectId || normalizeText(task.id)
+    const projectRootTaskId = metadata?.projectRootTaskId || projectId || normalizeText(task.id)
+
+    return {
+      projectId,
+      projectRootTaskId,
+      projectName: metadata?.projectName || normalizeText(task.productName) || '未命名项目',
+      projectPath: metadata?.projectPath || normalizeNullableText(task.sourceFolderPath)
+    }
   }
 
   private getVideoDebugLogPath(): string {
@@ -3171,12 +3197,60 @@ export class AiStudioService {
   }
 
   deleteTask(taskId: string): { success: boolean } {
-    const normalizedTaskId = normalizeText(taskId)
-    if (!normalizedTaskId) return { success: false }
+    return { success: this.deleteTasks([taskId]).success }
+  }
+
+  deleteTasks(taskIds: string[]): { success: boolean; deletedTaskIds: string[] } {
+    const normalizedTaskIds = normalizeStringArray(taskIds)
+    if (normalizedTaskIds.length === 0) {
+      return { success: false, deletedTaskIds: [] }
+    }
+
     const result = this.db
-      .prepare(`DELETE FROM ai_studio_tasks WHERE id = ?`)
-      .run(normalizedTaskId) as { changes?: number }
-    return { success: Number(result?.changes ?? 0) > 0 }
+      .prepare(
+        `DELETE FROM ai_studio_tasks WHERE id IN (${normalizedTaskIds.map(() => '?').join(', ')})`
+      )
+      .run(...normalizedTaskIds) as { changes?: number }
+
+    return {
+      success: Number(result?.changes ?? 0) > 0,
+      deletedTaskIds: normalizedTaskIds
+    }
+  }
+
+  resolveProjectDeletionPlan(taskId: string): AiStudioProjectDeletionPlan {
+    const normalizedTaskId = normalizeText(taskId)
+    if (!normalizedTaskId) throw new Error('[AI Studio] taskId 不能为空。')
+
+    const listedTasks = this.listTasks({ limit: 10000 })
+    const taskMap = new Map(listedTasks.map((task) => [task.id, task]))
+    const seedTask = taskMap.get(normalizedTaskId) ?? this.getTaskOrThrow(normalizedTaskId)
+    const seedProject = this.resolveTaskProjectContext(seedTask)
+
+    const projectTasks = new Map<string, AiStudioTaskRecord>()
+    for (const task of [...listedTasks, seedTask]) {
+      const project = this.resolveTaskProjectContext(task)
+      if (project.projectId !== seedProject.projectId) continue
+      projectTasks.set(task.id, task)
+    }
+
+    const groupedTasks = Array.from(projectTasks.values())
+    const rootTask =
+      groupedTasks.find((task) => task.id === seedProject.projectRootTaskId) ?? seedTask
+    const rootProject = this.resolveTaskProjectContext(rootTask)
+
+    return {
+      projectId: seedProject.projectId,
+      projectRootTaskId: rootProject.projectRootTaskId || seedProject.projectRootTaskId,
+      projectName: rootProject.projectName || seedProject.projectName || '未命名项目',
+      projectPath:
+        rootProject.projectPath ||
+        groupedTasks
+          .map((task) => this.resolveTaskProjectContext(task).projectPath)
+          .find((path) => Boolean(path)) ||
+        null,
+      taskIds: Array.from(projectTasks.keys())
+    }
   }
 
   listTasks(query?: { status?: string; ids?: string[]; limit?: number }): AiStudioTaskRecord[] {
