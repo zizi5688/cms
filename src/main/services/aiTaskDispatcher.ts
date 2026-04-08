@@ -25,6 +25,13 @@ export type AiDirectExecutors = {
   video: AiTaskExecutor
 }
 
+export type AiTaskDispatchOptions = {
+  resolveRoute?: (
+    state: ResolvedAiProviderState,
+    capability: AiCapability
+  ) => Promise<ResolvedAiRoute> | ResolvedAiRoute
+}
+
 function resolveTaskRoute(
   state: ResolvedAiProviderState,
   capability: AiCapability
@@ -38,9 +45,12 @@ function resolveTaskRoute(
 export async function dispatchAiTask(
   state: ResolvedAiProviderState,
   request: AiTaskRequest,
-  executors: AiDirectExecutors
+  executors: AiDirectExecutors,
+  options?: AiTaskDispatchOptions
 ): Promise<unknown> {
-  const route = resolveTaskRoute(state, request.capability)
+  const route = options?.resolveRoute
+    ? await options.resolveRoute(state, request.capability)
+    : resolveTaskRoute(state, request.capability)
   const executor = executors[request.capability]
   return executor({
     mode: 'direct',

@@ -205,7 +205,10 @@ const initialConfig: CmsConfig = {
     bundlePath: '/Users/z/Ai 工具/Local AI Gateway',
     autoStartOnAppLaunch: true,
     startAdminUi: true,
-    startCdpProxy: true
+    startCdpProxy: true,
+    allowDedicatedChrome: false,
+    chromeProfileDirectory: '',
+    prewarmImageOnLaunch: false
   }
 }
 

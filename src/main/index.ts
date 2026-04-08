@@ -647,6 +647,36 @@ function normalizeAiIpcErrorMessage(channel: 'cms.ai.route.resolve' | 'cms.ai.ta
   return `[${channel}] ${String(error ?? 'Unknown AI error')}`
 }
 
+function isLocalGatewayAiRoute(route: Pick<ResolvedAiRoute, 'baseUrl'>): boolean {
+  const normalized = String(route.baseUrl ?? '')
+    .trim()
+    .replace(/\/+$/, '')
+    .toLowerCase()
+  return (
+    normalized === 'http://127.0.0.1:4174' ||
+    normalized === 'http://localhost:4174' ||
+    normalized === 'http://0.0.0.0:4174'
+  )
+}
+
+async function resolveAiRouteWithLocalGatewayReadiness(
+  aiState: ReturnType<typeof readResolvedAiProviderStateFromStore>,
+  capability: AiCapability
+): Promise<ResolvedAiRoute> {
+  const route = resolveAiRouteByCapability(capability, {
+    chat: () => resolveChatRoute(aiState),
+    image: () => resolveImageRoute(aiState),
+    video: () => resolveVideoRoute(aiState)
+  })
+
+  if (!localGatewayManager || !isLocalGatewayAiRoute(route)) {
+    return route
+  }
+
+  await localGatewayManager.ensureReadyForCapability(capability)
+  return route
+}
+
 async function readFeishuJson<T>(res: Response): Promise<{ data: T; logId: string | null }> {
   const logId = res.headers.get('x-tt-logid')
   const json = (await res.json()) as T
@@ -3499,6 +3529,22 @@ app.whenReady().then(async () => {
     return localGatewayManager.retryStart()
   })
 
+  ipcMain.handle('local-gateway:list-chrome-profiles', async () => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.listChromeProfiles()
+  })
+
+  ipcMain.handle('local-gateway:initialize', async (_event, payload: { smokeImage?: boolean } | null | undefined) => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.initializeGateway({
+      smokeImage: payload?.smokeImage === true
+    })
+  })
+
   ipcMain.handle('cms.ai.route.resolve', async (_event, payload: { capability?: unknown } | null | undefined) => {
     try {
       const capability =
@@ -3511,11 +3557,7 @@ app.whenReady().then(async () => {
 
       const aiState = readResolvedAiProviderStateFromStore(configStore)
       syncResolvedAiProviderStateToStore(configStore, aiState)
-      return resolveAiRouteByCapability(capability, {
-        chat: () => resolveChatRoute(aiState),
-        image: () => resolveImageRoute(aiState),
-        video: () => resolveVideoRoute(aiState)
-      })
+      return await resolveAiRouteWithLocalGatewayReadiness(aiState, capability)
     } catch (error) {
       throw new Error(normalizeAiIpcErrorMessage('cms.ai.route.resolve', error))
     }
@@ -3561,6 +3603,10 @@ app.whenReady().then(async () => {
             input: request.input,
             context: request.context ?? {}
           })
+        },
+        {
+          resolveRoute: (state, nextCapability) =>
+            resolveAiRouteWithLocalGatewayReadiness(state, nextCapability)
         }
       )
     } catch (error) {

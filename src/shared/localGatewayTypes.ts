@@ -4,6 +4,9 @@ export type LocalGatewayConfig = {
   autoStartOnAppLaunch: boolean
   startAdminUi: boolean
   startCdpProxy: boolean
+  allowDedicatedChrome: boolean
+  chromeProfileDirectory: string
+  prewarmImageOnLaunch: boolean
 }
 
 export type LocalGatewayOverallStatus =
@@ -34,4 +37,17 @@ export type LocalGatewayState = {
   bundlePath: string
   lastStartedAt: number | null
   lastError: string | null
+}
+
+export type LocalGatewayChromeProfile = {
+  directory: string
+  name: string
+  label: string
+  userName: string | null
+}
+
+export type LocalGatewayInitializationResult = {
+  success: boolean
+  profileDirectory: string
+  output: string
 }

@@ -8,7 +8,10 @@ export function createDefaultLocalGatewayConfig(): LocalGatewayConfig {
     bundlePath: DEFAULT_LOCAL_GATEWAY_BUNDLE_PATH,
     autoStartOnAppLaunch: true,
     startAdminUi: true,
-    startCdpProxy: true
+    startCdpProxy: true,
+    allowDedicatedChrome: false,
+    chromeProfileDirectory: '',
+    prewarmImageOnLaunch: false
   }
 }
 
@@ -28,7 +31,13 @@ export function normalizeLocalGatewayConfig(value: unknown): LocalGatewayConfig 
         : fallback.bundlePath,
     autoStartOnAppLaunch: normalizeBool(record.autoStartOnAppLaunch, fallback.autoStartOnAppLaunch),
     startAdminUi: normalizeBool(record.startAdminUi, fallback.startAdminUi),
-    startCdpProxy: normalizeBool(record.startCdpProxy, fallback.startCdpProxy)
+    startCdpProxy: normalizeBool(record.startCdpProxy, fallback.startCdpProxy),
+    allowDedicatedChrome: normalizeBool(record.allowDedicatedChrome, fallback.allowDedicatedChrome),
+    chromeProfileDirectory:
+      typeof record.chromeProfileDirectory === 'string'
+        ? record.chromeProfileDirectory.trim()
+        : fallback.chromeProfileDirectory,
+    prewarmImageOnLaunch: normalizeBool(record.prewarmImageOnLaunch, fallback.prewarmImageOnLaunch)
   }
 }
 

@@ -207,6 +207,8 @@ declare global {
   }
 
   type LocalGatewayConfig = import('../shared/localGatewayTypes').LocalGatewayConfig
+  type LocalGatewayChromeProfile = import('../shared/localGatewayTypes').LocalGatewayChromeProfile
+  type LocalGatewayInitializationResult = import('../shared/localGatewayTypes').LocalGatewayInitializationResult
   type LocalGatewayState = import('../shared/localGatewayTypes').LocalGatewayState
 
   type SyncDouyinHotMusicResult = {
@@ -1454,6 +1456,10 @@ declare global {
     }) => Promise<{ success: true }>
     getLocalGatewayState: () => Promise<LocalGatewayState>
     retryStartLocalGateway: () => Promise<LocalGatewayState>
+    listLocalGatewayChromeProfiles: () => Promise<LocalGatewayChromeProfile[]>
+    initializeLocalGateway: (payload?: {
+      smokeImage?: boolean
+    }) => Promise<LocalGatewayInitializationResult>
     getStorageMaintenanceState: () => Promise<StorageMaintenanceState>
     runStorageMaintenanceNow: (payload?: {
       reason?: string

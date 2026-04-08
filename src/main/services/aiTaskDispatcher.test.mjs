@@ -149,3 +149,36 @@ test('dispatchAiTask routes direct mode requests to the matching capability exec
   assert.deepEqual(imageResult, { ok: true, capability: 'image' })
   assert.deepEqual(videoResult, { ok: true, capability: 'video' })
 })
+
+test('dispatchAiTask uses an async route resolver hook when provided', async () => {
+  const calls = []
+
+  const result = await dispatchAiTask(
+    STATE,
+    { capability: 'chat', input: { prompt: 'hi' } },
+    {
+      chat: async ({ route, request }) => {
+        calls.push(['chat', route.providerId, request.input])
+        return { ok: true, providerId: route.providerId }
+      },
+      image: async () => ({ ok: true }),
+      video: async () => ({ ok: true })
+    },
+    {
+      resolveRoute: async (_state, capability) => ({
+        providerId: 'provider-local',
+        providerName: 'Local',
+        capability,
+        baseUrl: 'http://127.0.0.1:4174',
+        apiKey: 'local-dev-secret',
+        modelId: 'model-gemini-web-chat',
+        modelName: 'gemini-web-chat',
+        endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+        protocol: 'google-genai'
+      })
+    }
+  )
+
+  assert.deepEqual(calls, [['chat', 'provider-local', { prompt: 'hi' }]])
+  assert.deepEqual(result, { ok: true, providerId: 'provider-local' })
+})
