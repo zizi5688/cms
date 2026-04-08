@@ -26,6 +26,7 @@ import {
 import { ResultPanel } from './ResultPanel'
 import {
   buildSmartNoteChatInput,
+  buildVideoSmartNoteChatInput,
   extractCsvFromSmartNoteResponse
 } from './smartNoteGenerationHelpers'
 import { TaskQueue } from './TaskQueue'
@@ -36,7 +37,16 @@ import {
   normalizeNoteSidebarConstraints,
   resolveNotePreviewTasksForDispatch
 } from './noteSidebarHelpers'
-import { buildGeneratedVideoNotePreviewTasks } from './videoNotePreviewHelpers'
+import {
+  buildGeneratedVideoNotePreviewTasks,
+  type GeneratedVideoNoteAsset
+} from './videoNotePreviewHelpers'
+import { type VideoNoteEntryMode } from './videoNoteEditorHelpers'
+import {
+  applyVideoNoteGenerationUpdate,
+  createInitialVideoNoteGenerationState,
+  type VideoNoteGenerationState
+} from './videoNoteGenerationOrchestrator'
 import {
   buildProjectCardSummaries,
   formatProjectUpdatedAt,
@@ -80,6 +90,8 @@ const NOTE_SIDEBAR_DEFAULTS = {
   phase: 'editing' as NoteSidebarPhase,
   csvDraft: '',
   smartPromptDraft: '',
+  videoSmartPromptDraft: '',
+  videoEntryMode: 'smart' as VideoNoteEntryMode,
   groupCountDraft: '1',
   minImagesDraft: '3',
   maxImagesDraft: '5',
@@ -274,6 +286,12 @@ function AiStudio(): React.JSX.Element {
   const [noteSmartPromptDraft, setNoteSmartPromptDraft] = useState(
     NOTE_SIDEBAR_DEFAULTS.smartPromptDraft
   )
+  const [videoNoteSmartPromptDraft, setVideoNoteSmartPromptDraft] = useState(
+    NOTE_SIDEBAR_DEFAULTS.videoSmartPromptDraft
+  )
+  const [videoNoteEntryMode, setVideoNoteEntryMode] = useState<VideoNoteEntryMode>(
+    NOTE_SIDEBAR_DEFAULTS.videoEntryMode
+  )
   const [noteGroupCountDraft, setNoteGroupCountDraft] = useState(
     NOTE_SIDEBAR_DEFAULTS.groupCountDraft
   )
@@ -282,6 +300,8 @@ function AiStudio(): React.JSX.Element {
   const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
   const [notePreviewTasks, setNotePreviewTasks] = useState<Task[]>([])
   const [isGeneratingNotePreview, setIsGeneratingNotePreview] = useState(false)
+  const [videoNoteGenerationState, setVideoNoteGenerationState] =
+    useState<VideoNoteGenerationState>(() => createInitialVideoNoteGenerationState())
   const [noteDispatchProgress, setNoteDispatchProgress] =
     useState<NoteDispatchProgressState | null>(null)
   const [noteUploadedMaterialPaths, setNoteUploadedMaterialPaths] = useState<string[]>([])
@@ -317,11 +337,14 @@ function AiStudio(): React.JSX.Element {
     setNoteSidebarPhase(NOTE_SIDEBAR_DEFAULTS.phase)
     setNoteCsvDraft(NOTE_SIDEBAR_DEFAULTS.csvDraft)
     setNoteSmartPromptDraft(NOTE_SIDEBAR_DEFAULTS.smartPromptDraft)
+    setVideoNoteSmartPromptDraft(NOTE_SIDEBAR_DEFAULTS.videoSmartPromptDraft)
+    setVideoNoteEntryMode(NOTE_SIDEBAR_DEFAULTS.videoEntryMode)
     setNoteGroupCountDraft(NOTE_SIDEBAR_DEFAULTS.groupCountDraft)
     setNoteMinImagesDraft(NOTE_SIDEBAR_DEFAULTS.minImagesDraft)
     setNoteMaxImagesDraft(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
     setNoteMaxReuseDraft(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
     setNotePreviewTasks([])
+    setVideoNoteGenerationState(createInitialVideoNoteGenerationState())
     setNoteDispatchProgress(null)
     setNoteUploadedMaterialPaths([])
     setNoteCanvasMode('result')
@@ -364,6 +387,15 @@ function AiStudio(): React.JSX.Element {
       ),
     [state.pooledOutputAssets]
   )
+  const hasReusableRenderedVideoAssets =
+    videoNoteGenerationState.mergeStatus === 'partial-failed' &&
+    videoNoteGenerationState.renderStatus === 'success' &&
+    videoNoteGenerationState.previewAssets.length > 0
+  const isVideoGenerateDisabled =
+    isGeneratingNotePreview ||
+    (videoNoteEntryMode === 'manual'
+      ? !hasReusableRenderedVideoAssets && !videoComposer.canGenerate
+      : !videoComposer.canGenerate)
 
   const batchPickAssets = useMemo(
     () => buildBatchPickAssets(state.historyTasks),
@@ -577,6 +609,29 @@ function AiStudio(): React.JSX.Element {
     )
   }, [])
 
+  const openVideoNotePreviewFromAssets = useCallback(
+    (
+      csvText: string,
+      previewAssets: GeneratedVideoNoteAsset[],
+      options?: {
+        successLog?: string
+        emptyAlert?: string
+      }
+    ): boolean => {
+      const nextTasks = buildGeneratedVideoNotePreviewTasks(csvText, previewAssets)
+      if (nextTasks.length === 0) {
+        window.alert(options?.emptyAlert || '已生成视频，但未能构建视频笔记结果，请检查 CSV 与输出数量。')
+        return false
+      }
+
+      setNotePreviewTasks(nextTasks)
+      setNoteSidebarPhase('preview')
+      if (options?.successLog) addLog(options.successLog)
+      return true
+    },
+    [addLog]
+  )
+
   const handleGenerateVideoNotePreview = useCallback(async (): Promise<void> => {
     if (!noteCsvDraft.trim()) {
       window.alert('请先输入 CSV 格式文案。')
@@ -590,6 +645,13 @@ function AiStudio(): React.JSX.Element {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 视频笔记 CSV 解析失败：${message}`)
       window.alert(message)
+      return
+    }
+
+    if (hasReusableRenderedVideoAssets) {
+      openVideoNotePreviewFromAssets(noteCsvDraft, videoNoteGenerationState.previewAssets, {
+        successLog: `[AI Studio] 已复用 ${videoNoteGenerationState.previewAssets.length} 条已生成视频，生成视频笔记预览。`
+      })
       return
     }
 
@@ -611,24 +673,47 @@ function AiStudio(): React.JSX.Element {
 
     setIsGeneratingNotePreview(true)
     try {
+      setVideoNoteGenerationState(createInitialVideoNoteGenerationState())
       const result = await videoComposer.startGenerate()
       if (!result || result.outputs.length === 0) {
+        const message =
+          result && result.failedCount > 0
+            ? '本轮视频生成失败，请检查参数或素材后重试。'
+            : '本轮视频生成未产出可用结果。'
+        setVideoNoteGenerationState((current) =>
+          applyVideoNoteGenerationUpdate(current, {
+            type: 'render-error',
+            message
+          })
+        )
         if (result && result.failedCount > 0) {
-          window.alert('本轮视频生成失败，请检查参数或素材后重试。')
+          window.alert(message)
         }
         return
       }
 
       const previewAssets = await prepareGeneratedVideoPreviewAssets(result.outputs)
-      const nextTasks = buildGeneratedVideoNotePreviewTasks(noteCsvDraft, previewAssets)
-      if (nextTasks.length === 0) {
-        window.alert('已生成视频，但未能构建视频笔记结果，请检查 CSV 与输出数量。')
+      if (previewAssets.length === 0) {
+        const message = '已生成视频，但未能准备可预览的视频素材，请检查输出目录后重试。'
+        setVideoNoteGenerationState((current) =>
+          applyVideoNoteGenerationUpdate(current, {
+            type: 'render-error',
+            message
+          })
+        )
+        window.alert(message)
         return
       }
 
-      setNotePreviewTasks(nextTasks)
-      setNoteSidebarPhase('preview')
-      addLog(`[AI Studio] 已生成 ${nextTasks.length} 组视频笔记预览。`)
+      setVideoNoteGenerationState((current) =>
+        applyVideoNoteGenerationUpdate(current, {
+          type: 'render-success',
+          assets: previewAssets
+        })
+      )
+      openVideoNotePreviewFromAssets(noteCsvDraft, previewAssets, {
+        successLog: `[AI Studio] 已生成 ${previewAssets.length} 组视频笔记预览。`
+      })
       if (result.failedCount > 0) {
         addLog(
           `[AI Studio] 视频笔记生成存在失败项：${result.failedCount} 条，已保留成功结果进入预览。`
@@ -644,7 +729,182 @@ function AiStudio(): React.JSX.Element {
     } finally {
       setIsGeneratingNotePreview(false)
     }
-  }, [addLog, noteCsvDraft, prepareGeneratedVideoPreviewAssets, videoComposer])
+  }, [
+    addLog,
+    noteCsvDraft,
+    openVideoNotePreviewFromAssets,
+    prepareGeneratedVideoPreviewAssets,
+    videoComposer,
+    videoNoteGenerationState.previewAssets,
+    hasReusableRenderedVideoAssets
+  ])
+
+  const handleGenerateSmartVideoNotePreview = useCallback(async (): Promise<void> => {
+    let chatInput: ReturnType<typeof buildVideoSmartNoteChatInput>
+    try {
+      chatInput = buildVideoSmartNoteChatInput({
+        userExtraPrompt: videoNoteSmartPromptDraft,
+        groupCount: Math.max(1, Math.min(20, Math.floor(Number(videoComposer.batchCount) || 1)))
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(message)
+      return
+    }
+
+    if (videoComposer.sourceMediaCount === 0) {
+      window.alert('请先导入至少一项图片或视频素材。')
+      return
+    }
+
+    if (videoComposer.sourceVideos.length === 0 && videoComposer.sourceImages.length < videoComposer.normalizedMin) {
+      window.alert(`当前仅 ${videoComposer.sourceImages.length} 张图，至少需要 ${videoComposer.normalizedMin} 张。`)
+      return
+    }
+
+    setIsGeneratingNotePreview(true)
+    setVideoNoteGenerationState((current) =>
+      applyVideoNoteGenerationUpdate(current, {
+        type: 'start'
+      })
+    )
+
+    try {
+      addLog('[AI Studio] 已发送视频笔记智能生成请求，并并行启动视频生成。')
+
+      const copyPromise = (async () => {
+        try {
+          const result = (await state.startChatRun({
+            promptText: chatInput.prompt,
+            imagePaths: chatInput.imagePaths
+          })) as {
+            outputText?: unknown
+          }
+          const csvText = extractCsvFromSmartNoteResponse(String(result?.outputText ?? ''))
+          setNoteCsvDraft(csvText)
+          setVideoNoteGenerationState((current) =>
+            applyVideoNoteGenerationUpdate(current, {
+              type: 'copy-success',
+              csvText
+            })
+          )
+          addLog('[AI Studio] 视频笔记文案已返回，等待视频生成完成。')
+          return {
+            ok: true as const,
+            csvText
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          setVideoNoteGenerationState((current) =>
+            applyVideoNoteGenerationUpdate(current, {
+              type: 'copy-error',
+              message
+            })
+          )
+          addLog(`[AI Studio] 视频笔记智能生成失败：${message}`)
+          return {
+            ok: false as const,
+            message
+          }
+        }
+      })()
+
+      const renderPromise = (async () => {
+        try {
+          const result = await videoComposer.startGenerate()
+          if (!result || result.outputs.length === 0) {
+            const message =
+              result && result.failedCount > 0
+                ? '本轮视频生成失败，请检查参数或素材后重试。'
+                : '本轮视频生成未产出可用结果。'
+            setVideoNoteGenerationState((current) =>
+              applyVideoNoteGenerationUpdate(current, {
+                type: 'render-error',
+                message
+              })
+            )
+            addLog(`[AI Studio] 视频笔记生成失败：${message}`)
+            return {
+              ok: false as const,
+              message
+            }
+          }
+
+          const previewAssets = await prepareGeneratedVideoPreviewAssets(result.outputs)
+          if (previewAssets.length === 0) {
+            const message = '已生成视频，但未能准备可预览的视频素材，请检查输出目录后重试。'
+            setVideoNoteGenerationState((current) =>
+              applyVideoNoteGenerationUpdate(current, {
+                type: 'render-error',
+                message
+              })
+            )
+            addLog(`[AI Studio] 视频笔记生成失败：${message}`)
+            return {
+              ok: false as const,
+              message
+            }
+          }
+
+          setVideoNoteGenerationState((current) =>
+            applyVideoNoteGenerationUpdate(current, {
+              type: 'render-success',
+              assets: previewAssets
+            })
+          )
+          addLog(`[AI Studio] 视频已生成 ${previewAssets.length} 条，等待文案返回。`)
+          if (result.failedCount > 0) {
+            addLog(
+              `[AI Studio] 视频笔记生成存在失败项：${result.failedCount} 条，已保留成功结果等待合流。`
+            )
+          }
+          return {
+            ok: true as const,
+            assets: previewAssets
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          setVideoNoteGenerationState((current) =>
+            applyVideoNoteGenerationUpdate(current, {
+              type: 'render-error',
+              message
+            })
+          )
+          addLog(`[AI Studio] 视频笔记生成失败：${message}`)
+          return {
+            ok: false as const,
+            message
+          }
+        }
+      })()
+
+      const [copyResult, renderResult] = await Promise.all([copyPromise, renderPromise])
+
+      if (copyResult.ok && renderResult.ok) {
+        openVideoNotePreviewFromAssets(copyResult.csvText, renderResult.assets, {
+          successLog: `[AI Studio] 视频笔记智能生成完成，并生成 ${renderResult.assets.length} 组预览。`
+        })
+        return
+      }
+
+      const messages = [
+        copyResult.ok ? '' : copyResult.message,
+        renderResult.ok ? '' : renderResult.message
+      ].filter(Boolean)
+      if (messages.length > 0) {
+        window.alert(messages.join('\n'))
+      }
+    } finally {
+      setIsGeneratingNotePreview(false)
+    }
+  }, [
+    addLog,
+    openVideoNotePreviewFromAssets,
+    prepareGeneratedVideoPreviewAssets,
+    state,
+    videoComposer,
+    videoNoteSmartPromptDraft
+  ])
 
   const handleDispatchNotePreview = async (selectedTaskIds: string[]): Promise<void> => {
     const tasksToDispatch = resolveNotePreviewTasksForDispatch(notePreviewTasks, selectedTaskIds)
@@ -802,10 +1062,14 @@ function AiStudio(): React.JSX.Element {
       materials={noteMaterials}
       csvDraft={noteCsvDraft}
       smartPromptDraft={noteSmartPromptDraft}
+      videoSmartPromptDraft={videoNoteSmartPromptDraft}
       groupCountDraft={noteGroupCountDraft}
       minImagesDraft={noteMinImagesDraft}
       maxImagesDraft={noteMaxImagesDraft}
       maxReuseDraft={noteMaxReuseDraft}
+      videoEntryMode={videoNoteEntryMode}
+      videoGenerationState={videoNoteGenerationState}
+      isVideoGenerateDisabled={isVideoGenerateDisabled}
       isGenerating={isGeneratingNotePreview}
       dispatchProgress={noteDispatchProgress}
       previewTasks={notePreviewTasks}
@@ -820,6 +1084,8 @@ function AiStudio(): React.JSX.Element {
       }}
       onCsvChange={setNoteCsvDraft}
       onSmartPromptChange={setNoteSmartPromptDraft}
+      onVideoSmartPromptChange={setVideoNoteSmartPromptDraft}
+      onVideoEntryModeChange={setVideoNoteEntryMode}
       onGroupCountChange={setNoteGroupCountDraft}
       onMinImagesChange={setNoteMinImagesDraft}
       onMaxImagesChange={setNoteMaxImagesDraft}
@@ -827,8 +1093,12 @@ function AiStudio(): React.JSX.Element {
       onGenerate={(payload) => {
         const imageNoteEntryMode: ImageNoteEntryMode =
           payload?.imageNoteEntryMode === 'manual' ? 'manual' : 'smart'
+        const nextVideoEntryMode: VideoNoteEntryMode =
+          payload?.videoNoteEntryMode === 'smart' ? 'smart' : 'manual'
         void (noteSidebarMode === 'video-note'
-          ? handleGenerateVideoNotePreview()
+          ? nextVideoEntryMode === 'smart'
+            ? handleGenerateSmartVideoNotePreview()
+            : handleGenerateVideoNotePreview()
           : imageNoteEntryMode === 'manual'
             ? handleGenerateNotePreview()
             : handleGenerateSmartNotePreview())

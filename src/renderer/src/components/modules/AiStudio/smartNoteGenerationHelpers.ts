@@ -72,6 +72,27 @@ export function buildSmartNoteChatInput(payload: {
   }
 }
 
+export function buildVideoSmartNoteChatInput(payload: {
+  userExtraPrompt: string
+  groupCount: number
+}): {
+  prompt: string
+  imagePaths: string[]
+} {
+  const userExtraPrompt = normalizeText(payload.userExtraPrompt)
+  if (!userExtraPrompt) {
+    throw new Error('请先输入视频笔记的商品信息或额外说明提示词。')
+  }
+
+  return {
+    prompt: buildSmartNotePrompt({
+      userExtraPrompt,
+      groupCount: payload.groupCount
+    }),
+    imagePaths: []
+  }
+}
+
 export function extractCsvFromSmartNoteResponse(responseText: string): string {
   const normalized = String(responseText ?? '')
   const match = normalized.match(/```csv\s*([\s\S]*?)```/i)
