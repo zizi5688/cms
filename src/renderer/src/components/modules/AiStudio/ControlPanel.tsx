@@ -18,7 +18,10 @@ import {
 
 import { Button } from '@renderer/components/ui/button'
 import geminiLogo from '@renderer/assets/ai-model-logos/gemini.svg'
-import { getAllowedVideoAspectRatios, getAllowedVideoDurations } from '@renderer/lib/aiVideoProfiles'
+import {
+  getAllowedVideoAspectRatios,
+  getAllowedVideoDurations
+} from '@renderer/lib/aiVideoProfiles'
 import {
   buildAiCapabilityRouteOptions,
   buildAiConfigPatch,
@@ -31,16 +34,18 @@ import {
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { cn } from '@renderer/lib/utils'
-import { useCmsStore, type AiModelProfile, type AiProviderProfile } from '@renderer/store/useCmsStore'
+import {
+  useCmsStore,
+  type AiModelProfile,
+  type AiProviderProfile
+} from '@renderer/store/useCmsStore'
 import { applyAiCapabilityDefaultSelection } from '../settings/aiProviderFormHelpers'
 
-import {
-  normalizeOutputCountDraftOnBlur,
-  parseOutputCountDraft
-} from './outputCountDraftHelpers'
+import { normalizeOutputCountDraftOnBlur, parseOutputCountDraft } from './outputCountDraftHelpers'
 import { resolvePrimaryGenerateButtonState } from './controlPanelHelpers'
 import { canStartPoolRemix, resolvePoolSendButtonText } from './poolDispatchHelpers'
 import { hasActivePreviewSlotRuntimeStates } from './previewSlotHelpers'
+import { ProjectAssetLibraryPanel } from './ProjectAssetLibraryPanel'
 import type { AiStudioAssetRecord, UseAiStudioStateResult } from './useAiStudioState'
 
 const VIDEO_MODE_OPTIONS = [
@@ -860,7 +865,11 @@ function SharedModelConfigurator({
   )
 }
 
-export function ImageModelConfigurator({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
+export function ImageModelConfigurator({
+  state
+}: {
+  state: UseAiStudioStateResult
+}): React.JSX.Element {
   const task = state.activeTask
   const config = useCmsStore((store) => store.config)
   const updateConfig = useCmsStore((store) => store.updateConfig)
@@ -1264,7 +1273,11 @@ export function ImageModelConfigurator({ state }: { state: UseAiStudioStateResul
   )
 }
 
-export function VideoModelConfigurator({ state }: { state: UseAiStudioStateResult }): React.JSX.Element {
+export function VideoModelConfigurator({
+  state
+}: {
+  state: UseAiStudioStateResult
+}): React.JSX.Element {
   const task = state.activeTask
   const videoMeta = state.videoMeta
   const config = useCmsStore((store) => store.config)
@@ -1674,7 +1687,12 @@ function ControlPanel({
         fallbackProviderName: config.aiProvider,
         fallbackModelName: config.aiDefaultImageModel || DEFAULT_GRSAI_IMAGE_MODEL
       }),
-    [config.aiDefaultImageModel, config.aiProvider, config.aiRuntimeDefaults?.imageProviderId, providerProfiles]
+    [
+      config.aiDefaultImageModel,
+      config.aiProvider,
+      config.aiRuntimeDefaults?.imageProviderId,
+      providerProfiles
+    ]
   )
   const currentImageModel = currentImageSelection.modelName || DEFAULT_GRSAI_IMAGE_MODEL
   const currentImageRouteValue =
@@ -1698,7 +1716,7 @@ function ControlPanel({
   )
   const requestedImageCount = Math.max(1, state.masterOutputCount || 1)
   const requestedVideoCount = Math.max(1, currentVideoMeta.outputCount || 1)
-  const previewRuntimeStates = task ? state.previewSlotRuntimeByTaskId[task.id] ?? {} : null
+  const previewRuntimeStates = task ? (state.previewSlotRuntimeByTaskId[task.id] ?? {}) : null
   const isRunning = isChatStudio
     ? state.isChatRunning
     : task?.status === 'running' ||
@@ -1828,7 +1846,9 @@ function ControlPanel({
       if (typeof state.followImageSettingsDefault === 'function') {
         await state.followImageSettingsDefault()
       }
-      addLog(`[AI Studio] 已切换默认图片路由：${nextSelection.providerName} / ${nextSelection.modelName}`)
+      addLog(
+        `[AI Studio] 已切换默认图片路由：${nextSelection.providerName} / ${nextSelection.modelName}`
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 切换默认图片路由失败：${message}`)
@@ -2015,6 +2035,13 @@ function ControlPanel({
                 ))}
               </select>
             </label>
+            <div className="flex min-w-[92px] shrink-0 flex-col gap-1">
+              <span className={CONTROL_FIELD_LABEL_CLASS}>项目资产</span>
+              <ProjectAssetLibraryPanel
+                state={state}
+                hasPromptDraft={Boolean(promptDraft.trim())}
+              />
+            </div>
           </>
         )}
       </div>

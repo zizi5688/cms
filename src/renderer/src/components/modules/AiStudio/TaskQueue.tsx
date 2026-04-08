@@ -443,27 +443,27 @@ function QuickInsertPopover({
                         const previewKey = previewKeyOf(preview)
                         const isActive = previewKeyOf(activePreview) === previewKey
                         return (
-                      <button
-                        type="button"
-                        onClick={() => handlePrimaryAction(preview)}
-                        onFocus={() => setActivePreview(preview)}
-                        className={cn(
-                          'flex h-8 w-full items-center justify-center rounded-[11px] px-1.5 text-center text-[11px] font-medium transition',
-                          isActive
-                            ? 'border border-zinc-950 bg-zinc-950 text-white'
-                            : 'border border-dashed border-zinc-300 bg-zinc-50/85 text-zinc-900 hover:border-zinc-400 hover:bg-white'
-                        )}
-                        title="新增模板"
-                      >
-                        <span className="block w-full truncate">
-                          {resolveQuickInsertButtonLabel({
-                            armedPreviewKey,
-                            itemPreviewKey: previewKey ?? 'create',
-                            defaultLabel: '新增模板',
-                            armedLabel: '新建'
-                          })}
-                        </span>
-                      </button>
+                          <button
+                            type="button"
+                            onClick={() => handlePrimaryAction(preview)}
+                            onFocus={() => setActivePreview(preview)}
+                            className={cn(
+                              'flex h-8 w-full items-center justify-center rounded-[11px] px-1.5 text-center text-[11px] font-medium transition',
+                              isActive
+                                ? 'border border-zinc-950 bg-zinc-950 text-white'
+                                : 'border border-dashed border-zinc-300 bg-zinc-50/85 text-zinc-900 hover:border-zinc-400 hover:bg-white'
+                            )}
+                            title="新增模板"
+                          >
+                            <span className="block w-full truncate">
+                              {resolveQuickInsertButtonLabel({
+                                armedPreviewKey,
+                                itemPreviewKey: previewKey ?? 'create',
+                                defaultLabel: '新增模板',
+                                armedLabel: '新建'
+                              })}
+                            </span>
+                          </button>
                         )
                       })()}
                     </div>
@@ -994,12 +994,12 @@ function TaskQueue({
   const promptComposerMinHeight = isChatStudio
     ? 132
     : isVideoStudio
-    ? videoMeta.mode === 'first-last-frame'
-      ? 148
-      : 132
-    : inputAssets.length > 0
-      ? 136
-      : 124
+      ? videoMeta.mode === 'first-last-frame'
+        ? 148
+        : 132
+      : inputAssets.length > 0
+        ? 136
+        : 124
 
   const handleOpenTemplateModal = (): void => {
     setEditingTemplateId(null)
@@ -1099,17 +1099,35 @@ function TaskQueue({
       return
     }
 
+    const shouldConfirmReset =
+      Boolean(promptDraft.trim()) ||
+      Boolean(state.primaryImagePath) ||
+      state.referenceImagePaths.length > 0
+
     if (!primaryAsset) {
       const [nextPrimary, ...nextReferences] = accepted
-      if (nextPrimary) {
-        await state.assignPrimaryImage(nextPrimary)
-      }
-      if (nextReferences.length > 0) {
-        await state.addReferenceImages(nextReferences)
-      }
+      await state.applyInputSelection(
+        {
+          primaryImagePath: nextPrimary ?? null,
+          referenceImagePaths: nextReferences
+        },
+        {
+          confirmReset: shouldConfirmReset
+        }
+      )
       addLog(`[AI Studio] 已导入参考图：${accepted.length} 张`)
     } else {
-      const { added } = await state.addReferenceImages(accepted)
+      const nextReferences = [...state.referenceImagePaths, ...accepted]
+      await state.applyInputSelection(
+        {
+          primaryImagePath: state.primaryImagePath,
+          referenceImagePaths: nextReferences
+        },
+        {
+          confirmReset: shouldConfirmReset
+        }
+      )
+      const added = accepted.length
       if (added > 0) {
         addLog(`[AI Studio] 已添加参考图：${added} 张`)
       }
@@ -1310,11 +1328,7 @@ function TaskQueue({
               : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 py-0'
           )}
         >
-          <div
-            className={cn(
-              isChatStudio ? 'hidden' : 'flex flex-col items-start gap-1.5 pt-0.5'
-            )}
-          >
+          <div className={cn(isChatStudio ? 'hidden' : 'flex flex-col items-start gap-1.5 pt-0.5')}>
             {isVideoStudio ? (
               <>
                 {videoMeta.mode === 'subject-reference' ? (
@@ -1391,11 +1405,15 @@ function TaskQueue({
                 isChatStudio
                   ? '输入本次聊天内容，例如：帮我写一条新品发布文案。'
                   : isVideoStudio
-                  ? '描述镜头运动、节奏、主体动作和氛围，例如：主体轻微转身，镜头缓慢推近，背景光影流动。'
-                  : '输入本次提示词...'
+                    ? '描述镜头运动、节奏、主体动作和氛围，例如：主体轻微转身，镜头缓慢推近，背景光影流动。'
+                    : '输入本次提示词...'
               }
               className="h-full max-h-none w-full resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-6 text-zinc-900 shadow-none placeholder:text-zinc-400 focus-visible:ring-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-              style={{ minHeight: `${promptComposerMinHeight}px`, scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+              style={{
+                minHeight: `${promptComposerMinHeight}px`,
+                scrollbarWidth: 'none',
+                msOverflowStyle: 'none'
+              }}
             />
           </div>
         </div>
