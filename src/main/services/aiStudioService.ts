@@ -15,6 +15,7 @@ import {
   isAiStudioAsyncFlowRoute,
   normalizeAiStudioAsyncFlowTaskPayload
 } from './aiStudioFlowTaskHelpers'
+import { pushUniqueAiStudioImageResultItem } from './aiStudioResultItemHelpers'
 import {
   AI_STUDIO_PROVIDER_REQUEST_TIMEOUT_MS,
   normalizeAiStudioProviderFailureMessage,
@@ -876,27 +877,7 @@ function pushResultItem(
   bucket: Array<Record<string, unknown>>,
   item: Record<string, unknown> | null | undefined
 ): void {
-  if (!item) return
-  const url = normalizeText(item.url)
-  const content = normalizeText(item.content)
-  if (!url && !content) return
-
-  const signature = url ? `url:${url}` : `content:${content.slice(0, 120)}`
-  const exists = bucket.some((existing) => {
-    const existingUrl = normalizeText(existing.url)
-    const existingContent = normalizeText(existing.content)
-    const existingSignature = existingUrl
-      ? `url:${existingUrl}`
-      : `content:${existingContent.slice(0, 120)}`
-    return existingSignature === signature
-  })
-  if (exists) return
-
-  bucket.push({
-    ...item,
-    ...(url ? { url } : {}),
-    ...(content ? { content } : {})
-  })
+  pushUniqueAiStudioImageResultItem(bucket, item)
 }
 
 function collectArrayImageItems(value: unknown): Array<Record<string, unknown>> {
