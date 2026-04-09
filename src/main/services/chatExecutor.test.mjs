@@ -256,3 +256,97 @@ test('executeChatTask wraps fetch transport failures with actionable local gatew
     }
   )
 })
+
+test('executeChatTask retries transient transport failures before succeeding', async () => {
+  let attempts = 0
+  const result = await executeChatTask(
+    {
+      route: ROUTE,
+      request: {
+        capability: 'chat',
+        input: {
+          prompt: 'retry please'
+        }
+      }
+    },
+    async () => {
+      attempts += 1
+      if (attempts < 3) {
+        const error = new TypeError('fetch failed')
+        error.cause = Object.assign(new Error('other side closed'), {
+          code: 'UND_ERR_SOCKET'
+        })
+        throw error
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: 'recovered'
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      sleep: async () => {}
+    }
+  )
+
+  assert.equal(attempts, 3)
+  assert.equal(result.outputText, 'recovered')
+})
+
+test('executeChatTask retries retryable HTTP errors and preserves provider message', async () => {
+  let attempts = 0
+  await assert.rejects(
+    () =>
+      executeChatTask(
+        {
+          route: {
+            ...ROUTE,
+            providerName: 'yunwu'
+          },
+          request: {
+            capability: 'chat',
+            input: {
+              prompt: '请只回复 ok'
+            }
+          }
+        },
+        async () => {
+          attempts += 1
+          return {
+            ok: false,
+            status: 429,
+            async json() {
+              return {
+                error: {
+                  message: '当前分组上游负载已饱和，请稍后再试'
+                }
+              }
+            }
+          }
+        },
+        {
+          sleep: async () => {}
+        }
+      ),
+    (error) => {
+      assert.equal(error instanceof ChatExecutorError, true)
+      assert.equal(error.code, 'AI_CHAT_REQUEST_FAILED')
+      assert.equal(error.status, 429)
+      assert.equal(attempts, 3)
+      assert.match(error.message, /当前分组上游负载已饱和/)
+      assert.match(error.message, /已重试 3 \/ 3 次/)
+      return true
+    }
+  )
+})
