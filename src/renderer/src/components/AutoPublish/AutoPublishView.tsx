@@ -1,10 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
-import { LogIn, Minimize2, Pencil, RefreshCw, Settings, Trash2, UserPlus, Video, X } from 'lucide-react'
+import {
+  LogIn,
+  Minimize2,
+  Pencil,
+  RefreshCw,
+  Settings,
+  Trash2,
+  UserPlus,
+  Video,
+  X
+} from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@renderer/components/ui/card'
 import { formatTaskProductSummary } from '@renderer/lib/cmsTaskProductHelpers'
 import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
@@ -70,7 +86,10 @@ function withDefaultStartTime(date: Date, timeText: string): Date {
   return next
 }
 
-function filterTasksByStage(tasks: CmsPublishTask[], stage: 'pending' | 'published'): CmsPublishTask[] {
+function filterTasksByStage(
+  tasks: CmsPublishTask[],
+  stage: 'pending' | 'published'
+): CmsPublishTask[] {
   if (stage === 'published') return tasks.filter((task) => task.status === 'published')
   return tasks.filter((task) => task.status !== 'published')
 }
@@ -253,7 +272,11 @@ function AutoPublishView(): React.JSX.Element {
         publishSessionIdRef.current = null
         setPublishSession(null)
         setIsPublishSessionHidden(false)
-        const errorText = (payload.error || payload.message || '发布失败，请检查任务后重新排期。').trim()
+        const errorText = (
+          payload.error ||
+          payload.message ||
+          '发布失败，请检查任务后重新排期。'
+        ).trim()
         if (errorText) {
           setPublishNotice(`发布已停止：${errorText}`)
           addLog(`[媒体矩阵] 发布已停止：${errorText}`)
@@ -270,8 +293,11 @@ function AutoPublishView(): React.JSX.Element {
 
       if (payload.status === 'succeeded') {
         publishSessionDismissTimerRef.current = window.setTimeout(() => {
-          publishSessionIdRef.current = publishSessionIdRef.current === payload.sessionId ? null : publishSessionIdRef.current
-          setPublishSession((current) => (current?.sessionId === payload.sessionId ? null : current))
+          publishSessionIdRef.current =
+            publishSessionIdRef.current === payload.sessionId ? null : publishSessionIdRef.current
+          setPublishSession((current) =>
+            current?.sessionId === payload.sessionId ? null : current
+          )
           setIsPublishSessionHidden((current) =>
             publishSessionIdRef.current === null ? false : current
           )
@@ -320,7 +346,9 @@ function AutoPublishView(): React.JSX.Element {
       .filter((task) => selectedTaskIds.has(task.id))
       .map((task) => task.id)
     if (ids.length === 0) return
-    const confirmed = window.confirm(`确定删除已选 ${ids.length} 条记录？仅删除本地记录，不影响小红书端。`)
+    const confirmed = window.confirm(
+      `确定删除已选 ${ids.length} 条记录？仅删除本地记录，不影响小红书端。`
+    )
     if (!confirmed) return
     try {
       const result = await window.api.cms.task.deleteBatch(ids)
@@ -336,7 +364,11 @@ function AutoPublishView(): React.JSX.Element {
   const handleAddAccount = async (): Promise<void> => {
     try {
       const now = new Date()
-      const datePart = now.toLocaleDateString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' })
+      const datePart = now.toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      })
       const timePart = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       const name = `小红书账号 ${datePart} ${timePart}`
       const created = await window.api.cms.account.create(name)
@@ -515,7 +547,10 @@ function AutoPublishView(): React.JSX.Element {
     if (activeStage === 'published') return
     if (stageSelectedCount <= 0) return
     setSmartScheduleIntervalMins(defaultInterval)
-    setSmartScheduleStartLocal((prev) => prev || toLocalDatetimeInputValue(withDefaultStartTime(new Date(), defaultStartTime)))
+    setSmartScheduleStartLocal(
+      (prev) =>
+        prev || toLocalDatetimeInputValue(withDefaultStartTime(new Date(), defaultStartTime))
+    )
     setIsSmartScheduleOpen(true)
   }
 
@@ -529,13 +564,16 @@ function AutoPublishView(): React.JSX.Element {
       return
     }
 
-    const intervalMins = selectedInStage.length > 1 ? Math.max(0, Number(smartScheduleIntervalMins) || 0) : 0
+    const intervalMins =
+      selectedInStage.length > 1 ? Math.max(0, Number(smartScheduleIntervalMins) || 0) : 0
     const updates = selectedInStage.map((task, index) => {
       return { id: task.id, updates: { scheduledAt: startMs + index * intervalMins * 60_000 } }
     })
 
     try {
-      const updateBatch = window.api.cms.task.updateBatch as unknown as (patches: unknown) => Promise<CmsPublishTask[]>
+      const updateBatch = window.api.cms.task.updateBatch as unknown as (
+        patches: unknown
+      ) => Promise<CmsPublishTask[]>
       const updated = await updateBatch(updates)
       patchTasksInState(updated)
       setIsSmartScheduleOpen(false)
@@ -605,10 +643,6 @@ function AutoPublishView(): React.JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div>
-        <div className="text-lg font-semibold">媒体矩阵</div>
-        <div className="mt-1 text-sm text-zinc-400">分发 · 队列 · 执行</div>
-      </div>
       {publishNotice ? (
         <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
           {publishNotice}
@@ -624,7 +658,12 @@ function AutoPublishView(): React.JSX.Element {
                 <CardDescription>选择账号查看对应队列。</CardDescription>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Button variant="outline" size="icon" onClick={() => void loadAccounts()} disabled={isLoadingAccounts}>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => void loadAccounts()}
+                  disabled={isLoadingAccounts}
+                >
                   <RefreshCw className={cn('h-4 w-4', isLoadingAccounts ? 'animate-spin' : '')} />
                 </Button>
                 <Button size="icon" onClick={() => void handleAddAccount()}>
@@ -654,7 +693,9 @@ function AutoPublishView(): React.JSX.Element {
                         tabIndex={0}
                         className={cn(
                           'group flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
-                          isActive ? 'border-zinc-300 bg-zinc-900/30' : 'border-zinc-800 bg-zinc-950 hover:bg-zinc-900/20'
+                          isActive
+                            ? 'border-zinc-300 bg-zinc-900/30'
+                            : 'border-zinc-800 bg-zinc-950 hover:bg-zinc-900/20'
                         )}
                       >
                         <div className="min-w-0">
@@ -674,7 +715,9 @@ function AutoPublishView(): React.JSX.Element {
                             />
                           ) : (
                             <div className="flex items-center gap-2">
-                              <div className="truncate text-sm font-medium text-zinc-50">{account.name}</div>
+                              <div className="truncate text-sm font-medium text-zinc-50">
+                                {account.name}
+                              </div>
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -697,7 +740,9 @@ function AutoPublishView(): React.JSX.Element {
                               isOnline ? 'bg-emerald-400' : 'bg-red-400'
                             )}
                           />
-                          <span className="text-xs text-zinc-400">{isOnline ? '在线' : '离线'}</span>
+                          <span className="text-xs text-zinc-400">
+                            {isOnline ? '在线' : '离线'}
+                          </span>
                           <button
                             type="button"
                             onClick={(e) => {
@@ -732,7 +777,12 @@ function AutoPublishView(): React.JSX.Element {
           </Card>
         )}
 
-        <Card className={cn('flex min-h-0 flex-1 flex-col', isScheduleMode ? 'lg:basis-full' : 'lg:basis-3/4')}>
+        <Card
+          className={cn(
+            'flex min-h-0 flex-1 flex-col',
+            isScheduleMode ? 'lg:basis-full' : 'lg:basis-3/4'
+          )}
+        >
           <CardHeader className="flex-row flex-wrap items-start justify-between gap-3">
             {isScheduleMode ? (
               <div className="min-w-0 space-y-2">
@@ -798,9 +848,15 @@ function AutoPublishView(): React.JSX.Element {
                       disabled={isLoadingAccounts}
                       aria-label="刷新账号"
                     >
-                      <RefreshCw className={cn('h-4 w-4', isLoadingAccounts ? 'animate-spin' : '')} />
+                      <RefreshCw
+                        className={cn('h-4 w-4', isLoadingAccounts ? 'animate-spin' : '')}
+                      />
                     </Button>
-                    <Button size="icon" onClick={() => void handleAddAccount()} aria-label="新增账号">
+                    <Button
+                      size="icon"
+                      onClick={() => void handleAddAccount()}
+                      aria-label="新增账号"
+                    >
                       <UserPlus className="h-4 w-4" />
                     </Button>
                   </div>
@@ -835,9 +891,13 @@ function AutoPublishView(): React.JSX.Element {
               </div>
             ) : (
               <div className="min-w-0">
-                <CardTitle className="truncate">{activeAccount ? activeAccount.name : '队列任务'}</CardTitle>
+                <CardTitle className="truncate">
+                  {activeAccount ? activeAccount.name : '队列任务'}
+                </CardTitle>
                 <CardDescription>
-                  {activeAccount ? '账号队列任务列表（按 createdAt 倒序）。' : '请选择账号查看队列。'}
+                  {activeAccount
+                    ? '账号队列任务列表（按 createdAt 倒序）。'
+                    : '请选择账号查看队列。'}
                 </CardDescription>
               </div>
             )}
@@ -852,7 +912,11 @@ function AutoPublishView(): React.JSX.Element {
               </Button>
               {activeAccountId ? (
                 <>
-                  <Button variant="outline" onClick={() => void handleSyncProducts()} disabled={isSyncingProducts}>
+                  <Button
+                    variant="outline"
+                    onClick={() => void handleSyncProducts()}
+                    disabled={isSyncingProducts}
+                  >
                     <RefreshCw className={cn('h-4 w-4', isSyncingProducts ? 'animate-spin' : '')} />
                     同步商品
                   </Button>
@@ -941,7 +1005,11 @@ function AutoPublishView(): React.JSX.Element {
                     </div>
 
                     {activeStage === 'pending' ? (
-                      <Button variant="outline" onClick={openSmartSchedule} disabled={stageSelectedCount === 0}>
+                      <Button
+                        variant="outline"
+                        onClick={openSmartSchedule}
+                        disabled={stageSelectedCount === 0}
+                      >
                         🕒 批量排期
                       </Button>
                     ) : null}
@@ -963,9 +1031,12 @@ function AutoPublishView(): React.JSX.Element {
                       const isSelected = selectedTaskIds.has(task.id)
                       const isVideo = task.mediaType === 'video'
                       const taskErrorText = (task.errorMsg || task.errorMessage || '').trim()
-                      const isPublishingTask = task.status === 'processing' || activePublishQueueTaskId === task.id
+                      const isPublishingTask =
+                        task.status === 'processing' || activePublishQueueTaskId === task.id
                       const publishTaskHint =
-                        isPublishingTask && activePublishQueueTaskId === task.id ? publishSessionHighlight : null
+                        isPublishingTask && activePublishQueueTaskId === task.id
+                          ? publishSessionHighlight
+                          : null
                       return (
                         <div
                           key={task.id}
@@ -1042,7 +1113,7 @@ function AutoPublishView(): React.JSX.Element {
                                 {task.status === 'failed' && taskErrorText && (
                                   <div className="mt-1 flex items-center gap-1.5 text-[11px] text-red-400">
                                     <span className="shrink-0 rounded bg-red-500/10 px-1 py-0.5 font-bold uppercase">
-                                    错误
+                                      错误
                                     </span>
                                     <span className="truncate">{taskErrorText}</span>
                                   </div>
@@ -1050,15 +1121,17 @@ function AutoPublishView(): React.JSX.Element {
                                 {task.status === 'publish_failed' && (
                                   <div className="mt-1 flex items-center gap-1.5 text-[11px] text-red-400">
                                     <span className="shrink-0 rounded bg-red-600 px-1.5 py-0.5 font-bold uppercase text-white">
-                                    发布失败
+                                      发布失败
                                     </span>
-                                    {taskErrorText && <span className="truncate">{taskErrorText}</span>}
+                                    {taskErrorText && (
+                                      <span className="truncate">{taskErrorText}</span>
+                                    )}
                                   </div>
                                 )}
                                 {task.scheduledAt ? (
                                   <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-sky-200">
                                     <span className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 font-bold">
-                                    🕒 排期中
+                                      🕒 排期中
                                     </span>
                                     <span className="group inline-flex min-w-0 items-center gap-1 pr-0.5">
                                       <span className="truncate font-semibold">
@@ -1106,7 +1179,9 @@ function AutoPublishView(): React.JSX.Element {
                                   })}`}
                                 </div>
                                 <div className="mt-0.5 truncate text-xs text-zinc-500">
-                                  {task.images?.length ? `图片：${task.images.length} 张` : '图片：0 张'}
+                                  {task.images?.length
+                                    ? `图片：${task.images.length} 张`
+                                    : '图片：0 张'}
                                 </div>
                               </div>
                               <div className="flex shrink-0 items-center gap-2">
@@ -1216,11 +1291,16 @@ function AutoPublishView(): React.JSX.Element {
                 return (
                   <div
                     key={step.key}
-                    className={cn('flex items-center gap-3 rounded-xl border px-3 py-2 text-sm', toneClass)}
+                    className={cn(
+                      'flex items-center gap-3 rounded-xl border px-3 py-2 text-sm',
+                      toneClass
+                    )}
                   >
                     <div className={cn('h-2.5 w-2.5 shrink-0 rounded-full', dotClass)} />
                     <div className="min-w-0 flex-1 truncate">{step.label}</div>
-                    <div className="shrink-0 text-xs font-medium">{publishStepStateText(step.state)}</div>
+                    <div className="shrink-0 text-xs font-medium">
+                      {publishStepStateText(step.state)}
+                    </div>
                   </div>
                 )
               })}
@@ -1339,7 +1419,10 @@ function AutoPublishView(): React.JSX.Element {
                   <Button variant="outline" onClick={() => setIsSingleScheduleOpen(false)}>
                     取消
                   </Button>
-                  <Button onClick={() => void handleConfirmSingleSchedule()} disabled={Boolean(singleScheduleSavingTaskId)}>
+                  <Button
+                    onClick={() => void handleConfirmSingleSchedule()}
+                    disabled={Boolean(singleScheduleSavingTaskId)}
+                  >
                     {singleScheduleSavingTaskId ? (
                       <>
                         <RefreshCw className="h-4 w-4 animate-spin" />
