@@ -47,6 +47,21 @@ export type NotePreviewCard = {
   log: string
 }
 
+export type NotePreviewTaskLayout = {
+  id: string
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+export type NotePreviewSelectionRect = {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
 function numberOr(value: string, fallback: number): number {
   const normalized = String(value ?? '').trim()
   if (!normalized) return fallback
@@ -92,6 +107,18 @@ function appendDispatchLog(log: string): string {
   if (!normalized) return dispatchText
   if (normalized.includes(dispatchText)) return normalized
   return `${normalized}\n${dispatchText}`
+}
+
+function intersectRectangles(
+  selectionRect: NotePreviewSelectionRect,
+  tileRect: NotePreviewSelectionRect
+): boolean {
+  return !(
+    tileRect.right < selectionRect.left ||
+    tileRect.left > selectionRect.right ||
+    tileRect.bottom < selectionRect.top ||
+    tileRect.top > selectionRect.bottom
+  )
 }
 
 function buildPreviewTaskDispatchKey(
@@ -152,6 +179,83 @@ export function buildNoteSidebarPreviewItems(tasks: NotePreviewTask[]): NotePrev
       log
     }
   })
+}
+
+export function replaceVideoPreviewCoverImage(
+  assignedImages: string[],
+  droppedPaths: string[]
+): string[] {
+  const nextCoverPath = uniquePaths(droppedPaths)[0] ?? ''
+  if (!nextCoverPath) return uniquePaths(assignedImages)
+
+  const currentImages = uniquePaths(assignedImages)
+  const trailingImages = currentImages.filter((path, index) => index > 0 && path !== nextCoverPath)
+  return [nextCoverPath, ...trailingImages]
+}
+
+export function applyDroppedCoversToPreviewTasks<T extends NotePreviewTask>(
+  tasks: T[],
+  targetTaskId: string,
+  droppedPaths: string[]
+): { tasks: T[]; appliedCount: number } {
+  const normalizedPaths = uniquePaths(droppedPaths)
+  const normalizedTargetTaskId = trimText(targetTaskId)
+  if (!normalizedTargetTaskId || normalizedPaths.length === 0) {
+    return { tasks: tasks.slice(), appliedCount: 0 }
+  }
+
+  const targetIndex = tasks.findIndex((task) => trimText(task.id) === normalizedTargetTaskId)
+  if (targetIndex < 0) {
+    return { tasks: tasks.slice(), appliedCount: 0 }
+  }
+
+  let nextPathIndex = 0
+  const nextTasks = tasks.map((task, index) => {
+    const isEligibleVideoTask = index >= targetIndex && task.mediaType === 'video'
+    if (!isEligibleVideoTask || nextPathIndex >= normalizedPaths.length) return task
+
+    const nextCoverPath = normalizedPaths[nextPathIndex] ?? ''
+    nextPathIndex += 1
+    return {
+      ...task,
+      assignedImages: replaceVideoPreviewCoverImage(task.assignedImages, [nextCoverPath]),
+      videoCoverMode: 'manual'
+    } as T
+  })
+
+  return {
+    tasks: nextTasks,
+    appliedCount: nextPathIndex
+  }
+}
+
+export function shouldAutoOpenBatchPickForVideoPreview(
+  tasks: Array<Pick<NotePreviewTask, 'mediaType'>>
+): boolean {
+  return tasks.some((task) => trimText(task.mediaType) === 'video')
+}
+
+export function canToggleNotePreviewSelection(
+  task: Pick<NotePreviewTask, 'status'>
+): boolean {
+  return !isNotePreviewTaskDispatched(task)
+}
+
+export function resolveIntersectedNotePreviewTaskIds({
+  taskLayouts,
+  selectableTaskIds,
+  selectionRect
+}: {
+  taskLayouts: NotePreviewTaskLayout[]
+  selectableTaskIds: string[]
+  selectionRect: NotePreviewSelectionRect
+}): string[] {
+  const selectableSet = new Set(uniqueIds(selectableTaskIds))
+  return taskLayouts
+    .filter((taskLayout) => selectableSet.has(trimText(taskLayout.id)))
+    .filter((taskLayout) => intersectRectangles(selectionRect, taskLayout))
+    .map((taskLayout) => trimText(taskLayout.id))
+    .filter(Boolean)
 }
 
 export function isNotePreviewTaskDispatched(task: Pick<NotePreviewTask, 'status'>): boolean {

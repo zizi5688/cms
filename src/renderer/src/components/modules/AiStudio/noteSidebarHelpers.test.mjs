@@ -2,13 +2,18 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  applyDroppedCoversToPreviewTasks,
   buildNoteSidebarPreviewItems,
   buildUploadTasksFromNotePreviewTasks,
+  canToggleNotePreviewSelection,
   collectDispatchableNotePreviewTaskIds,
   countUndispatchedNotePreviewTasks,
   markNotePreviewTasksDispatched,
   matchCreatedTasksToNotePreviewTaskIds,
-  normalizeNoteSidebarConstraints
+  normalizeNoteSidebarConstraints,
+  replaceVideoPreviewCoverImage,
+  resolveIntersectedNotePreviewTaskIds,
+  shouldAutoOpenBatchPickForVideoPreview
 } from './noteSidebarHelpers.ts'
 
 test('normalizeNoteSidebarConstraints falls back to defaults and clamps invalid ranges', () => {
@@ -204,4 +209,174 @@ test('matchCreatedTasksToNotePreviewTaskIds pairs created tasks back to preview 
   ])
 
   assert.deepEqual(matchedIds, ['preview-2'])
+})
+
+test('replaceVideoPreviewCoverImage swaps in the dropped image and preserves trailing assets', () => {
+  assert.deepEqual(
+    replaceVideoPreviewCoverImage(['/tmp/old-cover.png', '/tmp/detail-1.png'], [
+      '/tmp/new-cover.png',
+      '/tmp/unused-second-drop.png'
+    ]),
+    ['/tmp/new-cover.png', '/tmp/detail-1.png']
+  )
+})
+
+test('replaceVideoPreviewCoverImage prepends the dropped image when the video has no existing cover', () => {
+  assert.deepEqual(replaceVideoPreviewCoverImage([], ['/tmp/new-cover.png']), ['/tmp/new-cover.png'])
+})
+
+test('shouldAutoOpenBatchPickForVideoPreview only opens for video preview tasks', () => {
+  assert.equal(
+    shouldAutoOpenBatchPickForVideoPreview([
+      {
+        id: 'preview-video',
+        title: '视频',
+        body: '正文',
+        assignedImages: ['/tmp/cover.png'],
+        mediaType: 'video',
+        status: 'idle',
+        log: ''
+      }
+    ]),
+    true
+  )
+  assert.equal(
+    shouldAutoOpenBatchPickForVideoPreview([
+      {
+        id: 'preview-image',
+        title: '图文',
+        body: '正文',
+        assignedImages: ['/tmp/image.png'],
+        mediaType: 'image',
+        status: 'idle',
+        log: ''
+      }
+    ]),
+    false
+  )
+})
+
+test('applyDroppedCoversToPreviewTasks replaces covers downward from the target video in order', () => {
+  const sourceTasks = [
+    {
+      id: 'video-1',
+      title: '视频1',
+      body: '正文1',
+      assignedImages: ['/tmp/cover-1.png', '/tmp/detail-1.png'],
+      mediaType: 'video',
+      videoCoverMode: 'auto',
+      status: 'idle',
+      log: ''
+    },
+    {
+      id: 'video-2',
+      title: '视频2',
+      body: '正文2',
+      assignedImages: ['/tmp/cover-2.png', '/tmp/detail-2.png'],
+      mediaType: 'video',
+      videoCoverMode: 'auto',
+      status: 'idle',
+      log: ''
+    },
+    {
+      id: 'video-3',
+      title: '视频3',
+      body: '正文3',
+      assignedImages: ['/tmp/cover-3.png'],
+      mediaType: 'video',
+      videoCoverMode: 'auto',
+      status: 'idle',
+      log: ''
+    },
+    {
+      id: 'video-4',
+      title: '视频4',
+      body: '正文4',
+      assignedImages: ['/tmp/cover-4.png'],
+      mediaType: 'video',
+      videoCoverMode: 'auto',
+      status: 'idle',
+      log: ''
+    }
+  ]
+
+  const result = applyDroppedCoversToPreviewTasks(sourceTasks, 'video-2', [
+    '/tmp/new-cover-a.png',
+    '/tmp/new-cover-b.png',
+    '/tmp/new-cover-c.png'
+  ])
+
+  assert.equal(result.appliedCount, 3)
+  assert.deepEqual(result.tasks.map((task) => task.assignedImages), [
+    ['/tmp/cover-1.png', '/tmp/detail-1.png'],
+    ['/tmp/new-cover-a.png', '/tmp/detail-2.png'],
+    ['/tmp/new-cover-b.png'],
+    ['/tmp/new-cover-c.png']
+  ])
+  assert.deepEqual(result.tasks.map((task) => task.videoCoverMode), [
+    'auto',
+    'manual',
+    'manual',
+    'manual'
+  ])
+})
+
+test('applyDroppedCoversToPreviewTasks ignores overflow paths beyond the remaining videos', () => {
+  const result = applyDroppedCoversToPreviewTasks(
+    [
+      {
+        id: 'video-1',
+        title: '视频1',
+        body: '正文1',
+        assignedImages: ['/tmp/cover-1.png'],
+        mediaType: 'video',
+        videoCoverMode: 'auto',
+        status: 'idle',
+        log: ''
+      },
+      {
+        id: 'video-2',
+        title: '视频2',
+        body: '正文2',
+        assignedImages: ['/tmp/cover-2.png'],
+        mediaType: 'video',
+        videoCoverMode: 'auto',
+        status: 'idle',
+        log: ''
+      }
+    ],
+    'video-2',
+    ['/tmp/new-cover-a.png', '/tmp/new-cover-b.png']
+  )
+
+  assert.equal(result.appliedCount, 1)
+  assert.deepEqual(result.tasks.map((task) => task.assignedImages), [
+    ['/tmp/cover-1.png'],
+    ['/tmp/new-cover-a.png']
+  ])
+  assert.deepEqual(result.tasks.map((task) => task.videoCoverMode), ['auto', 'manual'])
+})
+
+test('canToggleNotePreviewSelection blocks dispatched cards from toggling', () => {
+  assert.equal(canToggleNotePreviewSelection({ status: 'idle' }), true)
+  assert.equal(canToggleNotePreviewSelection({ status: 'success' }), false)
+})
+
+test('resolveIntersectedNotePreviewTaskIds returns intersected selectable cards in layout order', () => {
+  const selectedIds = resolveIntersectedNotePreviewTaskIds({
+    taskLayouts: [
+      { id: 'task-1', left: 0, top: 0, right: 100, bottom: 100 },
+      { id: 'task-2', left: 0, top: 110, right: 100, bottom: 210 },
+      { id: 'task-3', left: 0, top: 220, right: 100, bottom: 320 }
+    ],
+    selectableTaskIds: ['task-1', 'task-3'],
+    selectionRect: {
+      left: 10,
+      top: 50,
+      right: 90,
+      bottom: 260
+    }
+  })
+
+  assert.deepEqual(selectedIds, ['task-1', 'task-3'])
 })

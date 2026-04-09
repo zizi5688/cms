@@ -35,7 +35,8 @@ import {
   markNotePreviewTasksDispatched,
   matchCreatedTasksToNotePreviewTaskIds,
   normalizeNoteSidebarConstraints,
-  resolveNotePreviewTasksForDispatch
+  resolveNotePreviewTasksForDispatch,
+  shouldAutoOpenBatchPickForVideoPreview
 } from './noteSidebarHelpers'
 import {
   buildGeneratedVideoNotePreviewTasks,
@@ -452,6 +453,11 @@ function AiStudio(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    const keepBatchPickForVideoPreview =
+      noteSidebarOpen && noteSidebarMode === 'video-note' && noteSidebarPhase === 'preview'
+    if (keepBatchPickForVideoPreview) {
+      return
+    }
     if (!noteSidebarOpen || noteSidebarMode !== 'image-note' || noteSidebarPhase !== 'editing') {
       setNoteCanvasMode('result')
     }
@@ -626,7 +632,11 @@ function AiStudio(): React.JSX.Element {
       }
 
       setNotePreviewTasks(nextTasks)
+      setNoteSidebarOpen(true)
+      setNoteSidebarMode('video-note')
       setNoteSidebarPhase('preview')
+      setNoteCanvasMode(shouldAutoOpenBatchPickForVideoPreview(nextTasks) ? 'batch-pick' : 'result')
+      setSelectedBatchPickAssetIds([])
       if (options?.successLog) addLog(options.successLog)
       return true
     },
@@ -1129,6 +1139,9 @@ function AiStudio(): React.JSX.Element {
         void state.toggleDispatchOutputPoolForTask(asset.taskId, asset.id)
       }}
       onOpenBatchPick={handleOpenBatchPick}
+      onConsumeBatchPickSelection={() => {
+        setSelectedBatchPickAssetIds([])
+      }}
     />
   )
 
