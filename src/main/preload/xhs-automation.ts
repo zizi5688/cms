@@ -22,6 +22,11 @@ import {
   isLikelyTopicDropdownContainerSignature,
   orderTopicDropdownCandidates
 } from './xhs-shared/topicDropdownHelpers'
+import {
+  hasCoverSelectionSignal,
+  normalizeImageSrcForCompare,
+  type CoverModalUploadSnapshot
+} from './xhsCoverUploadSignals'
 
 const XHS_PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish'
 
@@ -2469,19 +2474,6 @@ function getElementCenterPoint(target: HTMLElement): { x: number; y: number } {
   }
 }
 
-type CoverModalUploadSnapshot = {
-  text: string
-  imageSources: string[]
-  selectedFileCount: number
-  fileValues: string[]
-}
-
-function normalizeImageSrcForCompare(src: string): string {
-  const raw = String(src ?? '').trim()
-  if (!raw) return ''
-  return raw.replace(/[?#].*$/, '')
-}
-
 function snapshotCoverModalUploadState(modalRoot: HTMLElement): CoverModalUploadSnapshot {
   const text = normalizeText(modalRoot.innerText || modalRoot.textContent || '').toLowerCase()
   const imageSources = Array.from(modalRoot.querySelectorAll('img'))
@@ -2500,22 +2492,34 @@ function snapshotCoverModalUploadState(modalRoot: HTMLElement): CoverModalUpload
   return { text, imageSources, selectedFileCount, fileValues }
 }
 
-function hasCoverSelectionSignal(modalRoot: HTMLElement, coverAbsPath: string, baseline: CoverModalUploadSnapshot): boolean {
-  const now = snapshotCoverModalUploadState(modalRoot)
-  const coverBase = path.basename(coverAbsPath).toLowerCase()
-  const coverStem = coverBase.includes('.') ? coverBase.slice(0, coverBase.lastIndexOf('.')) : coverBase
+async function tryDirectCoverInputUpload(
+  modalRoot: HTMLElement,
+  resolvedCoverPath: string,
+  baseline: CoverModalUploadSnapshot,
+  timeLeft: () => number
+): Promise<boolean> {
+  const fileInput = findImageFileInputInScope(modalRoot)
+  if (!fileInput) return false
 
-  if (now.selectedFileCount > baseline.selectedFileCount) return true
-  if (coverBase && now.fileValues.some((v) => v.includes(coverBase))) return true
-  if (coverBase && now.text.includes(coverBase)) return true
-  if (coverStem && coverStem.length >= 6 && now.text.includes(coverStem)) return true
+  const dt = await createDataTransferForImages([resolvedCoverPath])
+  if (!dt.files || dt.files.length === 0) return false
 
-  const imageChanged = now.imageSources.join('|') !== baseline.imageSources.join('|')
-  const textChanged = now.text !== baseline.text
-  const uploadWords = ['上传中', '处理中', '已上传', '上传成功', '重新上传', '替换', '更换']
-  if (uploadWords.some((w) => now.text.includes(w)) && (imageChanged || textChanged)) return true
+  logPlain('检测到封面弹窗隐藏图片输入框，优先尝试直接注入文件')
+  dispatchUploadEventsToInput(fileInput, dt)
 
-  return false
+  const selectionReady = await waitFor(
+    () => {
+      const current = snapshotCoverModalUploadState(modalRoot)
+      return hasCoverSelectionSignal(current, resolvedCoverPath, baseline) ? true : null
+    },
+    {
+      timeoutMs: Math.min(7_000, timeLeft()),
+      intervalMs: 180,
+      timeoutMessage: '直接注入隐藏图片输入框后，未检测到封面选中信号。'
+    }
+  ).catch(() => null)
+
+  return Boolean(selectionReady)
 }
 
 async function setVideoCover(coverImagePath: string): Promise<void> {
@@ -2570,64 +2574,75 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
     )
     ensureTime()
 
-    const uploadBtn = await waitFor(() => findCoverModalUploadButton(modalRoot) || null, {
-      timeoutMs: Math.min(5_000, timeLeft()),
-      intervalMs: 180,
-      timeoutMessage: '未找到“上传图片”按钮。'
-    })
     const beforeUploadState = snapshotCoverModalUploadState(modalRoot)
-    let lastPickResult: unknown = null
-    let nativePickSuccess = false
+    let selectionReady = await tryDirectCoverInputUpload(modalRoot, resolvedCoverPath, beforeUploadState, timeLeft)
 
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      dispatchHoverEventChain(uploadBtn)
-      await Humanizer.sleep(90, Math.min(260, Math.max(90, timeLeft())))
-      ensureTime()
+    if (!selectionReady) {
+      logPlain('直接注入封面文件未成功，回退到系统文件选择器')
+      const uploadBtn = await waitFor(() => findCoverModalUploadButton(modalRoot) || null, {
+        timeoutMs: Math.min(5_000, timeLeft()),
+        intervalMs: 180,
+        timeoutMessage: '未找到“上传图片”按钮。'
+      })
+      let lastPickResult: unknown = null
+      let nativePickSuccess = false
 
-      const point = getElementCenterPoint(uploadBtn)
-      const nativeClickOk = await ipcRenderer
-        .invoke('cms.xhs.nativeClickAt', { x: point.x, y: point.y })
-        .catch(() => false)
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        dispatchHoverEventChain(uploadBtn)
+        await Humanizer.sleep(90, Math.min(260, Math.max(90, timeLeft())))
+        ensureTime()
 
-      if (!nativeClickOk) {
-        await SyncHumanizer.click(uploadBtn, `封面弹窗上传图片按钮（备用点击 #${attempt}）`)
-        clickElement(uploadBtn)
+        const point = getElementCenterPoint(uploadBtn)
+        const nativeClickOk = await ipcRenderer
+          .invoke('cms.xhs.nativeClickAt', { x: point.x, y: point.y })
+          .catch(() => false)
+
+        if (!nativeClickOk) {
+          await SyncHumanizer.click(uploadBtn, `封面弹窗上传图片按钮（备用点击 #${attempt}）`)
+          clickElement(uploadBtn)
+        }
+
+        await Humanizer.sleep(150, Math.min(520, Math.max(150, timeLeft())))
+        ensureTime()
+
+        const pickResult = await ipcRenderer
+          .invoke('cms.xhs.nativeDialogPickFile', { filePath: resolvedCoverPath })
+          .catch((error) => ({ ok: false, reason: 'ipc-error', detail: stringifyUnknownError(error) }))
+        lastPickResult = pickResult
+        const pickOk = Boolean(pickResult && typeof pickResult === 'object' && (pickResult as { ok?: unknown }).ok === true)
+
+        if (pickOk) {
+          nativePickSuccess = true
+          break
+        }
+
+        await sleep(Math.min(380, Math.max(180, timeLeft())))
+        ensureTime()
       }
 
-      await Humanizer.sleep(150, Math.min(520, Math.max(150, timeLeft())))
-      ensureTime()
-
-      const pickResult = await ipcRenderer
-        .invoke('cms.xhs.nativeDialogPickFile', { filePath: resolvedCoverPath })
-        .catch((error) => ({ ok: false, reason: 'ipc-error', detail: stringifyUnknownError(error) }))
-      lastPickResult = pickResult
-      const pickOk = Boolean(pickResult && typeof pickResult === 'object' && (pickResult as { ok?: unknown }).ok === true)
-
-      if (pickOk) {
-        nativePickSuccess = true
-        break
+      if (!nativePickSuccess) {
+        throw new Error(
+          `系统文件选择器自动选图失败：${stringifyUnknownError(lastPickResult)}。请检查“系统设置 > 隐私与安全性 > 辅助功能/自动化”是否允许 Super CMS 控制 System Events。`
+        )
       }
 
-      await sleep(Math.min(380, Math.max(180, timeLeft())))
-      ensureTime()
-    }
-
-    if (!nativePickSuccess) {
-      throw new Error(
-        `系统文件选择器自动选图失败：${stringifyUnknownError(lastPickResult)}。请检查“系统设置 > 隐私与安全性 > 辅助功能/自动化”是否允许 Super CMS 控制 System Events。`
+      selectionReady = Boolean(
+        await waitFor(
+          () => {
+            const current = snapshotCoverModalUploadState(modalRoot)
+            return hasCoverSelectionSignal(current, resolvedCoverPath, beforeUploadState) ? true : null
+          },
+          {
+            timeoutMs: Math.min(7_000, timeLeft()),
+            intervalMs: 180,
+            timeoutMessage: '系统文件选择器未确认选中封面文件，停止点击确定。'
+          }
+        ).catch(() => null)
       )
     }
 
-    const selectionReady = await waitFor(
-      () => (hasCoverSelectionSignal(modalRoot, resolvedCoverPath, beforeUploadState) ? true : null),
-      {
-        timeoutMs: Math.min(7_000, timeLeft()),
-        intervalMs: 180,
-        timeoutMessage: '系统文件选择器未确认选中封面文件，停止点击确定。'
-      }
-    ).catch(() => null)
     if (!selectionReady) {
-      throw new Error('系统文件选择器未确认封面已选中，已停止后续“确定”点击。')
+      throw new Error('未确认封面已选中，已停止后续“确定”点击。')
     }
 
     await sleep(Math.min(900, Math.max(320, timeLeft())))

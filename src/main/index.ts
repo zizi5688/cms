@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, protocol, clipboard, powerSaveBlocker, session } from 'electron'
 import { spawn } from 'child_process'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { join, resolve, extname, basename, dirname } from 'path'
 import * as path from 'path'
 import { createReadStream, openAsBlob, existsSync, statSync, appendFileSync } from 'fs'
@@ -75,6 +76,12 @@ import {
   type NativeDialogSelectResult
 } from './xhsNativeDialogHelpers'
 import { readPublishDebugState } from './publisherHelpers'
+import {
+  listInspectableWindows,
+  normalizeWindowDebugFilePaths,
+  resolveWindowDebugPort,
+  validateReadOnlyWindowDebugScript
+} from './windowDebugHelpers'
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -138,6 +145,255 @@ const IPC_SEARCH_1688_BY_IMAGE = 'IPC_SEARCH_1688_BY_IMAGE'
 const IPC_SOURCING_CAPTCHA_NEEDED = 'IPC_SOURCING_CAPTCHA_NEEDED'
 const IPC_SOURCING_LOGIN_NEEDED = 'IPC_SOURCING_LOGIN_NEEDED'
 let imageFetchProcessedCount = 0
+let windowDebugServer: Server | null = null
+
+function respondWindowDebugJson(res: ServerResponse, statusCode: number, payload: unknown): void {
+  res.statusCode = statusCode
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.end(JSON.stringify(payload))
+}
+
+async function readWindowDebugJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  let total = 0
+
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ''))
+    total += buffer.length
+    if (total > 64 * 1024) {
+      throw new Error('Request body too large.')
+    }
+    chunks.push(buffer)
+  }
+
+  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  if (!raw) return {}
+  const parsed = JSON.parse(raw)
+  return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+}
+
+async function handleWindowDebugRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const method = String(req.method ?? 'GET').toUpperCase()
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+
+  if (method === 'GET' && url.pathname === '/health') {
+    respondWindowDebugJson(res, 200, { ok: true })
+    return
+  }
+
+  if (method === 'GET' && url.pathname === '/windows') {
+    respondWindowDebugJson(res, 200, {
+      ok: true,
+      windows: listInspectableWindows(BrowserWindow.getAllWindows())
+    })
+    return
+  }
+
+  if (method === 'POST' && url.pathname === '/eval') {
+    let body: Record<string, unknown>
+    try {
+      body = await readWindowDebugJsonBody(req)
+    } catch (error) {
+      respondWindowDebugJson(res, 400, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return
+    }
+
+    const windowId = Number(body.windowId)
+    const script = typeof body.script === 'string' ? body.script.trim() : ''
+    if (!Number.isFinite(windowId) || windowId <= 0) {
+      respondWindowDebugJson(res, 400, { ok: false, error: 'windowId is required.' })
+      return
+    }
+
+    const validation = validateReadOnlyWindowDebugScript(script)
+    if (!validation.ok) {
+      respondWindowDebugJson(res, 400, { ok: false, error: validation.reason })
+      return
+    }
+
+    const targetWindow = BrowserWindow.getAllWindows().find(
+      (win) => !win.isDestroyed() && win.webContents.id === Math.floor(windowId)
+    )
+    if (!targetWindow) {
+      respondWindowDebugJson(res, 404, { ok: false, error: `Window ${windowId} not found.` })
+      return
+    }
+
+    try {
+      const value = await targetWindow.webContents.executeJavaScript(script, true)
+      respondWindowDebugJson(res, 200, {
+        ok: true,
+        value: value === undefined ? null : value
+      })
+    } catch (error) {
+      respondWindowDebugJson(res, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+    return
+  }
+
+  if (method === 'POST' && url.pathname === '/click-at') {
+    let body: Record<string, unknown>
+    try {
+      body = await readWindowDebugJsonBody(req)
+    } catch (error) {
+      respondWindowDebugJson(res, 400, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return
+    }
+
+    const windowId = Number(body.windowId)
+    const x = Number(body.x)
+    const y = Number(body.y)
+    if (!Number.isFinite(windowId) || windowId <= 0) {
+      respondWindowDebugJson(res, 400, { ok: false, error: 'windowId is required.' })
+      return
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      respondWindowDebugJson(res, 400, { ok: false, error: 'x and y are required.' })
+      return
+    }
+
+    const targetWindow = BrowserWindow.getAllWindows().find(
+      (win) => !win.isDestroyed() && win.webContents.id === Math.floor(windowId)
+    )
+    if (!targetWindow) {
+      respondWindowDebugJson(res, 404, { ok: false, error: `Window ${windowId} not found.` })
+      return
+    }
+
+    const ix = Math.max(0, Math.round(x))
+    const iy = Math.max(0, Math.round(y))
+    try {
+      targetWindow.show()
+      targetWindow.focus()
+      targetWindow.webContents.focus()
+      targetWindow.webContents.sendInputEvent({ type: 'mouseMove', x: ix, y: iy })
+      targetWindow.webContents.sendInputEvent({ type: 'mouseDown', x: ix, y: iy, button: 'left', clickCount: 1 })
+      targetWindow.webContents.sendInputEvent({ type: 'mouseUp', x: ix, y: iy, button: 'left', clickCount: 1 })
+      respondWindowDebugJson(res, 200, { ok: true })
+    } catch (error) {
+      respondWindowDebugJson(res, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+    return
+  }
+
+  if (method === 'POST' && url.pathname === '/set-files') {
+    let body: Record<string, unknown>
+    try {
+      body = await readWindowDebugJsonBody(req)
+    } catch (error) {
+      respondWindowDebugJson(res, 400, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return
+    }
+
+    const windowId = Number(body.windowId)
+    const selector = typeof body.selector === 'string' ? body.selector.trim() : ''
+    const files = normalizeWindowDebugFilePaths(body.files)
+    if (!Number.isFinite(windowId) || windowId <= 0) {
+      respondWindowDebugJson(res, 400, { ok: false, error: 'windowId is required.' })
+      return
+    }
+    if (!selector) {
+      respondWindowDebugJson(res, 400, { ok: false, error: 'selector is required.' })
+      return
+    }
+    if (files.length === 0) {
+      respondWindowDebugJson(res, 400, { ok: false, error: 'files are required.' })
+      return
+    }
+
+    const targetWindow = BrowserWindow.getAllWindows().find(
+      (win) => !win.isDestroyed() && win.webContents.id === Math.floor(windowId)
+    )
+    if (!targetWindow) {
+      respondWindowDebugJson(res, 404, { ok: false, error: `Window ${windowId} not found.` })
+      return
+    }
+
+    const debuggerAlreadyAttached = targetWindow.webContents.debugger.isAttached()
+    try {
+      if (!debuggerAlreadyAttached) {
+        targetWindow.webContents.debugger.attach('1.3')
+      }
+      const { root } = await targetWindow.webContents.debugger.sendCommand('DOM.getDocument', {
+        depth: -1,
+        pierce: true
+      })
+      const { nodeId } = await targetWindow.webContents.debugger.sendCommand('DOM.querySelector', {
+        nodeId: root.nodeId,
+        selector
+      })
+      if (!nodeId) {
+        respondWindowDebugJson(res, 404, { ok: false, error: `Selector not found: ${selector}` })
+        return
+      }
+      await targetWindow.webContents.debugger.sendCommand('DOM.setFileInputFiles', {
+        nodeId,
+        files
+      })
+      respondWindowDebugJson(res, 200, { ok: true })
+    } catch (error) {
+      respondWindowDebugJson(res, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    } finally {
+      if (!debuggerAlreadyAttached && targetWindow.webContents.debugger.isAttached()) {
+        try {
+          targetWindow.webContents.debugger.detach()
+        } catch (error) {
+          void error
+        }
+      }
+    }
+    return
+  }
+
+  respondWindowDebugJson(res, 404, { ok: false, error: 'Not found.' })
+}
+
+async function startWindowDebugServer(): Promise<void> {
+  if (!is.dev || windowDebugServer) return
+
+  const server = createServer((req, res) => {
+    void handleWindowDebugRequest(req, res).catch((error) => {
+      respondWindowDebugJson(res, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    })
+  })
+
+  await new Promise<void>((resolvePromise) => {
+    const port = resolveWindowDebugPort()
+
+    server.once('error', (error) => {
+      console.warn('[WindowDebug] Failed to start:', error instanceof Error ? error.message : String(error))
+      resolvePromise()
+    })
+
+    server.listen(port, '127.0.0.1', () => {
+      windowDebugServer = server
+      console.log(`[WindowDebug] Listening on http://127.0.0.1:${port}`)
+      resolvePromise()
+    })
+  })
+}
 let mainWindow: BrowserWindow | null = null
 let sourcingLoginWindow: BrowserWindow | null = null
 let storageMaintenanceService: StorageMaintenanceService | null = null
@@ -4833,6 +5089,7 @@ app.whenReady().then(async () => {
   console.log(`[PowerSave] Blocker started (id=${powerSaveId})`)
 
   void createWindow()
+  await startWindowDebugServer()
   void localGatewayManager?.autoStartIfEnabled()
   initAutoUpdate()
 
@@ -4874,6 +5131,12 @@ app.on('before-quit', () => {
     void error
   }
   localGatewayManager = null
+  try {
+    windowDebugServer?.close()
+  } catch (error) {
+    void error
+  }
+  windowDebugServer = null
   app.quit()
 })
 
