@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type * as React from 'react'
 
 import {
@@ -31,9 +31,12 @@ import {
   parseNoteMaterialDragPayload
 } from './noteMaterialDragPayload'
 import {
+  applyDroppedCoversToPreviewTasks,
+  canToggleNotePreviewSelection,
   collectDispatchableNotePreviewTaskIds,
   countUndispatchedNotePreviewTasks,
-  isNotePreviewTaskDispatched
+  isNotePreviewTaskDispatched,
+  resolveIntersectedNotePreviewTaskIds
 } from './noteSidebarHelpers'
 import {
   buildVideoNoteEditorViewModel,
@@ -101,6 +104,7 @@ type NoteSidebarProps = {
   onAddMaterials: (paths: string[]) => void
   onRemoveMaterial: (asset: AiStudioAssetRecord) => void
   onOpenBatchPick?: () => void
+  onConsumeBatchPickSelection?: () => void
 }
 
 type NoteSidebarAccountRecord = {
@@ -419,12 +423,16 @@ function PreviewNoteCard({
   task,
   onOpen,
   onTaskChange,
+  onCoverDrop,
+  cardRef,
   selected,
   onToggleSelect
 }: {
   task: Task
   onOpen: () => void
   onTaskChange: (patch: Partial<Task>) => void
+  onCoverDrop: (droppedPaths: string[]) => void
+  cardRef?: (node: HTMLDivElement | null) => void
   selected: boolean
   onToggleSelect: () => void
 }): React.JSX.Element {
@@ -437,6 +445,7 @@ function PreviewNoteCard({
   const productSummary = deriveNoteBoundProductSummary(task)
   const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
   const [draftValue, setDraftValue] = useState('')
+  const [isCoverDragOver, setIsCoverDragOver] = useState(false)
 
   const openEditor = (field: 'title' | 'body'): void => {
     setEditingField(field)
@@ -455,13 +464,80 @@ function PreviewNoteCard({
   }
 
   return (
-    <article className="px-3 py-2">
-      <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-4">
+    <article
+      ref={cardRef}
+      data-note-preview-card="true"
+      data-note-preview-task-id={task.id}
+      className={cn(
+        'rounded-[18px] px-3 py-2 transition',
+        selected
+          ? 'bg-zinc-50/92 shadow-[0_10px_24px_rgba(15,23,42,0.04)]'
+          : 'hover:bg-zinc-50/58'
+      )}
+    >
+      <div className="grid grid-cols-[20px_96px_minmax(0,1fr)] gap-4">
+        <div className="flex items-center justify-center self-start pt-10">
+          <button
+            type="button"
+            onClick={() => {
+              if (isDispatched) return
+              onToggleSelect()
+            }}
+            disabled={isDispatched}
+            data-note-preview-interactive="true"
+            className={cn(
+              'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border shadow-[0_6px_16px_rgba(15,23,42,0.06)] transition',
+              isDispatched
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                : selected
+                  ? 'border-zinc-900 bg-zinc-900 text-white'
+                  : 'border-zinc-300 bg-white text-transparent hover:border-zinc-400 hover:bg-zinc-50'
+            )}
+            aria-label={isDispatched ? '笔记已分发' : selected ? '取消选中笔记' : '选中笔记'}
+          >
+            <Check className="h-3 w-3" strokeWidth={2.5} />
+          </button>
+        </div>
+
         <div className="relative self-start">
           <button
             type="button"
             onClick={onOpen}
-            className="relative block overflow-hidden border border-zinc-200/80 bg-zinc-50 transition hover:border-sky-200 hover:shadow-[0_0_0_1px_rgba(125,211,252,0.26)]"
+            data-note-preview-interactive="true"
+            onDragEnter={(event) => {
+              if (!isVideoTask) return
+              event.preventDefault()
+              setIsCoverDragOver(true)
+            }}
+            onDragOver={(event) => {
+              if (!isVideoTask) return
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'copy'
+              setIsCoverDragOver(true)
+            }}
+            onDragLeave={(event) => {
+              if (!isVideoTask) return
+              event.preventDefault()
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+              setIsCoverDragOver(false)
+            }}
+            onDrop={(event) => {
+              if (!isVideoTask) return
+              event.preventDefault()
+              const droppedPaths = readDroppedMaterialPaths(event)
+              if (droppedPaths.length === 0) {
+                setIsCoverDragOver(false)
+                return
+              }
+              onCoverDrop(droppedPaths)
+              setIsCoverDragOver(false)
+            }}
+            className={cn(
+              'relative block overflow-hidden border bg-zinc-50 transition hover:border-sky-200 hover:shadow-[0_0_0_1px_rgba(125,211,252,0.26)]',
+              isCoverDragOver
+                ? 'border-sky-300 shadow-[0_0_0_2px_rgba(125,211,252,0.32)]'
+                : 'border-zinc-200/80'
+            )}
           >
             {coverSrc ? (
               <div className="relative">
@@ -485,28 +561,14 @@ function PreviewNoteCard({
                 {isVideoTask ? '暂无视频封面' : '暂无封面'}
               </div>
             )}
+            {isVideoTask && isCoverDragOver ? (
+              <div className="absolute inset-0 z-[1] flex items-center justify-center bg-sky-500/14 text-[10px] font-medium tracking-[0.08em] text-sky-700 backdrop-blur-[1px]">
+                释放替换封面
+              </div>
+            ) : null}
             <div className="absolute bottom-2 right-2 inline-flex h-5 items-center justify-center border border-white/90 bg-zinc-950/34 px-1.5 text-[10px] font-medium tracking-[0.02em] text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)] backdrop-blur-[4px]">
               {isVideoTask ? '视频' : `${imagePaths.length}张`}
             </div>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (isDispatched) return
-              onToggleSelect()
-            }}
-            disabled={isDispatched}
-            className={cn(
-              'absolute left-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center border shadow-[0_8px_18px_rgba(15,23,42,0.08)] transition',
-              isDispatched
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
-                : selected
-                  ? 'border-white bg-white text-zinc-950'
-                  : 'border-white/80 bg-white/78 text-transparent backdrop-blur-[2px] hover:bg-white'
-            )}
-            aria-label={isDispatched ? '笔记已分发' : selected ? '取消选中笔记' : '选中笔记'}
-          >
-            <Check className="h-3.5 w-3.5" />
           </button>
         </div>
 
@@ -517,6 +579,7 @@ function PreviewNoteCard({
                 <Input
                   autoFocus
                   value={draftValue}
+                  data-note-preview-interactive="true"
                   onChange={(event) => setDraftValue(event.target.value)}
                   onBlur={commitEditor}
                   onKeyDown={(event) => {
@@ -534,6 +597,7 @@ function PreviewNoteCard({
                 <button
                   type="button"
                   onClick={() => openEditor('title')}
+                  data-note-preview-interactive="true"
                   className="max-w-full flex-1 text-left text-[12px] font-medium tracking-[0.02em] text-zinc-700 transition hover:text-zinc-950"
                 >
                   <span className="line-clamp-2 break-all">
@@ -554,6 +618,7 @@ function PreviewNoteCard({
               <Textarea
                 autoFocus
                 value={draftValue}
+                data-note-preview-interactive="true"
                 onChange={(event) => setDraftValue(event.target.value)}
                 onBlur={commitEditor}
                 onKeyDown={(event) => {
@@ -572,6 +637,7 @@ function PreviewNoteCard({
                 <button
                   type="button"
                   onClick={() => openEditor('body')}
+                  data-note-preview-interactive="true"
                   className="block w-full text-left align-top transition hover:text-zinc-700"
                 >
                   <div className="whitespace-pre-wrap break-words text-[12px] leading-[1.7] text-zinc-500">
@@ -877,14 +943,17 @@ function DispatchProgressOverlay({
 function PreviewEditorModal({
   task,
   onClose,
-  onImagesChange
+  onImagesChange,
+  onCoverDrop
 }: {
   task: Task
   onClose: () => void
   onImagesChange: (nextImages: string[]) => void
+  onCoverDrop: (droppedPaths: string[]) => void
 }): React.JSX.Element {
   const workspacePath = useCmsStore((store) => store.workspacePath)
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
+  const [isVideoCoverDragOver, setIsVideoCoverDragOver] = useState(false)
   const imagePaths = task.assignedImages.filter(Boolean)
   const isVideoTask = task.mediaType === 'video'
   const videoPreviewPath = String(task.videoPreviewPath ?? task.videoPath ?? '').trim()
@@ -932,19 +1001,58 @@ function PreviewEditorModal({
               <div className="flex flex-col gap-3">
                 <div className="border border-zinc-200/80 bg-white p-3 shadow-[0_10px_24px_rgba(15,23,42,0.035)]">
                   <div className="text-[10px] tracking-[0.08em] text-zinc-400">视频封面</div>
-                  <div className="mt-3 overflow-hidden border border-zinc-200 bg-zinc-50">
+                  <div
+                    className={cn(
+                      'mt-3 overflow-hidden border bg-zinc-50 transition',
+                      isVideoCoverDragOver
+                        ? 'border-sky-300 shadow-[0_0_0_2px_rgba(125,211,252,0.22)]'
+                        : 'border-zinc-200'
+                    )}
+                    onDragEnter={(event) => {
+                      event.preventDefault()
+                      setIsVideoCoverDragOver(true)
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'copy'
+                      setIsVideoCoverDragOver(true)
+                    }}
+                    onDragLeave={(event) => {
+                      event.preventDefault()
+                      if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+                      setIsVideoCoverDragOver(false)
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      const droppedPaths = readDroppedMaterialPaths(event)
+                      if (droppedPaths.length > 0) {
+                        onCoverDrop(droppedPaths)
+                      }
+                      setIsVideoCoverDragOver(false)
+                    }}
+                  >
                     {videoCoverSrc ? (
-                      <img
-                        src={videoCoverSrc}
-                        alt={basename(videoCoverPath)}
-                        className="block aspect-[4/5] w-full object-cover"
-                        loading="lazy"
-                      />
+                      <div className="relative">
+                        <img
+                          src={videoCoverSrc}
+                          alt={basename(videoCoverPath)}
+                          className="block aspect-[4/5] w-full object-cover"
+                          loading="lazy"
+                        />
+                        {isVideoCoverDragOver ? (
+                          <div className="absolute inset-0 flex items-center justify-center bg-sky-500/14 text-[11px] font-medium tracking-[0.08em] text-sky-700 backdrop-blur-[1px]">
+                            释放替换封面
+                          </div>
+                        ) : null}
+                      </div>
                     ) : (
                       <div className="flex aspect-[4/5] items-center justify-center text-[11px] text-zinc-400">
-                        暂无封面
+                        {isVideoCoverDragOver ? '释放替换封面' : '暂无封面'}
                       </div>
                     )}
+                  </div>
+                  <div className="mt-2 text-[10px] tracking-[0.04em] text-zinc-400">
+                    可把图池图片直接拖到这里，覆盖为新封面
                   </div>
                 </div>
                 <div className="border border-zinc-200/80 bg-white p-3 text-[11px] leading-5 text-zinc-500 shadow-[0_10px_24px_rgba(15,23,42,0.035)]">
@@ -1556,7 +1664,8 @@ function NoteSidebar({
   onDispatch,
   onAddMaterials,
   onRemoveMaterial,
-  onOpenBatchPick
+  onOpenBatchPick,
+  onConsumeBatchPickSelection
 }: NoteSidebarProps): React.JSX.Element | null {
   const [activePreviewTaskId, setActivePreviewTaskId] = useState<string | null>(null)
   const [selectedPreviewTaskIds, setSelectedPreviewTaskIds] = useState<string[]>([])
@@ -1568,6 +1677,24 @@ function NoteSidebar({
   const [isLoadingDispatchProducts, setIsLoadingDispatchProducts] = useState(false)
   const [dispatchAccountIdDraft, setDispatchAccountIdDraft] = useState('')
   const [dispatchProductIdsDraft, setDispatchProductIdsDraft] = useState<string[]>([])
+  const previewSurfaceRef = useRef<HTMLDivElement | null>(null)
+  const previewCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const previewGestureRef = useRef<{
+    startX: number
+    startY: number
+    targetTaskId: string | null
+  } | null>(null)
+  const previewTaskLayoutRef = useRef<
+    Array<{ id: string; left: number; top: number; right: number; bottom: number }>
+  >([])
+  const suppressPreviewToggleRef = useRef(false)
+  const lastPreviewSelectionRef = useRef<string[]>([])
+  const [previewSelectionBox, setPreviewSelectionBox] = useState<{
+    startX: number
+    startY: number
+    endX: number
+    endY: number
+  } | null>(null)
   const preferredAccountId = useCmsStore((store) => store.preferredAccountId)
   const setPreferredAccountId = useCmsStore((store) => store.setPreferredAccountId)
   const isImageMode = mode === 'image-note'
@@ -1595,11 +1722,20 @@ function NoteSidebar({
     : '输入商品信息和额外说明提示词'
   const imageNoteGenerateButtonLabel = isManualImageNoteEntry ? '生成笔记' : '智能生成'
   const imageNoteEntryToggleLabel = isManualImageNoteEntry ? '智能生成' : '手动录入'
+  const previewSelectionOverlayStyle = previewSelectionBox
+    ? {
+        left: `${Math.min(previewSelectionBox.startX, previewSelectionBox.endX)}px`,
+        top: `${Math.min(previewSelectionBox.startY, previewSelectionBox.endY)}px`,
+        width: `${Math.abs(previewSelectionBox.endX - previewSelectionBox.startX)}px`,
+        height: `${Math.abs(previewSelectionBox.endY - previewSelectionBox.startY)}px`
+      }
+    : null
 
   useEffect(() => {
     if (!showPreview) {
       setSelectedPreviewTaskIds([])
       setIsDispatchSettingsOpen(false)
+      setPreviewSelectionBox(null)
       return
     }
 
@@ -1613,6 +1749,10 @@ function NoteSidebar({
     previewTaskIdsKey,
     showPreview
   ])
+
+  useEffect(() => {
+    lastPreviewSelectionRef.current = selectedPreviewTaskIds
+  }, [selectedPreviewTaskIds])
 
   useEffect(() => {
     if (!showPreview || !isDispatchSettingsOpen) return
@@ -1702,6 +1842,26 @@ function NoteSidebar({
   const updatePreviewTask = (taskId: string, patch: Partial<Task>): void => {
     onPreviewTasksChange(
       previewTasks.map((task) => (task.id === taskId ? { ...task, ...patch } : task))
+    )
+  }
+
+  const applyPreviewTaskCoverDrop = (taskId: string, droppedPaths: string[]): void => {
+    const result = applyDroppedCoversToPreviewTasks(previewTasks, taskId, droppedPaths)
+    if (result.appliedCount <= 0) return
+    onPreviewTasksChange(result.tasks)
+    onConsumeBatchPickSelection?.()
+  }
+
+  const togglePreviewTaskSelection = (taskId: string): void => {
+    const normalizedTaskId = String(taskId ?? '').trim()
+    if (!normalizedTaskId) return
+    const targetTask = previewTasks.find((task) => task.id === normalizedTaskId)
+    if (!targetTask || !canToggleNotePreviewSelection(targetTask)) return
+
+    setSelectedPreviewTaskIds((current) =>
+      current.includes(normalizedTaskId)
+        ? current.filter((currentTaskId) => currentTaskId !== normalizedTaskId)
+        : [...current, normalizedTaskId]
     )
   }
 
@@ -1825,7 +1985,126 @@ function NoteSidebar({
               ) : null}
 
               {showPreview ? (
-                <div className="space-y-3 py-2">
+                <div
+                  ref={previewSurfaceRef}
+                  onPointerDownCapture={(event) => {
+                    if (event.button !== 0 || isDispatching) return
+                    const surface = previewSurfaceRef.current
+                    if (!surface) return
+
+                    const target = event.target as HTMLElement | null
+                    const interactiveElement =
+                      target?.closest<HTMLElement>(
+                        '[data-note-preview-interactive="true"],button,a,input,textarea,select,[role="button"]'
+                      ) ?? null
+                    if (interactiveElement) return
+
+                    const cardElement =
+                      target?.closest<HTMLElement>('[data-note-preview-card="true"]') ?? null
+                    const targetTaskId =
+                      String(cardElement?.dataset.notePreviewTaskId ?? '').trim() || null
+
+                    event.preventDefault()
+                    const surfaceRect = surface.getBoundingClientRect()
+                    const startX = event.clientX - surfaceRect.left
+                    const startY = event.clientY - surfaceRect.top
+                    previewGestureRef.current = { startX, startY, targetTaskId }
+                    previewTaskLayoutRef.current = previewTasks
+                      .map((task) => {
+                        const cardNode = previewCardRefs.current[task.id]
+                        if (!cardNode) return null
+                        const cardRect = cardNode.getBoundingClientRect()
+                        return {
+                          id: task.id,
+                          left: cardRect.left - surfaceRect.left,
+                          top: cardRect.top - surfaceRect.top,
+                          right: cardRect.right - surfaceRect.left,
+                          bottom: cardRect.bottom - surfaceRect.top
+                        }
+                      })
+                      .filter(
+                        (
+                          layout
+                        ): layout is {
+                          id: string
+                          left: number
+                          top: number
+                          right: number
+                          bottom: number
+                        } => Boolean(layout)
+                      )
+                    suppressPreviewToggleRef.current = false
+                    lastPreviewSelectionRef.current = selectedPreviewTaskIds
+
+                    const handlePointerMove = (moveEvent: PointerEvent): void => {
+                      const currentSurface = previewSurfaceRef.current
+                      const gesture = previewGestureRef.current
+                      if (!currentSurface || !gesture) return
+
+                      const currentRect = currentSurface.getBoundingClientRect()
+                      const endX = moveEvent.clientX - currentRect.left
+                      const endY = moveEvent.clientY - currentRect.top
+                      if (Math.abs(endX - gesture.startX) < 4 && Math.abs(endY - gesture.startY) < 4) {
+                        return
+                      }
+
+                      suppressPreviewToggleRef.current = true
+                      const nextBox = {
+                        startX: gesture.startX,
+                        startY: gesture.startY,
+                        endX,
+                        endY
+                      }
+                      setPreviewSelectionBox(nextBox)
+
+                      const nextSelectedIds = resolveIntersectedNotePreviewTaskIds({
+                        taskLayouts: previewTaskLayoutRef.current,
+                        selectableTaskIds: dispatchablePreviewTaskIds,
+                        selectionRect: {
+                          left: Math.min(nextBox.startX, nextBox.endX),
+                          top: Math.min(nextBox.startY, nextBox.endY),
+                          right: Math.max(nextBox.startX, nextBox.endX),
+                          bottom: Math.max(nextBox.startY, nextBox.endY)
+                        }
+                      })
+
+                      const previousIds = lastPreviewSelectionRef.current
+                      if (
+                        previousIds.length === nextSelectedIds.length &&
+                        previousIds.every((id, index) => id === nextSelectedIds[index])
+                      ) {
+                        return
+                      }
+                      lastPreviewSelectionRef.current = nextSelectedIds
+                      setSelectedPreviewTaskIds(nextSelectedIds)
+                    }
+
+                    const handlePointerUp = (): void => {
+                      const gesture = previewGestureRef.current
+                      previewGestureRef.current = null
+                      previewTaskLayoutRef.current = []
+                      setPreviewSelectionBox(null)
+                      window.removeEventListener('pointermove', handlePointerMove)
+                      window.removeEventListener('pointerup', handlePointerUp)
+
+                      if (!suppressPreviewToggleRef.current) {
+                        if (gesture?.targetTaskId) {
+                          togglePreviewTaskSelection(gesture.targetTaskId)
+                        } else {
+                          setSelectedPreviewTaskIds([])
+                        }
+                      }
+
+                      window.setTimeout(() => {
+                        suppressPreviewToggleRef.current = false
+                      }, 0)
+                    }
+
+                    window.addEventListener('pointermove', handlePointerMove)
+                    window.addEventListener('pointerup', handlePointerUp)
+                  }}
+                  className="relative space-y-3 py-2"
+                >
                   <div className="flex items-center justify-between px-3">
                     <div className="text-[11px] tracking-[0.04em] text-zinc-400">
                       生成预览
@@ -1834,6 +2113,16 @@ function NoteSidebar({
                         : ' · 已全部分发'}
                     </div>
                     <div className="flex items-center gap-3">
+                      {mode === 'video-note' && onOpenBatchPick ? (
+                        <button
+                          type="button"
+                          onClick={onOpenBatchPick}
+                          className="inline-flex items-center gap-1 text-[11px] tracking-[0.04em] text-zinc-400 transition hover:text-zinc-700"
+                        >
+                          <ImageIcon className="h-3.5 w-3.5" />
+                          图池选图
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => {
@@ -1867,19 +2156,23 @@ function NoteSidebar({
                   {previewTasks.map((task) => (
                     <PreviewNoteCard
                       key={task.id}
+                      cardRef={(node) => {
+                        previewCardRefs.current[task.id] = node
+                      }}
                       task={task}
                       onOpen={() => setActivePreviewTaskId(task.id)}
                       onTaskChange={(patch) => updatePreviewTask(task.id, patch)}
+                      onCoverDrop={(droppedPaths) => applyPreviewTaskCoverDrop(task.id, droppedPaths)}
                       selected={selectedPreviewTaskIds.includes(task.id)}
-                      onToggleSelect={() => {
-                        setSelectedPreviewTaskIds((current) =>
-                          current.includes(task.id)
-                            ? current.filter((taskId) => taskId !== task.id)
-                            : [...current, task.id]
-                        )
-                      }}
+                      onToggleSelect={() => togglePreviewTaskSelection(task.id)}
                     />
                   ))}
+                  {previewSelectionOverlayStyle ? (
+                    <div
+                      className="pointer-events-none absolute z-20 rounded-[18px] border border-sky-400/85 bg-[rgba(56,189,248,0.18)] shadow-[0_0_0_1px_rgba(186,230,253,0.55),0_16px_40px_rgba(14,165,233,0.14)] backdrop-blur-[1px]"
+                      style={previewSelectionOverlayStyle}
+                    />
+                  ) : null}
                 </div>
               ) : phase !== 'editing' ? (
                 <div className="flex h-full min-h-[180px] items-end justify-center">
@@ -1992,6 +2285,7 @@ function NoteSidebar({
           task={activePreviewTask}
           onClose={() => setActivePreviewTaskId(null)}
           onImagesChange={(nextImages) => updatePreviewTaskImages(activePreviewTask.id, nextImages)}
+          onCoverDrop={(droppedPaths) => applyPreviewTaskCoverDrop(activePreviewTask.id, droppedPaths)}
         />
       ) : null}
 
