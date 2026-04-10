@@ -5,6 +5,7 @@ import {
   buildAiCapabilityRouteOptions,
   buildAiConfigPatch,
   buildVideoEndpointPair,
+  resolveOrderedChatProviderCandidates,
   resolveAiTaskProviderSelection
 } from './aiProviderProfiles.ts'
 
@@ -216,4 +217,157 @@ test('buildAiCapabilityRouteOptions lists enabled image models as provider-model
       label: 'allapi - jimeng-image-3.0'
     }
   ])
+})
+
+test('resolveOrderedChatProviderCandidates returns the configured default chat provider first', () => {
+  const candidates = resolveOrderedChatProviderCandidates(PROFILES, {
+    chatProviderId: 'provider-openai'
+  })
+
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].providerId, 'provider-openai')
+  assert.equal(candidates[0].providerName, 'openai')
+  assert.equal(candidates[0].modelId, 'model-gpt-4o-mini')
+  assert.equal(candidates[0].modelName, 'gpt-4o-mini')
+})
+
+test('resolveOrderedChatProviderCandidates appends one eligible fallback after the primary', () => {
+  const candidates = resolveOrderedChatProviderCandidates(
+    [
+      ...PROFILES,
+      {
+        id: 'provider-gemini',
+        providerName: 'gemini',
+        baseUrl: 'https://gemini.example.com',
+        apiKey: 'gemini-key',
+        enabled: true,
+        source: 'custom',
+        capabilities: {
+          chat: {
+            enabled: true,
+            defaultModelId: 'model-gemini-2.5-flash',
+            models: [
+              {
+                id: 'model-gemini-2.5-flash',
+                modelName: 'gemini-2.5-flash',
+                endpointPath: '/v1beta/models/gemini-2.5-flash:generateContent',
+                protocol: 'google-genai',
+                enabled: true
+              }
+            ]
+          },
+          image: { enabled: false, defaultModelId: null, models: [] },
+          video: { enabled: false, defaultModelId: null, models: [] }
+        }
+      }
+    ],
+    {
+      chatProviderId: 'provider-openai'
+    }
+  )
+
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.providerId),
+    ['provider-openai', 'provider-gemini']
+  )
+})
+
+test('resolveOrderedChatProviderCandidates excludes deleted disabled or missing-key providers from fallback', () => {
+  const candidates = resolveOrderedChatProviderCandidates(
+    [
+      ...PROFILES,
+      {
+        id: 'provider-deleted',
+        providerName: 'deleted-chat',
+        baseUrl: 'https://deleted.example.com',
+        apiKey: 'deleted-key',
+        enabled: true,
+        deleted: true,
+        source: 'custom',
+        capabilities: {
+          chat: {
+            enabled: true,
+            defaultModelId: 'model-deleted',
+            models: [
+              {
+                id: 'model-deleted',
+                modelName: 'deleted-model',
+                endpointPath: '/v1/chat/completions',
+                protocol: 'openai',
+                enabled: true
+              }
+            ]
+          },
+          image: { enabled: false, defaultModelId: null, models: [] },
+          video: { enabled: false, defaultModelId: null, models: [] }
+        }
+      },
+      {
+        id: 'provider-disabled-chat',
+        providerName: 'disabled-chat',
+        baseUrl: 'https://disabled-chat.example.com',
+        apiKey: 'disabled-key',
+        enabled: false,
+        source: 'custom',
+        capabilities: {
+          chat: {
+            enabled: true,
+            defaultModelId: 'model-disabled-chat',
+            models: [
+              {
+                id: 'model-disabled-chat',
+                modelName: 'disabled-model',
+                endpointPath: '/v1/chat/completions',
+                protocol: 'openai',
+                enabled: true
+              }
+            ]
+          },
+          image: { enabled: false, defaultModelId: null, models: [] },
+          video: { enabled: false, defaultModelId: null, models: [] }
+        }
+      },
+      {
+        id: 'provider-missing-key',
+        providerName: 'missing-key',
+        baseUrl: 'https://missing-key.example.com',
+        apiKey: '',
+        enabled: true,
+        source: 'custom',
+        capabilities: {
+          chat: {
+            enabled: true,
+            defaultModelId: 'model-missing-key',
+            models: [
+              {
+                id: 'model-missing-key',
+                modelName: 'missing-key-model',
+                endpointPath: '/v1/chat/completions',
+                protocol: 'openai',
+                enabled: true
+              }
+            ]
+          },
+          image: { enabled: false, defaultModelId: null, models: [] },
+          video: { enabled: false, defaultModelId: null, models: [] }
+        }
+      }
+    ],
+    {
+      chatProviderId: 'provider-openai'
+    }
+  )
+
+  assert.deepEqual(candidates.map((candidate) => candidate.providerId), ['provider-openai'])
+})
+
+test('resolveOrderedChatProviderCandidates never returns the same provider twice', () => {
+  const candidates = resolveOrderedChatProviderCandidates(PROFILES, {
+    chatProviderId: 'provider-openai'
+  })
+
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.providerId),
+    ['provider-openai']
+  )
 })

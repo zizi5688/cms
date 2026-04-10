@@ -22,6 +22,11 @@ import {
 import { DEFAULT_GRSAI_IMAGE_MODEL } from '@renderer/lib/grsaiModels'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 
+import {
+  resolveStartChatRunSelection,
+  resolveVideoSmartChatCandidates,
+  validateStartChatRunSelection
+} from './aiStudioChatRouteHelpers'
 import { runWithConcurrencyLimit } from './parallelRunHelpers'
 import type { PreviewSlotRuntimeState } from './previewSlotHelpers'
 import { claimVideoRetrySlot, releaseVideoRetrySlot } from './videoPreviewActions'
@@ -1846,18 +1851,6 @@ const useAiStudioState = () => {
         : resolveImageProviderSelection('', ''),
     [resolveImageProviderSelection]
   )
-  const resolveChatProviderSelection = useCallback(
-    (providerName?: string | null, modelName?: string | null) =>
-      resolveAiTaskProviderSelection(providerProfiles, {
-        capability: 'chat',
-        taskProviderName: providerName,
-        taskModelName: modelName,
-        fallbackProviderId: aiConfig.aiRuntimeDefaults?.chatProviderId ?? null,
-        fallbackProviderName: aiConfig.aiProvider,
-        fallbackModelName: ''
-      }),
-    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults?.chatProviderId, providerProfiles]
-  )
   const resolveVideoProviderSelection = useCallback(
     (providerName?: string | null, modelName?: string | null, endpointPath?: string | null) => {
       const resolved = resolveAiTaskProviderSelection(providerProfiles, {
@@ -1883,6 +1876,17 @@ const useAiStudioState = () => {
       defaultModel,
       providerProfiles
     ]
+  )
+  const getVideoSmartChatCandidates = useCallback(
+    () =>
+      resolveVideoSmartChatCandidates({
+        aiConfig: {
+          aiProvider: aiConfig.aiProvider,
+          aiRuntimeDefaults: aiConfig.aiRuntimeDefaults
+        },
+        providerProfiles
+      }),
+    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults, providerProfiles]
   )
 
   const replaceTask = useCallback((nextTask: AiStudioTaskRecord) => {
@@ -5289,7 +5293,20 @@ const useAiStudioState = () => {
   )
 
   const startChatRun = useCallback(
-    async (payload: { promptText: string; imagePaths?: string[] }) => {
+    async (payload: {
+      promptText: string
+      imagePaths?: string[]
+      routeOverride?: {
+        providerId?: string
+        providerName?: string
+        modelId?: string
+        modelName?: string
+        endpointPath?: string
+        baseUrl?: string
+        apiKey?: string
+        protocol?: 'openai' | 'google-genai' | 'vendor-custom'
+      } | null
+    }) => {
       const promptText = String(payload.promptText ?? '').trim()
       const imagePaths = Array.isArray(payload.imagePaths)
         ? payload.imagePaths.map((item) => String(item ?? '').trim()).filter(Boolean)
@@ -5298,18 +5315,17 @@ const useAiStudioState = () => {
         throw new Error('[AI Studio] 请先输入聊天内容。')
       }
 
-      const selection = resolveChatProviderSelection('', '')
-      if (!selection.providerProfile) {
-        throw new Error('[AI Studio] 请先在设置页配置聊天供应商。')
-      }
-      if (!selection.apiKey.trim()) {
-        throw new Error('[AI Studio] 请先填写聊天供应商 API Key。')
-      }
-      if (!selection.modelName.trim()) {
-        throw new Error('[AI Studio] 请先配置聊天模型。')
-      }
-      if (!selection.endpointPath.trim()) {
-        throw new Error('[AI Studio] 请先配置聊天模型 Endpoint。')
+      const selection = resolveStartChatRunSelection({
+        aiConfig: {
+          aiProvider: aiConfig.aiProvider,
+          aiRuntimeDefaults: aiConfig.aiRuntimeDefaults
+        },
+        providerProfiles,
+        routeOverride: payload.routeOverride
+      })
+      const validationError = validateStartChatRunSelection(selection.route)
+      if (validationError) {
+        throw validationError
       }
 
       setIsChatRunning(true)
@@ -5321,7 +5337,14 @@ const useAiStudioState = () => {
           input: {
             prompt: promptText,
             imagePaths
-          }
+          },
+          ...(selection.shouldUseRouteOverride
+            ? {
+                context: {
+                  routeOverride: selection.route
+                }
+              }
+            : {})
         })) as {
           outputText?: unknown
         }
@@ -5339,7 +5362,7 @@ const useAiStudioState = () => {
         setIsChatRunning(false)
       }
     },
-    [resolveChatProviderSelection]
+    [aiConfig.aiProvider, aiConfig.aiRuntimeDefaults, providerProfiles]
   )
 
   return {
@@ -5349,6 +5372,7 @@ const useAiStudioState = () => {
     videoProfiles,
     videoMeta,
     selectedVideoProfile,
+    getVideoSmartChatCandidates,
     videoMode: videoMeta.mode,
     selectedTemplate: selectedTemplateBase ?? selectedTemplate,
     selectedMasterTemplate,

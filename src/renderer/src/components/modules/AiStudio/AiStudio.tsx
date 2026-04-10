@@ -48,6 +48,7 @@ import {
   createInitialVideoNoteGenerationState,
   type VideoNoteGenerationState
 } from './videoNoteGenerationOrchestrator'
+import { runVideoSmartGenerationFlow } from './videoSmartGenerationFlow'
 import {
   buildProjectCardSummaries,
   formatProjectUpdatedAt,
@@ -393,11 +394,13 @@ function AiStudio(): React.JSX.Element {
     videoNoteGenerationState.mergeStatus === 'partial-failed' &&
     videoNoteGenerationState.renderStatus === 'success' &&
     videoNoteGenerationState.previewAssets.length > 0
+  const canRetrySmartCopyOnly =
+    videoNoteGenerationState.canRetryCopyOnly && videoNoteGenerationState.previewAssets.length > 0
   const isVideoGenerateDisabled =
     isGeneratingNotePreview ||
     (videoNoteEntryMode === 'manual'
       ? !hasReusableRenderedVideoAssets && !videoComposer.canGenerate
-      : !videoComposer.canGenerate)
+      : !canRetrySmartCopyOnly && !videoComposer.canGenerate)
 
   const batchPickAssets = useMemo(
     () => buildBatchPickAssets(state.historyTasks),
@@ -751,11 +754,15 @@ function AiStudio(): React.JSX.Element {
   ])
 
   const handleGenerateSmartVideoNotePreview = useCallback(async (): Promise<void> => {
+    const isCopyOnlyRetry =
+      videoNoteGenerationState.canRetryCopyOnly && videoNoteGenerationState.previewAssets.length > 0
     let chatInput: ReturnType<typeof buildVideoSmartNoteChatInput>
     try {
       chatInput = buildVideoSmartNoteChatInput({
         userExtraPrompt: videoNoteSmartPromptDraft,
-        groupCount: Math.max(1, Math.min(20, Math.floor(Number(videoComposer.batchCount) || 1)))
+        groupCount: isCopyOnlyRetry
+          ? videoNoteGenerationState.previewAssets.length
+          : Math.max(1, Math.min(20, Math.floor(Number(videoComposer.batchCount) || 1)))
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -763,137 +770,59 @@ function AiStudio(): React.JSX.Element {
       return
     }
 
-    if (videoComposer.sourceMediaCount === 0) {
+    if (!isCopyOnlyRetry && videoComposer.sourceMediaCount === 0) {
       window.alert('请先导入至少一项图片或视频素材。')
       return
     }
 
-    if (videoComposer.sourceVideos.length === 0 && videoComposer.sourceImages.length < videoComposer.normalizedMin) {
-      window.alert(`当前仅 ${videoComposer.sourceImages.length} 张图，至少需要 ${videoComposer.normalizedMin} 张。`)
+    if (
+      !isCopyOnlyRetry &&
+      videoComposer.sourceVideos.length === 0 &&
+      videoComposer.sourceImages.length < videoComposer.normalizedMin
+    ) {
+      window.alert(
+        `当前仅 ${videoComposer.sourceImages.length} 张图，至少需要 ${videoComposer.normalizedMin} 张。`
+      )
       return
     }
 
     setIsGeneratingNotePreview(true)
-    setVideoNoteGenerationState((current) =>
-      applyVideoNoteGenerationUpdate(current, {
-        type: 'start'
-      })
-    )
+    if (!isCopyOnlyRetry) {
+      setVideoNoteGenerationState((current) =>
+        applyVideoNoteGenerationUpdate(current, {
+          type: 'start'
+        })
+      )
+    }
 
     try {
-      addLog('[AI Studio] 已发送视频笔记智能生成请求，并并行启动视频生成。')
+      addLog(
+        isCopyOnlyRetry
+          ? '[AI Studio] 已启动视频笔记文案重试，将复用已生成视频。'
+          : '[AI Studio] 已发送视频笔记智能生成请求，并并行启动视频生成。'
+      )
+      const { copyResult, renderResult } = await runVideoSmartGenerationFlow({
+        chatInput,
+        chatCandidates: state.getVideoSmartChatCandidates(),
+        existingPreviewAssets: isCopyOnlyRetry ? videoNoteGenerationState.previewAssets : [],
+        startChatRun: state.startChatRun,
+        startVideoRender: () => videoComposer.startGenerate(),
+        prepareGeneratedVideoPreviewAssets,
+        extractCsvFromResponse: extractCsvFromSmartNoteResponse,
+        applyGenerationUpdate: (update) =>
+          setVideoNoteGenerationState((current) => applyVideoNoteGenerationUpdate(current, update)),
+        addLog
+      })
 
-      const copyPromise = (async () => {
-        try {
-          const result = (await state.startChatRun({
-            promptText: chatInput.prompt,
-            imagePaths: chatInput.imagePaths
-          })) as {
-            outputText?: unknown
-          }
-          const csvText = extractCsvFromSmartNoteResponse(String(result?.outputText ?? ''))
-          setNoteCsvDraft(csvText)
-          setVideoNoteGenerationState((current) =>
-            applyVideoNoteGenerationUpdate(current, {
-              type: 'copy-success',
-              csvText
-            })
-          )
-          addLog('[AI Studio] 视频笔记文案已返回，等待视频生成完成。')
-          return {
-            ok: true as const,
-            csvText
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          setVideoNoteGenerationState((current) =>
-            applyVideoNoteGenerationUpdate(current, {
-              type: 'copy-error',
-              message
-            })
-          )
-          addLog(`[AI Studio] 视频笔记智能生成失败：${message}`)
-          return {
-            ok: false as const,
-            message
-          }
-        }
-      })()
-
-      const renderPromise = (async () => {
-        try {
-          const result = await videoComposer.startGenerate()
-          if (!result || result.outputs.length === 0) {
-            const message =
-              result && result.failedCount > 0
-                ? '本轮视频生成失败，请检查参数或素材后重试。'
-                : '本轮视频生成未产出可用结果。'
-            setVideoNoteGenerationState((current) =>
-              applyVideoNoteGenerationUpdate(current, {
-                type: 'render-error',
-                message
-              })
-            )
-            addLog(`[AI Studio] 视频笔记生成失败：${message}`)
-            return {
-              ok: false as const,
-              message
-            }
-          }
-
-          const previewAssets = await prepareGeneratedVideoPreviewAssets(result.outputs)
-          if (previewAssets.length === 0) {
-            const message = '已生成视频，但未能准备可预览的视频素材，请检查输出目录后重试。'
-            setVideoNoteGenerationState((current) =>
-              applyVideoNoteGenerationUpdate(current, {
-                type: 'render-error',
-                message
-              })
-            )
-            addLog(`[AI Studio] 视频笔记生成失败：${message}`)
-            return {
-              ok: false as const,
-              message
-            }
-          }
-
-          setVideoNoteGenerationState((current) =>
-            applyVideoNoteGenerationUpdate(current, {
-              type: 'render-success',
-              assets: previewAssets
-            })
-          )
-          addLog(`[AI Studio] 视频已生成 ${previewAssets.length} 条，等待文案返回。`)
-          if (result.failedCount > 0) {
-            addLog(
-              `[AI Studio] 视频笔记生成存在失败项：${result.failedCount} 条，已保留成功结果等待合流。`
-            )
-          }
-          return {
-            ok: true as const,
-            assets: previewAssets
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          setVideoNoteGenerationState((current) =>
-            applyVideoNoteGenerationUpdate(current, {
-              type: 'render-error',
-              message
-            })
-          )
-          addLog(`[AI Studio] 视频笔记生成失败：${message}`)
-          return {
-            ok: false as const,
-            message
-          }
-        }
-      })()
-
-      const [copyResult, renderResult] = await Promise.all([copyPromise, renderPromise])
+      if (copyResult.ok) {
+        setNoteCsvDraft(copyResult.csvText)
+      }
 
       if (copyResult.ok && renderResult.ok) {
         openVideoNotePreviewFromAssets(copyResult.csvText, renderResult.assets, {
-          successLog: `[AI Studio] 视频笔记智能生成完成，并生成 ${renderResult.assets.length} 组预览。`
+          successLog: isCopyOnlyRetry
+            ? `[AI Studio] 视频笔记文案重试完成，并复用 ${renderResult.assets.length} 组视频预览。`
+            : `[AI Studio] 视频笔记智能生成完成，并生成 ${renderResult.assets.length} 组预览。`
         })
         return
       }
@@ -914,6 +843,8 @@ function AiStudio(): React.JSX.Element {
     prepareGeneratedVideoPreviewAssets,
     state,
     videoComposer,
+    videoNoteGenerationState.canRetryCopyOnly,
+    videoNoteGenerationState.previewAssets,
     videoNoteSmartPromptDraft
   ])
 
