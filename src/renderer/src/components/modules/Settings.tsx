@@ -662,13 +662,13 @@ function Settings(): React.JSX.Element {
       case 'downloading':
         return appUpdateState.message || '正在下载更新...'
       case 'downloaded':
-        return appUpdateState.message || '更新已下载，可安装。'
+        return appUpdateState.message || '更新已下载完成，可立即重启更新，或退出时自动安装。'
       case 'not-available':
         return appUpdateState.message || '当前已是最新版本。'
       case 'error':
         return appUpdateState.message || '更新检查失败。'
       default:
-        return appUpdateState.message || '自动更新已就绪。'
+        return appUpdateState.message || '自动更新已就绪（将自动检查并后台下载）。'
     }
   }, [appUpdateState])
 
@@ -1160,9 +1160,9 @@ function Settings(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle>应用更新（Windows）</CardTitle>
+          <CardTitle>应用更新（Windows / macOS）</CardTitle>
           <CardDescription>
-            基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。
+            基于 GitHub Releases 检查更新；打包版会在启动后自动检查，并在后台下载更新。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -1208,8 +1208,11 @@ function Settings(): React.JSX.Element {
               onClick={() => void installDownloadedUpdate()}
               disabled={appUpdateState?.phase !== 'downloaded' || isInstallingAppUpdate}
             >
-              {isInstallingAppUpdate ? '准备重启...' : '立即安装并重启'}
+              {isInstallingAppUpdate ? '准备重启...' : '立即重启更新'}
             </Button>
+          </div>
+          <div className="text-xs text-zinc-500">
+            下载完成后可选择立即重启更新；若稍后处理，退出应用时会自动安装。
           </div>
         </CardContent>
       </Card>

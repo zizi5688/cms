@@ -33,12 +33,22 @@ type FetchLike = (
     method?: string
     headers?: Record<string, string>
     body?: string
+    signal?: AbortSignal
   }
 ) => Promise<{
   ok: boolean
   status: number
   json: () => Promise<Record<string, unknown>>
 }>
+
+type ChatExecutorOptions = {
+  sleep?: (ms: number) => Promise<void>
+  timeoutMs?: number
+  maxAttempts?: number
+}
+
+const DEFAULT_CHAT_REQUEST_TIMEOUT_MS = 20_000
+const DEFAULT_CHAT_MAX_ATTEMPTS = 3
 
 export class ChatExecutorError extends Error {
   code: string
@@ -92,14 +102,22 @@ function describeNetworkFailure(error: unknown): string {
   return Array.from(new Set(details)).join(' | ')
 }
 
-function createFetchFailureMessage(requestUrl: string, error: unknown): string {
+function createFetchFailureMessage(
+  requestUrl: string,
+  error: unknown,
+  options?: { attempts?: number; maxAttempts?: number }
+): string {
   const endpointLabel = isLoopbackRequestUrl(requestUrl) ? '本地网关' : 'AI 提供方'
   const guidance = isLoopbackRequestUrl(requestUrl)
     ? '请检查本地网关是否仍在运行，并确认相关端口可访问。'
     : '请检查供应商地址、网络连接或代理配置。'
   const detail = describeNetworkFailure(error)
+  const attempts = Number(options?.attempts ?? 1)
+  const maxAttempts = Number(options?.maxAttempts ?? attempts)
+  const retrySuffix =
+    maxAttempts > 1 ? ` 已重试 ${Math.max(1, attempts)} / ${Math.max(1, maxAttempts)} 次。` : ' '
 
-  return `${endpointLabel}请求失败：${requestUrl}。${guidance}${detail ? ` 底层错误：${detail}` : ''}`
+  return `${endpointLabel}请求失败：${requestUrl}。${guidance}${retrySuffix}${detail ? `底层错误：${detail}` : ''}`.trim()
 }
 
 function buildProviderUrl(baseUrl: string, endpointPath: string): string {
@@ -282,6 +300,35 @@ function createGeminiChatPayload(request: AiTaskRequest): Record<string, unknown
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function normalizeRetryableStatusMessage(status: number, message: string): string {
+  const normalized = normalizeText(message)
+  if (normalized) return normalized
+  if (status === 429) return 'AI 提供方当前负载较高，请稍后再试。'
+  if (status >= 500) return 'AI 提供方暂时不可用，请稍后再试。'
+  if (status === 408) return 'AI 提供方响应超时，请稍后再试。'
+  return `Provider returned HTTP ${status}.`
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500
+}
+
+function buildRetryDelayMs(attempt: number): number {
+  return Math.min(1_500, 300 * 2 ** Math.max(0, attempt - 1))
+}
+
+function extractProviderErrorMessage(body: Record<string, unknown>, status: number): string {
+  return normalizeRetryableStatusMessage(
+    status,
+    normalizeText((body.error as Record<string, unknown> | undefined)?.message) ||
+      normalizeText(body.message)
+  )
+}
+
 export function createChatCompletionPayload(
   route: ResolvedAiRoute,
   request: AiTaskRequest
@@ -362,7 +409,8 @@ function extractAssistantText(route: ResolvedAiRoute, payload: Record<string, un
 
 export async function executeChatTask(
   input: ChatExecutorInput,
-  fetchImpl: FetchLike = fetch as unknown as FetchLike
+  fetchImpl: FetchLike = fetch as unknown as FetchLike,
+  options: ChatExecutorOptions = {}
 ): Promise<{
   mode: 'direct'
   capability: 'chat'
@@ -373,46 +421,78 @@ export async function executeChatTask(
   const normalizedRequest = await normalizeChatRequestInput(input.route, input.request)
   const payload = createChatCompletionPayload(input.route, normalizedRequest)
   const requestUrl = buildProviderUrl(input.route.baseUrl, input.route.endpointPath)
-  let response: Awaited<ReturnType<FetchLike>>
-  try {
-    response = await fetchImpl(requestUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${input.route.apiKey}`
-      },
-      body: JSON.stringify(payload)
-    })
-  } catch (error) {
-    throw new ChatExecutorError('AI_CHAT_NETWORK_ERROR', createFetchFailureMessage(requestUrl, error))
+  const sleepImpl = options.sleep ?? sleep
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Number(options.timeoutMs)) : DEFAULT_CHAT_REQUEST_TIMEOUT_MS
+  const maxAttempts = Number.isFinite(options.maxAttempts)
+    ? Math.max(1, Math.floor(Number(options.maxAttempts)))
+    : DEFAULT_CHAT_MAX_ATTEMPTS
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const abortController = new AbortController()
+    const timeoutHandle = setTimeout(() => abortController.abort(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs)
+    let response: Awaited<ReturnType<FetchLike>>
+
+    try {
+      response = await fetchImpl(requestUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${input.route.apiKey}`
+        },
+        body: JSON.stringify(payload),
+        signal: abortController.signal
+      })
+    } catch (error) {
+      clearTimeout(timeoutHandle)
+      if (attempt < maxAttempts) {
+        await sleepImpl(buildRetryDelayMs(attempt))
+        continue
+      }
+      throw new ChatExecutorError(
+        'AI_CHAT_NETWORK_ERROR',
+        createFetchFailureMessage(requestUrl, error, { attempts: attempt, maxAttempts })
+      )
+    }
+    clearTimeout(timeoutHandle)
+
+    let body: Record<string, unknown>
+    try {
+      body = await response.json()
+    } catch (error) {
+      const detail = describeNetworkFailure(error)
+      throw new ChatExecutorError(
+        'AI_CHAT_RESPONSE_INVALID',
+        `提供方响应解析失败：${requestUrl}${detail ? `。底层错误：${detail}` : ''}`,
+        response.status
+      )
+    }
+
+    if (!response.ok) {
+      const message = extractProviderErrorMessage(body, response.status)
+      if (isRetryableStatus(response.status) && attempt < maxAttempts) {
+        await sleepImpl(buildRetryDelayMs(attempt))
+        continue
+      }
+      const retrySuffix =
+        isRetryableStatus(response.status) && maxAttempts > 1
+          ? ` 已重试 ${attempt} / ${maxAttempts} 次。`
+          : ''
+      throw new ChatExecutorError(
+        'AI_CHAT_REQUEST_FAILED',
+        `${message}${retrySuffix}`,
+        response.status
+      )
+    }
+
+    return {
+      mode: 'direct',
+      capability: 'chat',
+      route: input.route,
+      outputText: extractAssistantText(input.route, body),
+      response: body
+    }
   }
 
-  let body: Record<string, unknown>
-  try {
-    body = await response.json()
-  } catch (error) {
-    const detail = describeNetworkFailure(error)
-    throw new ChatExecutorError(
-      'AI_CHAT_RESPONSE_INVALID',
-      `提供方响应解析失败：${requestUrl}${detail ? `。底层错误：${detail}` : ''}`,
-      response.status
-    )
-  }
-
-  if (!response.ok) {
-    const message =
-      normalizeText((body.error as Record<string, unknown> | undefined)?.message) ||
-      normalizeText(body.message) ||
-      `Provider returned HTTP ${response.status}.`
-    throw new ChatExecutorError('AI_CHAT_REQUEST_FAILED', message, response.status)
-  }
-
-  return {
-    mode: 'direct',
-    capability: 'chat',
-    route: input.route,
-    outputText: extractAssistantText(input.route, body),
-    response: body
-  }
+  throw new ChatExecutorError('AI_CHAT_REQUEST_FAILED', 'AI 提供方请求失败。')
 }

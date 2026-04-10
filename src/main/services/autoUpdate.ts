@@ -33,6 +33,7 @@ const UPDATE_STATUS_CHANNEL = 'app:update.status'
 const UPDATE_GET_STATE_CHANNEL = 'app:update.getState'
 const UPDATE_CHECK_CHANNEL = 'app:update.check'
 const UPDATE_INSTALL_CHANNEL = 'app:update.install'
+const SUPPORTED_AUTO_UPDATE_PLATFORMS: NodeJS.Platform[] = ['win32', 'darwin']
 
 let initialized = false
 let checkPromise: Promise<void> | null = null
@@ -76,6 +77,13 @@ function errorMessage(error: unknown): string {
   return String(error ?? 'unknown error')
 }
 
+export function isAutoUpdateSupportedPlatform(
+  platform: NodeJS.Platform = process.platform,
+  packaged: boolean = app.isPackaged
+): boolean {
+  return packaged && SUPPORTED_AUTO_UPDATE_PLATFORMS.includes(platform)
+}
+
 async function maybePromptInstall(updateInfo: UpdateInfo): Promise<void> {
   if (installPromptActive) return
   installPromptActive = true
@@ -85,7 +93,7 @@ async function maybePromptInstall(updateInfo: UpdateInfo): Promise<void> {
       title: '发现新版本',
       message: `新版本 ${updateInfo.version} 已下载完成。`,
       detail: '是否立即重启并安装更新？',
-      buttons: ['立即安装', '稍后'],
+      buttons: ['立即重启更新', '稍后'],
       defaultId: 0,
       cancelId: 1
     })
@@ -149,7 +157,7 @@ function bindUpdaterEvents(): void {
     patchState({
       phase: 'downloaded',
       latestVersion: info.version ?? updateState.latestVersion,
-      message: `更新已下载完成（${info.version ?? 'unknown'}）。`,
+      message: `更新已下载完成（${info.version ?? 'unknown'}），可立即重启更新，或稍后在退出应用时自动安装。`,
       downloadedAt: Date.now(),
       percent: 100
     })
@@ -245,9 +253,12 @@ function scheduleStartupCheck(): void {
   }, 12_000)
 }
 
-function resolveDisabledMessage(): string {
-  if (process.platform !== 'win32') return '自动更新目前仅在 Windows 启用。'
-  if (!app.isPackaged) return '开发模式已禁用自动更新。'
+function resolveDisabledMessage(
+  platform: NodeJS.Platform = process.platform,
+  packaged: boolean = app.isPackaged
+): string {
+  if (!SUPPORTED_AUTO_UPDATE_PLATFORMS.includes(platform)) return '自动更新当前仅支持 Windows 与 macOS。'
+  if (!packaged) return '开发模式已禁用自动更新（仅打包版启用）。'
   return '自动更新已禁用。'
 }
 
@@ -256,7 +267,7 @@ export function initAutoUpdate(): void {
   initialized = true
   registerUpdaterIpc()
 
-  if (process.platform !== 'win32' || !app.isPackaged) {
+  if (!isAutoUpdateSupportedPlatform()) {
     patchState({
       enabled: false,
       phase: 'disabled',
@@ -270,7 +281,7 @@ export function initAutoUpdate(): void {
   patchState({
     enabled: true,
     phase: 'idle',
-    message: '自动更新已就绪。',
+    message: '自动更新已就绪（启动后将自动检查，下载完成后可立即重启或在退出时自动安装）。',
     latestVersion: null,
     checkedAt: null,
     downloadedAt: null,

@@ -22,9 +22,39 @@ function exists(filePath) {
   }
 }
 
+function realpathSafe(filePath) {
+  try {
+    return fs.realpathSync(filePath)
+  } catch {
+    return filePath
+  }
+}
+
 function copyDir(sourceDir, targetDir) {
   fs.mkdirSync(path.dirname(targetDir), { recursive: true })
-  fs.cpSync(sourceDir, targetDir, { recursive: true, force: true, dereference: true })
+  fs.cpSync(realpathSafe(sourceDir), targetDir, {
+    recursive: true,
+    force: true,
+    dereference: true
+  })
+}
+
+function removeNestedBinDirs(rootDir) {
+  const stack = [rootDir]
+  while (stack.length > 0) {
+    const currentDir = stack.pop()
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === '.bin') {
+          fs.rmSync(entryPath, { recursive: true, force: true })
+          continue
+        }
+        stack.push(entryPath)
+      }
+    }
+  }
 }
 
 function findPackageRoot(resolvedPath, packageName) {
@@ -61,13 +91,13 @@ function resolvePackageDir({ packageName, fromDir, fallbackNodeModulesRoot }) {
       const packageRoot = candidate.endsWith('/package.json')
         ? path.dirname(resolved)
         : findPackageRoot(resolved, packageName)
-      if (packageRoot) return packageRoot
+      if (packageRoot) return realpathSafe(packageRoot)
     } catch {}
   }
 
   const fallbackDir = packageDirFromName(fallbackNodeModulesRoot, packageName)
   if (exists(path.join(fallbackDir, 'package.json'))) {
-    return fallbackDir
+    return realpathSafe(fallbackDir)
   }
   return null
 }
@@ -142,6 +172,7 @@ async function afterPack(context) {
   for (const { packageName, sourceDir } of closure) {
     const targetDir = packageDirFromName(externalNodeModulesRoot, packageName)
     copyDir(sourceDir, targetDir)
+    removeNestedBinDirs(targetDir)
   }
 
   console.log('[afterPack:runtime-deps] copied runtime closure to external resources node_modules')
@@ -155,7 +186,9 @@ module.exports = {
   packageDirFromName,
   readJson,
   exists,
+  realpathSafe,
   copyDir,
+  removeNestedBinDirs,
   findPackageRoot,
   resolvePackageDir,
   readRuntimeEntryPackages,

@@ -16,6 +16,26 @@ function assertExists(filePath, label) {
   }
 }
 
+function assertNoExternalSymlink(rootDir) {
+  const stack = [rootDir]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    const entries = fs.readdirSync(current, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(fullPath)
+        continue
+      }
+      if (!entry.isSymbolicLink()) continue
+      const target = fs.readlinkSync(fullPath)
+      if (path.isAbsolute(target)) {
+        fail(`Found absolute symlink in copied runtime deps: ${fullPath} -> ${target}`)
+      }
+    }
+  }
+}
+
 async function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'super-cms-afterpack-'))
   const appOutDir = path.join(tempRoot, 'release', 'mac-arm64')
@@ -45,6 +65,8 @@ async function main() {
   for (const [relativePath, label] of requiredPaths) {
     assertExists(path.join(externalNodeModulesDir, relativePath), label)
   }
+
+  assertNoExternalSymlink(externalNodeModulesDir)
 
   console.log('[test-after-pack-runtime-deps] PASS: afterPack copied required runtime packages')
 }
