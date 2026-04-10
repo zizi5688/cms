@@ -16,6 +16,17 @@ export type AiCapabilityRouteOption = {
   label: string
 }
 
+export type AiProviderRouteCandidate = {
+  providerId: string
+  providerName: string
+  modelId: string
+  modelName: string
+  endpointPath: string
+  baseUrl: string
+  apiKey: string
+  protocol: AiModelProfile['protocol']
+}
+
 export function normalizeAiProviderValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -85,6 +96,45 @@ function getCapabilityProfile(
   }
 }
 
+function resolveEnabledCapabilityModel(
+  providerProfile: AiProviderProfile | null,
+  capability: AiCapability
+): AiModelProfile | null {
+  const capabilityProfile = getCapabilityProfile(providerProfile, capability)
+  if (!capabilityProfile.enabled) return null
+  const enabledModels = capabilityProfile.models.filter((model) => model.enabled)
+  if (enabledModels.length <= 0) return null
+  if (capabilityProfile.defaultModelId) {
+    const defaultModel =
+      enabledModels.find((model) => model.id === capabilityProfile.defaultModelId) ?? null
+    if (defaultModel) return defaultModel
+  }
+  return enabledModels[0] ?? null
+}
+
+function buildCapabilityRouteCandidate(
+  providerProfile: AiProviderProfile | null,
+  capability: AiCapability
+): AiProviderRouteCandidate | null {
+  if (!providerProfile || isAiProviderDeleted(providerProfile) || !providerProfile.enabled) return null
+  const apiKey = normalizeAiProviderValue(providerProfile.apiKey)
+  if (!apiKey) return null
+  const modelProfile = resolveEnabledCapabilityModel(providerProfile, capability)
+  if (!modelProfile) return null
+  const endpointPath = normalizeAiEndpointPath(modelProfile.endpointPath)
+  if (!endpointPath) return null
+  return {
+    providerId: providerProfile.id,
+    providerName: providerProfile.providerName,
+    modelId: modelProfile.id,
+    modelName: modelProfile.modelName,
+    endpointPath,
+    baseUrl: providerProfile.baseUrl,
+    apiKey,
+    protocol: modelProfile.protocol
+  }
+}
+
 export function buildAiCapabilityRouteOptions(
   profiles: AiProviderProfile[],
   capability: AiCapability
@@ -106,6 +156,35 @@ export function buildAiCapabilityRouteOptions(
         }))
     })
     .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
+}
+
+export function resolveOrderedChatProviderCandidates(
+  profiles: AiProviderProfile[],
+  options?: {
+    chatProviderId?: string | null
+  }
+): AiProviderRouteCandidate[] {
+  const candidates: AiProviderRouteCandidate[] = []
+  const seenProviderIds = new Set<string>()
+  const pushCandidate = (candidate: AiProviderRouteCandidate | null): void => {
+    if (!candidate || seenProviderIds.has(candidate.providerId)) return
+    seenProviderIds.add(candidate.providerId)
+    candidates.push(candidate)
+  }
+
+  pushCandidate(
+    buildCapabilityRouteCandidate(
+      findAiProviderProfileById(profiles, normalizeAiProviderValue(options?.chatProviderId)),
+      'chat'
+    )
+  )
+
+  for (const profile of profiles) {
+    pushCandidate(buildCapabilityRouteCandidate(profile, 'chat'))
+    if (candidates.length >= 2) break
+  }
+
+  return candidates.slice(0, 2)
 }
 
 export function findAiModelProfile(

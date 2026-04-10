@@ -118,3 +118,124 @@ test('video note orchestration preserves CSV when video rendering fails', () => 
   assert.equal(result.renderError, 'ffmpeg failed')
   assert.equal(result.csvText, '标题,正文\n视频笔记 A,"正文 A"')
 })
+
+test('video note orchestration becomes preview-ready after copy fallback succeeds', () => {
+  const started = applyVideoNoteGenerationUpdate(createInitialVideoNoteGenerationState(), {
+    type: 'start'
+  })
+  const primaryAttempt = applyVideoNoteGenerationUpdate(started, {
+    type: 'copy-attempt-start',
+    providerName: 'openai'
+  })
+  const fallbackAttempt = applyVideoNoteGenerationUpdate(primaryAttempt, {
+    type: 'copy-fallback-start',
+    failedProviderName: 'openai',
+    failedMessage: 'primary timeout',
+    providerName: 'gemini'
+  })
+  const renderSucceeded = applyVideoNoteGenerationUpdate(fallbackAttempt, {
+    type: 'render-success',
+    assets: [
+      {
+        videoPath: '/tmp/video-a.mp4'
+      }
+    ]
+  })
+  const result = applyVideoNoteGenerationUpdate(renderSucceeded, {
+    type: 'copy-success',
+    csvText: '标题,正文\n视频笔记 A,"正文 A"',
+    rawCopyText: '```csv\n标题,正文\n视频笔记 A,"正文 A"\n```'
+  })
+
+  assert.equal(result.copyStatus, 'success')
+  assert.equal(result.renderStatus, 'success')
+  assert.equal(result.mergeStatus, 'ready-preview')
+  assert.equal(result.isReadyForPreview, true)
+  assert.equal(result.copyAttemptProviderName, 'gemini')
+  assert.equal(result.copyFallbackProviderName, 'gemini')
+  assert.equal(result.copyAttemptCount, 2)
+  assert.equal(result.rawCopyText, '```csv\n标题,正文\n视频笔记 A,"正文 A"\n```')
+  assert.deepEqual(result.copyFailureHistory, [
+    {
+      providerName: 'openai',
+      message: 'primary timeout'
+    }
+  ])
+})
+
+test('video note orchestration preserves preview assets and enables copy-only retry after both copy attempts fail', () => {
+  const started = applyVideoNoteGenerationUpdate(createInitialVideoNoteGenerationState(), {
+    type: 'start'
+  })
+  const primaryAttempt = applyVideoNoteGenerationUpdate(started, {
+    type: 'copy-attempt-start',
+    providerName: 'openai'
+  })
+  const fallbackAttempt = applyVideoNoteGenerationUpdate(primaryAttempt, {
+    type: 'copy-fallback-start',
+    failedProviderName: 'openai',
+    failedMessage: 'primary timeout',
+    providerName: 'gemini'
+  })
+  const renderSucceeded = applyVideoNoteGenerationUpdate(fallbackAttempt, {
+    type: 'render-success',
+    assets: [
+      {
+        videoPath: '/tmp/video-a.mp4',
+        previewPath: '/tmp/video-a-preview.mp4'
+      }
+    ]
+  })
+  const result = applyVideoNoteGenerationUpdate(renderSucceeded, {
+    type: 'copy-error',
+    providerName: 'gemini',
+    message: 'fallback timeout'
+  })
+
+  assert.equal(result.copyStatus, 'error')
+  assert.equal(result.renderStatus, 'success')
+  assert.equal(result.mergeStatus, 'partial-failed')
+  assert.equal(result.canRetryCopyOnly, true)
+  assert.equal(result.copyAttemptProviderName, 'gemini')
+  assert.equal(result.copyFallbackProviderName, 'gemini')
+  assert.equal(result.copyAttemptCount, 2)
+  assert.equal(result.copyError, 'fallback timeout')
+  assert.deepEqual(result.previewAssets, [
+    {
+      videoPath: '/tmp/video-a.mp4',
+      previewPath: '/tmp/video-a-preview.mp4'
+    }
+  ])
+})
+
+test('video note orchestration records copy failure history in attempt order', () => {
+  const started = applyVideoNoteGenerationUpdate(createInitialVideoNoteGenerationState(), {
+    type: 'start'
+  })
+  const primaryAttempt = applyVideoNoteGenerationUpdate(started, {
+    type: 'copy-attempt-start',
+    providerName: 'openai'
+  })
+  const fallbackAttempt = applyVideoNoteGenerationUpdate(primaryAttempt, {
+    type: 'copy-fallback-start',
+    failedProviderName: 'openai',
+    failedMessage: 'primary timeout',
+    providerName: 'gemini'
+  })
+  const result = applyVideoNoteGenerationUpdate(fallbackAttempt, {
+    type: 'copy-error',
+    providerName: 'gemini',
+    message: 'fallback overloaded'
+  })
+
+  assert.deepEqual(result.copyFailureHistory, [
+    {
+      providerName: 'openai',
+      message: 'primary timeout'
+    },
+    {
+      providerName: 'gemini',
+      message: 'fallback overloaded'
+    }
+  ])
+})

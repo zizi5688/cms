@@ -182,3 +182,42 @@ test('dispatchAiTask uses an async route resolver hook when provided', async () 
   assert.deepEqual(calls, [['chat', 'provider-local', { prompt: 'hi' }]])
   assert.deepEqual(result, { ok: true, providerId: 'provider-local' })
 })
+
+test('dispatchAiTask honors an explicit chat route override from request context', async () => {
+  const calls = []
+
+  const result = await dispatchAiTask(
+    STATE,
+    {
+      capability: 'chat',
+      input: { prompt: 'hi' },
+      context: {
+        routeOverride: {
+          providerId: 'provider-gemini',
+          providerName: 'gemini',
+          baseUrl: 'https://gemini.example.com',
+          apiKey: 'gemini-key',
+          modelId: 'model-gemini-2.5-flash',
+          modelName: 'gemini-2.5-flash',
+          endpointPath: '/v1beta/models/gemini-2.5-flash:generateContent',
+          protocol: 'google-genai'
+        }
+      }
+    },
+    {
+      chat: async ({ route, request }) => {
+        calls.push(['chat', route.providerId, route.modelName, request.input])
+        return { ok: true, providerId: route.providerId, modelName: route.modelName }
+      },
+      image: async () => ({ ok: true }),
+      video: async () => ({ ok: true })
+    }
+  )
+
+  assert.deepEqual(calls, [['chat', 'provider-gemini', 'gemini-2.5-flash', { prompt: 'hi' }]])
+  assert.deepEqual(result, {
+    ok: true,
+    providerId: 'provider-gemini',
+    modelName: 'gemini-2.5-flash'
+  })
+})

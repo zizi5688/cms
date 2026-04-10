@@ -27,19 +27,28 @@ export function buildVideoNoteEditorViewModel({
 
   let statusText = ''
   if (generationState.mergeStatus === 'waiting-copy') {
-    statusText = '视频已完成，等待文案返回'
+    statusText =
+      generationState.copyAttemptCount > 1
+        ? '主文案失败，已切换备用供应商，等待文案返回'
+        : '视频已完成，等待文案返回'
   } else if (generationState.mergeStatus === 'waiting-video') {
     statusText = '文案已完成，等待视频生成'
   } else if (generationState.mergeStatus === 'partial-failed') {
     statusText =
       generationState.copyStatus === 'error'
-        ? '文案生成失败，可改为手动录入或重试智能生成'
+        ? generationState.canRetryCopyOnly
+          ? '文案生成失败，但视频已保留，可重试文案生成'
+          : '文案生成失败，可改为手动录入或重试智能生成'
         : '视频生成失败，可直接重试视频生成'
   }
 
   return {
     textareaPlaceholder: '输入商品信息和额外说明提示词',
-    generateButtonLabel: isGenerating ? '生成中' : '智能生成',
+    generateButtonLabel: isGenerating
+      ? '生成中'
+      : generationState.canRetryCopyOnly
+        ? '重试文案'
+        : '智能生成',
     entryToggleLabel: '手动录入',
     statusText
   }
