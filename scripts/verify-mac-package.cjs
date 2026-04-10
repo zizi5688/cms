@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const { spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const asar = require('@electron/asar')
@@ -24,6 +25,19 @@ function mustBeNonEmptyFile(filePath, label) {
   const stat = fs.statSync(filePath)
   if (!stat.isFile() || stat.size <= 0) {
     fail(`${label} is empty or invalid: ${filePath}`)
+  }
+}
+
+function runCapture(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: rootDir,
+    encoding: 'utf8'
+  })
+
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout || '',
+    stderr: result.stderr || ''
   }
 }
 
@@ -78,6 +92,15 @@ if (!appPath) {
 
 if (expectedArch === 'arm64' && !appPath.includes('mac-arm64')) {
   fail(`Expected arm64 app bundle, got: ${appPath}`)
+}
+
+const codesignDetails = runCapture('codesign', ['-dv', '--verbose=4', appPath]).stderr
+if (codesignDetails.includes('flags=') && codesignDetails.includes('runtime')) {
+  const entitlementsResult = runCapture('codesign', ['-d', '--entitlements', ':-', appPath])
+  const entitlementsOutput = `${entitlementsResult.stdout}${entitlementsResult.stderr}`
+  if (!entitlementsOutput.includes('com.apple.security.cs.disable-library-validation')) {
+    fail('Hardened runtime build is missing com.apple.security.cs.disable-library-validation entitlement')
+  }
 }
 
 const resourcesDir = path.join(appPath, 'Contents', 'Resources')
