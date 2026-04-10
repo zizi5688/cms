@@ -51,9 +51,10 @@
     "createDesktopShortcut": "always"
   },
   "mac": {
-    "target": ["dmg"],
+    "target": ["dmg", "zip"],
+    "artifactName": "${name}-${version}-${arch}-mac.${ext}",
     "icon": "build/icon.icns",
-    "identity": null,
+    "identity": "-",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlementsInherit": "build/entitlements.mac.plist",

@@ -28,13 +28,48 @@ function mustBeNonEmptyFile(filePath, label) {
 }
 
 const releaseDirArg = process.argv[2] || 'release'
-const expectedArch = (process.argv[3] || 'arm64').toLowerCase()
+const defaultArch = process.arch === 'x64' || process.arch === 'arm64' ? process.arch : 'arm64'
+const expectedArch = (process.argv[3] || defaultArch).toLowerCase()
 const rootDir = process.cwd()
 const releaseDir = path.resolve(rootDir, releaseDirArg)
+const packageJsonPath = path.join(rootDir, 'package.json')
 const appCandidates = [
   path.join(releaseDir, 'mac-arm64', 'Super CMS.app'),
   path.join(releaseDir, 'mac', 'Super CMS.app')
 ]
+
+mustExist(packageJsonPath, 'package.json')
+mustExist(releaseDir, 'release directory')
+
+const version = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version
+const latestMacYmlPath = path.join(releaseDir, 'latest-mac.yml')
+mustBeNonEmptyFile(latestMacYmlPath, 'latest-mac.yml')
+
+const latestMacYml = fs.readFileSync(latestMacYmlPath, 'utf8')
+if (!latestMacYml.includes(`version: ${version}`)) {
+  fail(`latest-mac.yml version mismatch. Expected ${version}`)
+}
+
+const macPathLine = latestMacYml
+  .split(/\r?\n/)
+  .find((line) => line.trimStart().startsWith('path: '))
+
+if (!macPathLine) {
+  fail('Cannot find "path:" entry in latest-mac.yml')
+}
+
+const zipName = macPathLine.replace(/^.*path:\s*/, '').trim()
+const zipPath = path.join(releaseDir, zipName)
+mustBeNonEmptyFile(zipPath, 'mac auto-update zip artifact')
+
+const dmgCandidates = fs
+  .readdirSync(releaseDir, { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.dmg'))
+  .map((entry) => path.join(releaseDir, entry.name))
+
+if (dmgCandidates.length === 0) {
+  fail(`Missing DMG artifact in ${releaseDir}`)
+}
 
 const appPath = appCandidates.find((candidate) => fs.existsSync(candidate))
 if (!appPath) {
@@ -115,4 +150,4 @@ if (leakedEntry) {
   fail(`Found local-only content in app.asar: ${leakedEntry}`)
 }
 
-info(`PASS: app=${appPath}, arch=${expectedArch}`)
+info(`PASS: app=${appPath}, arch=${expectedArch}, latestMacYml=${latestMacYmlPath}, zip=${zipPath}`)
