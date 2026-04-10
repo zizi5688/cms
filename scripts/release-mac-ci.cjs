@@ -20,8 +20,22 @@ function fail(message) {
   process.exit(1)
 }
 
-if (!process.env.GH_TOKEN) {
-  fail('GH_TOKEN is missing.')
+function ensureGhToken() {
+  const existing = String(process.env.GH_TOKEN || '').trim()
+  if (existing) {
+    return
+  }
+
+  const result = spawnSync('gh', ['auth', 'token'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8'
+  })
+
+  if (result.status !== 0 || !String(result.stdout || '').trim()) {
+    fail(`Cannot resolve GH_TOKEN from gh auth token. ${(result.stderr || result.stdout || '').trim()}`)
+  }
+
+  process.env.GH_TOKEN = String(result.stdout || '').trim()
 }
 
 const rootDir = process.cwd()
@@ -39,6 +53,7 @@ if (expectedTag) {
   }
 }
 
+ensureGhToken()
 run('node scripts/release-mac.cjs')
 
 console.log(`[release-mac-ci] DONE version=${version}`)
