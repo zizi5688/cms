@@ -22,7 +22,8 @@ const execFileAsync = promisify(execFile)
 
 const DEFAULT_CHROME_EXECUTABLE =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const DEFAULT_CMS_DATA_DIR = join(os.homedir(), 'chrome-cms-data')
+const PRODUCTION_CMS_DATA_DIR = join(os.homedir(), 'chrome-cms-data')
+const DEVELOPMENT_CMS_DATA_DIR = join(os.homedir(), 'chrome-cms-data-dev')
 const CMS_ACCOUNTS_FILENAME = 'cms-accounts.json'
 const DEFAULT_GATEWAY_PROFILE_ID = 'cms-gateway-profile'
 type PublishRuntimeStore = {
@@ -96,6 +97,33 @@ function createDefaultCmsAccountsConfig(runtime: ResolvedChromeRuntimeConfig): C
   }
 }
 
+async function ensureCmsAccountsConfigExists(
+  userDataDir?: string
+): Promise<CmsChromeAccountsConfig> {
+  const runtime = resolveRuntimeConfigFromStore()
+  const dataDir = ensureDirectory(
+    userDataDir ? normalizeCmsDataDirValue(userDataDir) : runtime.userDataDir
+  )
+  const configPath = getCmsAccountsConfigPath(dataDir)
+  if (!existsSync(configPath)) {
+    const config = createDefaultCmsAccountsConfig({
+      executablePath: runtime.executablePath,
+      userDataDir: dataDir
+    })
+    await writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    return config
+  }
+
+  const existing = await readCmsAccountsConfig(dataDir)
+  return (
+    existing ?? {
+      profiles: [],
+      chromeExecutable: runtime.executablePath,
+      cmsDataDir: dataDir
+    }
+  )
+}
+
 function normalizeProfileNickname(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -167,6 +195,20 @@ async function readChromeMajorVersion(executablePath: string): Promise<number> {
   return parseChromeMajorVersion(`${stdout}\n${stderr}`.trim())
 }
 
+async function hasRunningChromeProcessForUserDataDir(userDataDir: string): Promise<boolean> {
+  const normalizedUserDataDir = resolve(userDataDir)
+  try {
+    const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='])
+    return stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .some((line) => line.includes('Google Chrome') && line.includes(`--user-data-dir=${normalizedUserDataDir}`))
+  } catch {
+    return false
+  }
+}
+
 async function assertPipeModeSupported(executablePath: string, userDataDir: string): Promise<void> {
   const major = await readChromeMajorVersion(executablePath)
   const defaultUserDataDir = join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome')
@@ -184,6 +226,27 @@ function normalizePathValue(value: unknown, fallback: string): string {
   return raw
 }
 
+function isDevelopmentRuntime(): boolean {
+  return (
+    process.env.NODE_ENV === 'development' ||
+    typeof process.env.ELECTRON_RENDERER_URL === 'string' ||
+    process.defaultApp === true
+  )
+}
+
+function getDefaultCmsDataDir(): string {
+  return isDevelopmentRuntime() ? DEVELOPMENT_CMS_DATA_DIR : PRODUCTION_CMS_DATA_DIR
+}
+
+function normalizeCmsDataDirValue(value: unknown): string {
+  const defaultDir = getDefaultCmsDataDir()
+  const resolved = normalizePathValue(value, defaultDir)
+  if (isDevelopmentRuntime() && resolve(resolved) === resolve(PRODUCTION_CMS_DATA_DIR)) {
+    return DEVELOPMENT_CMS_DATA_DIR
+  }
+  return resolved
+}
+
 function ensureDirectory(pathValue: string): string {
   const resolved = resolve(pathValue)
   mkdirSync(resolved, { recursive: true })
@@ -193,14 +256,12 @@ function ensureDirectory(pathValue: string): string {
 function resolveRuntimeConfigFromStore(): ResolvedChromeRuntimeConfig {
   const store = new StoreCtor<PublishRuntimeStore>()
   const executablePath = normalizePathValue(store.get('chromeExecutablePath'), DEFAULT_CHROME_EXECUTABLE)
-  const userDataDir = ensureDirectory(
-    normalizePathValue(store.get('cmsChromeDataDir'), DEFAULT_CMS_DATA_DIR)
-  )
+  const userDataDir = ensureDirectory(normalizeCmsDataDirValue(store.get('cmsChromeDataDir')))
   return { executablePath, userDataDir }
 }
 
 export function getDefaultCmsChromeDataDir(): string {
-  return DEFAULT_CMS_DATA_DIR
+  return getDefaultCmsDataDir()
 }
 
 export function getDefaultGatewayProfileId(): string {
@@ -223,7 +284,7 @@ export async function readCmsAccountsConfig(
       .map((profile) => normalizeCmsChromeProfileRecord(profile))
       .filter((profile) => Boolean(profile.id) && Boolean(profile.profileDir)),
     chromeExecutable: normalizePathValue(parsed.chromeExecutable, runtime.executablePath),
-    cmsDataDir: ensureDirectory(normalizePathValue(parsed.cmsDataDir, dataDir))
+    cmsDataDir: ensureDirectory(normalizeCmsDataDirValue(parsed.cmsDataDir ?? dataDir))
   }
 }
 
@@ -238,8 +299,8 @@ export async function writeCmsAccountsConfig(
 }
 
 export async function listCmsChromeProfiles(): Promise<CmsChromeProfileRecord[]> {
-  const config = await readCmsAccountsConfig()
-  return config?.profiles ?? []
+  const config = await ensureCmsAccountsConfigExists()
+  return config.profiles
 }
 
 export async function createCmsChromeProfile(input?: {
@@ -248,7 +309,7 @@ export async function createCmsChromeProfile(input?: {
 }): Promise<CmsChromeProfileRecord> {
   const runtime = resolveRuntimeConfigFromStore()
   const dataDir = runtime.userDataDir
-  const existing = (await readCmsAccountsConfig(dataDir)) ?? createDefaultCmsAccountsConfig(runtime)
+  const existing = await ensureCmsAccountsConfigExists(dataDir)
   const usedIds = new Set(existing.profiles.map((profile) => profile.id))
   let nextIndex = 1
   while (usedIds.has(`cms-profile-${nextIndex}`)) {
@@ -282,10 +343,7 @@ export async function renameCmsChromeProfile(
 ): Promise<CmsChromeProfileRecord> {
   const runtime = resolveRuntimeConfigFromStore()
   const dataDir = runtime.userDataDir
-  const existing = await readCmsAccountsConfig(dataDir)
-  if (!existing) {
-    throw new Error('未找到 cms-accounts.json，请先创建 CMS Chrome Profile。')
-  }
+  const existing = await ensureCmsAccountsConfigExists(dataDir)
 
   const normalizedProfileId = String(profileId ?? '').trim()
   if (!normalizedProfileId) {
@@ -324,7 +382,7 @@ export async function ensureCmsGatewayProfileRecord(): Promise<{
 }> {
   const runtime = resolveRuntimeConfigFromStore()
   const dataDir = runtime.userDataDir
-  const existing = (await readCmsAccountsConfig(dataDir)) ?? createDefaultCmsAccountsConfig(runtime)
+  const existing = await ensureCmsAccountsConfigExists(dataDir)
   const nextProfiles = [...existing.profiles]
   const index = nextProfiles.findIndex(
     (item) => item.id === DEFAULT_GATEWAY_PROFILE_ID || item.profileDir === DEFAULT_GATEWAY_PROFILE_ID
@@ -370,10 +428,7 @@ export async function resolveCmsChromeProfile(profileId: string): Promise<{
   runtime: ResolvedChromeRuntimeConfig
 }> {
   const runtime = resolveRuntimeConfigFromStore()
-  const config = await readCmsAccountsConfig(runtime.userDataDir)
-  if (!config) {
-    throw new Error('未找到 cms-accounts.json，请先运行 setup-cms-profiles.ts 初始化 CMS 专用 Chrome 目录。')
-  }
+  const config = await ensureCmsAccountsConfigExists(runtime.userDataDir)
 
   const normalizedProfileId = String(profileId ?? '').trim()
   const profile =
@@ -399,6 +454,9 @@ async function prepareUserDataDirForLaunch(
   const lockPath = join(userDataDir, 'SingletonLock')
   const status = inspectSingletonLock(lockPath)
   if (status.status === 'active') {
+    throw new Error(activeLockMessage)
+  }
+  if (status.status === 'missing' && (await hasRunningChromeProcessForUserDataDir(userDataDir))) {
     throw new Error(activeLockMessage)
   }
   if (status.status === 'stale') {
@@ -485,7 +543,6 @@ export async function launchChrome(
       `--window-size=${viewport.width},${viewport.height}`,
       '--disable-blink-features=AutomationControlled'
     ],
-    ignoreDefaultArgs: ['--enable-automation'],
     pipe: true,
     headless: false,
     defaultViewport: null,

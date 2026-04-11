@@ -193,10 +193,15 @@ test('assessPipeModeSupport allows older Chrome versions', () => {
   assert.equal(result.supported, true)
 })
 
-test('getCmsChromeDataDir resolves to standalone CMS directory', () => {
-  assert.equal(getCmsChromeDataDir('/Users/demo'), '/Users/demo/chrome-cms-data')
+test('getCmsChromeDataDir resolves to standalone CMS directory by environment', () => {
+  assert.equal(getCmsChromeDataDir('/Users/demo', 'development'), '/Users/demo/chrome-cms-data-dev')
+  assert.equal(getCmsChromeDataDir('/Users/demo', 'production'), '/Users/demo/chrome-cms-data')
   assert.equal(
-    getCmsAccountsConfigPath('/Users/demo'),
+    getCmsAccountsConfigPath('/Users/demo', 'development'),
+    '/Users/demo/chrome-cms-data-dev/cms-accounts.json'
+  )
+  assert.equal(
+    getCmsAccountsConfigPath('/Users/demo', 'production'),
     '/Users/demo/chrome-cms-data/cms-accounts.json'
   )
 })
@@ -217,7 +222,7 @@ test('buildCmsAccountsConfig creates requested number of profiles', () => {
     lastLoginCheck: null
   })
   assert.equal(config.chromeExecutable, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-  assert.equal(config.cmsDataDir, '/Users/demo/chrome-cms-data')
+  assert.equal(config.cmsDataDir, '/Users/demo/chrome-cms-data-dev')
 })
 
 test('buildCmsAccountsConfig preserves existing state and appends missing profiles', () => {

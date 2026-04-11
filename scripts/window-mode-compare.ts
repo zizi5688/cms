@@ -4,6 +4,8 @@ import os from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
+import { getCmsChromeDataDir } from './chrome-profile-utils.ts'
+
 const execFileAsync = promisify(execFile)
 
 type WindowMode = 'offscreen' | 'edge-visible'
@@ -31,7 +33,7 @@ async function main(): Promise<void> {
   const profile = parseRequiredArg(argv, '--profile')
   const outputDir = resolve(
     parseOptionalArg(argv, '--output-dir') ||
-      join(os.homedir(), 'chrome-cms-data', 'reports', `window-mode-compare-${Date.now()}`)
+      join(getCmsChromeDataDir(os.homedir()), 'reports', `window-mode-compare-${Date.now()}`)
   )
   mkdirSync(outputDir, { recursive: true })
 

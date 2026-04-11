@@ -4,6 +4,8 @@ import os from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
+import { getCmsChromeDataDir } from './chrome-profile-utils.ts'
+
 const execFileAsync = promisify(execFile)
 
 type WindowMode = 'visible' | 'minimized' | 'offscreen' | 'edge-visible'
@@ -24,7 +26,7 @@ async function main(): Promise<void> {
   const windowMode = (parseOptionalArg(argv, '--window-mode') ?? 'offscreen') as WindowMode
   const outputDir = resolve(
     parseOptionalArg(argv, '--output-dir') ||
-      join(os.homedir(), 'chrome-cms-data', 'reports', `publish-dryrun-batch-${Date.now()}`)
+      join(getCmsChromeDataDir(os.homedir()), 'reports', `publish-dryrun-batch-${Date.now()}`)
   )
 
   if (!Number.isFinite(count) || count <= 0) {
@@ -69,7 +71,7 @@ async function runBatchItem(
   outputDir: string
 ): Promise<BatchRunSummary> {
   const reportPath = join(outputDir, `run-${index}.json`)
-  const lockPath = join(os.homedir(), 'chrome-cms-data', 'SingletonLock')
+  const lockPath = join(getCmsChromeDataDir(os.homedir()), 'SingletonLock')
 
   const startedAt = Date.now()
   try {

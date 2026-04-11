@@ -156,6 +156,9 @@ function AutoPublishView(): React.JSX.Element {
   const [publishSession, setPublishSession] = useState<CmsPublishSessionSnapshot | null>(null)
   const [publishNotice, setPublishNotice] = useState('')
   const [isPublishSessionHidden, setIsPublishSessionHidden] = useState(false)
+  const [profileToastMessage, setProfileToastMessage] = useState('')
+  const [createProfileModalAccountId, setCreateProfileModalAccountId] = useState('')
+  const [createProfileNickname, setCreateProfileNickname] = useState('')
 
   const isLoadingAccountsRef = useRef(false)
   const isLoadingTasksRef = useRef(false)
@@ -186,6 +189,12 @@ function AutoPublishView(): React.JSX.Element {
     if (isSmartScheduleOpen) return
     setSmartScheduleIntervalMins(defaultInterval)
   }, [defaultInterval, isSmartScheduleOpen])
+
+  useEffect(() => {
+    if (!profileToastMessage) return
+    const timer = window.setTimeout(() => setProfileToastMessage(''), 2200)
+    return () => window.clearTimeout(timer)
+  }, [profileToastMessage])
 
   const activeAccount = useMemo(
     () => accounts.find((a) => a.id === activeAccountId) ?? null,
@@ -237,13 +246,15 @@ function AutoPublishView(): React.JSX.Element {
     }
   }, [addLog, preferredAccountId])
 
-  const loadCmsProfiles = useCallback(async (): Promise<void> => {
+  const loadCmsProfiles = useCallback(async (): Promise<CmsChromeProfileRecord[]> => {
     setIsLoadingCmsProfiles(true)
     try {
       const list = await window.api.cms.account.listCmsProfiles()
       setCmsProfiles(list)
+      return list
     } catch (error) {
       addLog(`[媒体矩阵] 读取 CMS Chrome Profiles 失败：${String(error)}`)
+      return []
     } finally {
       setIsLoadingCmsProfiles(false)
     }
@@ -539,20 +550,35 @@ function AutoPublishView(): React.JSX.Element {
     }
   }
 
+  const handleRefreshCmsProfiles = async (): Promise<void> => {
+    const list = await loadCmsProfiles()
+    setProfileToastMessage(`Profile 列表已刷新（当前 ${list.length} 个）`)
+  }
+
+  const closeCreateProfileModal = (): void => {
+    if (isCreatingCmsProfile) return
+    setCreateProfileModalAccountId('')
+    setCreateProfileNickname('')
+  }
+
   const handleCreateCmsProfile = async (account: CmsAccountRecord): Promise<void> => {
     const normalizedAccountId = account.id.trim()
     if (!normalizedAccountId || isCreatingCmsProfile) return
-    const nicknameInput = window.prompt(
-      '输入新 Profile 的昵称（可留空，后续也可以再改名）',
-      ''
-    )
-    if (nicknameInput === null) return
+    setCreateProfileModalAccountId(normalizedAccountId)
+    setCreateProfileNickname('')
+  }
+
+  const submitCreateCmsProfile = async (): Promise<void> => {
+    const normalizedAccountId = createProfileModalAccountId.trim()
+    if (!normalizedAccountId || isCreatingCmsProfile) return
 
     setIsCreatingCmsProfile(true)
     try {
-      const created = await window.api.cms.account.createCmsProfile(nicknameInput.trim())
+      const created = await window.api.cms.account.createCmsProfile(createProfileNickname.trim())
       await window.api.cms.account.bindCmsProfile(normalizedAccountId, created.id)
       await Promise.all([loadAccounts(), loadCmsProfiles()])
+      closeCreateProfileModal()
+      setProfileToastMessage(`已新建 Profile：${created.nickname || created.id}`)
       addLog(`[媒体矩阵] 已新建并绑定 CMS Profile：${created.nickname || created.id}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1140,7 +1166,7 @@ function AutoPublishView(): React.JSX.Element {
                           <Button
                             type="button"
                             variant="outline"
-                            onClick={() => void loadCmsProfiles()}
+                            onClick={() => void handleRefreshCmsProfiles()}
                             disabled={isLoadingCmsProfiles}
                           >
                             {isLoadingCmsProfiles ? '刷新中...' : '刷新 Profiles'}
@@ -1711,6 +1737,63 @@ function AutoPublishView(): React.JSX.Element {
                     取消
                   </Button>
                   <Button onClick={() => void handleConfirmSmartSchedule()}>确认</Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      ) : null}
+
+      {profileToastMessage ? (
+        <div className="pointer-events-none fixed left-1/2 top-8 z-50 -translate-x-1/2 rounded-md border border-sky-400/60 bg-sky-500/12 px-3 py-1.5 text-xs text-sky-100 shadow-lg">
+          {profileToastMessage}
+        </div>
+      ) : null}
+
+      {createProfileModalAccountId ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={closeCreateProfileModal}
+          role="presentation"
+        >
+          <div className="w-full max-w-md" onClick={(event) => event.stopPropagation()} role="presentation">
+            <Card className="border-zinc-800 bg-zinc-950">
+              <CardHeader>
+                <CardTitle>新建 CMS Chrome Profile</CardTitle>
+                <CardDescription>输入一个昵称，留空也可以，后续还能改名。</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  <div className="text-sm text-zinc-200">Profile 昵称</div>
+                  <input
+                    type="text"
+                    value={createProfileNickname}
+                    onChange={(event) => setCreateProfileNickname(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void submitCreateCmsProfile()
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        closeCreateProfileModal()
+                      }
+                    }}
+                    autoFocus
+                    placeholder="例如：西约帽业-主号"
+                    className="h-10 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+                  />
+                </div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs text-zinc-400">
+                  新建后会自动绑定到当前账号，并使用当前环境对应的 CMS 数据目录。
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={closeCreateProfileModal} disabled={isCreatingCmsProfile}>
+                    取消
+                  </Button>
+                  <Button onClick={() => void submitCreateCmsProfile()} disabled={isCreatingCmsProfile}>
+                    {isCreatingCmsProfile ? '新建中...' : '确认新建'}
+                  </Button>
                 </div>
               </CardContent>
             </Card>

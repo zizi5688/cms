@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-04-11
+
+### Fix (修复)
+- **CMS Profiles**: 区分开发环境 `~/chrome-cms-data-dev` 与生产环境 `~/chrome-cms-data`，避免生产端误读开发阶段创建的 CMS Chrome Profile。
+- **Profile Actions**: 修复生产环境中 `刷新 Profiles` 无反馈、`新建 Profile` 仍使用浏览器原生 prompt 的问题，改为应用内 modal 与明确的刷新提示。
+- **Login Verification**: 修复生产环境验证登录态时的 CDP 启动异常，移除会导致 `Target.setDiscoverTargets` 崩溃的启动参数，并在验证前主动清理同账号残留的 CMS 登录浏览器。
+
+### Chore (维护)
+- **Release Loop**: 更新仓库内 phase release 收尾 skill，要求每次发版前先读取 GitHub 最新 tag，再向用户确认目标版本号。
+
 ## [1.2.0] - 2026-04-11
 
 ### Feat (特性)

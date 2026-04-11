@@ -178,7 +178,7 @@ export interface CmsState {
 const initialConfig: CmsConfig = {
   publishMode: 'cdp',
   chromeExecutablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  cmsChromeDataDir: '~/chrome-cms-data',
+  cmsChromeDataDir: '',
   appId: '',
   appSecret: '',
   baseToken: '',
