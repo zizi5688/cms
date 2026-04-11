@@ -21,10 +21,16 @@ test('mergeLocalGatewayConfig applies partial patch and keeps defaults', () => {
   assert.equal(config.enabled, true)
   assert.equal(config.startAdminUi, false)
   assert.equal(config.startCdpProxy, true)
+  assert.equal(config.gatewayCmsProfileId, '')
 })
 
 test('readLocalGatewayConfigFromStore normalizes persisted values', () => {
-  const values = new Map([['localGateway', { enabled: true, bundlePath: ' /tmp/gateway ' }]])
+  const values = new Map([
+    [
+      'localGateway',
+      { enabled: true, bundlePath: ' /tmp/gateway ', gatewayCmsProfileId: ' cms-gateway-profile ' }
+    ]
+  ])
   const store = {
     get(key) {
       return values.get(key)
@@ -37,5 +43,6 @@ test('readLocalGatewayConfigFromStore normalizes persisted values', () => {
   const config = readLocalGatewayConfigFromStore(store)
   assert.equal(config.enabled, true)
   assert.equal(config.bundlePath, '/tmp/gateway')
+  assert.equal(config.gatewayCmsProfileId, 'cms-gateway-profile')
   assert.deepEqual(values.get('localGateway'), config)
 })

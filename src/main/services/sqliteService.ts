@@ -248,6 +248,22 @@ export class SqliteService {
     `)
   }
 
+  ensureAccountSchema(): void {
+    const db = this.db
+    if (!db) return
+
+    const columns = db.prepare(`PRAGMA table_info(accounts)`).all() as Array<{ name?: unknown }>
+    const hasStatusColumn = columns.some((col) => col?.name === 'status')
+    const hasCmsProfileIdColumn = columns.some((col) => col?.name === 'cmsProfileId')
+
+    if (!hasStatusColumn) {
+      db.exec(`ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'offline'`)
+    }
+    if (!hasCmsProfileIdColumn) {
+      db.exec(`ALTER TABLE accounts ADD COLUMN cmsProfileId TEXT`)
+    }
+  }
+
   async init(workspacePath: string): Promise<{
     migrationResult?: {
       migrated: boolean
@@ -264,6 +280,7 @@ export class SqliteService {
 
     const targetPath = join(resolvedWorkspacePath, 'cms.sqlite')
     if (this.db && this.dbPath === targetPath) {
+      this.ensureAccountSchema()
       this.ensureProductSchema()
       this.ensureQueueColumns()
       this.ensureAiStudioSchema()
@@ -291,7 +308,8 @@ export class SqliteService {
         name TEXT NOT NULL,
         partitionKey TEXT NOT NULL,
         lastLoginTime INTEGER,
-        status TEXT NOT NULL DEFAULT 'offline'
+        status TEXT NOT NULL DEFAULT 'offline',
+        cmsProfileId TEXT
       );
 
       CREATE TABLE IF NOT EXISTS products (
@@ -345,16 +363,9 @@ export class SqliteService {
       END;
     `)
 
-    const accountColumns = db.prepare(`PRAGMA table_info(accounts)`).all() as Array<{
-      name?: unknown
-    }>
-    const hasStatusColumn = accountColumns.some((col) => col?.name === 'status')
-    if (!hasStatusColumn) {
-      db.exec(`ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'offline'`)
-    }
-
     this.db = db
     this.dbPath = targetPath
+    this.ensureAccountSchema()
     this.ensureProductSchema()
     this.ensureQueueColumns()
     this.ensureAiStudioSchema()
@@ -467,8 +478,8 @@ export class SqliteService {
     const products = Array.isArray(record.xhs_products) ? record.xhs_products : []
 
     const insertAccount = db.prepare(
-      `INSERT OR IGNORE INTO accounts (id, name, partitionKey, lastLoginTime)
-       VALUES (@id, @name, @partitionKey, @lastLoginTime)`
+      `INSERT OR IGNORE INTO accounts (id, name, partitionKey, lastLoginTime, status, cmsProfileId)
+       VALUES (@id, @name, @partitionKey, @lastLoginTime, @status, @cmsProfileId)`
     )
     const insertProduct = db.prepare(
       `INSERT OR IGNORE INTO products (id, accountId, name, price, cover, productUrl)
@@ -553,7 +564,9 @@ export class SqliteService {
           id,
           name,
           partitionKey,
-          lastLoginTime: normalizeTimestampOrNull(a.lastLoginTime)
+          lastLoginTime: normalizeTimestampOrNull(a.lastLoginTime),
+          status: normalizeString(a.status) || 'offline',
+          cmsProfileId: normalizeOptionalString(a.cmsProfileId)
         })
         inserted.accounts += Number(result?.changes) || 0
       }

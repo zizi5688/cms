@@ -4,6 +4,7 @@ import {
   type AiProviderProfile,
   type AiRuntimeDefaults
 } from '../../../shared/ai/aiProviderTypes'
+import type { CmsPublishMode } from '../../../shared/cmsChromeProfileTypes'
 import type { LocalGatewayConfig } from '../../../shared/localGatewayTypes'
 import { DEFAULT_ACTIVE_MODULE } from '../components/layout/navigationDefaults'
 
@@ -80,6 +81,9 @@ export type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagona
 export type { AiCapability, AiCapabilityProfile, AiModelProfile, AiProviderProfile } from '../../../shared/ai/aiProviderTypes'
 
 export interface CmsConfig {
+  publishMode: CmsPublishMode
+  chromeExecutablePath: string
+  cmsChromeDataDir: string
   appId: string
   appSecret: string
   baseToken: string
@@ -172,6 +176,9 @@ export interface CmsState {
 }
 
 const initialConfig: CmsConfig = {
+  publishMode: 'electron',
+  chromeExecutablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  cmsChromeDataDir: '~/chrome-cms-data',
   appId: '',
   appSecret: '',
   baseToken: '',
@@ -206,8 +213,9 @@ const initialConfig: CmsConfig = {
     autoStartOnAppLaunch: true,
     startAdminUi: true,
     startCdpProxy: true,
-    allowDedicatedChrome: false,
+    allowDedicatedChrome: true,
     chromeProfileDirectory: '',
+    gatewayCmsProfileId: '',
     prewarmImageOnLaunch: false
   }
 }

@@ -1,5 +1,10 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes'
+import type {
+  CmsChromeLoginVerificationResult,
+  CmsChromeProfileRecord,
+  CmsPublishMode
+} from '../shared/cmsChromeProfileTypes'
 
 declare global {
   type WatermarkBox = { x: number; y: number; width: number; height: number }
@@ -8,7 +13,9 @@ declare global {
     id: string
     name: string
     partitionKey: string
+    status: 'logged_in' | 'expired' | 'offline'
     lastLoginTime: number | null
+    cmsProfileId: string | null
   }
 
   type PublisherResult = { success: boolean; time?: string; error?: string }
@@ -534,6 +541,13 @@ declare global {
         list: () => Promise<CmsAccountRecord[]>
         create: (name: string) => Promise<CmsAccountRecord>
         login: (accountId: string) => Promise<{ windowId: number }>
+        listCmsProfiles: () => Promise<CmsChromeProfileRecord[]>
+        bindCmsProfile: (accountId: string, cmsProfileId: string | null) => Promise<CmsAccountRecord>
+        openCmsProfileLogin: (accountId: string, profileId?: string) => Promise<{ profileId: string }>
+        verifyCmsProfileLogin: (
+          accountId: string,
+          profileId?: string
+        ) => Promise<CmsChromeLoginVerificationResult>
         checkStatus: (accountId: string) => Promise<boolean>
         rename: (accountId: string, name: string) => Promise<CmsAccountRecord>
         delete: (accountId: string) => Promise<{ success: boolean }>
@@ -1393,6 +1407,9 @@ declare global {
     setWorkspacePath: (path: string) => Promise<{ path: string }>
     relaunch: () => Promise<{ success: true }>
     getConfig: () => Promise<{
+      publishMode: CmsPublishMode
+      chromeExecutablePath: string
+      cmsChromeDataDir: string
       aiProvider: string
       aiBaseUrl: string
       aiApiKey: string
@@ -1424,6 +1441,9 @@ declare global {
       localGateway: LocalGatewayConfig
     }>
     saveConfig: (patch: {
+      publishMode?: CmsPublishMode
+      chromeExecutablePath?: string
+      cmsChromeDataDir?: string
       aiProvider?: string
       aiBaseUrl?: string
       aiApiKey?: string
@@ -1457,6 +1477,8 @@ declare global {
     getLocalGatewayState: () => Promise<LocalGatewayState>
     retryStartLocalGateway: () => Promise<LocalGatewayState>
     listLocalGatewayChromeProfiles: () => Promise<LocalGatewayChromeProfile[]>
+    ensureLocalGatewayProfile: () => Promise<LocalGatewayChromeProfile>
+    openLocalGatewayProfileLogin: () => Promise<{ success: true; profileId: string }>
     initializeLocalGateway: (payload?: {
       smokeImage?: boolean
     }) => Promise<LocalGatewayInitializationResult>

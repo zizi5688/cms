@@ -9,8 +9,9 @@ export function createDefaultLocalGatewayConfig(): LocalGatewayConfig {
     autoStartOnAppLaunch: true,
     startAdminUi: true,
     startCdpProxy: true,
-    allowDedicatedChrome: false,
+    allowDedicatedChrome: true,
     chromeProfileDirectory: '',
+    gatewayCmsProfileId: '',
     prewarmImageOnLaunch: false
   }
 }
@@ -37,6 +38,10 @@ export function normalizeLocalGatewayConfig(value: unknown): LocalGatewayConfig 
       typeof record.chromeProfileDirectory === 'string'
         ? record.chromeProfileDirectory.trim()
         : fallback.chromeProfileDirectory,
+    gatewayCmsProfileId:
+      typeof record.gatewayCmsProfileId === 'string'
+        ? record.gatewayCmsProfileId.trim()
+        : fallback.gatewayCmsProfileId,
     prewarmImageOnLaunch: normalizeBool(record.prewarmImageOnLaunch, fallback.prewarmImageOnLaunch)
   }
 }

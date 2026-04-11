@@ -459,12 +459,14 @@ function TaskDetailModal({
   onTaskUpdated
 }: TaskDetailModalProps): React.JSX.Element | null {
   const addLog = useCmsStore((s) => s.addLog)
+  const publishMode = useCmsStore((s) => s.config.publishMode)
   const deleteTasks = useCmsStore((s) => s.deleteTasks)
   const [activeIndex, setActiveIndex] = useState(0)
   const [mainLoaded, setMainLoaded] = useState(false)
   const [thumbLoaded, setThumbLoaded] = useState<Set<number>>(() => new Set())
   const [isDeleting, setIsDeleting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isTestingPublish, setIsTestingPublish] = useState(false)
   const [playableVideoSrc, setPlayableVideoSrc] = useState('')
   const [didFallbackToOriginalVideo, setDidFallbackToOriginalVideo] = useState(false)
   const [resolvedWorkspacePath, setResolvedWorkspacePath] = useState('')
@@ -1029,6 +1031,52 @@ function TaskDetailModal({
     }
   }
 
+  const handleTestPublish = async (): Promise<void> => {
+    if (isTestingPublish) return
+    const currentTask = task
+    if (!currentTask) return
+    if (isDirty) {
+      window.alert('当前任务有未保存修改，请先保存后再执行测试发布。')
+      return
+    }
+    if (currentTask.status === 'published') {
+      window.alert('已发布任务不需要再做测试发布。')
+      return
+    }
+
+    const confirmed = window.confirm(
+      '将执行一次“不会真发”的测试发布：会自动打开发布页并填充内容，但不会点击最终发布按钮。\n确定继续吗？'
+    )
+    if (!confirmed) return
+
+    setIsTestingPublish(true)
+    try {
+      const result = await window.api.cms.publisher.publish(currentTask.accountId, {
+        title: currentTask.title,
+        content: currentTask.content,
+        mediaType: currentTask.mediaType,
+        videoPath: currentTask.videoPath,
+        videoCoverMode: currentTask.videoCoverMode,
+        images: currentTask.images,
+        productId: currentTask.productId,
+        productName: currentTask.productName,
+        linkedProducts: currentTask.linkedProducts,
+        dryRun: true,
+        mode: 'immediate'
+      })
+      if (!result.success) {
+        throw new Error(result.error || '测试发布失败')
+      }
+      addLog('[媒体矩阵] 测试发布执行完成：已走到发布前最后一步，未真正发布。')
+      window.alert('测试发布执行完成：已走到发布前最后一步，未真正发布。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`测试发布失败：${message}`)
+    } finally {
+      setIsTestingPublish(false)
+    }
+  }
+
   if (!isOpen || !task) return null
 
   const isRemix = Boolean(
@@ -1361,6 +1409,21 @@ function TaskDetailModal({
                   />
 
                   <div className="flex items-center justify-end gap-2">
+                    {publishMode === 'cdp' && (task.status === 'pending' || task.status === 'scheduled') ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 text-sm text-amber-100 transition hover:bg-amber-500/20',
+                          (isTestingPublish || isDirty) && 'pointer-events-none opacity-60'
+                        )}
+                        disabled={isTestingPublish || isDirty}
+                        onClick={() => void handleTestPublish()}
+                        title={isDirty ? '请先保存任务修改，再执行测试发布' : '自动走到发布前最后一步，但不会真正发布'}
+                      >
+                        <Save className="h-4 w-4" />
+                        {isTestingPublish ? '测试中…' : '测试发布（不会真发）'}
+                      </button>
+                    ) : null}
                     {isEditable && isDirty ? (
                       <button
                         type="button"
