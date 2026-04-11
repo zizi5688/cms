@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
 import type { Browser, CDPSession, Page } from 'puppeteer'
+import type { CmsPublishSafetyCheck } from '../shared/cmsChromeProfileTypes'
 
 import {
   checkCreatorLogin,
@@ -56,6 +57,21 @@ type SelectorViewportSnapshot = {
     width: number
     height: number
   }
+}
+
+type SafetyEventRecord = {
+  type: string
+  isTrusted: boolean
+  timestamp?: number
+  x?: number
+  y?: number
+}
+
+type SafetyDetectionProbeResult = {
+  isTrusted: boolean
+  webdriver: boolean
+  hasProcess: boolean
+  headless: boolean
 }
 
 export type CdpPublishTaskInput = {
@@ -174,6 +190,236 @@ async function waitForCondition<T>(
     await jitterDelay(intervalMs, intervalMs + 80)
   }
   throw new Error(errorMessage)
+}
+
+async function installSafetyEventLog(page: Page): Promise<void> {
+  await page.evaluateOnNewDocument(() => {
+    const win = window as typeof window & {
+      __cmsSafetyEventLog?: unknown[]
+      __cmsSafetyEventLogInstalled?: boolean
+    }
+
+    const pushEntry = (entry: unknown) => {
+      if (!Array.isArray(win.__cmsSafetyEventLog)) {
+        win.__cmsSafetyEventLog = []
+      }
+      win.__cmsSafetyEventLog.push(entry)
+    }
+
+    if (!win.__cmsSafetyEventLogInstalled) {
+      document.addEventListener(
+        'mousemove',
+        (event) => {
+          pushEntry({
+            type: 'mousemove',
+            isTrusted: event.isTrusted,
+            timestamp: event.timeStamp,
+            x: event.clientX,
+            y: event.clientY
+          })
+        },
+        true
+      )
+      document.addEventListener(
+        'mousedown',
+        (event) => {
+          pushEntry({
+            type: 'mousedown',
+            isTrusted: event.isTrusted,
+            timestamp: event.timeStamp,
+            x: event.clientX,
+            y: event.clientY
+          })
+        },
+        true
+      )
+      document.addEventListener(
+        'click',
+        (event) => {
+          pushEntry({
+            type: 'click',
+            isTrusted: event.isTrusted,
+            timestamp: event.timeStamp,
+            x: event.clientX,
+            y: event.clientY
+          })
+        },
+        true
+      )
+      win.__cmsSafetyEventLogInstalled = true
+    }
+
+    win.__cmsSafetyEventLog = []
+  })
+
+  await page.evaluate(() => {
+    const win = window as typeof window & {
+      __cmsSafetyEventLog?: unknown[]
+      __cmsSafetyEventLogInstalled?: boolean
+    }
+
+    const pushEntry = (entry: unknown) => {
+      if (!Array.isArray(win.__cmsSafetyEventLog)) {
+        win.__cmsSafetyEventLog = []
+      }
+      win.__cmsSafetyEventLog.push(entry)
+    }
+
+    if (!win.__cmsSafetyEventLogInstalled) {
+      document.addEventListener(
+        'mousemove',
+        (event) => {
+          pushEntry({
+            type: 'mousemove',
+            isTrusted: event.isTrusted,
+            timestamp: event.timeStamp,
+            x: event.clientX,
+            y: event.clientY
+          })
+        },
+        true
+      )
+      document.addEventListener(
+        'mousedown',
+        (event) => {
+          pushEntry({
+            type: 'mousedown',
+            isTrusted: event.isTrusted,
+            timestamp: event.timeStamp,
+            x: event.clientX,
+            y: event.clientY
+          })
+        },
+        true
+      )
+      document.addEventListener(
+        'click',
+        (event) => {
+          pushEntry({
+            type: 'click',
+            isTrusted: event.isTrusted,
+            timestamp: event.timeStamp,
+            x: event.clientX,
+            y: event.clientY
+          })
+        },
+        true
+      )
+      win.__cmsSafetyEventLogInstalled = true
+    }
+
+    win.__cmsSafetyEventLog = []
+  })
+}
+
+async function readSafetyEventLog(page: Page): Promise<SafetyEventRecord[]> {
+  return page.evaluate(() => {
+    return ((window as typeof window & { __cmsSafetyEventLog?: unknown[] }).__cmsSafetyEventLog ?? []) as SafetyEventRecord[]
+  })
+}
+
+async function runSafetyDetectionProbe(page: Page, client: CDPSession): Promise<SafetyDetectionProbeResult> {
+  await page.evaluate(() => {
+    const win = window as typeof window & {
+      __cmsSafetyDetectionTrusted?: boolean | null
+      __cmsSafetyDetectionInstalled?: boolean
+      process?: unknown
+    }
+
+    if (!win.__cmsSafetyDetectionInstalled) {
+      document.addEventListener(
+        'click',
+        (event) => {
+          const target = event.target
+          if (target instanceof HTMLElement && target.dataset.cmsSafetyDetectionProbe === 'true') {
+            win.__cmsSafetyDetectionTrusted = event.isTrusted
+          }
+        },
+        true
+      )
+      win.__cmsSafetyDetectionInstalled = true
+    }
+
+    win.__cmsSafetyDetectionTrusted = null
+    document.querySelector('[data-cms-safety-detection-probe="true"]')?.remove()
+
+    const probe = document.createElement('button')
+    probe.type = 'button'
+    probe.dataset.cmsSafetyDetectionProbe = 'true'
+    probe.setAttribute('data-cms-safety-detection-probe', 'true')
+    probe.textContent = 'Safety Detection Probe'
+    probe.style.position = 'fixed'
+    probe.style.right = '24px'
+    probe.style.bottom = '24px'
+    probe.style.width = '160px'
+    probe.style.height = '40px'
+    probe.style.zIndex = '2147483647'
+    probe.style.opacity = '0.01'
+    probe.style.pointerEvents = 'auto'
+    probe.style.background = '#111827'
+    probe.style.color = '#111827'
+    probe.style.border = '0'
+    document.body.appendChild(probe)
+  })
+
+  const target = await page.evaluate(() => {
+    const element = document.querySelector<HTMLElement>('[data-cms-safety-detection-probe="true"]')
+    if (!element) return null
+    const rect = element.getBoundingClientRect()
+    return {
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2
+    }
+  })
+
+  if (!target) {
+    throw new Error('未找到安全检测探针')
+  }
+
+  await humanClick(client, { x: 40, y: 40 }, target.centerX, target.centerY)
+  await jitterDelay(220, 320)
+
+  return page.evaluate(() => {
+    const win = window as typeof window & {
+      __cmsSafetyDetectionTrusted?: boolean | null
+      process?: unknown
+    }
+
+    return {
+      isTrusted: win.__cmsSafetyDetectionTrusted === true,
+      webdriver: Boolean(navigator.webdriver),
+      hasProcess: typeof win.process !== 'undefined',
+      headless: /HeadlessChrome/i.test(navigator.userAgent)
+    }
+  })
+}
+
+async function tryCollectSafetyCheck(
+  page: Page,
+  client: CDPSession,
+  onLog?: (message: string) => void
+): Promise<CmsPublishSafetyCheck | undefined> {
+  try {
+    const eventLog = await readSafetyEventLog(page)
+    const mouseMoveCount = eventLog.filter((event) => event.type === 'mousemove').length
+    const detection = await runSafetyDetectionProbe(page, client)
+    return {
+      isTrusted: detection.isTrusted,
+      webdriver: detection.webdriver,
+      hasProcess: detection.hasProcess,
+      mouseMoveCount,
+      headless: detection.headless,
+      allPassed:
+        detection.isTrusted &&
+        detection.webdriver === false &&
+        detection.hasProcess === false &&
+        mouseMoveCount >= 15 &&
+        detection.headless === false
+    }
+  } catch (error) {
+    logLine(onLog, `[安全检测] 采集失败：${error instanceof Error ? error.message : String(error)}`)
+    return undefined
+  }
 }
 
 function normalizeTagList(content: string): string[] {
@@ -3258,6 +3504,7 @@ async function waitForPublishSuccess(page: Page): Promise<string> {
 export async function runXhsPublishWithCdp(input: CdpPublishRunOptions): Promise<{
   published: boolean
   time?: string
+  safetyCheck?: CmsPublishSafetyCheck
 }> {
   const { browser, task, workspacePath, dryRun = true, windowMode = dryRun ? 'visible' : 'offscreen', onLog } = input
   const page = await browser.newPage()
@@ -3274,6 +3521,8 @@ export async function runXhsPublishWithCdp(input: CdpPublishRunOptions): Promise
   if (!login.loggedIn) {
     throw new Error(`当前 CMS Profile 登录态无效：${login.reason}`)
   }
+
+  await installSafetyEventLog(page)
 
   const windowPlacement = await setChromeWindowMode(page, windowMode)
   logLine(onLog, `[窗口模式] ${windowPlacement.message}`)
@@ -3340,7 +3589,8 @@ export async function runXhsPublishWithCdp(input: CdpPublishRunOptions): Promise
 
   if (dryRun) {
     await prepareDryRunPublish(page, mediaType, onLog)
-    return { published: false }
+    const safetyCheck = await tryCollectSafetyCheck(page, client, onLog)
+    return { published: false, safetyCheck }
   }
 
   logLine(onLog, '开始：点击发布')
@@ -3351,5 +3601,6 @@ export async function runXhsPublishWithCdp(input: CdpPublishRunOptions): Promise
   await clickPublish(page, client)
   const time = await waitForPublishSuccess(page)
   logLine(onLog, '完成：点击发布')
-  return { published: true, time }
+  const safetyCheck = await tryCollectSafetyCheck(page, client, onLog)
+  return { published: true, time, safetyCheck }
 }

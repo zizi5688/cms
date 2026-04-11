@@ -58,6 +58,7 @@ export class SqliteService {
     const hasRemixSeed = columns.some((col) => col?.name === 'remixSeed')
     const hasLinkedProductsJson = columns.some((col) => col?.name === 'linkedProductsJson')
     const hasVideoCoverMode = columns.some((col) => col?.name === 'videoCoverMode')
+    const hasSafetyCheckJson = columns.some((col) => col?.name === 'safetyCheckJson')
 
     if (!hasLockedAt) {
       db.exec(`ALTER TABLE tasks ADD COLUMN locked_at INTEGER;`)
@@ -82,6 +83,9 @@ export class SqliteService {
     }
     if (!hasVideoCoverMode) {
       db.exec(`ALTER TABLE tasks ADD COLUMN videoCoverMode TEXT NOT NULL DEFAULT 'manual';`)
+    }
+    if (!hasSafetyCheckJson) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN safetyCheckJson TEXT;`)
     }
     db.exec(`
       UPDATE tasks
@@ -344,6 +348,7 @@ export class SqliteService {
         remixSeed TEXT,
         scheduledAt INTEGER,
         publishedAt TEXT,
+        safetyCheckJson TEXT,
         createdAt INTEGER NOT NULL,
         errorMsg TEXT NOT NULL DEFAULT '',
         errorMessage TEXT,

@@ -5,7 +5,7 @@ import ElectronStore from 'electron-store'
 import { is } from '@electron-toolkit/utils'
 import { closeChrome, launchChrome } from '../cdp/chrome-launcher'
 import { runXhsPublishWithCdp } from '../cdp/xhs-publisher'
-import type { CmsPublishMode } from '../shared/cmsChromeProfileTypes'
+import type { CmsPublishMode, CmsPublishSafetyCheck } from '../shared/cmsChromeProfileTypes'
 import type { AccountManager } from './services/accountManager'
 import type { TaskManager } from './taskManager'
 import { QueueService } from './services/queueService'
@@ -108,7 +108,7 @@ export type XhsProductRecord = {
   productUrl: string
 }
 
-export type PublisherResult = { success: boolean; time?: string; error?: string }
+export type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
 
 type AutomationTaskPayload = {
   taskId: string
@@ -516,7 +516,7 @@ export class PublisherService {
           taskTitle: normalizedTask.title,
           success: true
         })
-        return { success: true, time: automationResult.time }
+        return { success: true, time: automationResult.time, safetyCheck: automationResult.safetyCheck }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         const failure = buildPublishFailureSummary(message, normalizedTask.mediaType)
@@ -734,7 +734,12 @@ export class PublisherService {
         } else {
           succeeded += 1
           queueService.completeTask(task.id)
-          const updated = taskManager.updateBatch([task.id], { publishedAt: result.time, errorMsg: '', scheduledAt: null })[0]
+          const updated = taskManager.updateBatch([task.id], {
+            publishedAt: result.time,
+            errorMsg: '',
+            scheduledAt: null,
+            ...(result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})
+          })[0]
           if (updated) broadcastToRenderers('cms.task.updated', updated)
         }
       } else {
@@ -744,7 +749,7 @@ export class PublisherService {
           status: 'publish_failed',
           resetRetryCount: true
         })
-        const updated = taskManager.updateBatch([task.id], {})[0]
+        const updated = taskManager.updateBatch([task.id], result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})[0]
         if (updated) broadcastToRenderers('cms.task.updated', updated)
       }
 

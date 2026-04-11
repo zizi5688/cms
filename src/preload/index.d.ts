@@ -3,7 +3,8 @@ import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shar
 import type {
   CmsChromeLoginVerificationResult,
   CmsChromeProfileRecord,
-  CmsPublishMode
+  CmsPublishMode,
+  CmsPublishSafetyCheck
 } from '../shared/cmsChromeProfileTypes'
 
 declare global {
@@ -18,7 +19,7 @@ declare global {
     cmsProfileId: string | null
   }
 
-  type PublisherResult = { success: boolean; time?: string; error?: string }
+  type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
 
   type CmsProductRecord = {
     id: string
@@ -89,6 +90,7 @@ declare global {
     isRaw?: boolean
     scheduledAt?: number
     publishedAt: string | null
+    safetyCheck?: CmsPublishSafetyCheck
     errorMsg: string
     errorMessage?: string
     createdAt: number

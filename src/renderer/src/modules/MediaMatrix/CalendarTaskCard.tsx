@@ -29,6 +29,31 @@ type CalendarTaskCardProps = {
   ) => void | Promise<void>
 }
 
+function formatBooleanMetric(value: boolean): string {
+  return value ? 'true' : 'false'
+}
+
+function getSafetyMetricTone(isSafe: boolean): string {
+  return isSafe ? '安全' : '异常'
+}
+
+function getSafetyFixSuggestion(label: string): string {
+  switch (label) {
+    case 'isTrusted':
+      return '点击事件未被信任，检查是否回退到了 DOM dispatchEvent'
+    case 'webdriver':
+      return '自动化标志暴露，检查 stealth 注入和 --disable-blink-features=AutomationControlled 启动参数'
+    case 'hasProcess':
+      return 'Node 环境特征泄漏，检查 stealth 注入中 window.process 清理逻辑'
+    case 'mouseMoveCount':
+      return '鼠标轨迹不足，检查 humanMove 是否正常执行'
+    case 'headless':
+      return '检测到无头模式，检查 Chrome 启动参数是否误加了 --headless'
+    default:
+      return ''
+  }
+}
+
 function getDropPlacement(
   clientOffset: { x: number; y: number } | null,
   element: HTMLElement | null
@@ -170,6 +195,45 @@ function CalendarTaskCard({
   const errorText = (task.errorMsg || task.errorMessage || '').trim()
   const tooltipText = isFailed && errorText ? errorText : titleText
   const isVideo = task.mediaType === 'video'
+  const safetyCheck = isPublished ? task.safetyCheck ?? null : null
+  const safetyTooltipRows = useMemo(() => {
+    if (!safetyCheck) return []
+    return [
+      {
+        label: 'isTrusted',
+        value: formatBooleanMetric(safetyCheck.isTrusted),
+        safe: safetyCheck.isTrusted
+      },
+      {
+        label: 'webdriver',
+        value: formatBooleanMetric(safetyCheck.webdriver),
+        safe: safetyCheck.webdriver === false
+      },
+      {
+        label: 'hasProcess',
+        value: formatBooleanMetric(safetyCheck.hasProcess),
+        safe: safetyCheck.hasProcess === false
+      },
+      {
+        label: 'mouseMoveCount',
+        value: String(safetyCheck.mouseMoveCount),
+        safe: safetyCheck.mouseMoveCount >= 15
+      },
+      {
+        label: 'headless',
+        value: formatBooleanMetric(safetyCheck.headless),
+        safe: safetyCheck.headless === false
+      }
+    ]
+  }, [safetyCheck])
+  const failedSafetyRows = useMemo(() => {
+    return safetyTooltipRows
+      .filter((row) => !row.safe)
+      .map((row) => ({
+        ...row,
+        suggestion: getSafetyFixSuggestion(row.label)
+      }))
+  }, [safetyTooltipRows])
 
   const commitTime = async (nextTime: string): Promise<void> => {
     if (!scheduledAtDate) return
@@ -373,6 +437,55 @@ function CalendarTaskCard({
         >
           <X className="h-4 w-4" />
         </button>
+      ) : null}
+
+      {isPublished && safetyCheck ? (
+        <div className="absolute bottom-2 right-2 z-20">
+          <button
+            type="button"
+            className={cn(
+              'inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border shadow-[0_0_0_1px_rgba(0,0,0,0.18)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950',
+              safetyCheck.allPassed
+                ? 'border-emerald-300/70 bg-emerald-400 focus-visible:ring-emerald-300'
+                : 'peer border-red-300/70 bg-red-400 focus-visible:ring-red-300'
+            )}
+            aria-label={safetyCheck.allPassed ? '安全指标通过' : '安全指标异常'}
+          >
+            <span className="sr-only">{safetyCheck.allPassed ? '安全指标通过' : '安全指标异常'}</span>
+          </button>
+          {!safetyCheck.allPassed ? (
+            <div className="pointer-events-none absolute bottom-6 right-0 z-30 w-64 rounded-lg border border-zinc-600 bg-zinc-950 p-3 text-left text-[10px] text-zinc-100 opacity-0 shadow-[0_18px_48px_rgba(0,0,0,0.7)] transition duration-150 peer-hover:opacity-100 peer-focus-visible:opacity-100">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="font-semibold text-zinc-50">安全指标</span>
+                <span className="rounded-full bg-red-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-red-200">
+                  未通过
+                </span>
+              </div>
+              <div className="space-y-2">
+                <div className="space-y-1.5">
+                  {safetyTooltipRows.map((row) => (
+                    <div key={row.label} className="flex items-center justify-between gap-3">
+                      <span className="text-zinc-400">{row.label}</span>
+                      <span className={row.safe ? 'text-emerald-200' : 'text-red-200'}>
+                        {row.value} · {getSafetyMetricTone(row.safe)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {failedSafetyRows.length > 0 ? (
+                  <div className="space-y-1.5 border-t border-zinc-800/80 pt-2">
+                    {failedSafetyRows.map((row) => (
+                      <div key={`${row.label}-suggestion`} className="space-y-1">
+                        <div className="text-[10px] font-medium text-red-200">{row.label} 修复建议</div>
+                        <div className="text-[10px] leading-relaxed text-zinc-300">{row.suggestion}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

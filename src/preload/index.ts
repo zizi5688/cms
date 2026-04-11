@@ -4,7 +4,8 @@ import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shar
 import type {
   CmsChromeLoginVerificationResult,
   CmsChromeProfileRecord,
-  CmsPublishMode
+  CmsPublishMode,
+  CmsPublishSafetyCheck
 } from '../shared/cmsChromeProfileTypes'
 import type {
   LocalGatewayChromeProfile,
@@ -13,7 +14,7 @@ import type {
   LocalGatewayState
 } from '../shared/localGatewayTypes.ts'
 
-type PublisherResult = { success: boolean; time?: string; error?: string }
+type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
 
 type CmsPublishTaskStatus =
   | 'pending'
@@ -46,6 +47,7 @@ type CmsPublishTask = {
   isRaw?: boolean
   scheduledAt?: number
   publishedAt: string | null
+  safetyCheck?: CmsPublishSafetyCheck
   errorMsg: string
   errorMessage?: string
   createdAt: number
