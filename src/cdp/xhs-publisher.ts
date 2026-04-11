@@ -10,7 +10,7 @@ import {
   setChromeWindowMode,
   type ChromeWindowMode
 } from './chrome-launcher.ts'
-import { humanClick, type MouseState } from './human-input.ts'
+import { humanClick, humanMove, type MouseState } from './human-input.ts'
 
 /**
  * CDP parity progress against src/main/preload/xhs-automation.ts
@@ -163,6 +163,15 @@ type CoverModalUploadSnapshot = {
 
 type SelectCoverOptions = {
   onLog?: (message: string) => void
+}
+
+type CoverModalVariantInfo = {
+  variant: 'tabbed' | 'legacy' | 'unknown'
+  hasUploadTab: boolean
+  uploadTabActive: boolean
+  hasLegacyUploadButton: boolean
+  hasImageInput: boolean
+  summary: string
 }
 
 async function waitForCondition<T>(
@@ -1852,12 +1861,21 @@ async function markFirstCoverEntry(page: Page): Promise<EditorTarget> {
       '[class*="cover_item"]',
       '[class*="cover-frame"]',
       '[class*="coverFrame"]',
+      '[class*="cover-image"]',
+      '[class*="coverImage"]',
+      '[class*="artistic-bg"]',
+      '[class*="artisticBg"]',
+      '[class*="default"][class*="column"]',
+      '.default.column',
+      '.defaults',
       '[class*="cover"] img',
       '[class*="Cover"] img',
       '[class*="cover"] canvas',
       '[class*="Cover"] canvas',
       '[class*="thumbnail"]',
+      '[class*="Thumbnail"]',
       '[class*="poster"]',
+      '[class*="Poster"]',
       '[data-testid*="cover"]',
       '[data-test*="cover"]'
     ].join(', ')
@@ -1880,10 +1898,17 @@ async function markFirstCoverEntry(page: Page): Promise<EditorTarget> {
         if (!isVisible(target)) continue
         if (target.closest('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')) continue
         if (target.closest('header, nav, aside, footer')) continue
+        if (target.closest('.preview-container, .video-preview-wrapper, .video-preview, .publish-video')) continue
         const rect = target.getBoundingClientRect()
         if (rect.width < 56 || rect.height < 56) continue
         if (rect.width > 420 || rect.height > 420) continue
         if (rect.bottom < 0 || rect.top > window.innerHeight + 200) continue
+        const style = window.getComputedStyle(target)
+        const hasBackgroundImage = Boolean(style.backgroundImage && style.backgroundImage !== 'none')
+        const classNames = `${String(target.className || '')} ${String(target.parentElement?.className || '')}`.toLowerCase()
+        if (!hasBackgroundImage && !target.querySelector('img, canvas, video') && !/cover|poster|thumbnail|default|artistic/.test(classNames)) {
+          continue
+        }
         seen.add(target)
         picked.push(target)
       }
@@ -1900,7 +1925,11 @@ async function markFirstCoverEntry(page: Page): Promise<EditorTarget> {
       if (classNames.includes('cover')) score += 360
       if (classNames.includes('recommend')) score += 120
       if (classNames.includes('poster') || classNames.includes('thumbnail')) score += 120
+      if (classNames.includes('default')) score += 220
+      if (classNames.includes('artistic')) score += 180
+      if (classNames.includes('cover-image')) score += 220
       if (text.includes('修改封面') || text.includes('替换封面') || text.includes('更换封面')) score += 320
+      if (text.includes('封面上传中')) score += 160
       if (target.closest('#publish-container')) score += 120
       if (rect.top >= 20 && rect.top <= window.innerHeight + 120) score += 90
       if (rect.left >= 0 && rect.left <= window.innerWidth + 60) score += 40
@@ -1908,8 +1937,10 @@ async function markFirstCoverEntry(page: Page): Promise<EditorTarget> {
       if (aspect >= 0.45 && aspect <= 1.8) score += 60
       if (target.closest('[role="list"], ul, ol, [class*="list"], [class*="List"]')) score += 50
       if (target.querySelector('img, canvas, video')) score += 40
+      if (window.getComputedStyle(target).backgroundImage !== 'none') score += 120
       if (target.closest('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')) score -= 480
       if (target.closest('header, nav, aside, footer')) score -= 420
+      if (target.closest('.preview-container, .video-preview-wrapper, .video-preview, .publish-video')) score -= 600
       if (anchorRectValue) {
         const dy = rect.top - anchorRectValue.top
         if (dy >= -30) score += 120
@@ -1976,6 +2007,13 @@ async function inspectCoverEntryCandidates(page: Page): Promise<string> {
       '[class*="cover_item"]',
       '[class*="cover-frame"]',
       '[class*="coverFrame"]',
+      '[class*="cover-image"]',
+      '[class*="coverImage"]',
+      '[class*="artistic-bg"]',
+      '[class*="artisticBg"]',
+      '[class*="default"][class*="column"]',
+      '.default.column',
+      '.defaults',
       '[class*="cover"] img',
       '[class*="Cover"] img',
       '[class*="cover"] canvas',
@@ -2031,7 +2069,7 @@ async function waitForCoverSectionReady(page: Page): Promise<void> {
           text.includes('默认截取第一帧作为封面')
         const hasClickableCover = Boolean(
           document.querySelector(
-            '[class*="cover-item"], [class*="coverItem"], [class*="cover_item"], [class*="cover-frame"], [class*="coverFrame"], [class*="cover"] img, [class*="cover"] canvas'
+            '[class*="cover-item"], [class*="coverItem"], [class*="cover_item"], [class*="cover-frame"], [class*="coverFrame"], [class*="cover-image"], [class*="coverImage"], [class*="artistic-bg"], [class*="artisticBg"], [class*="default"][class*="column"], .default.column, .defaults, [class*="cover"] img, [class*="cover"] canvas'
           )
         )
         return hasCoverText && (hasPreviewText || hasClickableCover) ? true : null
@@ -2068,26 +2106,18 @@ async function waitForCoverModal(page: Page, timeoutMs = 8_000): Promise<void> {
           }
         }
         if (!modal) return null
-        const inputs = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="file"]'))
-        const hasImageInput = inputs.some((input) => {
-          const accept = String(input.getAttribute('accept') || '').toLowerCase()
-          if (!accept) return false
-          if (accept.includes('video')) return false
-          return accept.includes('image') || accept.includes('.jpg') || accept.includes('.jpeg') || accept.includes('.png') || accept.includes('.webp')
-        })
-        if (hasImageInput) return true
-        const candidates = Array.from(
-          modal.querySelectorAll<HTMLElement>('button, [role="button"], a, div[tabindex], span[tabindex], .ant-btn')
-        ).filter((element) => isVisible(element))
-        const hasUploadButton = candidates.some((element) => {
-          const text = String(element.innerText || element.textContent || '').replace(/\s+/g, '')
-          return text.includes('上传图片')
-        })
-        return hasUploadButton ? true : null
+        const modalText = String(modal.innerText || modal.textContent || '').replace(/\s+/g, '')
+        const hasCoverContext =
+          modalText.includes('设置封面') ||
+          modalText.includes('截取封面') ||
+          modalText.includes('上传封面') ||
+          modalText.includes('裁剪比例') ||
+          modalText.includes('上传图片')
+        return hasCoverContext ? true : null
       }),
     timeoutMs,
     220,
-    '未出现封面弹窗（含上传图片入口）。'
+    '未出现封面弹窗。'
   )
 }
 
@@ -2117,9 +2147,147 @@ async function hoverCoverEntry(page: Page, selector: string): Promise<void> {
   }, selector)
 }
 
+async function detectCoverModalVariant(page: Page): Promise<CoverModalVariantInfo> {
+  return page.evaluate((): CoverModalVariantInfo => {
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 12 && rect.height > 12
+    }
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const dialogs = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')
+    ).filter((element) => isVisible(element))
+
+    if (dialogs.length === 0) {
+      return {
+        variant: 'unknown',
+        hasUploadTab: false,
+        uploadTabActive: false,
+        hasLegacyUploadButton: false,
+        hasImageInput: false,
+        summary: 'no-visible-modal'
+      }
+    }
+
+    let modal = dialogs[0] ?? null
+    let bestZ = Number.NEGATIVE_INFINITY
+    for (const candidate of dialogs) {
+      const z = Number.parseInt(window.getComputedStyle(candidate).zIndex || '0', 10)
+      const zValue = Number.isFinite(z) ? z : 0
+      if (zValue >= bestZ) {
+        bestZ = zValue
+        modal = candidate
+      }
+    }
+
+    if (!modal) {
+      return {
+        variant: 'unknown',
+        hasUploadTab: false,
+        uploadTabActive: false,
+        hasLegacyUploadButton: false,
+        hasImageInput: false,
+        summary: 'no-top-modal'
+      }
+    }
+
+    const controls = Array.from(modal.querySelectorAll<HTMLElement>('button, [role="tab"], [role="button"], a, div, span'))
+      .filter((element) => isVisible(element))
+      .map((element) => ({
+        element,
+        text: normalizeText(element.innerText || element.textContent || ''),
+        className: String(element.className || '').toLowerCase()
+      }))
+
+    const uploadTab = controls.find((item) => item.text.includes('上传封面'))
+    const legacyUploadButton = controls.find((item) => item.text.includes('上传图片'))
+    const imageInputs = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+    const hasImageInput = imageInputs.some((input) => {
+      const accept = String(input.getAttribute('accept') || '').toLowerCase()
+      if (!accept) return true
+      if (accept.includes('video')) return false
+      return accept.includes('image') || accept.includes('.jpg') || accept.includes('.jpeg') || accept.includes('.png') || accept.includes('.webp')
+    })
+
+    const hasUploadTab = Boolean(uploadTab)
+    const uploadTabActive = Boolean(uploadTab && /active|selected|current/.test(uploadTab.className))
+    const hasLegacyUploadButton = Boolean(legacyUploadButton)
+    const variant = (hasUploadTab
+      ? 'tabbed'
+      : hasLegacyUploadButton
+        ? 'legacy'
+        : 'unknown') as CoverModalVariantInfo['variant']
+
+    return {
+      variant,
+      hasUploadTab,
+      uploadTabActive,
+      hasLegacyUploadButton,
+      hasImageInput,
+      summary: [
+        `variant=${variant}`,
+        `hasUploadTab=${hasUploadTab}`,
+        `uploadTabActive=${uploadTabActive}`,
+        `hasLegacyUploadButton=${hasLegacyUploadButton}`,
+        `hasImageInput=${hasImageInput}`
+      ].join(', ')
+    }
+  })
+}
+
+async function markCoverOpenTrigger(page: Page, entrySelector: string): Promise<EditorTarget> {
+  const target = await page.evaluate((targetSelector) => {
+    const root = document.querySelector<HTMLElement>(targetSelector)
+    if (!root) return null
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 8 && rect.height > 8
+    }
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const candidates = Array.from(root.querySelectorAll<HTMLElement>('button, [role="button"], a, div, span, label'))
+      .filter((element) => isVisible(element))
+      .map((element, index) => {
+        const text = normalizeText(element.innerText || element.textContent || '')
+        const className = String(element.className || '').toLowerCase()
+        const rect = element.getBoundingClientRect()
+        let score = 0
+        if (text === '修改封面') score += 400
+        else if (text.includes('修改封面')) score += 320
+        else if (text.includes('替换封面') || text.includes('更换封面')) score += 280
+        if (className.includes('operator')) score += 120
+        if (className.includes('pointer')) score += 60
+        if (className.includes('cover')) score += 40
+        if (rect.width >= 40 && rect.height >= 24) score += 30
+        score -= index
+        return { element, rect, score }
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+
+    const match = candidates[0]
+    if (!match) return null
+    match.element.setAttribute('data-cms-cdp-cover-trigger', 'true')
+    return {
+      found: true,
+      selector: '[data-cms-cdp-cover-trigger="true"]',
+      centerX: match.rect.left + match.rect.width / 2,
+      centerY: match.rect.top + match.rect.height / 2,
+      tagName: match.element.tagName,
+      isContentEditable: false,
+      isTextInput: false
+    }
+  }, entrySelector)
+
+  return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
+}
+
 async function markCoverUploadInput(page: Page): Promise<UploadTarget> {
   return page.evaluate(() => {
-    const modalSelectors = '[role="dialog"], .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
+    const modalSelectors = '[role="dialog"], .d-modal, .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
     const modalRoots = Array.from(document.querySelectorAll<HTMLElement>(modalSelectors)).filter((modal) => {
       const style = window.getComputedStyle(modal)
       const rect = modal.getBoundingClientRect()
@@ -2167,6 +2335,335 @@ async function markCoverUploadInput(page: Page): Promise<UploadTarget> {
       selector: 'input[type="file"][data-cms-cdp-cover-upload="true"]'
     }
   })
+}
+
+async function markLegacyCoverUploadButton(page: Page): Promise<EditorTarget> {
+  const target = await page.evaluate(() => {
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 20
+    }
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const dialogs = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')
+    ).filter((element) => isVisible(element))
+    if (dialogs.length === 0) return null
+
+    let modal = dialogs[0] ?? null
+    let bestZ = Number.NEGATIVE_INFINITY
+    for (const candidate of dialogs) {
+      const z = Number.parseInt(window.getComputedStyle(candidate).zIndex || '0', 10)
+      const zValue = Number.isFinite(z) ? z : 0
+      if (zValue >= bestZ) {
+        bestZ = zValue
+        modal = candidate
+      }
+    }
+    if (!modal) return null
+
+    const candidates = Array.from(modal.querySelectorAll<HTMLElement>('button, [role="button"], a, div, span, label'))
+      .filter((element) => isVisible(element))
+      .map((element, index) => {
+        const text = normalizeText(element.innerText || element.textContent || '')
+        if (!text.includes('上传图片')) return null
+        const rect = element.getBoundingClientRect()
+        const className = String(element.className || '').toLowerCase()
+        let score = 0
+        if (text === '+ 上传图片' || text === '+上传图片') score += 320
+        else if (text === '上传图片') score += 260
+        else score += 180
+        if (className.includes('upload')) score += 80
+        if (className.includes('btn') || className.includes('button')) score += 40
+        score -= index
+        return { element, rect, score }
+      })
+      .filter((item): item is { element: HTMLElement; rect: DOMRect; score: number } => Boolean(item))
+      .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+
+    const match = candidates[0]
+    if (!match) return null
+    match.element.setAttribute('data-cms-cdp-cover-upload-button', 'true')
+    return {
+      found: true,
+      selector: '[data-cms-cdp-cover-upload-button="true"]',
+      centerX: match.rect.left + match.rect.width / 2,
+      centerY: match.rect.top + match.rect.height / 2,
+      tagName: match.element.tagName,
+      isContentEditable: false,
+      isTextInput: false
+    }
+  })
+
+  return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
+}
+
+async function markCoverUploadTab(page: Page): Promise<EditorTarget> {
+  const target = await page.evaluate(() => {
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 24 && rect.height > 16
+    }
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const dialogs = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')
+    ).filter((element) => isVisible(element))
+    if (dialogs.length === 0) return null
+
+    let modal = dialogs[0] ?? null
+    let bestZ = Number.NEGATIVE_INFINITY
+    for (const candidate of dialogs) {
+      const z = Number.parseInt(window.getComputedStyle(candidate).zIndex || '0', 10)
+      const zValue = Number.isFinite(z) ? z : 0
+      if (zValue >= bestZ) {
+        bestZ = zValue
+        modal = candidate
+      }
+    }
+    if (!modal) return null
+
+    const candidates = Array.from(modal.querySelectorAll<HTMLElement>('button, [role="tab"], [role="button"], a, div, span, h1, h2, h3, h4, h5, h6'))
+      .filter((element) => isVisible(element))
+      .map((element, index) => {
+        const text = normalizeText(element.innerText || element.textContent || '')
+        if (!text.includes('上传封面')) return null
+        const clickable =
+          element.closest<HTMLElement>('.d-tabs-header, [role="tab"], button, [role="button"], a, div[tabindex], span[tabindex]') ||
+          element
+        if (!isVisible(clickable)) return null
+        const rect = clickable.getBoundingClientRect()
+        const className = String(clickable.className || '').toLowerCase()
+        let score = 0
+        if (text === '上传封面') score += 240
+        if (clickable.getAttribute('role') === 'tab') score += 80
+        if (className.includes('d-tabs-header')) score += 120
+        if (className.includes('tab')) score += 60
+        if (className.includes('active')) score -= 40
+        score -= index
+        return { element: clickable, rect, score }
+      })
+      .filter((item): item is { element: HTMLElement; rect: DOMRect; score: number } => Boolean(item))
+      .sort((a, b) => b.score - a.score || a.rect.left - b.rect.left)
+
+    const match = candidates[0]
+    if (!match) return null
+    match.element.setAttribute('data-cms-cdp-cover-upload-tab', 'true')
+    return {
+      found: true,
+      selector: '[data-cms-cdp-cover-upload-tab="true"]',
+      centerX: match.rect.left + match.rect.width / 2,
+      centerY: match.rect.top + match.rect.height / 2,
+      tagName: match.element.tagName,
+      isContentEditable: false,
+      isTextInput: false
+    }
+  })
+
+  return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
+}
+
+async function markCoverUploadButton(page: Page): Promise<EditorTarget> {
+  const legacy = await markLegacyCoverUploadButton(page)
+  if (legacy.found) return legacy
+
+  const target = await page.evaluate(() => {
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 20
+    }
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const dialogs = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')
+    ).filter((element) => isVisible(element))
+    if (dialogs.length === 0) return null
+
+    let modal = dialogs[0] ?? null
+    let bestZ = Number.NEGATIVE_INFINITY
+    for (const candidate of dialogs) {
+      const z = Number.parseInt(window.getComputedStyle(candidate).zIndex || '0', 10)
+      const zValue = Number.isFinite(z) ? z : 0
+      if (zValue >= bestZ) {
+        bestZ = zValue
+        modal = candidate
+      }
+    }
+    if (!modal) return null
+
+    const candidates = Array.from(modal.querySelectorAll<HTMLElement>('button, [role="button"], a, div, span, label'))
+      .filter((element) => isVisible(element))
+      .map((element, index) => {
+        const text = normalizeText(element.innerText || element.textContent || '')
+        if (!(text.includes('上传图片') || text.includes('重新上传'))) return null
+        const clickable =
+          element.closest<HTMLElement>('button, [role="button"], a, div[tabindex], span[tabindex], label') || element
+        if (!isVisible(clickable)) return null
+        const rect = clickable.getBoundingClientRect()
+        const className = String(clickable.className || '').toLowerCase()
+        let score = 0
+        if (text === '上传图片') score += 260
+        else if (text === '重新上传') score += 240
+        else if (text.includes('上传图片')) score += 200
+        else if (text.includes('重新上传')) score += 180
+        if (className.includes('upload')) score += 80
+        if (className.includes('button') || className.includes('btn')) score += 40
+        score -= index
+        return { element: clickable, rect, score }
+      })
+      .filter((item): item is { element: HTMLElement; rect: DOMRect; score: number } => Boolean(item))
+      .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left)
+
+    const match = candidates[0]
+    if (!match) return null
+    match.element.setAttribute('data-cms-cdp-cover-upload-button-generic', 'true')
+    return {
+      found: true,
+      selector: '[data-cms-cdp-cover-upload-button-generic="true"]',
+      centerX: match.rect.left + match.rect.width / 2,
+      centerY: match.rect.top + match.rect.height / 2,
+      tagName: match.element.tagName,
+      isContentEditable: false,
+      isTextInput: false
+    }
+  })
+
+  return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
+}
+
+async function waitForCoverUploadSurface(page: Page, timeoutMs = 4_000): Promise<void> {
+  await waitForCondition(
+    async () =>
+      page.evaluate(() => {
+        const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+          if (!element) return false
+          const style = window.getComputedStyle(element)
+          const rect = element.getBoundingClientRect()
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 16 && rect.height > 16
+        }
+        const dialogs = Array.from(
+          document.querySelectorAll<HTMLElement>('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="Dialog"]')
+        ).filter((element) => isVisible(element))
+        if (dialogs.length === 0) return null
+        let modal = dialogs[0] ?? null
+        let bestZ = Number.NEGATIVE_INFINITY
+        for (const candidate of dialogs) {
+          const z = Number.parseInt(window.getComputedStyle(candidate).zIndex || '0', 10)
+          const zValue = Number.isFinite(z) ? z : 0
+          if (zValue >= bestZ) {
+            bestZ = zValue
+            modal = candidate
+          }
+        }
+        if (!modal) return null
+
+        const text = String(modal.innerText || modal.textContent || '').replace(/\s+/g, '')
+        const hasUploadHint =
+          text.includes('拖拽图片到此或点击上传') ||
+          text.includes('点击上传') ||
+          text.includes('上传图片')
+
+        const hasUploadButton = Array.from(modal.querySelectorAll<HTMLElement>('button, [role="button"], a, div, span, label'))
+          .filter((element) => isVisible(element))
+          .some((element) => String(element.innerText || element.textContent || '').replace(/\s+/g, '').includes('上传图片'))
+
+        const hasImageInput = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="file"]')).some((input) => {
+          const accept = String(input.getAttribute('accept') || '').toLowerCase()
+          if (!accept) return true
+          if (accept.includes('video')) return false
+          return accept.includes('image') || accept.includes('.jpg') || accept.includes('.jpeg') || accept.includes('.png') || accept.includes('.webp')
+        })
+
+        return hasUploadHint || hasUploadButton || hasImageInput ? true : null
+      }),
+    timeoutMs,
+    150,
+    '上传封面页签未就绪'
+  )
+}
+
+async function uploadCoverViaButtonChooser(
+  page: Page,
+  client: CDPSession,
+  mouse: MouseState,
+  coverPath: string,
+  onLog?: (message: string) => void
+): Promise<MouseState> {
+  logLine(onLog, '[封面] 通过“上传图片”按钮触发文件选择')
+  const uploadButton = await waitForCondition(
+    async () => {
+      const target = await markCoverUploadButton(page)
+      return target.found ? target : null
+    },
+    3_000,
+    150,
+    '未找到“上传图片”按钮'
+  )
+  const clickableUploadButton = await ensureSelectorReachableForMouse(page, client, uploadButton.selector)
+  if (!clickableUploadButton.found) {
+    throw new Error('未找到可点击的“上传图片”按钮')
+  }
+  const fileChooserPromise = page.waitForFileChooser({ timeout: 2_500 }).catch(() => null)
+  mouse = await humanClick(client, mouse, clickableUploadButton.centerX, clickableUploadButton.centerY)
+  const fileChooser = await fileChooserPromise
+  if (!fileChooser) {
+    throw new Error('点击“上传图片”按钮后未捕获文件选择器')
+  }
+  logLine(onLog, `[封面] 已捕获文件选择器，注入封面文件: ${coverPath}`)
+  await fileChooser.accept([coverPath])
+  return mouse
+}
+
+async function ensureCoverUploadSurface(page: Page, client: CDPSession, mouse: MouseState, onLog?: (message: string) => void): Promise<MouseState> {
+  const variant = await detectCoverModalVariant(page)
+  logLine(onLog, `[封面] 弹窗版本检测: ${variant.summary}`)
+
+  if (variant.variant === 'tabbed') {
+    const uploadTab = await markCoverUploadTab(page)
+    if (!uploadTab.found) {
+      throw new Error('检测到新版封面弹窗，但未找到“上传封面”tab')
+    }
+    if (!variant.uploadTabActive) {
+      logLine(onLog, '[封面] 新版弹窗：切换到“上传封面”tab')
+      const clickable = await ensureSelectorReachableForMouse(page, client, uploadTab.selector)
+      if (!clickable.found) {
+        throw new Error('未找到可点击的“上传封面”tab')
+      }
+      mouse = await humanClick(client, mouse, clickable.centerX, clickable.centerY)
+      await waitForCoverUploadSurface(page, 3_000)
+      await jitterDelay(320, 520)
+    } else {
+      logLine(onLog, '[封面] 新版弹窗：已在“上传封面”tab')
+      await waitForCoverUploadSurface(page, 3_000)
+    }
+    return mouse
+  }
+
+  if (variant.variant === 'legacy') {
+    logLine(onLog, '[封面] 旧版弹窗：检测到“+ 上传图片”按钮')
+    const legacyButton = await markLegacyCoverUploadButton(page)
+    if (!legacyButton.found) {
+      throw new Error('检测到旧版封面弹窗，但未找到“+ 上传图片”按钮')
+    }
+    if (!variant.hasImageInput) {
+      logLine(onLog, '[封面] 旧版弹窗：先点击“+ 上传图片”按钮，等待上传入口就绪')
+      const clickable = await ensureSelectorReachableForMouse(page, client, legacyButton.selector)
+      if (!clickable.found) {
+        throw new Error('未找到可点击的“+ 上传图片”按钮')
+      }
+      mouse = await humanClick(client, mouse, clickable.centerX, clickable.centerY)
+      await jitterDelay(320, 520)
+    } else {
+      logLine(onLog, '[封面] 旧版弹窗：已存在上传 input，直接注入文件')
+    }
+    return mouse
+  }
+
+  logLine(onLog, '[封面] 未识别到明确版本，尝试直接定位上传 input')
+  return mouse
 }
 
 async function waitForCoverUploadInput(page: Page): Promise<UploadTarget> {
@@ -2227,7 +2724,7 @@ function hasCoverSelectionSignal(
 async function snapshotCoverModalUploadState(page: Page): Promise<CoverModalUploadSnapshot> {
   return page.evaluate(() => {
     const modal = document.querySelector<HTMLElement>(
-      '[role="dialog"], .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
+      '[role="dialog"], .d-modal, .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
     )
     const text = (modal?.innerText || modal?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase()
     const imageSources = Array.from(modal?.querySelectorAll('img') ?? [])
@@ -2272,7 +2769,7 @@ async function waitForCoverSelectionSignal(page: Page, coverPath: string, baseli
 async function markCoverConfirmButton(page: Page): Promise<EditorTarget> {
   const target = await page.evaluate(() => {
     const modal = document.querySelector<HTMLElement>(
-      '[role="dialog"], .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
+      '[role="dialog"], .d-modal, .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
     )
     if (!modal) return null
 
@@ -2321,7 +2818,7 @@ async function waitForCoverModalClose(page: Page): Promise<void> {
     async () =>
       page.evaluate(() => {
         const modal = document.querySelector<HTMLElement>(
-          '[role="dialog"], .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
+          '[role="dialog"], .d-modal, .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
         )
         if (!modal) return true
         const style = window.getComputedStyle(modal)
@@ -3582,19 +4079,30 @@ export async function selectCover(
     if (!openButton.found) {
       throw new Error('未找到可点击的封面编辑入口')
     }
+    mouse = await humanMove(client, mouse.x, mouse.y, openButton.centerX, openButton.centerY)
+    await jitterDelay(120, 220)
+    const explicitTrigger = await markCoverOpenTrigger(page, coverEntry.selector)
+    if (explicitTrigger.found) {
+      logLine(options.onLog, `[封面] hover 后发现显式触发层: ${explicitTrigger.selector}`)
+    } else {
+      logLine(options.onLog, '[封面] hover 后未发现显式触发层，回退点击封面块中心')
+    }
+    const clickTarget = explicitTrigger.found
+      ? await ensureSelectorReachableForMouse(page, client, explicitTrigger.selector)
+      : openButton
     logLine(
       options.onLog,
-      `[封面] 已计算点击坐标: (${Math.round(openButton.centerX)}, ${Math.round(openButton.centerY)})`
+      `[封面] 已计算点击坐标: (${Math.round(clickTarget.centerX)}, ${Math.round(clickTarget.centerY)})`
     )
 
     logLine(options.onLog, '[封面] 开始点击封面入口')
-    mouse = await humanClick(client, mouse, openButton.centerX, openButton.centerY)
+    mouse = await humanClick(client, mouse, clickTarget.centerX, clickTarget.centerY)
     logLine(options.onLog, '[封面] 封面入口点击完成')
     await jitterDelay(700, 1200)
 
     try {
       logLine(options.onLog, '[封面] 等待弹窗可见')
-      await waitForCoverModal(page, 2600)
+      await waitForCoverModal(page, 8_000)
       modalOpened = true
       logLine(options.onLog, '[封面] 已检测到弹窗')
       break
@@ -3609,16 +4117,41 @@ export async function selectCover(
     throw lastOpenError ?? new Error('未出现封面弹窗（含上传图片入口）。')
   }
 
+  mouse = await ensureCoverUploadSurface(page, client, mouse, options.onLog)
   logLine(options.onLog, '[封面] 记录上传前快照')
   const beforeUploadState = await snapshotCoverModalUploadState(page)
+  let coverSelectionConfirmed = false
   logLine(options.onLog, '[封面] 定位弹窗内上传 input')
-  const modalUploadInput = await waitForCoverUploadInput(page)
-  logLine(options.onLog, `[封面] 注入封面文件: ${coverPath}`)
-  await setFilesWithCdp(client, modalUploadInput.selector, [coverPath])
-  logLine(options.onLog, '[封面] 等待 input.files 生效')
-  await waitForCoverFileSelection(page, modalUploadInput.selector)
-  logLine(options.onLog, '[封面] 等待“已选中”信号')
-  await waitForCoverSelectionSignal(page, coverPath, beforeUploadState)
+  let modalUploadInput = await waitForCoverUploadInput(page).catch(() => null)
+  if (modalUploadInput?.found) {
+    try {
+      logLine(options.onLog, `[封面] 注入封面文件: ${coverPath}`)
+      await setFilesWithCdp(client, modalUploadInput.selector, [coverPath])
+      logLine(options.onLog, '[封面] 等待 input.files 生效')
+      await waitForCoverFileSelection(page, modalUploadInput.selector)
+      coverSelectionConfirmed = true
+    } catch (error) {
+      logLine(
+        options.onLog,
+        `[封面] 直注 input 未生效，回退按钮上传: ${error instanceof Error ? error.message : String(error)}`
+      )
+      try {
+        await waitForCoverSelectionSignal(page, coverPath, beforeUploadState)
+        coverSelectionConfirmed = true
+        logLine(options.onLog, '[封面] 虽未读取到 input.files，但界面已出现封面选中信号')
+      } catch {
+        mouse = await uploadCoverViaButtonChooser(page, client, mouse, coverPath, options.onLog)
+      }
+    }
+  } else {
+    logLine(options.onLog, '[封面] 未直接找到上传 input，回退按钮上传')
+    mouse = await uploadCoverViaButtonChooser(page, client, mouse, coverPath, options.onLog)
+  }
+  if (!coverSelectionConfirmed) {
+    logLine(options.onLog, '[封面] 等待“已选中”信号')
+    await waitForCoverSelectionSignal(page, coverPath, beforeUploadState)
+    coverSelectionConfirmed = true
+  }
 
   logLine(options.onLog, '[封面] 定位确认按钮')
   const confirmButton = await markCoverConfirmButton(page)
@@ -3639,7 +4172,7 @@ export async function ensureCoverModalDismissed(page: Page, client: CDPSession, 
   const isCoverModalVisible = async (): Promise<boolean> =>
     page.evaluate(() => {
       const modal = document.querySelector<HTMLElement>(
-        '[role="dialog"], .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
+        '[role="dialog"], .d-modal, .d-modal.cover-modal, .cover-modal, .ant-modal, .ant-modal-root'
       )
       if (!modal) return false
       const style = window.getComputedStyle(modal)
