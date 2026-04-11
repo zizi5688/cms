@@ -2,6 +2,7 @@ import { BrowserWindow, session } from 'electron'
 import { randomUUID } from 'crypto'
 import type { Browser } from 'puppeteer'
 import {
+  closeChrome,
   createCmsChromeProfile,
   listCmsChromeProfiles,
   openCmsProfileLoginBrowser,
@@ -407,6 +408,16 @@ export class AccountManager {
     }
 
     this.bindCmsProfile(normalizedAccountId, profileId)
+    const cachedLoginBrowser = this.cmsLoginBrowsersByAccountId.get(normalizedAccountId)
+    if (cachedLoginBrowser?.connected) {
+      this.cmsLoginBrowsersByAccountId.delete(normalizedAccountId)
+      try {
+        await closeChrome(cachedLoginBrowser)
+      } catch {
+        void 0
+      }
+    }
+
     const result = await verifyCmsProfileLogin({
       accountId: normalizedAccountId,
       profileId

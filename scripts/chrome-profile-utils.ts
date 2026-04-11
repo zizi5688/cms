@@ -47,6 +47,8 @@ export type CmsAccountsConfig = {
 const CHROME_USER_DATA_DIR = join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome')
 const SYSTEM_CHROME_EXECUTABLE =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const PRODUCTION_CMS_DATA_DIR_NAME = 'chrome-cms-data'
+const DEVELOPMENT_CMS_DATA_DIR_NAME = 'chrome-cms-data-dev'
 
 export function getChromeUserDataDir(): string {
   return CHROME_USER_DATA_DIR
@@ -62,6 +64,10 @@ export function getChromeSingletonLockPath(): string {
 
 export function getChromeExecutablePath(): string {
   return SYSTEM_CHROME_EXECUTABLE
+}
+
+export function getCmsRuntimeEnvironment(): 'development' | 'production' {
+  return process.env.NODE_ENV === 'production' ? 'production' : 'development'
 }
 
 export function hasFilesystemEntry(path: string): boolean {
@@ -226,12 +232,18 @@ export function getChromeProfilesOutputPath(): string {
   return join(os.homedir(), 'chrome-profiles.json')
 }
 
-export function getCmsChromeDataDir(homeDir: string = os.homedir()): string {
-  return join(homeDir, 'chrome-cms-data')
+export function getCmsChromeDataDir(
+  homeDir: string = os.homedir(),
+  environment: 'development' | 'production' = getCmsRuntimeEnvironment()
+): string {
+  return join(homeDir, environment === 'production' ? PRODUCTION_CMS_DATA_DIR_NAME : DEVELOPMENT_CMS_DATA_DIR_NAME)
 }
 
-export function getCmsAccountsConfigPath(homeDir: string = os.homedir()): string {
-  return join(getCmsChromeDataDir(homeDir), 'cms-accounts.json')
+export function getCmsAccountsConfigPath(
+  homeDir: string = os.homedir(),
+  environment: 'development' | 'production' = getCmsRuntimeEnvironment()
+): string {
+  return join(getCmsChromeDataDir(homeDir, environment), 'cms-accounts.json')
 }
 
 export function getSingletonLockPathForUserDataDir(userDataDir: string): string {
@@ -271,11 +283,20 @@ export function buildCmsAccountsConfig(input: {
 export async function loadCmsAccountsConfig(
   homeDir: string = os.homedir()
 ): Promise<CmsAccountsConfig | null> {
-  const configPath = getCmsAccountsConfigPath(homeDir)
+  const environment = getCmsRuntimeEnvironment()
+  const configPath = getCmsAccountsConfigPath(homeDir, environment)
 
   try {
     const raw = await readFile(configPath, 'utf8')
-    return JSON.parse(raw) as CmsAccountsConfig
+    const parsed = JSON.parse(raw) as CmsAccountsConfig
+    return {
+      profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
+      chromeExecutable:
+        typeof parsed.chromeExecutable === 'string' && parsed.chromeExecutable.trim()
+          ? parsed.chromeExecutable
+          : getChromeExecutablePath(),
+      cmsDataDir: getCmsChromeDataDir(homeDir, environment)
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null
@@ -288,9 +309,14 @@ export async function saveCmsAccountsConfig(
   config: CmsAccountsConfig,
   homeDir: string = os.homedir()
 ): Promise<void> {
-  const configPath = getCmsAccountsConfigPath(homeDir)
-  await mkdir(getCmsChromeDataDir(homeDir), { recursive: true })
-  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+  const environment = getCmsRuntimeEnvironment()
+  const configPath = getCmsAccountsConfigPath(homeDir, environment)
+  await mkdir(getCmsChromeDataDir(homeDir, environment), { recursive: true })
+  await writeFile(
+    configPath,
+    `${JSON.stringify({ ...config, cmsDataDir: getCmsChromeDataDir(homeDir, environment) }, null, 2)}\n`,
+    'utf8'
+  )
 }
 
 export function findCmsProfileRecord(

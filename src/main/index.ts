@@ -789,7 +789,8 @@ const defaultStorageMaintenanceRetainDays = 7
 const defaultPublishMode: CmsPublishMode = 'cdp'
 const defaultChromeExecutablePath =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const defaultCmsChromeDataDir = join(homedir(), 'chrome-cms-data')
+const productionCmsChromeDataDir = join(homedir(), 'chrome-cms-data')
+const developmentCmsChromeDataDir = join(homedir(), 'chrome-cms-data-dev')
 type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
@@ -863,9 +864,20 @@ function normalizeChromeExecutablePath(value: unknown): string {
   return normalized || defaultChromeExecutablePath
 }
 
+function getDefaultCmsChromeDataDir(): string {
+  return is.dev ? developmentCmsChromeDataDir : productionCmsChromeDataDir
+}
+
 function normalizeCmsChromeDataDir(value: unknown): string {
   const normalized = typeof value === 'string' ? value.trim() : ''
-  return normalized || defaultCmsChromeDataDir
+  if (!normalized) return getDefaultCmsChromeDataDir()
+
+  const expanded = normalized.startsWith('~/') ? join(homedir(), normalized.slice(2)) : normalized
+  if (is.dev && resolve(expanded) === resolve(productionCmsChromeDataDir)) {
+    return developmentCmsChromeDataDir
+  }
+
+  return normalized
 }
 
 const configStore = new StoreCtor<{

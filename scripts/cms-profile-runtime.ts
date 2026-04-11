@@ -89,7 +89,6 @@ export async function launchCmsProfileBrowser(input: {
       '--window-size=1440,960',
       '--disable-blink-features=AutomationControlled'
     ],
-    ignoreDefaultArgs: ['--enable-automation'],
     pipe: true,
     headless: false,
     defaultViewport: null,

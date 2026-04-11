@@ -1138,7 +1138,7 @@ function Settings(): React.JSX.Element {
                 <option value="cdp">Chrome CDP（新模式）</option>
               </select>
               <div className="text-xs text-zinc-500">
-                `Chrome CDP` 会使用 CMS 专用目录 `~/chrome-cms-data`，不接管日常 Chrome。
+                `Chrome CDP` 会按当前环境切换 CMS 专用目录：开发环境默认 `~/chrome-cms-data-dev`，生产环境默认 `~/chrome-cms-data`。
               </div>
             </div>
             <div className="flex flex-col gap-1">
@@ -1166,7 +1166,7 @@ function Settings(): React.JSX.Element {
               <Input
                 value={config.cmsChromeDataDir}
                 onChange={(event) => updateConfig({ cmsChromeDataDir: event.target.value })}
-                placeholder="~/chrome-cms-data"
+                placeholder="开发: ~/chrome-cms-data-dev / 生产: ~/chrome-cms-data"
               />
               <Button
                 type="button"
@@ -1182,7 +1182,7 @@ function Settings(): React.JSX.Element {
               </Button>
             </div>
             <div className="text-xs text-zinc-500">
-              这里应指向阶段 0 创建的 CMS 专用 Chrome 数据目录，里面包含 `cms-accounts.json`。
+              这里应指向当前环境对应的 CMS 专用 Chrome 数据目录，里面包含 `cms-accounts.json`。
             </div>
           </div>
         </CardContent>
