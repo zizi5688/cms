@@ -25,9 +25,6 @@ const DEFAULT_CHROME_EXECUTABLE =
 const DEFAULT_CMS_DATA_DIR = join(os.homedir(), 'chrome-cms-data')
 const CMS_ACCOUNTS_FILENAME = 'cms-accounts.json'
 const DEFAULT_GATEWAY_PROFILE_ID = 'cms-gateway-profile'
-const XHS_REAL_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
 type PublishRuntimeStore = {
   publishMode?: 'electron' | 'cdp'
   chromeExecutablePath?: string
@@ -198,10 +195,6 @@ function resolveRuntimeConfigFromStore(): ResolvedChromeRuntimeConfig {
   return { executablePath, userDataDir }
 }
 
-export function getChromeUserAgent(): string {
-  return XHS_REAL_UA
-}
-
 export function getDefaultCmsChromeDataDir(): string {
   return DEFAULT_CMS_DATA_DIR
 }
@@ -341,7 +334,6 @@ function viewportForSession(): { width: number; height: number } {
 }
 
 export async function prepareStealthPage(page: Page): Promise<void> {
-  await page.setUserAgent(XHS_REAL_UA)
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', {
       configurable: true,

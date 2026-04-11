@@ -38,9 +38,6 @@ export type WindowPlacementResult = {
   message: string
 }
 
-const XHS_REAL_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
 export async function readChromeMajorVersion(executablePath: string): Promise<number> {
   const { stdout, stderr } = await execFileAsync(executablePath, ['--version'])
   return parseChromeMajorVersion(`${stdout}\n${stderr}`.trim())
@@ -101,7 +98,6 @@ export async function launchCmsProfileBrowser(input: {
 }
 
 export async function prepareStealthPage(page: import('puppeteer').Page): Promise<void> {
-  await page.setUserAgent(XHS_REAL_UA)
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', {
       configurable: true,

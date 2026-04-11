@@ -25,14 +25,28 @@ type DetectionResult = {
   hasRequire: boolean
   hasElectron: boolean
   uaContainsElectron: boolean
+  userAgentDataPresent: boolean
   webdriver: boolean
+  webdriverType: string
   hasChromeCdc: boolean
   hasDomAutomation: boolean
   hasDomAutomationController: boolean
   hasChrome: boolean
   hasChromeRuntime: boolean
+  playwrightTrace: boolean
+  canvasStable: boolean
+  webrtcAvailable: boolean
   pluginCount: number
   languages: string[]
+  uaVersion: string | null
+  uaMajorVersion: string | null
+  actualChromeVersion: string | null
+  actualChromeFullVersion: string | null
+  actualChromeMajorVersion: string | null
+  uaVersionMatchesBrand: boolean
+  uaVersionMatchesFullVersion: boolean
+  uaMajorMatchesBrand: boolean
+  uaMajorMatchesFullVersion: boolean
   stackTrace: string
 }
 
@@ -106,6 +120,8 @@ async function main(): Promise<void> {
         2
       )
     )
+    console.log('预期检查:')
+    console.log(JSON.stringify(buildExpectationSummary(afterCdpClick), null, 2))
 
     await delay(2_000)
   } finally {
@@ -180,7 +196,7 @@ async function readProbeTarget(
 }
 
 async function readDetection(page: import('puppeteer').Page): Promise<DetectionResult> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const win = window as typeof window & {
       __cmsDetectionLastTrusted?: boolean | null
       process?: unknown
@@ -190,7 +206,46 @@ async function readDetection(page: import('puppeteer').Page): Promise<DetectionR
       domAutomation?: unknown
       domAutomationController?: unknown
       chrome?: { runtime?: unknown }
+      RTCPeerConnection?: unknown
+      navigator: Navigator & {
+        userAgentData?: {
+          brands?: Array<{ brand?: string; version?: string }>
+          getHighEntropyValues?: (
+            hints: string[]
+          ) => Promise<{ fullVersionList?: Array<{ brand?: string; version?: string }> }>
+        }
+      }
     }
+
+    const stackTrace = String(new Error().stack ?? '')
+    const brands = Array.isArray(win.navigator.userAgentData?.brands) ? win.navigator.userAgentData?.brands : []
+    const brandVersion =
+      brands?.find((brand) => brand?.brand === 'Google Chrome')?.version ?? null
+    let fullVersion: string | null = null
+
+    try {
+      const highEntropy = await win.navigator.userAgentData?.getHighEntropyValues?.(['fullVersionList'])
+      const fullVersionList = Array.isArray(highEntropy?.fullVersionList)
+        ? highEntropy.fullVersionList
+        : []
+      fullVersion =
+        fullVersionList.find((brand) => brand?.brand === 'Google Chrome')?.version ?? null
+    } catch {
+      fullVersion = null
+    }
+
+    const uaVersion = navigator.userAgent.match(/Chrome\/([\d.]+)/)?.[1] ?? null
+    const uaMajorVersion = uaVersion?.split('.')[0] ?? null
+    const actualChromeMajorVersion = fullVersion?.split('.')[0] ?? brandVersion?.split('.')[0] ?? null
+    const canvasStable = (() => {
+      const canvas = document.createElement('canvas')
+      const context = canvas.getContext('2d')
+      if (!context) return false
+      context.fillText('test', 10, 10)
+      const first = canvas.toDataURL()
+      const second = canvas.toDataURL()
+      return first === second
+    })()
 
     return {
       isTrusted: win.__cmsDetectionLastTrusted ?? null,
@@ -198,17 +253,78 @@ async function readDetection(page: import('puppeteer').Page): Promise<DetectionR
       hasRequire: typeof win.require !== 'undefined',
       hasElectron: typeof win.__electron !== 'undefined',
       uaContainsElectron: navigator.userAgent.includes('Electron'),
+      userAgentDataPresent: Boolean(win.navigator.userAgentData),
       webdriver: Boolean(navigator.webdriver),
+      webdriverType: typeof navigator.webdriver,
       hasChromeCdc: Boolean(win.cdc_adoQpoasnfa76pfcZLmcfl_),
       hasDomAutomation: Boolean(win.domAutomation),
       hasDomAutomationController: Boolean(win.domAutomationController),
       hasChrome: Boolean(win.chrome),
       hasChromeRuntime: Boolean(win.chrome?.runtime),
+      playwrightTrace: /playwright|evaluation_script|__puppeteer/.test(stackTrace),
+      canvasStable,
+      webrtcAvailable: Boolean(win.RTCPeerConnection),
       pluginCount: navigator.plugins.length,
       languages: Array.from(navigator.languages ?? []),
-      stackTrace: String(new Error().stack ?? '')
+      uaVersion,
+      uaMajorVersion,
+      actualChromeVersion: brandVersion,
+      actualChromeFullVersion: fullVersion,
+      actualChromeMajorVersion,
+      uaVersionMatchesBrand: Boolean(uaVersion && brandVersion && uaVersion === brandVersion),
+      uaVersionMatchesFullVersion: Boolean(uaVersion && fullVersion && uaVersion === fullVersion),
+      uaMajorMatchesBrand: Boolean(uaMajorVersion && brandVersion && uaMajorVersion === brandVersion),
+      uaMajorMatchesFullVersion: Boolean(
+        uaMajorVersion && actualChromeMajorVersion && uaMajorVersion === actualChromeMajorVersion
+      ),
+      stackTrace
     }
   })
+}
+
+function buildExpectationSummary(result: DetectionResult): Record<string, { expected: unknown; actual: unknown; ok: boolean }> {
+  return {
+    playwrightTrace: {
+      expected: false,
+      actual: result.playwrightTrace,
+      ok: result.playwrightTrace === false
+    },
+    userAgentDataPresent: {
+      expected: true,
+      actual: result.userAgentDataPresent,
+      ok: result.userAgentDataPresent === true
+    },
+    webdriverType: {
+      expected: 'boolean',
+      actual: result.webdriverType,
+      ok: result.webdriverType === 'boolean'
+    },
+    webdriver: {
+      expected: false,
+      actual: result.webdriver,
+      ok: result.webdriver === false
+    },
+    canvasStable: {
+      expected: true,
+      actual: result.canvasStable,
+      ok: result.canvasStable === true
+    },
+    webrtcAvailable: {
+      expected: true,
+      actual: result.webrtcAvailable,
+      ok: result.webrtcAvailable === true
+    },
+    uaMajorMatchesFullVersion: {
+      expected: true,
+      actual: result.uaMajorMatchesFullVersion,
+      ok: result.uaMajorMatchesFullVersion === true
+    },
+    uaVersionMatchesFullVersion: {
+      expected: true,
+      actual: result.uaVersionMatchesFullVersion,
+      ok: result.uaVersionMatchesFullVersion === true
+    }
+  }
 }
 
 function buildDiffSummary(
