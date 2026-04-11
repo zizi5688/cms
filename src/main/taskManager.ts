@@ -17,6 +17,7 @@ import {
   type LinkedTaskProduct
 } from './taskLinkedProductsHelpers'
 import { normalizeVideoCoverMode, normalizeVideoCoverModeForDb } from './taskVideoCoverMode'
+import type { CmsPublishSafetyCheck } from '../shared/cmsChromeProfileTypes'
 
 export type PublishTaskStatus = 'pending' | 'processing' | 'failed' | 'publish_failed' | 'scheduled' | 'published'
 
@@ -47,6 +48,7 @@ export type PublishTask = {
   isRaw?: boolean
   scheduledAt?: number
   publishedAt: string | null
+  safetyCheck?: CmsPublishSafetyCheck
   errorMsg: string
   errorMessage?: string
   createdAt: number
@@ -135,6 +137,27 @@ function normalizeTransformPolicy(value: unknown): TaskTransformPolicy {
 
 function normalizeMediaType(value: unknown): 'image' | 'video' {
   return value === 'video' ? 'video' : 'image'
+}
+
+function normalizeSafetyCheck(value: unknown): CmsPublishSafetyCheck | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const isTrusted = record.isTrusted === true
+  const webdriver = record.webdriver === true
+  const hasProcess = record.hasProcess === true
+  const headless = record.headless === true
+  const rawMouseMoveCount =
+    typeof record.mouseMoveCount === 'number' ? record.mouseMoveCount : Number(record.mouseMoveCount)
+  const mouseMoveCount = Number.isFinite(rawMouseMoveCount) ? Math.max(0, Math.floor(rawMouseMoveCount)) : 0
+  const allPassed = isTrusted && !webdriver && !hasProcess && mouseMoveCount >= 15 && !headless
+  return {
+    isTrusted,
+    webdriver,
+    hasProcess,
+    mouseMoveCount,
+    headless,
+    allPassed
+  }
 }
 
 function isHttpUrl(value: string): boolean {
@@ -496,7 +519,7 @@ export class TaskManager {
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
-          scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
+          scheduledAt, publishedAt, safetyCheckJson, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         ORDER BY createdAt DESC`
       )
@@ -517,7 +540,7 @@ export class TaskManager {
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
-          scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
+          scheduledAt, publishedAt, safetyCheckJson, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE accountId = ?
         ORDER BY createdAt DESC`
@@ -542,7 +565,7 @@ export class TaskManager {
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
-          scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
+          scheduledAt, publishedAt, safetyCheckJson, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE scheduledAt IS NOT NULL
           AND scheduledAt <= ?
@@ -1133,6 +1156,7 @@ export class TaskManager {
         remixSeed,
         scheduledAt: Number.isFinite(record.scheduledAt) ? Math.floor(record.scheduledAt as number) : undefined,
         publishedAt: null,
+        safetyCheck: undefined,
         errorMsg: '',
         errorMessage: '',
         createdAt
@@ -1153,12 +1177,12 @@ export class TaskManager {
         id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
         title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
         remixSessionId, remixSourceTaskIds, remixSeed,
-        scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
+        scheduledAt, publishedAt, safetyCheckJson, createdAt, errorMsg, errorMessage, isRaw
       ) VALUES (
         @id, @accountId, @status, @mediaType, @images, @videoPath, @videoPreviewPath, @videoCoverMode,
         @title, @content, @tags, @productId, @productName, @linkedProductsJson, @publishMode, @transformPolicy,
         @remixSessionId, @remixSourceTaskIds, @remixSeed,
-        @scheduledAt, @publishedAt, @createdAt, @errorMsg, @errorMessage, @isRaw
+        @scheduledAt, @publishedAt, @safetyCheckJson, @createdAt, @errorMsg, @errorMessage, @isRaw
       )`
     )
     const tx = db.transaction(() => {
@@ -1545,6 +1569,7 @@ export class TaskManager {
         publishMode=@publishMode,
         scheduledAt=@scheduledAt,
         publishedAt=@publishedAt,
+        safetyCheckJson=@safetyCheckJson,
         errorMsg=@errorMsg,
         errorMessage=@errorMessage,
         isRaw=@isRaw
@@ -1613,6 +1638,7 @@ export class TaskManager {
         publishMode=@publishMode,
         scheduledAt=@scheduledAt,
         publishedAt=@publishedAt,
+        safetyCheckJson=@safetyCheckJson,
         errorMsg=@errorMsg,
         errorMessage=@errorMessage,
         isRaw=@isRaw
@@ -1694,6 +1720,13 @@ export class TaskManager {
       }
     }
 
+    const nextSafetyCheck =
+      'safetyCheck' in record
+        ? record.safetyCheck === null
+          ? undefined
+          : normalizeSafetyCheck(record.safetyCheck)
+        : null
+
     const nextImages = Array.isArray(record.images)
       ? (record.images as unknown[]).map((v) => (typeof v === 'string' ? v.trim() : '')).filter(Boolean)
       : null
@@ -1759,6 +1792,7 @@ export class TaskManager {
       status: resolvedStatus,
       scheduledAt: nextScheduledAt !== null ? nextScheduledAt : task.scheduledAt,
       publishedAt: resolvedPublishedAt,
+      safetyCheck: nextSafetyCheck !== null ? nextSafetyCheck : task.safetyCheck,
       mediaType: resolvedMediaType === 'video' && !resolvedVideoPath ? 'image' : resolvedMediaType,
       videoPath: resolvedMediaType === 'video' ? resolvedVideoPath : undefined,
       videoPreviewPath: resolvedMediaType === 'video' ? resolvedVideoPreviewPath : undefined,
@@ -1795,6 +1829,15 @@ export class TaskManager {
     }
   }
 
+  private parseSafetyCheck(value: unknown): CmsPublishSafetyCheck | undefined {
+    if (typeof value !== 'string' || !value.trim()) return undefined
+    try {
+      return normalizeSafetyCheck(JSON.parse(value) as unknown)
+    } catch {
+      return undefined
+    }
+  }
+
   private rowToTask(row: Record<string, unknown>): PublishTask {
     const id = typeof row.id === 'string' ? row.id : ''
     const accountId = typeof row.accountId === 'string' ? row.accountId : ''
@@ -1819,6 +1862,7 @@ export class TaskManager {
     const remixSeed = typeof row.remixSeed === 'string' && row.remixSeed.trim() ? row.remixSeed : undefined
     const scheduledAt = typeof row.scheduledAt === 'number' && Number.isFinite(row.scheduledAt) ? row.scheduledAt : undefined
     const publishedAt = typeof row.publishedAt === 'string' && row.publishedAt.trim() ? row.publishedAt : null
+    const safetyCheck = this.parseSafetyCheck(row.safetyCheckJson)
     const createdAt = typeof row.createdAt === 'number' && Number.isFinite(row.createdAt) ? row.createdAt : Date.now()
     const errorMsg = typeof row.errorMsg === 'string' ? row.errorMsg : ''
     const errorMessage = typeof row.errorMessage === 'string' && row.errorMessage.trim() ? row.errorMessage : undefined
@@ -1847,6 +1891,7 @@ export class TaskManager {
       isRaw,
       scheduledAt,
       publishedAt,
+      safetyCheck,
       errorMsg,
       errorMessage,
       createdAt
@@ -1880,6 +1925,7 @@ export class TaskManager {
       remixSeed: task.remixSeed ?? null,
       scheduledAt: typeof task.scheduledAt === 'number' ? task.scheduledAt : null,
       publishedAt: task.publishedAt ?? null,
+      safetyCheckJson: task.safetyCheck ? JSON.stringify(task.safetyCheck) : null,
       createdAt: task.createdAt,
       errorMsg: task.errorMsg,
       errorMessage: task.errorMessage ?? null,
@@ -1896,7 +1942,7 @@ export class TaskManager {
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
-          scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
+          scheduledAt, publishedAt, safetyCheckJson, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE id = ?
         LIMIT 1`
@@ -1918,7 +1964,7 @@ export class TaskManager {
           id, accountId, status, mediaType, images, videoPath, videoPreviewPath, videoCoverMode,
           title, content, tags, productId, productName, linkedProductsJson, publishMode, transformPolicy,
           remixSessionId, remixSourceTaskIds, remixSeed,
-          scheduledAt, publishedAt, createdAt, errorMsg, errorMessage, isRaw
+          scheduledAt, publishedAt, safetyCheckJson, createdAt, errorMsg, errorMessage, isRaw
         FROM tasks
         WHERE id IN (${placeholders})`
       )

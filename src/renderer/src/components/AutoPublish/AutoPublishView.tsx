@@ -26,6 +26,7 @@ import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { CalendarView } from '@renderer/modules/MediaMatrix/CalendarView'
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import type { CmsChromeProfileRecord } from '../../../../shared/cmsChromeProfileTypes'
 import { resolveWorkshopAccountId } from '../modules/workshopProductSelectionHelpers'
 
 const CMS_PRODUCTS_SYNCED_EVENT = 'cms.products.synced'
@@ -116,12 +117,14 @@ function resolvePublishSessionHighlight(snapshot: CmsPublishSessionSnapshot | nu
 function AutoPublishView(): React.JSX.Element {
   const addLog = useCmsStore((s) => s.addLog)
   const workspacePath = useCmsStore((s) => s.workspacePath)
+  const publishMode = useCmsStore((s) => s.config.publishMode)
   const defaultStartTime = useCmsStore((s) => s.preferences.defaultStartTime)
   const defaultInterval = useCmsStore((s) => s.preferences.defaultInterval)
   const preferredAccountId = useCmsStore((s) => s.preferredAccountId)
   const setPreferredAccountId = useCmsStore((s) => s.setPreferredAccountId)
 
   const [accounts, setAccounts] = useState<CmsAccountRecord[]>([])
+  const [cmsProfiles, setCmsProfiles] = useState<CmsChromeProfileRecord[]>([])
   const [activeAccountId, setActiveAccountId] = useState('')
   const [tasks, setTasks] = useState<CmsPublishTask[]>([])
   const viewMode: 'schedule' = 'schedule'
@@ -131,9 +134,15 @@ function AutoPublishView(): React.JSX.Element {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false)
   const [isLoadingTasks, setIsLoadingTasks] = useState(false)
+  const [isLoadingCmsProfiles, setIsLoadingCmsProfiles] = useState(false)
+  const [isCreatingCmsProfile, setIsCreatingCmsProfile] = useState(false)
+  const [isRenamingCmsProfile, setIsRenamingCmsProfile] = useState(false)
   const [isSyncingProducts, setIsSyncingProducts] = useState(false)
+  const [bindingCmsProfileAccountId, setBindingCmsProfileAccountId] = useState('')
+  const [verifyingCmsProfileAccountId, setVerifyingCmsProfileAccountId] = useState('')
   const [deletingTaskId, setDeletingTaskId] = useState('')
   const [retryingTaskId, setRetryingTaskId] = useState('')
+  const [testingTaskId, setTestingTaskId] = useState('')
   const [editingAccountId, setEditingAccountId] = useState('')
   const [editingAccountName, setEditingAccountName] = useState('')
   const [isSmartScheduleOpen, setIsSmartScheduleOpen] = useState(false)
@@ -182,6 +191,24 @@ function AutoPublishView(): React.JSX.Element {
     () => accounts.find((a) => a.id === activeAccountId) ?? null,
     [accounts, activeAccountId]
   )
+  const visibleCmsProfiles = useMemo(() => {
+    const boundProfileIds = new Set(
+      accounts
+        .map((account) => account.cmsProfileId)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    )
+
+    return cmsProfiles
+      .filter((profile) => profile.purpose !== 'gateway')
+      .filter((profile) => {
+        const nickname = profile.nickname.trim()
+        if (nickname) return true
+        if (profile.xhsLoggedIn) return true
+        if (boundProfileIds.has(profile.id)) return true
+        return false
+      })
+      .sort((left, right) => left.profileDir.localeCompare(right.profileDir, 'zh-CN'))
+  }, [accounts, cmsProfiles])
   const activePublishQueueTaskId = publishSession?.queueTaskId?.trim() ?? ''
   const publishSessionHighlight = useMemo(
     () => resolvePublishSessionHighlight(publishSession),
@@ -210,6 +237,18 @@ function AutoPublishView(): React.JSX.Element {
     }
   }, [addLog, preferredAccountId])
 
+  const loadCmsProfiles = useCallback(async (): Promise<void> => {
+    setIsLoadingCmsProfiles(true)
+    try {
+      const list = await window.api.cms.account.listCmsProfiles()
+      setCmsProfiles(list)
+    } catch (error) {
+      addLog(`[媒体矩阵] 读取 CMS Chrome Profiles 失败：${String(error)}`)
+    } finally {
+      setIsLoadingCmsProfiles(false)
+    }
+  }, [addLog])
+
   const loadTasks = useCallback(
     async (accountId: string): Promise<void> => {
       const normalized = accountId.trim()
@@ -236,6 +275,11 @@ function AutoPublishView(): React.JSX.Element {
   useEffect(() => {
     void loadAccounts()
   }, [loadAccounts])
+
+  useEffect(() => {
+    if (publishMode !== 'cdp') return
+    void loadCmsProfiles()
+  }, [loadCmsProfiles, publishMode])
 
   useEffect(() => {
     void loadTasks(activeAccountId)
@@ -373,7 +417,9 @@ function AutoPublishView(): React.JSX.Element {
       const name = `小红书账号 ${datePart} ${timePart}`
       const created = await window.api.cms.account.create(name)
       setActiveAccountId(created.id)
-      await window.api.cms.account.login(created.id)
+      if (publishMode === 'electron') {
+        await window.api.cms.account.login(created.id)
+      }
       await loadAccounts()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -407,11 +453,142 @@ function AutoPublishView(): React.JSX.Element {
     const normalized = accountId.trim()
     if (!normalized) return
     try {
-      await window.api.cms.account.login(normalized)
-      addLog(`[媒体矩阵] 已打开登录窗口：${normalized}`)
+      if (publishMode === 'cdp') {
+        await window.api.cms.account.openCmsProfileLogin(normalized)
+        addLog(`[媒体矩阵] 已打开 CMS Chrome 登录窗口：${normalized}`)
+      } else {
+        await window.api.cms.account.login(normalized)
+        addLog(`[媒体矩阵] 已打开登录窗口：${normalized}`)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`打开登录窗口失败：${message}`)
+    }
+  }
+
+  const handleBindCmsProfile = async (accountId: string, cmsProfileId: string | null): Promise<void> => {
+    const normalizedAccountId = accountId.trim()
+    if (!normalizedAccountId) return
+    const currentAccount = accounts.find((account) => account.id === normalizedAccountId) ?? null
+    if (!currentAccount) return
+    const nextProfileId =
+      typeof cmsProfileId === 'string' && cmsProfileId.trim() ? cmsProfileId.trim() : null
+
+    if (currentAccount.cmsProfileId === nextProfileId) {
+      return
+    }
+
+    if (currentAccount.cmsProfileId && nextProfileId && currentAccount.cmsProfileId !== nextProfileId) {
+      const confirmed = window.confirm(
+        `当前账号已绑定 ${currentAccount.cmsProfileId}。\n确定要改绑到 ${nextProfileId} 吗？`
+      )
+      if (!confirmed) return
+    }
+
+    const occupiedBy = nextProfileId
+      ? accounts.find(
+          (account) => account.id !== normalizedAccountId && account.cmsProfileId === nextProfileId
+        ) ?? null
+      : null
+    if (occupiedBy) {
+      const confirmed = window.confirm(
+        `${nextProfileId} 当前已绑定给账号“${occupiedBy.name}”。\n继续后会自动从原账号解绑，并改绑到当前账号。\n确定继续吗？`
+      )
+      if (!confirmed) return
+    }
+
+    if (!nextProfileId && currentAccount.cmsProfileId) {
+      const confirmed = window.confirm(`确定要解除当前绑定 ${currentAccount.cmsProfileId} 吗？`)
+      if (!confirmed) return
+    }
+
+    setBindingCmsProfileAccountId(normalizedAccountId)
+    try {
+      await window.api.cms.account.bindCmsProfile(normalizedAccountId, nextProfileId)
+      await loadAccounts()
+      addLog(
+        `[媒体矩阵] ${
+          nextProfileId ? `已绑定 CMS Profile：${nextProfileId}` : '已清除 CMS Profile 绑定'
+        }`
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`绑定 CMS Profile 失败：${message}`)
+    } finally {
+      setBindingCmsProfileAccountId('')
+    }
+  }
+
+  const handleVerifyCmsProfile = async (account: CmsAccountRecord): Promise<void> => {
+    const normalizedAccountId = account.id.trim()
+    if (!normalizedAccountId) return
+    setVerifyingCmsProfileAccountId(normalizedAccountId)
+    try {
+      const result = await window.api.cms.account.verifyCmsProfileLogin(normalizedAccountId)
+      await Promise.all([loadAccounts(), loadCmsProfiles()])
+      const summary = result.loggedIn
+        ? `✅ ${result.profileId} 登录有效`
+        : `❌ ${result.profileId} 未登录：${result.reason}`
+      addLog(`[媒体矩阵] ${summary}`)
+      window.alert(`${summary}\n${result.finalUrl}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`验证登录态失败：${message}`)
+    } finally {
+      setVerifyingCmsProfileAccountId('')
+    }
+  }
+
+  const handleCreateCmsProfile = async (account: CmsAccountRecord): Promise<void> => {
+    const normalizedAccountId = account.id.trim()
+    if (!normalizedAccountId || isCreatingCmsProfile) return
+    const nicknameInput = window.prompt(
+      '输入新 Profile 的昵称（可留空，后续也可以再改名）',
+      ''
+    )
+    if (nicknameInput === null) return
+
+    setIsCreatingCmsProfile(true)
+    try {
+      const created = await window.api.cms.account.createCmsProfile(nicknameInput.trim())
+      await window.api.cms.account.bindCmsProfile(normalizedAccountId, created.id)
+      await Promise.all([loadAccounts(), loadCmsProfiles()])
+      addLog(`[媒体矩阵] 已新建并绑定 CMS Profile：${created.nickname || created.id}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`新建 CMS Profile 失败：${message}`)
+    } finally {
+      setIsCreatingCmsProfile(false)
+    }
+  }
+
+  const handleRenameCmsProfile = async (profileId: string): Promise<void> => {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId || isRenamingCmsProfile) return
+    const current =
+      cmsProfiles.find((profile) => profile.id === normalizedProfileId) ??
+      visibleCmsProfiles.find((profile) => profile.id === normalizedProfileId) ??
+      null
+    if (!current) return
+
+    const nextNickname = window.prompt('输入新的 Profile 昵称', current.nickname || current.id)
+    if (nextNickname === null) return
+    const normalizedNickname = nextNickname.trim()
+    if (!normalizedNickname) {
+      window.alert('Profile 昵称不能为空')
+      return
+    }
+
+    setIsRenamingCmsProfile(true)
+    try {
+      await window.api.cms.account.renameCmsProfile(normalizedProfileId, normalizedNickname)
+      await loadCmsProfiles()
+      addLog(`[媒体矩阵] 已重命名 CMS Profile：${normalizedNickname}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`重命名 CMS Profile 失败：${message}`)
+    } finally {
+      setIsRenamingCmsProfile(false)
     }
   }
 
@@ -511,6 +688,49 @@ function AutoPublishView(): React.JSX.Element {
       }
     },
     [activeAccountId, addLog, retryingTaskId]
+  )
+
+  const handleTestPublish = useCallback(
+    async (task: CmsPublishTask): Promise<void> => {
+      if (testingTaskId) return
+      if (task.status === 'published') {
+        window.alert('已发布任务不需要再做测试发布。')
+        return
+      }
+
+      const confirmed = window.confirm(
+        '将执行一次“不会真发”的测试发布：会自动打开发布页并填充内容，但不会点击最终发布按钮。\n确定继续吗？'
+      )
+      if (!confirmed) return
+
+      setTestingTaskId(task.id)
+      try {
+        const result = await window.api.cms.publisher.publish(task.accountId, {
+          title: task.title,
+          content: task.content,
+          mediaType: task.mediaType,
+          videoPath: task.videoPath,
+          videoCoverMode: task.videoCoverMode,
+          images: task.images,
+          productId: task.productId,
+          productName: task.productName,
+          linkedProducts: task.linkedProducts,
+          dryRun: true,
+          mode: 'immediate'
+        })
+        if (!result.success) {
+          throw new Error(result.error || '测试发布失败')
+        }
+        addLog('[媒体矩阵] 测试发布执行完成：已走到发布前最后一步，未真正发布。')
+        window.alert('测试发布执行完成：已走到发布前最后一步，未真正发布。')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        window.alert(`测试发布失败：${message}`)
+      } finally {
+        setTestingTaskId('')
+      }
+    },
+    [addLog, testingTaskId]
   )
 
   const filteredTasks = useMemo(() => {
@@ -680,7 +900,7 @@ function AutoPublishView(): React.JSX.Element {
                 <div className="flex flex-col gap-2">
                   {accounts.map((account) => {
                     const isActive = account.id === activeAccountId
-                    const isOnline = account.lastLoginTime !== null
+                    const isOnline = account.status === 'logged_in'
                     const isEditing = editingAccountId === account.id
                     return (
                       <div
@@ -741,7 +961,7 @@ function AutoPublishView(): React.JSX.Element {
                             )}
                           />
                           <span className="text-xs text-zinc-400">
-                            {isOnline ? '在线' : '离线'}
+                            {isOnline ? '在线' : account.status === 'expired' ? '已过期' : '离线'}
                           </span>
                           <button
                             type="button"
@@ -754,7 +974,7 @@ function AutoPublishView(): React.JSX.Element {
                             aria-label="登录"
                           >
                             <LogIn className="h-3.5 w-3.5" />
-                            登录
+                            {publishMode === 'cdp' ? '登录/重登' : '登录'}
                           </button>
                           <button
                             type="button"
@@ -807,11 +1027,15 @@ function AutoPublishView(): React.JSX.Element {
                       <span
                         className={cn(
                           'h-2.5 w-2.5 rounded-full',
-                          activeAccount.lastLoginTime !== null ? 'bg-emerald-400' : 'bg-red-400'
+                          activeAccount.status === 'logged_in' ? 'bg-emerald-400' : 'bg-red-400'
                         )}
                       />
                       <span className="text-xs text-zinc-400">
-                        {activeAccount.lastLoginTime !== null ? '在线' : '离线'}
+                        {activeAccount.status === 'logged_in'
+                          ? '在线'
+                          : activeAccount.status === 'expired'
+                            ? '已过期'
+                            : '离线'}
                       </span>
                       <button
                         type="button"
@@ -820,7 +1044,7 @@ function AutoPublishView(): React.JSX.Element {
                         aria-label="登录"
                       >
                         <LogIn className="h-3.5 w-3.5" />
-                        登录
+                        {publishMode === 'cdp' ? '登录/重登' : '登录'}
                       </button>
                       <button
                         type="button"
@@ -888,6 +1112,91 @@ function AutoPublishView(): React.JSX.Element {
                     </Button>
                   </div>
                 ) : null}
+                {activeAccount && publishMode === 'cdp' ? (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-1">
+                        <div className="text-xs text-zinc-400">CMS Chrome Profile</div>
+                        <div className="flex flex-wrap gap-2">
+                          <select
+                            value={activeAccount.cmsProfileId ?? ''}
+                            onChange={(event) =>
+                              void handleBindCmsProfile(
+                                activeAccount.id,
+                                event.target.value.trim() || null
+                              )
+                            }
+                            disabled={bindingCmsProfileAccountId === activeAccount.id}
+                            className="h-9 min-w-[260px] rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100"
+                          >
+                            <option value="">未绑定</option>
+                            {visibleCmsProfiles.map((profile) => (
+                              <option key={profile.id} value={profile.id}>
+                                {(profile.nickname || profile.id) +
+                                  ` · ${profile.profileDir} · ${profile.xhsLoggedIn ? '已登录' : '未登录'}`}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void loadCmsProfiles()}
+                            disabled={isLoadingCmsProfiles}
+                          >
+                            {isLoadingCmsProfiles ? '刷新中...' : '刷新 Profiles'}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={() => void handleCreateCmsProfile(activeAccount)}
+                            disabled={isCreatingCmsProfile}
+                          >
+                            {isCreatingCmsProfile ? '新建中...' : '新建 Profile'}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() =>
+                              activeAccount.cmsProfileId
+                                ? void handleRenameCmsProfile(activeAccount.cmsProfileId)
+                                : void 0
+                            }
+                            disabled={!activeAccount.cmsProfileId || isRenamingCmsProfile}
+                          >
+                            {isRenamingCmsProfile ? '改名中...' : '改名'}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={() => void handleLogin(activeAccount.id)}
+                            disabled={!activeAccount.cmsProfileId}
+                          >
+                            登录/重新登录
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void handleVerifyCmsProfile(activeAccount)}
+                            disabled={
+                              !activeAccount.cmsProfileId ||
+                              verifyingCmsProfileAccountId === activeAccount.id
+                            }
+                          >
+                            {verifyingCmsProfileAccountId === activeAccount.id
+                              ? '验证中...'
+                              : '验证登录态'}
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="text-xs text-zinc-400">
+                        {activeAccount.cmsProfileId
+                          ? `当前绑定：${
+                              cmsProfiles.find((profile) => profile.id === activeAccount.cmsProfileId)?.nickname ||
+                              activeAccount.cmsProfileId
+                            }。发布任务会直接使用这个专用 Profile。`
+                          : '请先新建或绑定一个 CMS 专用 Profile，再进行登录或发布。'}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="min-w-0">
@@ -915,7 +1224,7 @@ function AutoPublishView(): React.JSX.Element {
                   <Button
                     variant="outline"
                     onClick={() => void handleSyncProducts()}
-                    disabled={isSyncingProducts}
+                    disabled={isSyncingProducts || publishMode === 'cdp'}
                   >
                     <RefreshCw className={cn('h-4 w-4', isSyncingProducts ? 'animate-spin' : '')} />
                     同步商品
@@ -1185,6 +1494,22 @@ function AutoPublishView(): React.JSX.Element {
                                 </div>
                               </div>
                               <div className="flex shrink-0 items-center gap-2">
+                                {publishMode === 'cdp' &&
+                                (task.status === 'pending' || task.status === 'scheduled') ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      void handleTestPublish(task)
+                                    }}
+                                    disabled={Boolean(testingTaskId)}
+                                    title="自动走到发布前最后一步，但不会真正发布"
+                                    className="border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20 hover:text-amber-50"
+                                  >
+                                    {testingTaskId === task.id ? '测试中…' : '测试发布'}
+                                  </Button>
+                                ) : null}
                                 {task.status === 'failed' ? (
                                   <Button
                                     variant="outline"
@@ -1193,7 +1518,7 @@ function AutoPublishView(): React.JSX.Element {
                                       e.stopPropagation()
                                       void handleRetryTask(task.id)
                                     }}
-                                    disabled={Boolean(retryingTaskId)}
+                                    disabled={Boolean(retryingTaskId) || Boolean(testingTaskId)}
                                   >
                                     重试
                                   </Button>
@@ -1204,7 +1529,7 @@ function AutoPublishView(): React.JSX.Element {
                                     e.stopPropagation()
                                     void handleDeleteTask(task.id)
                                   }}
-                                  disabled={Boolean(deletingTaskId)}
+                                  disabled={Boolean(deletingTaskId) || Boolean(testingTaskId)}
                                   className={cn(
                                     'inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent text-zinc-500 transition',
                                     'hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-300',

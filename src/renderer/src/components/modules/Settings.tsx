@@ -221,6 +221,14 @@ function Settings(): React.JSX.Element {
   const storageMaintenanceRunLockRef = useRef(false)
   const storageMaintenanceRollbackLockRef = useRef(false)
   const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
+  const hasLegacyLocalGatewayProfile = Boolean(
+    config.localGateway.chromeProfileDirectory.trim() && !config.localGateway.gatewayCmsProfileId.trim()
+  )
+  const selectedLocalGatewayProfile = useMemo(
+    () =>
+      localGatewayProfiles.find((profile) => profile.id === config.localGateway.gatewayCmsProfileId.trim()) ?? null,
+    [config.localGateway.gatewayCmsProfileId, localGatewayProfiles]
+  )
 
   useEffect(() => {
     const startedAt = performance.now()
@@ -287,6 +295,9 @@ function Settings(): React.JSX.Element {
         const savedTools = await window.electronAPI.getConfig()
         if (!cancelled && savedTools) {
           updateConfig({
+            publishMode: savedTools.publishMode ?? 'cdp',
+            chromeExecutablePath: savedTools.chromeExecutablePath ?? '',
+            cmsChromeDataDir: savedTools.cmsChromeDataDir ?? '',
             aiProvider:
               typeof savedTools.aiProvider === 'string' && savedTools.aiProvider.trim()
                 ? savedTools.aiProvider.trim()
@@ -397,7 +408,7 @@ function Settings(): React.JSX.Element {
       const profiles = await window.electronAPI.listLocalGatewayChromeProfiles()
       setLocalGatewayProfiles(profiles)
     } catch (error) {
-      addLog(`[本地网关] 读取 Chrome Profile 失败：${unwrapElectronInvokeError(extractErrorMessage(error))}`)
+      addLog(`[本地网关] 读取 CMS 网关 Profile 失败：${unwrapElectronInvokeError(extractErrorMessage(error))}`)
     } finally {
       setIsLoadingLocalGatewayProfiles(false)
     }
@@ -515,6 +526,9 @@ function Settings(): React.JSX.Element {
     const handle = window.setTimeout(() => {
       void window.electronAPI
         .saveConfig({
+          publishMode: config.publishMode,
+          chromeExecutablePath: config.chromeExecutablePath.trim(),
+          cmsChromeDataDir: config.cmsChromeDataDir.trim(),
           aiProvider: config.aiProvider,
           aiBaseUrl: config.aiBaseUrl,
           aiApiKey: config.aiApiKey,
@@ -551,6 +565,8 @@ function Settings(): React.JSX.Element {
     }
   }, [
     addLog,
+    config.chromeExecutablePath,
+    config.cmsChromeDataDir,
     config.aiApiKey,
     config.aiBaseUrl,
     config.aiDefaultImageModel,
@@ -558,6 +574,7 @@ function Settings(): React.JSX.Element {
     config.aiProvider,
     config.aiProviderProfiles,
     config.aiRuntimeDefaults,
+    config.publishMode,
     config.importStrategy,
     config.pythonPath,
     config.realEsrganPath,
@@ -612,6 +629,48 @@ function Settings(): React.JSX.Element {
     }
   }
 
+  const ensureLocalGatewayProfile = async (): Promise<void> => {
+    if (typeof window.electronAPI.ensureLocalGatewayProfile !== 'function') return
+    setIsInitializingLocalGateway(true)
+    try {
+      const profile = await window.electronAPI.ensureLocalGatewayProfile()
+      updateConfig({
+        localGateway: {
+          ...config.localGateway,
+          gatewayCmsProfileId: profile.id,
+          allowDedicatedChrome: true
+        }
+      })
+      addLog(`[本地网关] 已准备网关专用 Profile：${profile.profileDir}`)
+      await refreshLocalGatewayProfiles()
+      await refreshLocalGatewayState()
+    } catch (error) {
+      addLog(`[本地网关] 初始化网关专用 Profile 失败：${extractErrorMessage(error)}`)
+    } finally {
+      setIsInitializingLocalGateway(false)
+    }
+  }
+
+  const openLocalGatewayProfileLogin = async (): Promise<void> => {
+    if (typeof window.electronAPI.openLocalGatewayProfileLogin !== 'function') return
+    try {
+      const result = await window.electronAPI.openLocalGatewayProfileLogin()
+      if (!config.localGateway.gatewayCmsProfileId.trim()) {
+        updateConfig({
+          localGateway: {
+            ...config.localGateway,
+            gatewayCmsProfileId: result.profileId,
+            allowDedicatedChrome: true
+          }
+        })
+      }
+      addLog(`[本地网关] 已打开网关专用 Profile，请在 Chrome 中完成 Google / Flow 登录。`)
+      await refreshLocalGatewayProfiles()
+    } catch (error) {
+      addLog(`[本地网关] 打开网关专用 Profile 失败：${extractErrorMessage(error)}`)
+    }
+  }
+
   useEffect(() => {
     const dispose = window.api.cms.scout.dashboard.onAutoImportScanProgress((payload) => {
       if (!payload || payload.mode !== 'manual') return
@@ -662,13 +721,13 @@ function Settings(): React.JSX.Element {
       case 'downloading':
         return appUpdateState.message || '正在下载更新...'
       case 'downloaded':
-        return appUpdateState.message || '更新已下载完成，可立即重启更新，或退出时自动安装。'
+        return appUpdateState.message || '更新已下载，可安装。'
       case 'not-available':
         return appUpdateState.message || '当前已是最新版本。'
       case 'error':
         return appUpdateState.message || '更新检查失败。'
       default:
-        return appUpdateState.message || '自动更新已就绪（将自动检查并后台下载）。'
+        return appUpdateState.message || '自动更新已就绪。'
     }
   }, [appUpdateState])
 
@@ -1028,7 +1087,7 @@ function Settings(): React.JSX.Element {
         <AiProviderSettingsPanel config={config} updateConfig={updateConfig} />
       ) : (
         <>
-      <Card>
+        <Card>
         <CardHeader>
           <CardTitle>工作区管理</CardTitle>
           <CardDescription>
@@ -1054,6 +1113,80 @@ function Settings(): React.JSX.Element {
           </div>
           </CardContent>
         </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Chrome 发布模式</CardTitle>
+          <CardDescription>
+            保留旧的 Electron 链路，同时支持切换到基于真实 Chrome 的 CDP 发布模式。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">发布模式</div>
+              <select
+                value={config.publishMode}
+                onChange={(event) =>
+                  updateConfig({
+                    publishMode: event.target.value === 'cdp' ? 'cdp' : 'electron'
+                  })
+                }
+                className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
+              >
+                <option value="electron">Electron（旧模式）</option>
+                <option value="cdp">Chrome CDP（新模式）</option>
+              </select>
+              <div className="text-xs text-zinc-500">
+                `Chrome CDP` 会使用 CMS 专用目录 `~/chrome-cms-data`，不接管日常 Chrome。
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-zinc-400">当前说明</div>
+              <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+                {config.publishMode === 'cdp'
+                  ? '当前发布将走真实 Chrome + Puppeteer pipe 模式。账号需要先绑定 CMS Profile。'
+                  : '当前发布继续走 Electron BrowserWindow 方案，旧链路不受影响。'}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">Chrome 可执行文件路径</div>
+            <Input
+              value={config.chromeExecutablePath}
+              onChange={(event) => updateConfig({ chromeExecutablePath: event.target.value })}
+              placeholder="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-zinc-400">CMS 数据目录</div>
+            <div className="flex gap-2">
+              <Input
+                value={config.cmsChromeDataDir}
+                onChange={(event) => updateConfig({ cmsChromeDataDir: event.target.value })}
+                placeholder="~/chrome-cms-data"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  void window.electronAPI.openDirectory().then((selected) => {
+                    if (!selected) return
+                    updateConfig({ cmsChromeDataDir: selected })
+                  })
+                }
+              >
+                选择目录
+              </Button>
+            </div>
+            <div className="text-xs text-zinc-500">
+              这里应指向阶段 0 创建的 CMS 专用 Chrome 数据目录，里面包含 `cms-accounts.json`。
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -1160,9 +1293,9 @@ function Settings(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle>应用更新（Windows / macOS）</CardTitle>
+          <CardTitle>应用更新（Windows）</CardTitle>
           <CardDescription>
-            基于 GitHub Releases 检查更新；打包版会在启动后自动检查，并在后台下载更新。
+            基于 GitHub Releases 检查更新；Windows 打包版会在启动后自动检查一次。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -1208,11 +1341,8 @@ function Settings(): React.JSX.Element {
               onClick={() => void installDownloadedUpdate()}
               disabled={appUpdateState?.phase !== 'downloaded' || isInstallingAppUpdate}
             >
-              {isInstallingAppUpdate ? '准备重启...' : '立即重启更新'}
+              {isInstallingAppUpdate ? '准备重启...' : '立即安装并重启'}
             </Button>
-          </div>
-          <div className="text-xs text-zinc-500">
-            下载完成后可选择立即重启更新；若稍后处理，退出应用时会自动安装。
           </div>
         </CardContent>
       </Card>
@@ -1257,45 +1387,57 @@ function Settings(): React.JSX.Element {
                 onClick={() => void refreshLocalGatewayProfiles()}
                 disabled={isLoadingLocalGatewayProfiles}
               >
-                {isLoadingLocalGatewayProfiles ? '读取中...' : '刷新 Profiles'}
+                {isLoadingLocalGatewayProfiles ? '读取中...' : '刷新 CMS Profiles'}
               </Button>
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="flex flex-col gap-1">
-              <div className="text-xs text-zinc-400">Chrome Profile</div>
+              <div className="text-xs text-zinc-400">网关专用 CMS Profile</div>
               <select
-                value={config.localGateway.chromeProfileDirectory}
+                value={config.localGateway.gatewayCmsProfileId}
                 onChange={(event) =>
                   updateConfig({
                     localGateway: {
                       ...config.localGateway,
-                      chromeProfileDirectory: event.target.value
+                      gatewayCmsProfileId: event.target.value,
+                      allowDedicatedChrome: true
                     }
                   })
                 }
                 className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
               >
-                <option value="">请选择一个 Profile</option>
+                <option value="">请选择一个 CMS 网关 Profile</option>
                 {localGatewayProfiles.map((profile) => (
-                  <option key={profile.directory} value={profile.directory}>
+                  <option key={profile.id} value={profile.id}>
                     {profile.label}
                   </option>
                 ))}
               </select>
               <div className="text-xs text-zinc-500">
-                用于首次初始化和图片链路恢复；会复用这个 Chrome 登录态。
+                本地网关只会使用这里选中的 CMS 专用 Profile，不会再接管你日常使用的 Chrome。
               </div>
+              {selectedLocalGatewayProfile ? (
+                <div className="text-xs text-emerald-300">
+                  当前选择：{selectedLocalGatewayProfile.nickname} / {selectedLocalGatewayProfile.profileDir}
+                </div>
+              ) : null}
+              {hasLegacyLocalGatewayProfile ? (
+                <div className="text-xs text-amber-300">
+                  检测到旧版日常 Chrome Profile 配置：{config.localGateway.chromeProfileDirectory}。请先初始化网关专用 CMS
+                  Profile，再重新登录。
+                </div>
+              ) : null}
               {!isLoadingLocalGatewayProfiles && localGatewayProfiles.length === 0 ? (
                 <div className="text-xs text-amber-300">
-                  当前没有读取到本机 Chrome Profiles。新机器上先登录一次 Chrome，再点“刷新 Profiles”。
+                  当前还没有网关专用 CMS Profile。先点“初始化网关专用 Profile”，再点“打开并登录网关 Profile”。
                 </div>
               ) : null}
             </div>
             <div className="flex flex-col gap-1">
               <div className="text-xs text-zinc-400">初始化说明</div>
               <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
-                新机器首次使用时，先准备好网关程序包目录，再选择一个已登录 Google 的 Chrome Profile，然后点“执行初始化”。
+                首次使用时，先初始化一个“本地网关专用”CMS Profile，再打开它完成 Google / Flow 登录，最后执行初始化。
               </div>
             </div>
           </div>
@@ -1363,21 +1505,6 @@ function Settings(): React.JSX.Element {
             <label className="flex items-center gap-2 text-sm text-zinc-200">
               <input
                 type="checkbox"
-                checked={config.localGateway.allowDedicatedChrome}
-                onChange={(event) =>
-                  updateConfig({
-                    localGateway: {
-                      ...config.localGateway,
-                      allowDedicatedChrome: event.target.checked
-                    }
-                  })
-                }
-              />
-              允许 dedicated Chrome
-            </label>
-            <label className="flex items-center gap-2 text-sm text-zinc-200">
-              <input
-                type="checkbox"
                 checked={config.localGateway.prewarmImageOnLaunch}
                 onChange={(event) =>
                   updateConfig({
@@ -1414,6 +1541,22 @@ function Settings(): React.JSX.Element {
             <Button
               type="button"
               variant="outline"
+              onClick={() => void ensureLocalGatewayProfile()}
+              disabled={isInitializingLocalGateway}
+            >
+              初始化网关专用 Profile
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void openLocalGatewayProfileLogin()}
+              disabled={isInitializingLocalGateway}
+            >
+              打开并登录网关 Profile
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
               onClick={() => void refreshLocalGatewayState()}
             >
               刷新状态
@@ -1431,7 +1574,7 @@ function Settings(): React.JSX.Element {
               disabled={
                 isInitializingLocalGateway ||
                 !config.localGateway.enabled ||
-                !config.localGateway.chromeProfileDirectory.trim()
+                !config.localGateway.gatewayCmsProfileId.trim()
               }
             >
               {isInitializingLocalGateway ? '初始化中...' : '执行初始化'}

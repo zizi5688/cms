@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.node.json",
+  "include": [
+    "scripts/chrome-profile-utils.ts",
+    "scripts/cms-profile-runtime.ts",
+    "scripts/lib/human-input.ts",
+    "scripts/list-chrome-profiles.ts",
+    "scripts/chrome-profile-launcher.ts"
+    ,
+    "scripts/setup-cms-profiles.ts",
+    "scripts/cms-login.ts",
+    "scripts/verify-cms-profile.ts",
+    "scripts/cms-login-all.ts",
+    "scripts/publish-test-helpers.ts",
+    "scripts/publish-test.ts"
+  ],
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  }
+}

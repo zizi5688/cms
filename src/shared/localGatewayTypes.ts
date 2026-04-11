@@ -1,3 +1,5 @@
+import type { CmsChromeProfilePurpose } from './cmsChromeProfileTypes'
+
 export type LocalGatewayConfig = {
   enabled: boolean
   bundlePath: string
@@ -6,6 +8,7 @@ export type LocalGatewayConfig = {
   startCdpProxy: boolean
   allowDedicatedChrome: boolean
   chromeProfileDirectory: string
+  gatewayCmsProfileId: string
   prewarmImageOnLaunch: boolean
 }
 
@@ -40,14 +43,18 @@ export type LocalGatewayState = {
 }
 
 export type LocalGatewayChromeProfile = {
-  directory: string
-  name: string
+  id: string
+  profileDir: string
+  nickname: string
   label: string
-  userName: string | null
+  purpose: CmsChromeProfilePurpose
+  xhsLoggedIn: boolean
+  lastLoginCheck: string | null
 }
 
 export type LocalGatewayInitializationResult = {
   success: boolean
+  profileId: string
   profileDirectory: string
   output: string
 }

@@ -3,6 +3,9 @@ import { randomUUID } from 'crypto'
 import { join } from 'path'
 import ElectronStore from 'electron-store'
 import { is } from '@electron-toolkit/utils'
+import { closeChrome, launchChrome } from '../cdp/chrome-launcher'
+import { runXhsPublishWithCdp } from '../cdp/xhs-publisher'
+import type { CmsPublishMode, CmsPublishSafetyCheck } from '../shared/cmsChromeProfileTypes'
 import type { AccountManager } from './services/accountManager'
 import type { TaskManager } from './taskManager'
 import { QueueService } from './services/queueService'
@@ -65,6 +68,12 @@ function resolveQueueConfig(): QueueConfig {
   }
 }
 
+function resolvePublishMode(): CmsPublishMode {
+  const store = new StoreCtor<{ publishMode?: CmsPublishMode }>()
+  const stored = store.get('publishMode')
+  return stored === 'cdp' ? 'cdp' : 'electron'
+}
+
 /** Box-Muller 高斯随机延迟 */
 function gaussianDelay(minMs: number, maxMs: number): number {
   const u1 = Math.random() || 1e-10
@@ -99,7 +108,7 @@ export type XhsProductRecord = {
   productUrl: string
 }
 
-export type PublisherResult = { success: boolean; time?: string; error?: string }
+export type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
 
 type AutomationTaskPayload = {
   taskId: string
@@ -446,6 +455,99 @@ export class PublisherService {
     })
 
     const publishDebugState = readPublishDebugState()
+    const publishMode = resolvePublishMode()
+
+    if (publishMode === 'cdp') {
+      if (!account.cmsProfileId) {
+        const failure = '当前账号未绑定 CMS Chrome Profile，请先在账号管理中绑定后再发布。'
+        session = failPublishSession(session, {
+          userMessage: failure,
+          message: failure,
+          stageKey: 'prepare'
+        })
+        broadcastPublishSession(session)
+        notifyPublishPhase({
+          phase: 'finish',
+          accountName: account.name,
+          taskTitle: normalizedTask.title,
+          success: false,
+          error: failure
+        })
+        return { success: false, error: failure }
+      }
+
+      const diagnostics = new DiagnosticsService()
+      let browser: Awaited<ReturnType<typeof launchChrome>> | null = null
+      try {
+        browser = await launchChrome(account.cmsProfileId)
+        const automationResult = await runXhsPublishWithCdp({
+          browser,
+          workspacePath: resolveWorkspacePath(),
+          task: {
+            title: normalizedTask.title,
+            content: normalizedTask.content,
+            mediaType: normalizedTask.mediaType,
+            videoPath: normalizedTask.videoPath,
+            videoCoverMode: normalizedTask.videoCoverMode,
+            images: normalizedTask.images,
+            productId: normalizedTask.productId,
+            productName: normalizedTask.productName,
+            linkedProducts: normalizedTask.linkedProducts
+          },
+          dryRun: normalizedTask.dryRun,
+          onLog: (message) => {
+            const trimmed = String(message ?? '').trim()
+            if (!trimmed) return
+            broadcastToRenderers('automation-log', trimmed)
+            const stageUpdate = derivePublishStageUpdate(trimmed, normalizedTask.mediaType)
+            if (!stageUpdate) return
+            session = applyPublishStageUpdate(session, stageUpdate)
+            broadcastPublishSession(session)
+          }
+        })
+        if (!normalizedTask.dryRun && !automationResult.time) {
+          throw new Error('发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。')
+        }
+        session = completePublishSession(session)
+        broadcastPublishSession(session)
+        notifyPublishPhase({
+          phase: 'finish',
+          accountName: account.name,
+          taskTitle: normalizedTask.title,
+          success: true
+        })
+        return { success: true, time: automationResult.time, safetyCheck: automationResult.safetyCheck }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const failure = buildPublishFailureSummary(message, normalizedTask.mediaType)
+        session = failPublishSession(session, failure)
+        broadcastPublishSession(session)
+        try {
+          await diagnostics.saveDiagnostics({
+            taskId,
+            workspacePath: resolveWorkspacePath(),
+            errorMessage: message
+          })
+        } catch {
+          void 0
+        }
+        notifyPublishPhase({
+          phase: 'finish',
+          accountName: account.name,
+          taskTitle: normalizedTask.title,
+          success: false,
+          error: failure.userMessage
+        })
+        return { success: false, error: failure.userMessage }
+      } finally {
+        try {
+          await closeChrome(browser)
+        } catch {
+          void 0
+        }
+        diagnostics.detach()
+      }
+    }
 
     const worker = new BrowserWindow(
       buildPublishWorkerWindowOptions({
@@ -632,7 +734,12 @@ export class PublisherService {
         } else {
           succeeded += 1
           queueService.completeTask(task.id)
-          const updated = taskManager.updateBatch([task.id], { publishedAt: result.time, errorMsg: '', scheduledAt: null })[0]
+          const updated = taskManager.updateBatch([task.id], {
+            publishedAt: result.time,
+            errorMsg: '',
+            scheduledAt: null,
+            ...(result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})
+          })[0]
           if (updated) broadcastToRenderers('cms.task.updated', updated)
         }
       } else {
@@ -642,7 +749,7 @@ export class PublisherService {
           status: 'publish_failed',
           resetRetryCount: true
         })
-        const updated = taskManager.updateBatch([task.id], {})[0]
+        const updated = taskManager.updateBatch([task.id], result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})[0]
         if (updated) broadcastToRenderers('cms.task.updated', updated)
       }
 

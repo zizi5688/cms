@@ -2,13 +2,19 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI as toolkitElectronAPI } from '@electron-toolkit/preload'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
 import type {
+  CmsChromeLoginVerificationResult,
+  CmsChromeProfileRecord,
+  CmsPublishMode,
+  CmsPublishSafetyCheck
+} from '../shared/cmsChromeProfileTypes'
+import type {
   LocalGatewayChromeProfile,
   LocalGatewayConfig,
   LocalGatewayInitializationResult,
   LocalGatewayState
 } from '../shared/localGatewayTypes.ts'
 
-type PublisherResult = { success: boolean; time?: string; error?: string }
+type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
 
 type CmsPublishTaskStatus =
   | 'pending'
@@ -41,6 +47,7 @@ type CmsPublishTask = {
   isRaw?: boolean
   scheduledAt?: number
   publishedAt: string | null
+  safetyCheck?: CmsPublishSafetyCheck
   errorMsg: string
   errorMessage?: string
   createdAt: number
@@ -491,7 +498,14 @@ const api = {
     },
     account: {
       list: (): Promise<
-        Array<{ id: string; name: string; partitionKey: string; lastLoginTime: number | null }>
+        Array<{
+          id: string
+          name: string
+          partitionKey: string
+          status: 'logged_in' | 'expired' | 'offline'
+          lastLoginTime: number | null
+          cmsProfileId: string | null
+        }>
       > => ipcRenderer.invoke('GET /accounts'),
       create: (
         name: string
@@ -499,10 +513,42 @@ const api = {
         id: string
         name: string
         partitionKey: string
+        status: 'logged_in' | 'expired' | 'offline'
         lastLoginTime: number | null
+        cmsProfileId: string | null
       }> => ipcRenderer.invoke('POST /accounts', { name }),
       login: (accountId: string): Promise<{ windowId: number }> =>
         ipcRenderer.invoke('POST /login-window', { accountId }),
+      listCmsProfiles: (): Promise<CmsChromeProfileRecord[]> =>
+        ipcRenderer.invoke('cms.account.listCmsProfiles'),
+      createCmsProfile: (nickname?: string): Promise<CmsChromeProfileRecord> =>
+        ipcRenderer.invoke('cms.account.createCmsProfile', { nickname }),
+      renameCmsProfile: (
+        profileId: string,
+        nickname: string
+      ): Promise<CmsChromeProfileRecord> =>
+        ipcRenderer.invoke('cms.account.renameCmsProfile', { profileId, nickname }),
+      bindCmsProfile: (
+        accountId: string,
+        cmsProfileId: string | null
+      ): Promise<{
+        id: string
+        name: string
+        partitionKey: string
+        status: 'logged_in' | 'expired' | 'offline'
+        lastLoginTime: number | null
+        cmsProfileId: string | null
+      }> => ipcRenderer.invoke('cms.account.bindCmsProfile', { accountId, cmsProfileId }),
+      openCmsProfileLogin: (
+        accountId: string,
+        profileId?: string
+      ): Promise<{ profileId: string }> =>
+        ipcRenderer.invoke('cms.account.openCmsProfileLogin', { accountId, profileId }),
+      verifyCmsProfileLogin: (
+        accountId: string,
+        profileId?: string
+      ): Promise<CmsChromeLoginVerificationResult> =>
+        ipcRenderer.invoke('cms.account.verifyCmsProfileLogin', { accountId, profileId }),
       checkStatus: (accountId: string): Promise<boolean> =>
         ipcRenderer.invoke('cms.account.checkStatus', { accountId }),
       rename: (
@@ -512,7 +558,9 @@ const api = {
         id: string
         name: string
         partitionKey: string
+        status: 'logged_in' | 'expired' | 'offline'
         lastLoginTime: number | null
+        cmsProfileId: string | null
       }> => ipcRenderer.invoke('cms.account.rename', { accountId, name }),
       delete: (accountId: string): Promise<{ success: boolean }> =>
         ipcRenderer.invoke('cms.account.delete', { accountId })
@@ -1548,6 +1596,9 @@ const electronAPI = {
     ipcRenderer.invoke('workspace.setPath', path),
   relaunch: (): Promise<{ success: true }> => ipcRenderer.invoke('workspace.relaunch'),
   getConfig: (): Promise<{
+    publishMode: CmsPublishMode
+    chromeExecutablePath: string
+    cmsChromeDataDir: string
     aiProvider: string
     aiBaseUrl: string
     aiApiKey: string
@@ -1579,6 +1630,9 @@ const electronAPI = {
     localGateway: LocalGatewayConfig
   }> => ipcRenderer.invoke('get-config'),
   saveConfig: (patch: {
+    publishMode?: CmsPublishMode
+    chromeExecutablePath?: string
+    cmsChromeDataDir?: string
     aiProvider?: string
     aiBaseUrl?: string
     aiApiKey?: string
@@ -1613,6 +1667,10 @@ const electronAPI = {
   retryStartLocalGateway: (): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:retry-start'),
   listLocalGatewayChromeProfiles: (): Promise<LocalGatewayChromeProfile[]> =>
     ipcRenderer.invoke('local-gateway:list-chrome-profiles'),
+  ensureLocalGatewayProfile: (): Promise<LocalGatewayChromeProfile> =>
+    ipcRenderer.invoke('local-gateway:ensure-gateway-profile'),
+  openLocalGatewayProfileLogin: (): Promise<{ success: true; profileId: string }> =>
+    ipcRenderer.invoke('local-gateway:open-gateway-login'),
   initializeLocalGateway: (payload?: {
     smokeImage?: boolean
   }): Promise<LocalGatewayInitializationResult> =>

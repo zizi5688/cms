@@ -1,49 +1,51 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import test from 'node:test'
 
 import { listLocalGatewayChromeProfiles } from './localGatewayChromeProfiles.ts'
 
-test('listLocalGatewayChromeProfiles reads and sorts profiles from Local State', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'chrome-profiles-'))
-  const localStatePath = join(root, 'Local State')
-  await writeFile(
-    localStatePath,
-    JSON.stringify({
-      profile: {
-        info_cache: {
-          'Profile 10': { name: 'Work', user_name: 'work@example.com' },
-          Default: { name: 'Personal' }
-        }
-      }
-    }),
-    'utf-8'
-  )
-
-  const profiles = await listLocalGatewayChromeProfiles(localStatePath)
-  assert.deepEqual(profiles, [
+test('listLocalGatewayChromeProfiles maps CMS gateway profiles into local gateway options', async () => {
+  const profiles = await listLocalGatewayChromeProfiles(async () => [
     {
-      directory: 'Default',
-      name: 'Personal',
-      label: 'Personal (Default)',
-      userName: null
+      id: 'cms-gateway-profile',
+      nickname: '本地网关专用',
+      profileDir: 'cms-gateway-profile',
+      purpose: 'gateway',
+      xhsLoggedIn: false,
+      lastLoginCheck: null
     },
     {
-      directory: 'Profile 10',
-      name: 'Work',
-      label: 'Work (Profile 10) - work@example.com',
-      userName: 'work@example.com'
+      id: 'cms-shared',
+      nickname: '共享 Profile',
+      profileDir: 'cms-shared',
+      purpose: 'shared',
+      xhsLoggedIn: true,
+      lastLoginCheck: '2026-04-11T01:02:03.000Z'
+    }
+  ])
+
+  assert.deepEqual(profiles, [
+    {
+      id: 'cms-gateway-profile',
+      profileDir: 'cms-gateway-profile',
+      nickname: '本地网关专用',
+      purpose: 'gateway',
+      xhsLoggedIn: false,
+      lastLoginCheck: null,
+      label: '本地网关专用 (cms-gateway-profile) · 网关专用 · 未登录'
+    },
+    {
+      id: 'cms-shared',
+      profileDir: 'cms-shared',
+      nickname: '共享 Profile',
+      purpose: 'shared',
+      xhsLoggedIn: true,
+      lastLoginCheck: '2026-04-11T01:02:03.000Z',
+      label: '共享 Profile (cms-shared) · 共享 · 已登录'
     }
   ])
 })
 
-test('listLocalGatewayChromeProfiles returns empty list when Local State is missing', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'chrome-profiles-missing-'))
-  const localStatePath = join(root, 'Local State')
-
-  const profiles = await listLocalGatewayChromeProfiles(localStatePath)
-
+test('listLocalGatewayChromeProfiles returns empty when no CMS gateway profiles exist', async () => {
+  const profiles = await listLocalGatewayChromeProfiles(async () => [])
   assert.deepEqual(profiles, [])
 })

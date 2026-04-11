@@ -35,7 +35,8 @@ test('LocalGatewayManager returns unconfigured when bundle is missing', async ()
         bundlePath: '/tmp/does-not-exist',
         autoStartOnAppLaunch: true,
         startAdminUi: true,
-        startCdpProxy: true
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
       }
     }),
     logsDir: join(tmpdir(), 'local-gateway-test-logs-missing'),
@@ -76,7 +77,7 @@ test('LocalGatewayManager reports services_ready when core services are healthy'
   rmSync(root, { recursive: true, force: true })
 })
 
-test('LocalGatewayManager initializeGateway records startup time after bootstrap succeeds', async () => {
+test('LocalGatewayManager initializeGateway records startup time after bootstrap succeeds', async (t) => {
   const root = join(tmpdir(), `local-gateway-init-success-${Date.now()}`)
   createConfiguredBundleRoot(root)
   writeFileSync(
@@ -93,10 +94,26 @@ test('LocalGatewayManager initializeGateway records startup time after bootstrap
         autoStartOnAppLaunch: false,
         startAdminUi: true,
         startCdpProxy: true,
-        chromeProfileDirectory: 'Default'
+        gatewayCmsProfileId: 'cms-gateway-profile'
       }
     }),
     logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
     healthDeps: {
       fetch: async () => ({ ok: true, status: 200 }),
       isPortListening: async () => true
@@ -107,7 +124,8 @@ test('LocalGatewayManager initializeGateway records startup time after bootstrap
   const state = manager.getState()
 
   assert.equal(result.success, true)
-  assert.equal(result.profileDirectory, 'Default')
+  assert.equal(result.profileId, 'cms-gateway-profile')
+  assert.equal(result.profileDirectory, 'cms-gateway-profile')
   assert.match(result.output, /bootstrap ok/)
   assert.equal(state.overallStatus, 'services_ready')
   assert.equal(state.lastError, null)
@@ -133,10 +151,26 @@ test('LocalGatewayManager initializeGateway records failure in state when bootst
         autoStartOnAppLaunch: false,
         startAdminUi: true,
         startCdpProxy: true,
-        chromeProfileDirectory: 'Default'
+        gatewayCmsProfileId: 'cms-gateway-profile'
       }
     }),
     logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
     healthDeps: {
       fetch: async () => ({ ok: true, status: 200 }),
       isPortListening: async () => true
@@ -180,10 +214,26 @@ echo "bootstrap run \${count}"
         autoStartOnAppLaunch: false,
         startAdminUi: true,
         startCdpProxy: true,
-        chromeProfileDirectory: 'Default'
+        gatewayCmsProfileId: 'cms-gateway-profile'
       }
     }),
     logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
     healthDeps: {
       fetch: async () => ({ ok: true, status: 200 }),
       isPortListening: async () => true

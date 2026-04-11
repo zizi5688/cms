@@ -6,7 +6,7 @@ import * as path from 'path'
 import { createReadStream, openAsBlob, existsSync, statSync, appendFileSync } from 'fs'
 import { copyFile, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'fs/promises'
 import { createHash } from 'crypto'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
 import ElectronStore from 'electron-store'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -17,6 +17,7 @@ import pLimit from 'p-limit'
 import { fileURLToPath } from 'url'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
 import type { LocalGatewayConfig } from '../shared/localGatewayTypes.ts'
+import type { CmsPublishMode } from '../shared/cmsChromeProfileTypes.ts'
 import { AccountManager } from './services/accountManager'
 import { dispatchAiTask, type AiTaskRequest } from './services/aiTaskDispatcher'
 import { executeChatTask } from './services/chatExecutor'
@@ -785,6 +786,10 @@ const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
 const defaultStorageMaintenanceEnabled = false
 const defaultStorageMaintenanceStartTime = '02:30'
 const defaultStorageMaintenanceRetainDays = 7
+const defaultPublishMode: CmsPublishMode = 'cdp'
+const defaultChromeExecutablePath =
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const defaultCmsChromeDataDir = join(homedir(), 'chrome-cms-data')
 type DynamicWatermarkTrajectory = 'smoothSine' | 'figureEight' | 'diagonalWrap' | 'largeEllipse' | 'pseudoRandom'
 
 function isValidWatermarkBox(value: unknown): value is { x: number; y: number; width: number; height: number } {
@@ -849,6 +854,20 @@ function normalizeStorageArchivePath(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function normalizeCmsPublishMode(value: unknown): CmsPublishMode {
+  return value === 'cdp' ? 'cdp' : defaultPublishMode
+}
+
+function normalizeChromeExecutablePath(value: unknown): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  return normalized || defaultChromeExecutablePath
+}
+
+function normalizeCmsChromeDataDir(value: unknown): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  return normalized || defaultCmsChromeDataDir
+}
+
 const configStore = new StoreCtor<{
   feishuConfig: { appId: string; appSecret: string; baseToken: string; tableId: string }
   aiProvider?: string
@@ -873,6 +892,9 @@ const configStore = new StoreCtor<{
   scoutDashboardAutoImportSince?: number
   localGateway?: LocalGatewayConfig
   watermarkBox: { x: number; y: number; width: number; height: number }
+  publishMode?: CmsPublishMode
+  chromeExecutablePath?: string
+  cmsChromeDataDir?: string
   defaultStartTime?: string
   defaultInterval?: number
   workspacePath?: string
@@ -2162,6 +2184,58 @@ app.whenReady().then(async () => {
     const url = typeof payload?.url === 'string' ? payload.url : undefined
     return accountManager.openLoginWindow({ accountId, url })
   })
+
+  ipcMain.handle('cms.account.listCmsProfiles', async () => {
+    return accountManager.listCmsProfiles()
+  })
+
+  ipcMain.handle(
+    'cms.account.createCmsProfile',
+    async (_event, payload: { nickname?: string }) => {
+      const nickname = typeof payload?.nickname === 'string' ? payload.nickname : ''
+      return accountManager.createCmsProfile({ nickname })
+    }
+  )
+
+  ipcMain.handle(
+    'cms.account.renameCmsProfile',
+    async (_event, payload: { profileId?: string; nickname?: string }) => {
+      const profileId = typeof payload?.profileId === 'string' ? payload.profileId : ''
+      const nickname = typeof payload?.nickname === 'string' ? payload.nickname : ''
+      return accountManager.renameCmsProfile(profileId, nickname)
+    }
+  )
+
+  ipcMain.handle(
+    'cms.account.bindCmsProfile',
+    async (_event, payload: { accountId?: string; cmsProfileId?: string | null }) => {
+      const accountId = typeof payload?.accountId === 'string' ? payload.accountId : ''
+      const cmsProfileId =
+        typeof payload?.cmsProfileId === 'string' && payload.cmsProfileId.trim()
+          ? payload.cmsProfileId.trim()
+          : null
+      return accountManager.bindCmsProfile(accountId, cmsProfileId)
+    }
+  )
+
+  ipcMain.handle(
+    'cms.account.openCmsProfileLogin',
+    async (_event, payload: { accountId?: string; profileId?: string; url?: string }) => {
+      const accountId = typeof payload?.accountId === 'string' ? payload.accountId : ''
+      const profileId = typeof payload?.profileId === 'string' ? payload.profileId : undefined
+      const url = typeof payload?.url === 'string' ? payload.url : undefined
+      return accountManager.openCmsProfileLogin({ accountId, profileId, url })
+    }
+  )
+
+  ipcMain.handle(
+    'cms.account.verifyCmsProfileLogin',
+    async (_event, payload: { accountId?: string; profileId?: string }) => {
+      const accountId = typeof payload?.accountId === 'string' ? payload.accountId : ''
+      const profileId = typeof payload?.profileId === 'string' ? payload.profileId : undefined
+      return accountManager.verifyCmsProfileLoginStatus({ accountId, profileId })
+    }
+  )
 
   ipcMain.handle('cms.account.checkStatus', async (_event, payload: { accountId?: string }) => {
     const accountId = typeof payload?.accountId === 'string' ? payload.accountId : ''
@@ -3553,6 +3627,21 @@ app.whenReady().then(async () => {
       cooldownAfterNTasks: Math.max(1, Math.floor(Number(storedQueueConfig?.cooldownAfterNTasks) || 5)),
       cooldownDurationMs: Math.max(0, Math.floor(Number(storedQueueConfig?.cooldownDurationMs) || 300000))
     }
+    const storedPublishMode = configStore.get('publishMode')
+    const publishMode = normalizeCmsPublishMode(storedPublishMode)
+    if (storedPublishMode !== publishMode) {
+      configStore.set('publishMode', publishMode)
+    }
+    const storedChromeExecutablePath = configStore.get('chromeExecutablePath')
+    const chromeExecutablePath = normalizeChromeExecutablePath(storedChromeExecutablePath)
+    if (storedChromeExecutablePath !== chromeExecutablePath) {
+      configStore.set('chromeExecutablePath', chromeExecutablePath)
+    }
+    const storedCmsChromeDataDir = configStore.get('cmsChromeDataDir')
+    const cmsChromeDataDir = normalizeCmsChromeDataDir(storedCmsChromeDataDir)
+    if (storedCmsChromeDataDir !== cmsChromeDataDir) {
+      configStore.set('cmsChromeDataDir', cmsChromeDataDir)
+    }
     const localGateway = readLocalGatewayConfigFromStore(configStore)
 
     return {
@@ -3569,6 +3658,9 @@ app.whenReady().then(async () => {
       watermarkScriptPath: configStore.get('watermarkScriptPath') ?? '',
       scoutDashboardAutoImportDir,
       watermarkBox,
+      publishMode,
+      chromeExecutablePath,
+      cmsChromeDataDir,
       defaultStartTime,
       defaultInterval,
       dynamicWatermarkEnabled,
@@ -3612,6 +3704,9 @@ app.whenReady().then(async () => {
             scoutDashboardAutoImportDir?: string
             localGateway?: Partial<LocalGatewayConfig>
             watermarkBox?: { x: number; y: number; width: number; height: number }
+            publishMode?: CmsPublishMode
+            chromeExecutablePath?: string
+            cmsChromeDataDir?: string
             defaultStartTime?: string
             defaultInterval?: number
             queueConfig?: {
@@ -3716,6 +3811,18 @@ app.whenReady().then(async () => {
       if (isValidWatermarkBox(patch?.watermarkBox)) {
         configStore.set('watermarkBox', patch.watermarkBox)
       }
+      if (patch?.publishMode !== undefined) {
+        configStore.set('publishMode', normalizeCmsPublishMode(patch.publishMode))
+      }
+      if (patch?.chromeExecutablePath !== undefined) {
+        configStore.set(
+          'chromeExecutablePath',
+          normalizeChromeExecutablePath(patch.chromeExecutablePath)
+        )
+      }
+      if (patch?.cmsChromeDataDir !== undefined) {
+        configStore.set('cmsChromeDataDir', normalizeCmsChromeDataDir(patch.cmsChromeDataDir))
+      }
       const nextDefaultStartTime =
         typeof patch?.defaultStartTime === 'string' ? patch.defaultStartTime.trim() : undefined
       if (nextDefaultStartTime !== undefined && /^([01]\d|2[0-3]):[0-5]\d$/.test(nextDefaultStartTime)) {
@@ -3790,6 +3897,20 @@ app.whenReady().then(async () => {
       throw new Error('本地网关管理器尚未初始化。')
     }
     return localGatewayManager.listChromeProfiles()
+  })
+
+  ipcMain.handle('local-gateway:ensure-gateway-profile', async () => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.ensureGatewayProfile()
+  })
+
+  ipcMain.handle('local-gateway:open-gateway-login', async () => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.openGatewayLogin()
   })
 
   ipcMain.handle('local-gateway:initialize', async (_event, payload: { smokeImage?: boolean } | null | undefined) => {

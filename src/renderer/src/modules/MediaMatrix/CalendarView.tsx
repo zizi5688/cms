@@ -104,6 +104,72 @@ function parsePercentInMessage(message: string): number | null {
   return clampPercent(percent)
 }
 
+function buildSafetyDemoTasks(seedAccountId: string): CmsPublishTask[] {
+  const now = Date.now()
+  return [
+    {
+      id: 'dev-safety-pass',
+      accountId: seedAccountId,
+      status: 'published',
+      mediaType: 'video',
+      images: [],
+      title: '演示卡片：安全检查全部通过',
+      content: '这是一张开发环境演示卡片，用来确认绿色安全指标圆点和通过态 tooltip。',
+      tags: ['演示', '安全通过'],
+      publishMode: 'immediate',
+      linkedProducts: [
+        {
+          id: 'demo-product-safe',
+          name: '演示商品',
+          cover: '',
+          productUrl: 'https://example.com/products/safe'
+        }
+      ],
+      publishedAt: new Date(now - 30 * 60_000).toISOString(),
+      safetyCheck: {
+        isTrusted: true,
+        webdriver: false,
+        hasProcess: false,
+        mouseMoveCount: 42,
+        headless: false,
+        allPassed: true
+      },
+      errorMsg: '',
+      createdAt: now - 60 * 60_000
+    },
+    {
+      id: 'dev-safety-fail',
+      accountId: seedAccountId,
+      status: 'published',
+      mediaType: 'video',
+      images: [],
+      title: '演示卡片：webdriver 暴露',
+      content: '这是一张开发环境演示卡片，用来确认红色安全指标圆点、失败项明细和修复建议。',
+      tags: ['演示', '安全异常'],
+      publishMode: 'immediate',
+      linkedProducts: [
+        {
+          id: 'demo-product-risk',
+          name: '演示商品',
+          cover: '',
+          productUrl: 'https://example.com/products/risk'
+        }
+      ],
+      publishedAt: new Date(now - 90 * 60_000).toISOString(),
+      safetyCheck: {
+        isTrusted: true,
+        webdriver: true,
+        hasProcess: false,
+        mouseMoveCount: 28,
+        headless: false,
+        allPassed: false
+      },
+      errorMsg: '',
+      createdAt: now - 2 * 60 * 60_000
+    }
+  ]
+}
+
 function CalendarView({
   tasks,
   workspacePath,
@@ -115,7 +181,7 @@ function CalendarView({
 }: CalendarViewProps): React.JSX.Element {
   const [draggingBatchIds, setDraggingBatchIds] = useState<string[]>([])
   const [isSaving, setIsSaving] = useState(false)
-  const [showPublished, setShowPublished] = useState(false)
+  const [showPublished, setShowPublished] = useState(() => import.meta.env.DEV)
   const [toastMessage, setToastMessage] = useState<string>('')
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
   const [isRemixing, setIsRemixing] = useState(false)
@@ -144,10 +210,15 @@ function CalendarView({
   const clearSelectedPendingTaskIds = useCmsStore((s) => s.clearSelectedPendingTaskIds)
   const sidebarPanelRef = usePanelRef()
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({ id: 'cms-layout-persistence' })
+  const taskSource = useMemo(() => {
+    if (!import.meta.env.DEV) return tasks
+    const seedAccountId = tasks[0]?.accountId?.trim() || 'dev-safety-demo-account'
+    return [...buildSafetyDemoTasks(seedAccountId), ...tasks]
+  }, [tasks])
 
   const unscheduledPool = useMemo(() => {
-    return tasks.filter((task) => task.status !== 'published' && task.scheduledAt == null)
-  }, [tasks])
+    return taskSource.filter((task) => task.status !== 'published' && task.scheduledAt == null)
+  }, [taskSource])
 
   const unscheduledTitleIssueById = useMemo(() => {
     const map = new Map<string, TitleLengthIssue>()
@@ -228,9 +299,9 @@ function CalendarView({
   }
 
   const calendarTasks = useMemo(() => {
-    const withTime = tasks.filter((task) => getTaskDisplayTime(task) != null)
+    const withTime = taskSource.filter((task) => getTaskDisplayTime(task) != null)
     return showPublished ? withTime : withTime.filter((task) => task.status !== 'published')
-  }, [showPublished, tasks])
+  }, [showPublished, taskSource])
 
   const calendarStartDate = useMemo(() => {
     if (viewSpan === 7) return moment().startOf('day').add(weekOffset * 7, 'day').toDate()
@@ -403,7 +474,7 @@ function CalendarView({
     const dayStart = targetDay.valueOf()
     const dayEnd = targetDay.clone().endOf('day').valueOf()
 
-    const lastScheduledAt = tasks.reduce<number | null>((latest, task) => {
+    const lastScheduledAt = taskSource.reduce<number | null>((latest, task) => {
       const scheduledAt =
         typeof task.scheduledAt === 'number' && Number.isFinite(task.scheduledAt) ? task.scheduledAt : null
       if (scheduledAt == null || scheduledAt < dayStart || scheduledAt > dayEnd) return latest
@@ -451,7 +522,7 @@ function CalendarView({
         const pendingIds: string[] = []
 
         for (const id of keyboardSelectedTaskIds) {
-          const task = tasks.find((t) => t.id === id)
+          const task = taskSource.find((t) => t.id === id)
           if (!task) continue
           if (task.status === 'published') continue
 
@@ -484,7 +555,7 @@ function CalendarView({
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleBatchDelete, handleBatchUnschedule, keyboardSelectedTaskIds, tasks])
+  }, [handleBatchDelete, handleBatchUnschedule, keyboardSelectedTaskIds, taskSource])
 
   useEffect(() => {
     if (flashingTaskIds.size === 0) return
@@ -544,7 +615,7 @@ function CalendarView({
     if (!candidate) return null
     const scopedSeed = `${picker.seed}:${batchId}`
     if (candidate.mediaType === 'video') {
-      const remix = buildSurpriseVideoRemix(tasks, {
+      const remix = buildSurpriseVideoRemix(taskSource, {
         count: 5,
         lookbackDays: 14,
         seed: scopedSeed,
@@ -554,7 +625,7 @@ function CalendarView({
       })
       return remix ? { ...remix, mediaType: 'video' } : null
     }
-    const remix = buildSurpriseRemix(tasks, {
+    const remix = buildSurpriseRemix(taskSource, {
       count: 5,
       lookbackDays: 14,
       publishedImageSignatures: picker.publishedImageSignatures,
@@ -569,14 +640,14 @@ function CalendarView({
     if (isRemixing || isRollingBackRemix || remixPicker) return
     // Step 3: 计算已发布任务的图片签名集合用于跨历史去重
     const publishedImageSignatures = new Set<string>()
-    for (const t of tasks) {
+    for (const t of taskSource) {
       if (t.status === 'published' && t.images && t.images.length > 0) {
         const unique = Array.from(new Set(t.images.filter((v) => Boolean(v))))
         unique.sort()
         publishedImageSignatures.add(unique.join('|'))
       }
     }
-    const candidates = listSurpriseRemixBatches(tasks, { lookbackDays: 14 })
+    const candidates = listSurpriseRemixBatches(taskSource, { lookbackDays: 14 })
     if (candidates.length === 0) {
       setToastMessage('🎲 没有可混剪的批次（近14天、每批≥3条）')
       return

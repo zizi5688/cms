@@ -1,51 +1,31 @@
-import { readFile } from 'fs/promises'
-import { homedir } from 'os'
-import { join } from 'path'
-
+import { listGatewayCmsChromeProfiles } from '../../cdp/chrome-launcher.ts'
+import type { CmsChromeProfileRecord } from '../../shared/cmsChromeProfileTypes'
 import type { LocalGatewayChromeProfile } from '../../shared/localGatewayTypes.ts'
 
-const DEFAULT_LOCAL_STATE_PATH = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  'Google',
-  'Chrome',
-  'Local State'
-)
+export function mapCmsProfilesToLocalGatewayProfiles(
+  profiles: CmsChromeProfileRecord[]
+): LocalGatewayChromeProfile[] {
+  return profiles
+    .map((profile) => {
+      const nickname = typeof profile.nickname === 'string' && profile.nickname.trim() ? profile.nickname.trim() : profile.id
+      const purpose: LocalGatewayChromeProfile['purpose'] = profile.purpose === 'shared' ? 'shared' : 'gateway'
+      const status = profile.xhsLoggedIn ? '已登录' : '未登录'
+      return {
+        id: profile.id,
+        profileDir: profile.profileDir,
+        nickname,
+        purpose,
+        xhsLoggedIn: profile.xhsLoggedIn,
+        lastLoginCheck: profile.lastLoginCheck,
+        label: `${nickname} (${profile.profileDir}) · ${purpose === 'gateway' ? '网关专用' : '共享'} · ${status}`
+      }
+    })
+    .sort((left, right) => left.profileDir.localeCompare(right.profileDir))
+}
 
 export async function listLocalGatewayChromeProfiles(
-  localStatePath = DEFAULT_LOCAL_STATE_PATH
+  listProfiles: () => Promise<CmsChromeProfileRecord[]> = listGatewayCmsChromeProfiles
 ): Promise<LocalGatewayChromeProfile[]> {
-  let raw = ''
-  try {
-    raw = await readFile(localStatePath, 'utf-8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
-      return []
-    }
-    throw error
-  }
-  const payload = JSON.parse(raw) as Record<string, unknown>
-  const profile =
-    payload.profile && typeof payload.profile === 'object'
-      ? (payload.profile as Record<string, unknown>)
-      : {}
-  const infoCache =
-    profile.info_cache && typeof profile.info_cache === 'object'
-      ? (profile.info_cache as Record<string, unknown>)
-      : {}
-
-  const profiles = Object.entries(infoCache).map(([directory, value]) => {
-    const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
-    const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim() : directory
-    const userName = typeof record.user_name === 'string' && record.user_name.trim() ? record.user_name.trim() : null
-    return {
-      directory,
-      name,
-      label: userName ? `${name} (${directory}) - ${userName}` : `${name} (${directory})`,
-      userName
-    }
-  })
-
-  return profiles.sort((left, right) => left.directory.localeCompare(right.directory))
+  const profiles = await listProfiles()
+  return mapCmsProfilesToLocalGatewayProfiles(profiles)
 }
