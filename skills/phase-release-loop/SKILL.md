@@ -20,21 +20,44 @@ Run a deterministic Mac release loop while keeping the source workspace safe and
 9. relaunch and report
 10. refresh a local `main` checkout so this machine's `main` also stays current
 11. clean up temporary release branches/worktrees and merged local `codex/` branches that are no longer active
+12. use GitHub's latest published/tagged version as the release baseline, then explicitly ask the user which version to release before any version bump or publish step
 
 ## Required Inputs
 
 Before execution, confirm these values (infer reasonable defaults when omitted):
 
-1. commit scope paths
-2. bilingual commit message in format `type: 中文 / English`
-3. source branch (default: current branch)
-4. target branch (default: `main`)
-5. whether to stop on merge conflict (default: yes)
-6. whether to remove temporary release worktree after success (default: yes)
-7. whether to delete the temporary remote release branch after success (default: yes)
-8. whether to delete merged local `codex/` branches that are not checked out in any worktree (default: yes for “收尾” / “阶段收尾” style requests)
+1. latest GitHub version/tag (must be checked first; do not trust only local `package.json`)
+2. target release version confirmed by the user after seeing the GitHub baseline
+3. commit scope paths
+4. bilingual commit message in format `type: 中文 / English`
+5. source branch (default: current branch)
+6. target branch (default: `main`)
+7. whether to stop on merge conflict (default: yes)
+8. whether to remove temporary release worktree after success (default: yes)
+9. whether to delete the temporary remote release branch after success (default: yes)
+10. whether to delete merged local `codex/` branches that are not checked out in any worktree (default: yes for “收尾” / “阶段收尾” style requests)
 
 ## Workflow
+
+### 0) GitHub Version Baseline
+
+Run before any commit/release version bump:
+
+```bash
+git remote -v
+git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' | sort -V | tail -n 20
+```
+
+Rules:
+
+1. Treat GitHub tags/releases as the source of truth for the current published version.
+2. Report the latest GitHub version to the user explicitly.
+3. Ask one explicit question before touching version numbers:
+
+`GitHub 当前最新版本是 <latest>，这次要更新到几？`
+
+4. Do not auto-bump from local `package.json` alone.
+5. Do not continue to merge/build/publish until the target version is confirmed by the user.
 
 ### 1) Baseline Inspection
 
