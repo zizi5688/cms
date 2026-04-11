@@ -521,6 +521,13 @@ const api = {
         ipcRenderer.invoke('POST /login-window', { accountId }),
       listCmsProfiles: (): Promise<CmsChromeProfileRecord[]> =>
         ipcRenderer.invoke('cms.account.listCmsProfiles'),
+      createCmsProfile: (nickname?: string): Promise<CmsChromeProfileRecord> =>
+        ipcRenderer.invoke('cms.account.createCmsProfile', { nickname }),
+      renameCmsProfile: (
+        profileId: string,
+        nickname: string
+      ): Promise<CmsChromeProfileRecord> =>
+        ipcRenderer.invoke('cms.account.renameCmsProfile', { profileId, nickname }),
       bindCmsProfile: (
         accountId: string,
         cmsProfileId: string | null

@@ -786,7 +786,7 @@ const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
 const defaultStorageMaintenanceEnabled = false
 const defaultStorageMaintenanceStartTime = '02:30'
 const defaultStorageMaintenanceRetainDays = 7
-const defaultPublishMode: CmsPublishMode = 'electron'
+const defaultPublishMode: CmsPublishMode = 'cdp'
 const defaultChromeExecutablePath =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const defaultCmsChromeDataDir = join(homedir(), 'chrome-cms-data')
@@ -2188,6 +2188,23 @@ app.whenReady().then(async () => {
   ipcMain.handle('cms.account.listCmsProfiles', async () => {
     return accountManager.listCmsProfiles()
   })
+
+  ipcMain.handle(
+    'cms.account.createCmsProfile',
+    async (_event, payload: { nickname?: string }) => {
+      const nickname = typeof payload?.nickname === 'string' ? payload.nickname : ''
+      return accountManager.createCmsProfile({ nickname })
+    }
+  )
+
+  ipcMain.handle(
+    'cms.account.renameCmsProfile',
+    async (_event, payload: { profileId?: string; nickname?: string }) => {
+      const profileId = typeof payload?.profileId === 'string' ? payload.profileId : ''
+      const nickname = typeof payload?.nickname === 'string' ? payload.nickname : ''
+      return accountManager.renameCmsProfile(profileId, nickname)
+    }
+  )
 
   ipcMain.handle(
     'cms.account.bindCmsProfile',

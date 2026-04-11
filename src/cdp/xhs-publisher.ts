@@ -549,7 +549,7 @@ async function dispatchFileInputEvents(page: Page, selector: string): Promise<vo
 
 async function waitForUploadReady(page: Page, mediaType: 'image' | 'video', expectedCount: number): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const state = await page.evaluate((kind) => {
+    const state = await page.evaluate((kind, expectedUploads) => {
       const pageText = document.body?.innerText ?? ''
       const hasUploadingText = /上传中|处理中|转码中|上传失败/.test(pageText)
       if (kind === 'video') {
@@ -570,10 +570,10 @@ async function waitForUploadReady(page: Page, mediaType: 'image' | 'video', expe
         'img, [class*="upload"] [class*="item"], [class*="dragger"] [class*="item"]'
       ).length
       return {
-        ready: imagePreviewCount >= expectedCount && !hasUploadingText,
+        ready: imagePreviewCount >= expectedUploads && !hasUploadingText,
         hasUploadingText
       }
-    }, mediaType)
+    }, mediaType, expectedCount)
 
     if (state.ready && !state.hasUploadingText) {
       return
@@ -582,6 +582,175 @@ async function waitForUploadReady(page: Page, mediaType: 'image' | 'video', expe
   }
 
   throw new Error(mediaType === 'video' ? '视频上传后编辑器未就绪' : '图片上传结果未就绪')
+}
+
+async function waitForPublishPageReady(page: Page): Promise<void> {
+  await waitForCondition(
+    async () =>
+      page.evaluate(() => {
+        const isVisible = (element: Element | null): element is HTMLElement => {
+          if (!(element instanceof HTMLElement)) return false
+          const style = window.getComputedStyle(element)
+          const rect = element.getBoundingClientRect()
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 24 && rect.height > 18
+        }
+
+        const hasSidebar = Array.from(document.querySelectorAll<HTMLElement>('div, span, a, button')).some((element) => {
+          if (!isVisible(element)) return false
+          const text = String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim()
+          return text.includes('发布笔记')
+        })
+
+        const hasMainSignal =
+          Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]')).length > 0 ||
+          Array.from(document.querySelectorAll<HTMLElement>('textarea, [contenteditable="true"], div, span, button')).some((element) => {
+            if (!isVisible(element)) return false
+            const text = String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim()
+            return text.includes('上传视频') || text.includes('上传图文')
+          })
+
+        return hasSidebar || hasMainSignal ? true : null
+      }),
+    60_000,
+    250,
+    '发布页面未就绪（可能未登录或页面加载异常）。'
+  )
+}
+
+async function markImageUploadTab(page: Page): Promise<EditorTarget> {
+  const target = await page.evaluate(() => {
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const isVisible = (element: Element | null): element is HTMLElement => {
+      if (!(element instanceof HTMLElement)) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      const intersectsViewport =
+        rect.right > 0 &&
+        rect.bottom > 0 &&
+        rect.left < window.innerWidth &&
+        rect.top < window.innerHeight
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        rect.width > 20 &&
+        rect.height > 18 &&
+        intersectsViewport
+      )
+    }
+
+    const textNodes = Array.from(document.querySelectorAll<HTMLElement>('button, [role="tab"], [role="button"], a, div, span'))
+      .filter((element) => isVisible(element))
+      .map((element, index) => {
+        const text = normalizeText(element.innerText || element.textContent || '')
+        if (text !== '上传图文') return null
+        const clickable =
+          (element.closest('.creator-tab, button, [role="tab"], [role="button"], a, div[tabindex], span[tabindex]') as HTMLElement | null) || element
+        if (!isVisible(clickable)) return null
+        const rect = clickable.getBoundingClientRect()
+        const className = `${element.className ?? ''} ${clickable.className ?? ''}`.toLowerCase()
+        let score = 0
+        if (clickable.getAttribute('role') === 'tab') score += 20
+        if (className.includes('creator-tab')) score += 18
+        if (className.includes('tab')) score += 12
+        if (className.includes('upload')) score += 8
+        score -= index
+        return { clickable, rect, score }
+      })
+      .filter((item): item is { clickable: HTMLElement; rect: DOMRect; score: number } => Boolean(item))
+      .sort((a, b) => b.score - a.score)
+
+    const match = textNodes[0]
+    if (!match) return null
+    match.clickable.setAttribute('data-cms-cdp-image-upload-tab', 'true')
+    return {
+      found: true,
+      selector: '[data-cms-cdp-image-upload-tab="true"]',
+      centerX: match.rect.left + match.rect.width / 2,
+      centerY: match.rect.top + match.rect.height / 2,
+      tagName: match.clickable.tagName,
+      isContentEditable: false,
+      isTextInput: false
+    }
+  })
+
+  return (
+    target ?? {
+      found: false,
+      selector: '',
+      centerX: 0,
+      centerY: 0,
+      tagName: '',
+      isContentEditable: false,
+      isTextInput: false
+    }
+  )
+}
+
+async function waitForImageUploadTab(page: Page): Promise<EditorTarget> {
+  return waitForCondition(
+    async () => {
+      const target = await markImageUploadTab(page)
+      return target.found ? target : null
+    },
+    10_000,
+    250,
+    '未找到“上传图文”入口（可能页面结构变化）。'
+  )
+}
+
+async function waitForImageUploadSurface(page: Page): Promise<void> {
+  await waitForCondition(
+    async () =>
+      page.evaluate(() => {
+        const isVisible = (element: Element | null): element is HTMLElement => {
+          if (!(element instanceof HTMLElement)) return false
+          const style = window.getComputedStyle(element)
+          const rect = element.getBoundingClientRect()
+          return style.display !== 'none' && style.visibility !== 'hidden' && rect.width >= 120 && rect.height >= 60
+        }
+
+        const fileInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+        const imageInput = fileInputs.find((element) => {
+          const accept = String(element.getAttribute('accept') || '').toLowerCase()
+          if (!accept) return false
+          if (accept.includes('video')) return false
+          return accept.includes('image') || accept.includes('.jpg') || accept.includes('.jpeg') || accept.includes('.png') || accept.includes('.webp')
+        })
+
+        if (imageInput) {
+          const container =
+            imageInput.closest('.upload-dragger') ||
+            imageInput.closest('[class*="upload"]') ||
+            imageInput.closest('div,section,main,form') ||
+            imageInput.parentElement
+          if (container && isVisible(container)) return true
+        }
+
+        const hints = ['拖拽图片', '点击上传', '上传图片', '上传图文']
+        const hasHint = Array.from(document.querySelectorAll<HTMLElement>('div, span, button, p')).some((element) => {
+          if (!isVisible(element)) return false
+          const text = String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim()
+          return hints.some((hint) => text.includes(hint))
+        })
+
+        return hasHint ? true : null
+      }),
+    20_000,
+    250,
+    '未检测到图文上传界面（可能页面结构变化）。'
+  )
+}
+
+async function switchToImageUploadTab(page: Page, client: CDPSession): Promise<void> {
+  await waitForPublishPageReady(page)
+  const tab = await waitForImageUploadTab(page)
+  const clickable = await ensureSelectorReachableForMouse(page, client, tab.selector)
+  if (!clickable.found) {
+    throw new Error('未找到“上传图文”入口（可能页面结构变化）。')
+  }
+  await humanClick(client, { x: 40, y: 40 }, clickable.centerX, clickable.centerY)
+  await waitForImageUploadSurface(page)
+  await jitterDelay(420, 620)
 }
 
 async function waitForVideoUploadInput(page: Page): Promise<UploadTarget> {
@@ -844,7 +1013,8 @@ async function markTitleEditor(page: Page): Promise<EditorTarget> {
     }
   })
 
-  return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
+  if (target) return target
+  return markEditorByKeywords(page, 'title', ['标题', '请输入标题', '填写标题'])
 }
 
 async function markBodyEditor(page: Page): Promise<EditorTarget> {
@@ -904,7 +1074,89 @@ async function markBodyEditor(page: Page): Promise<EditorTarget> {
     }
   })
 
-  return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
+  if (target) return target
+  return markEditorByKeywords(page, 'body', ['正文', '内容', '描述', '添加正文', '输入正文'])
+}
+
+async function markEditorByKeywords(
+  page: Page,
+  kind: 'title' | 'body',
+  keywords: string[]
+): Promise<EditorTarget> {
+  const target = await page.evaluate(
+    ({ targetKind, targetKeywords }) => {
+      const selectors = [
+        'textarea',
+        'input[type="text"]',
+        'input:not([type])',
+        '[contenteditable="true"]',
+        '[contenteditable="plaintext-only"]'
+      ]
+
+      const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+        if (!element) return false
+        const style = window.getComputedStyle(element)
+        const rect = element.getBoundingClientRect()
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 40 && rect.height > 18
+      }
+
+      const scoreElement = (element: HTMLElement): number => {
+        const raw = [
+          element.getAttribute('placeholder') ?? '',
+          element.getAttribute('aria-label') ?? '',
+          element.getAttribute('data-placeholder') ?? '',
+          element.textContent ?? '',
+          element.className ?? '',
+          element.id ?? '',
+          element.parentElement?.className ?? '',
+          element.parentElement?.textContent ?? ''
+        ].join(' ')
+        const text = raw.toLowerCase()
+        let score = 0
+        for (const keyword of targetKeywords) {
+          if (text.includes(String(keyword).toLowerCase())) score += 10
+        }
+        if (element.tagName === 'TEXTAREA') score += 3
+        if (element.getAttribute('contenteditable')) score += 2
+        return score
+      }
+
+      const candidates = selectors
+        .flatMap((selector) => Array.from(document.querySelectorAll<HTMLElement>(selector)))
+        .filter((element) => isVisible(element))
+        .map((element, index) => ({ element, index, score: scoreElement(element) }))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+
+      const match = candidates[0]?.element
+      if (!match) return null
+
+      match.setAttribute('data-cms-cdp-editor-target', targetKind)
+      const rect = match.getBoundingClientRect()
+      return {
+        found: true,
+        selector: `[data-cms-cdp-editor-target="${targetKind}"]`,
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+        tagName: match.tagName,
+        isContentEditable: match.getAttribute('contenteditable') === 'true',
+        isTextInput: match instanceof HTMLInputElement || match instanceof HTMLTextAreaElement
+      }
+    },
+    { targetKind: kind, targetKeywords: keywords }
+  )
+
+  return (
+    target ?? {
+      found: false,
+      selector: '',
+      centerX: 0,
+      centerY: 0,
+      tagName: '',
+      isContentEditable: false,
+      isTextInput: false
+    }
+  )
 }
 
 async function focusSelectorWithCdp(client: CDPSession, selector: string): Promise<void> {
@@ -2219,10 +2471,12 @@ export async function uploadVideo(page: Page, client: CDPSession, filePath: stri
   await waitForUploadReady(page, 'video', 1)
 }
 
-async function uploadImages(page: Page, client: CDPSession, filePaths: string[]): Promise<void> {
+export async function uploadImages(page: Page, client: CDPSession, filePaths: string[]): Promise<void> {
+  await switchToImageUploadTab(page, client)
   const target = await markVideoUploadInput(page, 'image')
   if (!target.found) throw new Error('未找到图片上传 input[type=file]')
   await setFilesWithCdp(client, target.selector, filePaths)
+  await dispatchFileInputEvents(page, target.selector)
   await waitForUploadReady(page, 'image', filePaths.length)
 }
 
@@ -2665,11 +2919,15 @@ async function markProductActionButton(
 async function openProductModalWithRetry(
   page: Page,
   client: CDPSession,
-  mouse: MouseState
+  mouse: MouseState,
+  onLog?: (message: string) => void
 ): Promise<{ input: EditorTarget; mouse: MouseState }> {
   await ensureMinimumWindowLayout(page, client, 1280, 900)
+  logLine(onLog, '开始滚到底部')
   await scrollPublishAreaToBottom(page)
+  logLine(onLog, '滚到底部完成')
 
+  logLine(onLog, '开始点击添加商品')
   const directAddProduct = await clickKeywordLikeLegacy(page, client, mouse, '添加商品', 2_500, 'data-cms-cdp-add-product-leaf')
   mouse = directAddProduct.mouse
 
@@ -2690,11 +2948,91 @@ async function openProductModalWithRetry(
       throw new Error('未找到“添加商品”按钮。')
     }
   }
+  logLine(onLog, '点击添加商品完成')
 
   await jitterDelay(500, 700)
 
-  const input = await waitForProductModalSearchInput(page)
+  logLine(onLog, '开始等待商品弹窗搜索框')
+  const input = await waitForProductModalSearchInput(page).catch((error) => {
+    logLine(onLog, '搜索框未出现超时')
+    throw error
+  })
+  logLine(onLog, '搜索框已出现')
   return { input, mouse }
+}
+
+async function countVisibleProductModalCandidates(page: Page): Promise<number> {
+  return page.evaluate((modalSelector) => {
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 40 && rect.height > 30
+    }
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        `${modalSelector} li, ${modalSelector} [role="option"], ${modalSelector} [class*="goods"], ${modalSelector} [class*="product"], ${modalSelector} [class*="item"], ${modalSelector} .product-item, ${modalSelector} .product-card`
+      )
+    ).filter((element) => isVisible(element)).length
+  }, PRODUCT_MODAL_SELECTOR)
+}
+
+async function inspectProductModalCandidateDom(page: Page): Promise<{
+  candidateCount: number
+  checkboxCount: number
+  checkboxLikeCount: number
+  items: Array<{
+    index: number
+    text: string
+    className: string
+    hasNativeCheckbox: boolean
+    nativeCheckboxCount: number
+    hasCheckboxLike: boolean
+    checkboxLikeClasses: string[]
+    outerHTML: string
+  }>
+}> {
+  return page.evaluate((modalSelector) => {
+    const normalizeText = (value: string): string => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const isVisible = (element: HTMLElement | null): element is HTMLElement => {
+      if (!element) return false
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 40 && rect.height > 30
+    }
+
+    const modal =
+      document.querySelector<HTMLElement>('[role="dialog"]') ||
+      document.querySelector<HTMLElement>('.ant-modal') ||
+      document.querySelector<HTMLElement>('.ant-modal-content') ||
+      document.querySelector<HTMLElement>('.d-modal')
+
+    const items = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        `${modalSelector} li, ${modalSelector} [role="option"], ${modalSelector} [class*="goods"], ${modalSelector} [class*="product"], ${modalSelector} [class*="item"], ${modalSelector} .product-item, ${modalSelector} .product-card`
+      )
+    ).filter((element) => isVisible(element))
+
+    return {
+      candidateCount: items.length,
+      checkboxCount: modal?.querySelectorAll('input[type="checkbox"]').length ?? 0,
+      checkboxLikeCount: modal?.querySelectorAll('[role="checkbox"], .ant-checkbox, .ant-checkbox-wrapper, [class*="checkbox"]').length ?? 0,
+      items: items.slice(0, 10).map((element, index) => ({
+        index,
+        text: normalizeText(element.innerText || element.textContent || '').slice(0, 220),
+        className: String(element.className || ''),
+        hasNativeCheckbox: Boolean(element.querySelector('input[type="checkbox"]')),
+        nativeCheckboxCount: element.querySelectorAll('input[type="checkbox"]').length,
+        hasCheckboxLike: Boolean(element.querySelector('[role="checkbox"], .ant-checkbox, .ant-checkbox-wrapper, [class*="checkbox"]')),
+        checkboxLikeClasses: Array.from(
+          element.querySelectorAll<HTMLElement>('[role="checkbox"], .ant-checkbox, .ant-checkbox-wrapper, [class*="checkbox"]')
+        )
+          .slice(0, 8)
+          .map((node) => String(node.className || node.getAttribute('role') || '')),
+        outerHTML: element.outerHTML.slice(0, 500)
+      }))
+    }
+  }, PRODUCT_MODAL_SELECTOR)
 }
 
 async function markProductModalItemById(page: Page, productId: string): Promise<EditorTarget> {
@@ -2778,20 +3116,30 @@ async function markFirstProductModalItem(page: Page): Promise<EditorTarget> {
   return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
 }
 
-async function markFirstProductCheckbox(page: Page): Promise<EditorTarget> {
-  const target = await page.evaluate((modalSelector) => {
+async function markProductCheckboxWithinTarget(page: Page, rowSelector: string): Promise<EditorTarget> {
+  const target = await page.evaluate((targetSelector) => {
     const isVisible = (element: HTMLElement | null): element is HTMLElement => {
       if (!element) return false
       const style = window.getComputedStyle(element)
       const rect = element.getBoundingClientRect()
       return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 12 && rect.height > 12
     }
-    const input = Array.from(document.querySelectorAll<HTMLInputElement>(`${modalSelector} input[type="checkbox"]`)).find(
-      (element) => Boolean(element)
-    )
-    if (!input) return null
+
+    const row = document.querySelector<HTMLElement>(targetSelector)
+    if (!row) return null
+
+    const preferredClickable =
+      row.querySelector<HTMLElement>(
+        '.d-checkbox.d-checkbox-main, .d-grid.d-checkbox, [role="checkbox"], .ant-checkbox-wrapper, .ant-checkbox'
+      ) || null
+    const input = row.querySelector<HTMLInputElement>('input[type="checkbox"]')
     const clickable =
-      (input.closest('label, .ant-checkbox-wrapper, [role="checkbox"], div, span') as HTMLElement | null) || input
+      preferredClickable ||
+      (input
+        ? ((input.closest('label, .ant-checkbox-wrapper, [role="checkbox"], .d-checkbox, .d-grid.d-checkbox, div, span') as HTMLElement | null) ||
+            input)
+        : null)
+    if (!clickable) return null
     if (!isVisible(clickable)) return null
     const rect = clickable.getBoundingClientRect()
     clickable.setAttribute('data-cms-cdp-product-checkbox', 'true')
@@ -2804,7 +3152,7 @@ async function markFirstProductCheckbox(page: Page): Promise<EditorTarget> {
       isContentEditable: false,
       isTextInput: false
     }
-  }, PRODUCT_MODAL_SELECTOR)
+  }, rowSelector)
 
   return target ?? { found: false, selector: '', centerX: 0, centerY: 0, tagName: '', isContentEditable: false, isTextInput: false }
 }
@@ -2964,27 +3312,36 @@ async function softCheckProductAdded(page: Page): Promise<void> {
   )
 }
 
-export async function addProductById(page: Page, client: CDPSession, mouse: MouseState, productId: string): Promise<MouseState> {
+export async function addProductById(
+  page: Page,
+  client: CDPSession,
+  mouse: MouseState,
+  productId: string,
+  onLog?: (message: string) => void
+): Promise<MouseState> {
   const normalizedId = String(productId ?? '').trim()
   if (!normalizedId) return mouse
 
   mouse = await dismissPotentialPopups(page, client, mouse)
-  const opened = await openProductModalWithRetry(page, client, mouse)
+  const opened = await openProductModalWithRetry(page, client, mouse, onLog)
   mouse = opened.mouse
   await jitterDelay(2_000, 2_050)
 
+  logLine(onLog, `开始输入商品ID: ${normalizedId}`)
   mouse = await clearAndFillTextInput(page, client, mouse, opened.input, normalizedId)
+  logLine(onLog, '输入完成')
   await jitterDelay(2_000, 2_050)
 
+  logLine(onLog, '开始等待搜索结果')
   const matchedById = await waitForCondition(
     async () => {
       const match = await markProductModalItemById(page, normalizedId)
       return match.found ? match : null
     },
     8_000,
-    250,
-    '未在列表中匹配到商品ID。'
-  ).catch(() => null)
+      250,
+      '未在列表中匹配到商品ID。'
+    ).catch(() => null)
 
   const firstSelectable =
     matchedById ??
@@ -2998,16 +3355,29 @@ export async function addProductById(page: Page, client: CDPSession, mouse: Mous
       '未找到可选商品行。'
     ).catch(() => null))
 
+  const candidateCount = await countVisibleProductModalCandidates(page).catch(() => 0)
+  logLine(onLog, `搜索结果出现，候选数量: ${candidateCount}`)
+  const candidateDom = await inspectProductModalCandidateDom(page).catch(() => null)
+  if (candidateDom) {
+    logLine(onLog, `[挂车DOM] ${JSON.stringify(candidateDom)}`)
+  }
+
   if (!firstSelectable) {
     throw new Error(`未在商品列表中找到商品ID: ${normalizedId}`)
   }
 
-  const checkbox = await markFirstProductCheckbox(page)
+  logLine(onLog, '开始勾选商品')
+  const checkbox = await markProductCheckboxWithinTarget(page, firstSelectable.selector)
+  if (!checkbox.found) {
+    logLine(onLog, '未找到可勾选的元素')
+  }
   const selectionTarget = checkbox.found ? checkbox : firstSelectable
   const clickableSelection = await ensureSelectorReachableForMouse(page, client, selectionTarget.selector)
   mouse = await humanClick(client, mouse, clickableSelection.centerX, clickableSelection.centerY)
   await jitterDelay(300, 360)
+  logLine(onLog, '勾选完成')
 
+  logLine(onLog, '开始点击确认按钮')
   const confirm = await waitForCondition(
     async () => {
       const button = await markProductModalConfirmButton(page)
@@ -3019,19 +3389,37 @@ export async function addProductById(page: Page, client: CDPSession, mouse: Mous
   )
   const clickableConfirm = await ensureSelectorReachableForMouse(page, client, confirm.selector)
   mouse = await humanClick(client, mouse, clickableConfirm.centerX, clickableConfirm.centerY)
-  await waitForProductModalClose(page).catch(() => void 0)
+  logLine(onLog, '确认按钮已点击')
+  logLine(onLog, '开始等待弹窗关闭')
+  await waitForProductModalClose(page)
+    .then(() => {
+      logLine(onLog, '弹窗已关闭')
+    })
+    .catch((error) => {
+      logLine(onLog, '弹窗未关闭超时')
+      throw error
+    })
   return mouse
 }
 
-export async function selectProduct(page: Page, client: CDPSession, mouse: MouseState, productName: string): Promise<MouseState> {
+export async function selectProduct(
+  page: Page,
+  client: CDPSession,
+  mouse: MouseState,
+  productName: string,
+  onLog?: (message: string) => void
+): Promise<MouseState> {
   const normalizedName = String(productName ?? '').trim()
   if (!normalizedName) return mouse
 
-  const opened = await openProductModalWithRetry(page, client, mouse)
+  const opened = await openProductModalWithRetry(page, client, mouse, onLog)
   mouse = opened.mouse
+  logLine(onLog, `开始输入商品ID: ${normalizedName}`)
   mouse = await clearAndFillTextInput(page, client, mouse, opened.input, normalizedName)
+  logLine(onLog, '输入完成')
   await jitterDelay(500, 620)
 
+  logLine(onLog, '开始等待搜索结果')
   const firstItem = await waitForCondition(
     async () => {
       const item = await markFirstProductModalItem(page)
@@ -3041,10 +3429,24 @@ export async function selectProduct(page: Page, client: CDPSession, mouse: Mouse
     250,
     '未找到商品搜索结果。'
   )
-  const clickableItem = await ensureSelectorReachableForMouse(page, client, firstItem.selector)
+  const candidateCount = await countVisibleProductModalCandidates(page).catch(() => 0)
+  logLine(onLog, `搜索结果出现，候选数量: ${candidateCount}`)
+  const candidateDom = await inspectProductModalCandidateDom(page).catch(() => null)
+  if (candidateDom) {
+    logLine(onLog, `[挂车DOM] ${JSON.stringify(candidateDom)}`)
+  }
+  logLine(onLog, '开始勾选商品')
+  const checkbox = await markProductCheckboxWithinTarget(page, firstItem.selector)
+  if (!checkbox.found) {
+    logLine(onLog, '未找到可勾选的元素')
+  }
+  const selectionTarget = checkbox.found ? checkbox : firstItem
+  const clickableItem = await ensureSelectorReachableForMouse(page, client, selectionTarget.selector)
   mouse = await humanClick(client, mouse, clickableItem.centerX, clickableItem.centerY)
   await jitterDelay(300, 360)
+  logLine(onLog, '勾选完成')
 
+  logLine(onLog, '开始点击确认按钮')
   const confirm = await waitForCondition(
     async () => {
       const button = await markProductModalConfirmButton(page)
@@ -3056,7 +3458,16 @@ export async function selectProduct(page: Page, client: CDPSession, mouse: Mouse
   )
   const clickableConfirm = await ensureSelectorReachableForMouse(page, client, confirm.selector)
   mouse = await humanClick(client, mouse, clickableConfirm.centerX, clickableConfirm.centerY)
-  await waitForProductModalClose(page).catch(() => void 0)
+  logLine(onLog, '确认按钮已点击')
+  logLine(onLog, '开始等待弹窗关闭')
+  await waitForProductModalClose(page)
+    .then(() => {
+      logLine(onLog, '弹窗已关闭')
+    })
+    .catch((error) => {
+      logLine(onLog, '弹窗未关闭超时')
+      throw error
+    })
   await jitterDelay(3_000, 3_050)
   return mouse
 }
@@ -3067,7 +3478,7 @@ async function addProductCore(
   mouse: MouseState,
   productId: string,
   productName: string,
-  options: { skipIfAlreadyAdded: boolean }
+  options: { skipIfAlreadyAdded: boolean; onLog?: (message: string) => void }
 ): Promise<MouseState> {
   const id = String(productId ?? '').trim()
   const name = String(productName ?? '').trim()
@@ -3079,7 +3490,7 @@ async function addProductCore(
 
   if (id) {
     try {
-      mouse = await addProductById(page, client, mouse, id)
+      mouse = await addProductById(page, client, mouse, id, options.onLog)
       await softCheckProductAdded(page)
       return mouse
     } catch (error) {
@@ -3088,14 +3499,19 @@ async function addProductCore(
   }
 
   if (name) {
-    mouse = await selectProduct(page, client, mouse, name)
+    mouse = await selectProduct(page, client, mouse, name, options.onLog)
     await softCheckProductAdded(page)
   }
 
   return mouse
 }
 
-export async function addProductsIfNeeded(page: Page, client: CDPSession, task: CdpPublishTaskInput): Promise<void> {
+export async function addProductsIfNeeded(
+  page: Page,
+  client: CDPSession,
+  task: CdpPublishTaskInput,
+  onLog?: (message: string) => void
+): Promise<void> {
   let mouse: MouseState = { x: 40, y: 40 }
   const linkedProducts = Array.isArray(task.linkedProducts)
     ? task.linkedProducts.map((item) => ({
@@ -3106,14 +3522,16 @@ export async function addProductsIfNeeded(page: Page, client: CDPSession, task: 
 
   if (linkedProducts.length === 0) {
     await addProductCore(page, client, mouse, String(task.productId ?? ''), String(task.productName ?? ''), {
-      skipIfAlreadyAdded: true
+      skipIfAlreadyAdded: true,
+      onLog
     })
     return
   }
 
   for (const product of linkedProducts) {
     mouse = await addProductCore(page, client, mouse, product.id, product.name, {
-      skipIfAlreadyAdded: false
+      skipIfAlreadyAdded: false,
+      onLog
     })
     await jitterDelay(900, 960)
   }
@@ -3217,7 +3635,7 @@ export async function selectCover(
   logLine(options.onLog, '[封面] 弹窗已关闭')
 }
 
-async function ensureCoverModalDismissed(page: Page, client: CDPSession, mouse: MouseState): Promise<MouseState> {
+export async function ensureCoverModalDismissed(page: Page, client: CDPSession, mouse: MouseState): Promise<MouseState> {
   const isCoverModalVisible = async (): Promise<boolean> =>
     page.evaluate(() => {
       const modal = document.querySelector<HTMLElement>(
@@ -3501,6 +3919,78 @@ async function waitForPublishSuccess(page: Page): Promise<string> {
   throw new Error('发布结果未确认（可能页面结构变化或网络异常）。')
 }
 
+type SharedPostUploadFlowOptions = {
+  page: Page
+  client: CDPSession
+  task: CdpPublishTaskInput
+  mediaType: 'video' | 'image'
+  title: string
+  content: string
+  tagsInContent: string[]
+  extraTags: string[]
+  dryRun: boolean
+  onLog?: (message: string) => void
+}
+
+async function runSharedPostUploadEditorFlow(options: SharedPostUploadFlowOptions): Promise<{
+  published: boolean
+  time?: string
+  safetyCheck?: CmsPublishSafetyCheck
+}> {
+  const { page, client, task, mediaType, title, content, tagsInContent, extraTags, dryRun, onLog } = options
+
+  const beforeViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }))
+  if (beforeViewport.width !== 1280 || beforeViewport.height !== 900) {
+    logLine(onLog, `[共享流程] 进入前视口 ${beforeViewport.width}x${beforeViewport.height}，恢复到 1280x900`)
+  }
+  await page.setViewport({ width: 1280, height: 900 })
+  await jitterDelay(120, 180)
+  const restoredViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }))
+  logLine(onLog, `[共享流程] 当前视口 ${restoredViewport.width}x${restoredViewport.height}`)
+
+  logLine(onLog, '开始：填写文案')
+  if (title) {
+    await safeFillTitle(page, client, title)
+    await observationDelay(1_000, 1_900, 3_000, onLog, '标题填写后停顿')
+  }
+  if (content) {
+    await safeFillContentAndTags(page, client, content, extraTags)
+    await observationDelay(1_000, 1_400, 2_000, onLog, '正文填写后检查')
+  }
+  if (!content && extraTags.length > 0) {
+    await fillTagsAsBlueTopics(page, client, extraTags)
+  }
+  if (extraTags.length > 0 || tagsInContent.length > 0) {
+    await observationDelay(1_000, 1_500, 2_000, onLog, '话题渲染后确认')
+  }
+  logLine(onLog, '完成：填写文案')
+
+  if (hasProductBinding(task)) {
+    logLine(onLog, '开始：挂车商品')
+    let productMouse: MouseState = { x: 40, y: 40 }
+    productMouse = await ensureCoverModalDismissed(page, client, productMouse)
+    await addProductsIfNeeded(page, client, task, onLog)
+    logLine(onLog, '完成：挂车商品')
+  }
+
+  if (dryRun) {
+    await prepareDryRunPublish(page, mediaType, onLog)
+    const safetyCheck = await tryCollectSafetyCheck(page, client, onLog)
+    return { published: false, safetyCheck }
+  }
+
+  logLine(onLog, '开始：点击发布')
+  if (mediaType === 'video') {
+    await checkVideoReady(page, { onLog })
+  }
+  await observationDelay(2_000, 2_900, 4_000, onLog, '发布前最后确认')
+  await clickPublish(page, client)
+  const time = await waitForPublishSuccess(page)
+  logLine(onLog, '完成：点击发布')
+  const safetyCheck = await tryCollectSafetyCheck(page, client, onLog)
+  return { published: true, time, safetyCheck }
+}
+
 export async function runXhsPublishWithCdp(input: CdpPublishRunOptions): Promise<{
   published: boolean
   time?: string
@@ -3562,45 +4052,16 @@ export async function runXhsPublishWithCdp(input: CdpPublishRunOptions): Promise
     logLine(onLog, '完成：图片上传')
   }
 
-  logLine(onLog, '开始：填写文案')
-  if (title) {
-    await safeFillTitle(page, client, title)
-    await observationDelay(1_000, 1_900, 3_000, onLog, '标题填写后停顿')
-  }
-  if (content) {
-    await safeFillContentAndTags(page, client, content, extraTags)
-    await observationDelay(1_000, 1_400, 2_000, onLog, '正文填写后检查')
-  }
-  if (!content && extraTags.length > 0) {
-    await fillTagsAsBlueTopics(page, client, extraTags)
-  }
-  if (extraTags.length > 0 || tagsInContent.length > 0) {
-    await observationDelay(1_000, 1_500, 2_000, onLog, '话题渲染后确认')
-  }
-  logLine(onLog, '完成：填写文案')
-
-  if (hasProductBinding(task)) {
-    logLine(onLog, '开始：挂车商品')
-    let productMouse: MouseState = { x: 40, y: 40 }
-    productMouse = await ensureCoverModalDismissed(page, client, productMouse)
-    await addProductsIfNeeded(page, client, task)
-    logLine(onLog, '完成：挂车商品')
-  }
-
-  if (dryRun) {
-    await prepareDryRunPublish(page, mediaType, onLog)
-    const safetyCheck = await tryCollectSafetyCheck(page, client, onLog)
-    return { published: false, safetyCheck }
-  }
-
-  logLine(onLog, '开始：点击发布')
-  if (mediaType === 'video') {
-    await checkVideoReady(page, { onLog })
-  }
-  await observationDelay(2_000, 2_900, 4_000, onLog, '发布前最后确认')
-  await clickPublish(page, client)
-  const time = await waitForPublishSuccess(page)
-  logLine(onLog, '完成：点击发布')
-  const safetyCheck = await tryCollectSafetyCheck(page, client, onLog)
-  return { published: true, time, safetyCheck }
+  return runSharedPostUploadEditorFlow({
+    page,
+    client,
+    task,
+    mediaType,
+    title,
+    content,
+    tagsInContent,
+    extraTags,
+    dryRun,
+    onLog
+  })
 }

@@ -295,7 +295,7 @@ function Settings(): React.JSX.Element {
         const savedTools = await window.electronAPI.getConfig()
         if (!cancelled && savedTools) {
           updateConfig({
-            publishMode: savedTools.publishMode ?? 'electron',
+            publishMode: savedTools.publishMode ?? 'cdp',
             chromeExecutablePath: savedTools.chromeExecutablePath ?? '',
             cmsChromeDataDir: savedTools.cmsChromeDataDir ?? '',
             aiProvider:

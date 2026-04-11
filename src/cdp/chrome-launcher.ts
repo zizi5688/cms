@@ -96,6 +96,10 @@ function createDefaultCmsAccountsConfig(runtime: ResolvedChromeRuntimeConfig): C
   }
 }
 
+function normalizeProfileNickname(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function buildDefaultGatewayProfileRecord(): CmsChromeProfileRecord {
   return {
     id: DEFAULT_GATEWAY_PROFILE_ID,
@@ -236,6 +240,82 @@ export async function writeCmsAccountsConfig(
 export async function listCmsChromeProfiles(): Promise<CmsChromeProfileRecord[]> {
   const config = await readCmsAccountsConfig()
   return config?.profiles ?? []
+}
+
+export async function createCmsChromeProfile(input?: {
+  nickname?: string
+  purpose?: CmsChromeProfilePurpose
+}): Promise<CmsChromeProfileRecord> {
+  const runtime = resolveRuntimeConfigFromStore()
+  const dataDir = runtime.userDataDir
+  const existing = (await readCmsAccountsConfig(dataDir)) ?? createDefaultCmsAccountsConfig(runtime)
+  const usedIds = new Set(existing.profiles.map((profile) => profile.id))
+  let nextIndex = 1
+  while (usedIds.has(`cms-profile-${nextIndex}`)) {
+    nextIndex += 1
+  }
+
+  const id = `cms-profile-${nextIndex}`
+  const profile: CmsChromeProfileRecord = {
+    id,
+    nickname: normalizeProfileNickname(input?.nickname),
+    profileDir: id,
+    purpose: input?.purpose === 'gateway' || input?.purpose === 'shared' ? input.purpose : 'publisher',
+    xhsLoggedIn: false,
+    lastLoginCheck: null
+  }
+
+  mkdirSync(join(dataDir, profile.profileDir), { recursive: true })
+  const nextConfig: CmsChromeAccountsConfig = {
+    ...existing,
+    chromeExecutable: existing.chromeExecutable || runtime.executablePath,
+    cmsDataDir: existing.cmsDataDir || dataDir,
+    profiles: [...existing.profiles, profile]
+  }
+  await writeCmsAccountsConfig(nextConfig, dataDir)
+  return profile
+}
+
+export async function renameCmsChromeProfile(
+  profileId: string,
+  nickname: string
+): Promise<CmsChromeProfileRecord> {
+  const runtime = resolveRuntimeConfigFromStore()
+  const dataDir = runtime.userDataDir
+  const existing = await readCmsAccountsConfig(dataDir)
+  if (!existing) {
+    throw new Error('未找到 cms-accounts.json，请先创建 CMS Chrome Profile。')
+  }
+
+  const normalizedProfileId = String(profileId ?? '').trim()
+  if (!normalizedProfileId) {
+    throw new Error('profileId 不能为空。')
+  }
+
+  const normalizedNickname = normalizeProfileNickname(nickname)
+  if (!normalizedNickname) {
+    throw new Error('Profile 昵称不能为空。')
+  }
+
+  const index = existing.profiles.findIndex(
+    (profile) => profile.id === normalizedProfileId || profile.profileDir === normalizedProfileId
+  )
+  if (index < 0) {
+    throw new Error(`未找到 CMS Chrome Profile: ${normalizedProfileId}`)
+  }
+
+  const updatedProfile: CmsChromeProfileRecord = {
+    ...existing.profiles[index],
+    nickname: normalizedNickname
+  }
+  const nextProfiles = [...existing.profiles]
+  nextProfiles[index] = updatedProfile
+  const nextConfig: CmsChromeAccountsConfig = {
+    ...existing,
+    profiles: nextProfiles
+  }
+  await writeCmsAccountsConfig(nextConfig, dataDir)
+  return updatedProfile
 }
 
 export async function ensureCmsGatewayProfileRecord(): Promise<{

@@ -2,8 +2,10 @@ import { BrowserWindow, session } from 'electron'
 import { randomUUID } from 'crypto'
 import type { Browser } from 'puppeteer'
 import {
+  createCmsChromeProfile,
   listCmsChromeProfiles,
   openCmsProfileLoginBrowser,
+  renameCmsChromeProfile,
   verifyCmsProfileLogin
 } from '../../cdp/chrome-launcher'
 import type {
@@ -337,6 +339,14 @@ export class AccountManager {
 
   async listCmsProfiles(): Promise<CmsChromeProfileRecord[]> {
     return listCmsChromeProfiles()
+  }
+
+  async createCmsProfile(options?: { nickname?: string }): Promise<CmsChromeProfileRecord> {
+    return createCmsChromeProfile({ nickname: options?.nickname })
+  }
+
+  async renameCmsProfile(profileId: string, nickname: string): Promise<CmsChromeProfileRecord> {
+    return renameCmsChromeProfile(profileId, nickname)
   }
 
   async openCmsProfileLogin(options: {

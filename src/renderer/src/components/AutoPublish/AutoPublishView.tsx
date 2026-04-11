@@ -135,6 +135,8 @@ function AutoPublishView(): React.JSX.Element {
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false)
   const [isLoadingTasks, setIsLoadingTasks] = useState(false)
   const [isLoadingCmsProfiles, setIsLoadingCmsProfiles] = useState(false)
+  const [isCreatingCmsProfile, setIsCreatingCmsProfile] = useState(false)
+  const [isRenamingCmsProfile, setIsRenamingCmsProfile] = useState(false)
   const [isSyncingProducts, setIsSyncingProducts] = useState(false)
   const [bindingCmsProfileAccountId, setBindingCmsProfileAccountId] = useState('')
   const [verifyingCmsProfileAccountId, setVerifyingCmsProfileAccountId] = useState('')
@@ -189,6 +191,24 @@ function AutoPublishView(): React.JSX.Element {
     () => accounts.find((a) => a.id === activeAccountId) ?? null,
     [accounts, activeAccountId]
   )
+  const visibleCmsProfiles = useMemo(() => {
+    const boundProfileIds = new Set(
+      accounts
+        .map((account) => account.cmsProfileId)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    )
+
+    return cmsProfiles
+      .filter((profile) => profile.purpose !== 'gateway')
+      .filter((profile) => {
+        const nickname = profile.nickname.trim()
+        if (nickname) return true
+        if (profile.xhsLoggedIn) return true
+        if (boundProfileIds.has(profile.id)) return true
+        return false
+      })
+      .sort((left, right) => left.profileDir.localeCompare(right.profileDir, 'zh-CN'))
+  }, [accounts, cmsProfiles])
   const activePublishQueueTaskId = publishSession?.queueTaskId?.trim() ?? ''
   const publishSessionHighlight = useMemo(
     () => resolvePublishSessionHighlight(publishSession),
@@ -516,6 +536,59 @@ function AutoPublishView(): React.JSX.Element {
       window.alert(`验证登录态失败：${message}`)
     } finally {
       setVerifyingCmsProfileAccountId('')
+    }
+  }
+
+  const handleCreateCmsProfile = async (account: CmsAccountRecord): Promise<void> => {
+    const normalizedAccountId = account.id.trim()
+    if (!normalizedAccountId || isCreatingCmsProfile) return
+    const nicknameInput = window.prompt(
+      '输入新 Profile 的昵称（可留空，后续也可以再改名）',
+      ''
+    )
+    if (nicknameInput === null) return
+
+    setIsCreatingCmsProfile(true)
+    try {
+      const created = await window.api.cms.account.createCmsProfile(nicknameInput.trim())
+      await window.api.cms.account.bindCmsProfile(normalizedAccountId, created.id)
+      await Promise.all([loadAccounts(), loadCmsProfiles()])
+      addLog(`[媒体矩阵] 已新建并绑定 CMS Profile：${created.nickname || created.id}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`新建 CMS Profile 失败：${message}`)
+    } finally {
+      setIsCreatingCmsProfile(false)
+    }
+  }
+
+  const handleRenameCmsProfile = async (profileId: string): Promise<void> => {
+    const normalizedProfileId = profileId.trim()
+    if (!normalizedProfileId || isRenamingCmsProfile) return
+    const current =
+      cmsProfiles.find((profile) => profile.id === normalizedProfileId) ??
+      visibleCmsProfiles.find((profile) => profile.id === normalizedProfileId) ??
+      null
+    if (!current) return
+
+    const nextNickname = window.prompt('输入新的 Profile 昵称', current.nickname || current.id)
+    if (nextNickname === null) return
+    const normalizedNickname = nextNickname.trim()
+    if (!normalizedNickname) {
+      window.alert('Profile 昵称不能为空')
+      return
+    }
+
+    setIsRenamingCmsProfile(true)
+    try {
+      await window.api.cms.account.renameCmsProfile(normalizedProfileId, normalizedNickname)
+      await loadCmsProfiles()
+      addLog(`[媒体矩阵] 已重命名 CMS Profile：${normalizedNickname}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`重命名 CMS Profile 失败：${message}`)
+    } finally {
+      setIsRenamingCmsProfile(false)
     }
   }
 
@@ -1057,7 +1130,7 @@ function AutoPublishView(): React.JSX.Element {
                             className="h-9 min-w-[260px] rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100"
                           >
                             <option value="">未绑定</option>
-                            {cmsProfiles.map((profile) => (
+                            {visibleCmsProfiles.map((profile) => (
                               <option key={profile.id} value={profile.id}>
                                 {(profile.nickname || profile.id) +
                                   ` · ${profile.profileDir} · ${profile.xhsLoggedIn ? '已登录' : '未登录'}`}
@@ -1071,6 +1144,25 @@ function AutoPublishView(): React.JSX.Element {
                             disabled={isLoadingCmsProfiles}
                           >
                             {isLoadingCmsProfiles ? '刷新中...' : '刷新 Profiles'}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={() => void handleCreateCmsProfile(activeAccount)}
+                            disabled={isCreatingCmsProfile}
+                          >
+                            {isCreatingCmsProfile ? '新建中...' : '新建 Profile'}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() =>
+                              activeAccount.cmsProfileId
+                                ? void handleRenameCmsProfile(activeAccount.cmsProfileId)
+                                : void 0
+                            }
+                            disabled={!activeAccount.cmsProfileId || isRenamingCmsProfile}
+                          >
+                            {isRenamingCmsProfile ? '改名中...' : '改名'}
                           </Button>
                           <Button
                             type="button"
@@ -1096,8 +1188,11 @@ function AutoPublishView(): React.JSX.Element {
                       </div>
                       <div className="text-xs text-zinc-400">
                         {activeAccount.cmsProfileId
-                          ? `当前绑定：${activeAccount.cmsProfileId}。发布任务会直接使用这个专用 Profile。`
-                          : '请先为该账号绑定一个 CMS 专用 Profile，再进行登录或发布。'}
+                          ? `当前绑定：${
+                              cmsProfiles.find((profile) => profile.id === activeAccount.cmsProfileId)?.nickname ||
+                              activeAccount.cmsProfileId
+                            }。发布任务会直接使用这个专用 Profile。`
+                          : '请先新建或绑定一个 CMS 专用 Profile，再进行登录或发布。'}
                       </div>
                     </div>
                   </div>

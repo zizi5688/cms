@@ -544,6 +544,11 @@ declare global {
         create: (name: string) => Promise<CmsAccountRecord>
         login: (accountId: string) => Promise<{ windowId: number }>
         listCmsProfiles: () => Promise<CmsChromeProfileRecord[]>
+        createCmsProfile: (nickname?: string) => Promise<CmsChromeProfileRecord>
+        renameCmsProfile: (
+          profileId: string,
+          nickname: string
+        ) => Promise<CmsChromeProfileRecord>
         bindCmsProfile: (accountId: string, cmsProfileId: string | null) => Promise<CmsAccountRecord>
         openCmsProfileLogin: (accountId: string, profileId?: string) => Promise<{ profileId: string }>
         verifyCmsProfileLogin: (

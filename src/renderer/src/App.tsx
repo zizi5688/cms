@@ -54,6 +54,9 @@ function App(): React.JSX.Element {
         const saved = await window.electronAPI.getConfig()
         if (!cancelled && saved) {
           const patch: Parameters<typeof updateConfig>[0] = {
+            publishMode: saved.publishMode === 'cdp' ? 'cdp' : 'electron',
+            chromeExecutablePath: saved.chromeExecutablePath ?? '',
+            cmsChromeDataDir: saved.cmsChromeDataDir ?? '',
             aiProvider:
               typeof saved.aiProvider === 'string' && saved.aiProvider.trim()
                 ? saved.aiProvider.trim()
