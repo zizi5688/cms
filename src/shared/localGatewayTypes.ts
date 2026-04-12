@@ -7,10 +7,12 @@ export type LocalGatewayConfig = {
   startAdminUi: boolean
   startCdpProxy: boolean
   allowDedicatedChrome: boolean
-  chromeProfileDirectory: string
+  chromeProfileDirectories: string[]
   gatewayCmsProfileId: string
   prewarmImageOnLaunch: boolean
 }
+
+export type LocalGatewayAccountStatus = 'active' | 'cooldown' | 'disabled'
 
 export type LocalGatewayOverallStatus =
   | 'disabled'
@@ -50,6 +52,22 @@ export type LocalGatewayChromeProfile = {
   purpose: CmsChromeProfilePurpose
   xhsLoggedIn: boolean
   lastLoginCheck: string | null
+}
+
+export type LocalGatewaySystemChromeProfile = {
+  profileDirectory: string
+  displayName: string
+  email: string | null
+  label: string
+}
+
+export type LocalGatewayAccountSummary = {
+  id: string
+  accountLabel: string
+  status: LocalGatewayAccountStatus
+  chromeProfileDirectory: string | null
+  lastFailedAt: number | null
+  consecutiveFailures: number
 }
 
 export type LocalGatewayInitializationResult = {

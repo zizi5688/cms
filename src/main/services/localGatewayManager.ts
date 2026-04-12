@@ -10,10 +10,12 @@ import {
 } from '../../cdp/chrome-launcher.ts'
 import type { AiCapability } from '../../shared/ai/aiProviderTypes.ts'
 import type {
+  LocalGatewayAccountSummary,
   LocalGatewayChromeProfile,
   LocalGatewayConfig,
   LocalGatewayInitializationResult,
   LocalGatewayServiceName,
+  LocalGatewaySystemChromeProfile,
   LocalGatewayState
 } from '../../shared/localGatewayTypes.ts'
 import {
@@ -21,6 +23,10 @@ import {
   collectLocalGatewayServiceStatuses,
   type LocalGatewayHealthDependency
 } from './localGatewayHealth.ts'
+import {
+  listLocalGatewayAccounts as fetchLocalGatewayAccounts,
+  syncLocalGatewayAccounts as pushLocalGatewayAccounts
+} from './localGatewayAdminClient.ts'
 import { listLocalGatewayChromeProfiles } from './localGatewayChromeProfiles.ts'
 import { readLocalGatewayConfigFromStore } from './localGatewayConfig.ts'
 import { LocalGatewayProcessManager } from './localGatewayProcessManager.ts'
@@ -28,6 +34,7 @@ import {
   resolveLocalGatewayChromeDebugPort,
   resolveLocalGatewayDedicatedChromeUserDataDir
 } from './localGatewayRuntime.ts'
+import { listSystemChromeProfiles as readSystemChromeProfiles } from './systemChromeProfiles.ts'
 
 type LocalGatewayStore = {
   get: (key: string) => unknown
@@ -192,10 +199,7 @@ export class LocalGatewayManager {
       return this.refreshState()
     }
     if (!config.gatewayCmsProfileId.trim()) {
-      this.lastError =
-        config.chromeProfileDirectory.trim().length > 0
-          ? `检测到旧版日常 Chrome Profile 配置（${config.chromeProfileDirectory.trim()}），请先迁移到 CMS 网关专用 Profile。`
-          : '本地网关已启用自动恢复，但尚未配置 CMS 网关专用 Profile。'
+      this.lastError = '本地网关已启用自动恢复，但尚未配置 CMS 网关专用 Profile。'
       return this.refreshState()
     }
     try {
@@ -214,10 +218,7 @@ export class LocalGatewayManager {
       return this.refreshState()
     }
     if (!config.gatewayCmsProfileId.trim()) {
-      this.lastError =
-        config.chromeProfileDirectory.trim().length > 0
-          ? `检测到旧版日常 Chrome Profile 配置（${config.chromeProfileDirectory.trim()}），请先初始化 CMS 网关专用 Profile。`
-          : '请先初始化一个 CMS 网关专用 Profile。'
+      this.lastError = '请先初始化一个 CMS 网关专用 Profile。'
       return this.refreshState()
     }
     try {
@@ -236,6 +237,20 @@ export class LocalGatewayManager {
 
   async listChromeProfiles(): Promise<LocalGatewayChromeProfile[]> {
     return listLocalGatewayChromeProfiles()
+  }
+
+  async listSystemChromeProfiles(): Promise<LocalGatewaySystemChromeProfile[]> {
+    return readSystemChromeProfiles()
+  }
+
+  async listGatewayAccounts(): Promise<LocalGatewayAccountSummary[]> {
+    return fetchLocalGatewayAccounts(this.fetchImpl)
+  }
+
+  async syncGatewayAccounts(
+    profiles: LocalGatewaySystemChromeProfile[]
+  ): Promise<LocalGatewayAccountSummary[]> {
+    return pushLocalGatewayAccounts(this.fetchImpl, profiles)
   }
 
   async ensureGatewayProfile(): Promise<LocalGatewayChromeProfile> {

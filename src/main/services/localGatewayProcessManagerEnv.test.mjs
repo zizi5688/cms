@@ -16,7 +16,7 @@ function createConfig(root) {
     startAdminUi: false,
     startCdpProxy: false,
     allowDedicatedChrome: false,
-    chromeProfileDirectory: 'Profile 10',
+    chromeProfileDirectories: ['Profile 10', 'Profile 11'],
     prewarmImageOnLaunch: false
   }
 }

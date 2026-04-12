@@ -10,7 +10,7 @@ export function createDefaultLocalGatewayConfig(): LocalGatewayConfig {
     startAdminUi: true,
     startCdpProxy: true,
     allowDedicatedChrome: true,
-    chromeProfileDirectory: '',
+    chromeProfileDirectories: [],
     gatewayCmsProfileId: '',
     prewarmImageOnLaunch: false
   }
@@ -20,9 +20,28 @@ function normalizeBool(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+
+  const seen = new Set<string>()
+  const values: string[] = []
+
+  for (const item of value) {
+    const normalized = typeof item === 'string' ? item.trim() : ''
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    values.push(normalized)
+  }
+
+  return values
+}
+
 export function normalizeLocalGatewayConfig(value: unknown): LocalGatewayConfig {
   const fallback = createDefaultLocalGatewayConfig()
   const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const chromeProfileDirectories = normalizeStringArray(record.chromeProfileDirectories)
+  const legacyChromeProfileDirectory =
+    typeof record.chromeProfileDirectory === 'string' ? record.chromeProfileDirectory.trim() : ''
 
   return {
     enabled: normalizeBool(record.enabled, fallback.enabled),
@@ -34,10 +53,12 @@ export function normalizeLocalGatewayConfig(value: unknown): LocalGatewayConfig 
     startAdminUi: normalizeBool(record.startAdminUi, fallback.startAdminUi),
     startCdpProxy: normalizeBool(record.startCdpProxy, fallback.startCdpProxy),
     allowDedicatedChrome: normalizeBool(record.allowDedicatedChrome, fallback.allowDedicatedChrome),
-    chromeProfileDirectory:
-      typeof record.chromeProfileDirectory === 'string'
-        ? record.chromeProfileDirectory.trim()
-        : fallback.chromeProfileDirectory,
+    chromeProfileDirectories:
+      chromeProfileDirectories.length > 0
+        ? chromeProfileDirectories
+        : legacyChromeProfileDirectory
+          ? [legacyChromeProfileDirectory]
+          : fallback.chromeProfileDirectories,
     gatewayCmsProfileId:
       typeof record.gatewayCmsProfileId === 'string'
         ? record.gatewayCmsProfileId.trim()

@@ -98,6 +98,15 @@ function buildServiceDefinitions(config: LocalGatewayConfig): ServiceDefinition[
   return definitions
 }
 
+function resolvePrimaryChromeProfileDirectory(config: LocalGatewayConfig): string | undefined {
+  const profileDirectory = Array.isArray(config.chromeProfileDirectories)
+    ? config.chromeProfileDirectories.find(
+        (value) => typeof value === 'string' && value.trim().length > 0
+      )
+    : null
+  return profileDirectory?.trim() || undefined
+}
+
 export class LocalGatewayProcessManager {
   private readonly logsDir: string
   private readonly fetchImpl: typeof fetch
@@ -137,7 +146,7 @@ export class LocalGatewayProcessManager {
         definition.name === 'gateway'
           ? {
               ...process.env,
-              CHROME_PROFILE_DIRECTORY: config.chromeProfileDirectory
+              CHROME_PROFILE_DIRECTORY: resolvePrimaryChromeProfileDirectory(config)
             }
           : definition.name === 'cdpProxy'
             ? {

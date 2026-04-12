@@ -13,6 +13,13 @@ import { Input } from '@renderer/components/ui/input'
 import { Tabs } from '@renderer/components/ui/tabs'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import { createEmptyAiRuntimeDefaults } from '../../../../shared/ai/aiProviderTypes'
+import type {
+  LocalGatewayAccountStatus,
+  LocalGatewayAccountSummary,
+  LocalGatewayChromeProfile,
+  LocalGatewayState,
+  LocalGatewaySystemChromeProfile
+} from '../../../../shared/localGatewayTypes'
 
 import { AiProviderSettingsPanel } from './settings/AiProviderSettingsPanel'
 
@@ -145,6 +152,21 @@ function unwrapElectronInvokeError(message: string): string {
   return next.trim()
 }
 
+function getLocalGatewayAccountStatusLabel(
+  status: LocalGatewayAccountStatus | null | undefined
+): string {
+  return status ?? '待同步'
+}
+
+function getLocalGatewayAccountStatusClassName(
+  status: LocalGatewayAccountStatus | null | undefined
+): string {
+  if (status === 'active') return 'border-emerald-700/60 bg-emerald-950/30 text-emerald-200'
+  if (status === 'cooldown') return 'border-amber-700/60 bg-amber-950/30 text-amber-200'
+  if (status === 'disabled') return 'border-rose-700/60 bg-rose-950/30 text-rose-200'
+  return 'border-zinc-700 bg-zinc-900/70 text-zinc-300'
+}
+
 function pickVolumePathFromText(text: string): string {
   const matched = String(text ?? '').match(/\/Volumes\/[^\s'"]+/)
   return matched ? matched[0] : ''
@@ -197,6 +219,10 @@ function Settings(): React.JSX.Element {
   const [localGatewayState, setLocalGatewayState] = useState<LocalGatewayState | null>(null)
   const [localGatewayProfiles, setLocalGatewayProfiles] = useState<LocalGatewayChromeProfile[]>([])
   const [isLoadingLocalGatewayProfiles, setIsLoadingLocalGatewayProfiles] = useState(false)
+  const [systemChromeProfiles, setSystemChromeProfiles] = useState<LocalGatewaySystemChromeProfile[]>([])
+  const [isLoadingSystemChromeProfiles, setIsLoadingSystemChromeProfiles] = useState(false)
+  const [localGatewayAccounts, setLocalGatewayAccounts] = useState<LocalGatewayAccountSummary[]>([])
+  const [isSyncingLocalGatewayAccounts, setIsSyncingLocalGatewayAccounts] = useState(false)
   const [isRetryingLocalGateway, setIsRetryingLocalGateway] = useState(false)
   const [isInitializingLocalGateway, setIsInitializingLocalGateway] = useState(false)
   const [localGatewayInitializationOutput, setLocalGatewayInitializationOutput] = useState('')
@@ -218,17 +244,68 @@ function Settings(): React.JSX.Element {
   const pythonPickerRef = useRef<HTMLInputElement | null>(null)
   const scriptPickerRef = useRef<HTMLInputElement | null>(null)
   const skipFirstSaveRef = useRef(true)
+  const skipFirstLocalGatewayAccountsSyncRef = useRef(true)
   const storageMaintenanceRunLockRef = useRef(false)
   const storageMaintenanceRollbackLockRef = useRef(false)
   const selectedTrajectory = normalizeDynamicWatermarkTrajectory(config.dynamicWatermarkTrajectory)
-  const hasLegacyLocalGatewayProfile = Boolean(
-    config.localGateway.chromeProfileDirectory.trim() && !config.localGateway.gatewayCmsProfileId.trim()
-  )
+  const selectedChatChromeProfileDirectories = useMemo(() => {
+    const next: string[] = []
+    for (const value of config.localGateway.chromeProfileDirectories ?? []) {
+      const normalized = String(value ?? '').trim()
+      if (!normalized || next.includes(normalized)) continue
+      next.push(normalized)
+    }
+    return next
+  }, [config.localGateway.chromeProfileDirectories])
   const selectedLocalGatewayProfile = useMemo(
     () =>
       localGatewayProfiles.find((profile) => profile.id === config.localGateway.gatewayCmsProfileId.trim()) ?? null,
     [config.localGateway.gatewayCmsProfileId, localGatewayProfiles]
   )
+  const displayedSystemChromeProfiles = useMemo(() => {
+    const existing = new Set(systemChromeProfiles.map((profile) => profile.profileDirectory))
+    const fallbackProfiles = selectedChatChromeProfileDirectories
+      .filter((profileDirectory) => !existing.has(profileDirectory))
+      .map((profileDirectory) => ({
+        profileDirectory,
+        displayName: profileDirectory,
+        email: null,
+        label: profileDirectory
+      }))
+    return [...systemChromeProfiles, ...fallbackProfiles]
+  }, [selectedChatChromeProfileDirectories, systemChromeProfiles])
+  const selectedSystemChromeProfiles = useMemo(
+    () =>
+      selectedChatChromeProfileDirectories.map((profileDirectory) => {
+        return (
+          displayedSystemChromeProfiles.find((profile) => profile.profileDirectory === profileDirectory) ?? {
+            profileDirectory,
+            displayName: profileDirectory,
+            email: null,
+            label: profileDirectory
+          }
+        )
+      }),
+    [displayedSystemChromeProfiles, selectedChatChromeProfileDirectories]
+  )
+  const selectedSystemChromeProfilesSyncKey = useMemo(
+    () =>
+      JSON.stringify(
+        selectedSystemChromeProfiles.map((profile) => [
+          profile.profileDirectory,
+          profile.displayName,
+          profile.email
+        ])
+      ),
+    [selectedSystemChromeProfiles]
+  )
+  const localGatewayAccountsByProfileDirectory = useMemo(() => {
+    return new Map(
+      localGatewayAccounts
+        .filter((account) => account.chromeProfileDirectory)
+        .map((account) => [String(account.chromeProfileDirectory), account])
+    )
+  }, [localGatewayAccounts])
 
   useEffect(() => {
     const startedAt = performance.now()
@@ -414,6 +491,69 @@ function Settings(): React.JSX.Element {
     }
   }, [addLog])
 
+  const refreshSystemChromeProfiles = useCallback(async (): Promise<void> => {
+    if (typeof window.electronAPI.listLocalGatewaySystemChromeProfiles !== 'function') return
+    setIsLoadingSystemChromeProfiles(true)
+    try {
+      const profiles = await window.electronAPI.listLocalGatewaySystemChromeProfiles()
+      setSystemChromeProfiles(profiles)
+    } catch (error) {
+      addLog(
+        `[本地网关] 读取系统 Chrome Profiles 失败：${unwrapElectronInvokeError(extractErrorMessage(error))}`
+      )
+    } finally {
+      setIsLoadingSystemChromeProfiles(false)
+    }
+  }, [addLog])
+
+  const refreshLocalGatewayAccounts = useCallback(async (): Promise<void> => {
+    if (typeof window.electronAPI.listLocalGatewayAccounts !== 'function') return
+    try {
+      const accounts = await window.electronAPI.listLocalGatewayAccounts()
+      setLocalGatewayAccounts(accounts)
+    } catch (error) {
+      addLog(`[本地网关] 读取网关账号状态失败：${unwrapElectronInvokeError(extractErrorMessage(error))}`)
+    }
+  }, [addLog])
+
+  const syncSelectedLocalGatewayAccounts = useCallback(
+    async (profiles: LocalGatewaySystemChromeProfile[]): Promise<void> => {
+      if (typeof window.electronAPI.syncLocalGatewayAccounts !== 'function') return
+      setIsSyncingLocalGatewayAccounts(true)
+      try {
+        const accounts = await window.electronAPI.syncLocalGatewayAccounts({ profiles })
+        setLocalGatewayAccounts(accounts)
+        addLog(`[本地网关] 已同步 ${profiles.length} 个聊天链路 Chrome Profiles。`)
+      } catch (error) {
+        addLog(
+          `[本地网关] 同步聊天链路 Chrome Profiles 失败：${unwrapElectronInvokeError(extractErrorMessage(error))}`
+        )
+      } finally {
+        setIsSyncingLocalGatewayAccounts(false)
+      }
+    },
+    [addLog]
+  )
+
+  const toggleSystemChromeProfile = useCallback(
+    (profileDirectory: string): void => {
+      const normalized = String(profileDirectory ?? '').trim()
+      if (!normalized) return
+
+      const nextDirectories = selectedChatChromeProfileDirectories.includes(normalized)
+        ? selectedChatChromeProfileDirectories.filter((value) => value !== normalized)
+        : [...selectedChatChromeProfileDirectories, normalized]
+
+      updateConfig({
+        localGateway: {
+          ...config.localGateway,
+          chromeProfileDirectories: nextDirectories
+        }
+      })
+    },
+    [config.localGateway, selectedChatChromeProfileDirectories, updateConfig]
+  )
+
   useEffect(() => {
     void refreshStorageMaintenanceState()
   }, [refreshStorageMaintenanceState])
@@ -425,6 +565,29 @@ function Settings(): React.JSX.Element {
   useEffect(() => {
     void refreshLocalGatewayProfiles()
   }, [refreshLocalGatewayProfiles])
+
+  useEffect(() => {
+    void refreshSystemChromeProfiles()
+  }, [refreshSystemChromeProfiles])
+
+  useEffect(() => {
+    void refreshLocalGatewayAccounts()
+  }, [refreshLocalGatewayAccounts])
+
+  useEffect(() => {
+    if (skipFirstLocalGatewayAccountsSyncRef.current) {
+      skipFirstLocalGatewayAccountsSyncRef.current = false
+      return
+    }
+
+    const handle = window.setTimeout(() => {
+      void syncSelectedLocalGatewayAccounts(selectedSystemChromeProfiles)
+    }, 250)
+
+    return () => {
+      window.clearTimeout(handle)
+    }
+  }, [selectedSystemChromeProfiles, selectedSystemChromeProfilesSyncKey, syncSelectedLocalGatewayAccounts])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1422,12 +1585,6 @@ function Settings(): React.JSX.Element {
                   当前选择：{selectedLocalGatewayProfile.nickname} / {selectedLocalGatewayProfile.profileDir}
                 </div>
               ) : null}
-              {hasLegacyLocalGatewayProfile ? (
-                <div className="text-xs text-amber-300">
-                  检测到旧版日常 Chrome Profile 配置：{config.localGateway.chromeProfileDirectory}。请先初始化网关专用 CMS
-                  Profile，再重新登录。
-                </div>
-              ) : null}
               {!isLoadingLocalGatewayProfiles && localGatewayProfiles.length === 0 ? (
                 <div className="text-xs text-amber-300">
                   当前还没有网关专用 CMS Profile。先点“初始化网关专用 Profile”，再点“打开并登录网关 Profile”。
@@ -1439,6 +1596,80 @@ function Settings(): React.JSX.Element {
               <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
                 首次使用时，先初始化一个“本地网关专用”CMS Profile，再打开它完成 Google / Flow 登录，最后执行初始化。
               </div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3 rounded-md border border-zinc-800 bg-zinc-950/30 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-zinc-400">聊天链路 Google Profiles</div>
+                <div className="text-xs text-zinc-500">
+                  这里读取系统 Chrome 的 Local State。勾选的 Profile 会同步到 gateway 的 accounts
+                  表，供 Chat 链路做多账号轮询；不会影响上面的 CMS 网关专用 Profile / Flow 生图链路。
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void refreshSystemChromeProfiles()}
+                disabled={isLoadingSystemChromeProfiles}
+              >
+                {isLoadingSystemChromeProfiles ? '读取中...' : '刷新 Google Profiles'}
+              </Button>
+            </div>
+            <div className="text-xs text-zinc-400">
+              已选 {selectedChatChromeProfileDirectories.length} 个
+              {isSyncingLocalGatewayAccounts ? ' · 正在同步到 gateway...' : ''}
+            </div>
+            <div className="flex flex-col gap-2">
+              {displayedSystemChromeProfiles.map((profile) => {
+                const checked = selectedChatChromeProfileDirectories.includes(profile.profileDirectory)
+                const account = localGatewayAccountsByProfileDirectory.get(profile.profileDirectory) ?? null
+                const status = checked ? account?.status ?? null : null
+                return (
+                  <label
+                    key={profile.profileDirectory}
+                    className={`rounded-md border px-3 py-2 ${
+                      checked ? 'border-emerald-800/70 bg-emerald-950/10' : 'border-zinc-800 bg-zinc-950/20'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSystemChromeProfile(profile.profileDirectory)}
+                          className="mt-1"
+                        />
+                        <div className="flex flex-col gap-1">
+                          <div className="text-sm text-zinc-100">{profile.displayName}</div>
+                          <div className="text-xs text-zinc-400">{profile.profileDirectory}</div>
+                          <div className="text-xs text-zinc-500">{profile.email ?? '未读取到邮箱'}</div>
+                        </div>
+                      </div>
+                      {checked ? (
+                        <div
+                          className={`rounded-full border px-2 py-0.5 text-[11px] ${getLocalGatewayAccountStatusClassName(
+                            status
+                          )}`}
+                        >
+                          {getLocalGatewayAccountStatusLabel(status)}
+                        </div>
+                      ) : null}
+                    </div>
+                    {checked && account ? (
+                      <div className="mt-2 text-xs text-zinc-500">
+                        失败次数 {account.consecutiveFailures}
+                        {account.lastFailedAt ? ` · 最近失败 ${formatDateTime(account.lastFailedAt)}` : ''}
+                      </div>
+                    ) : null}
+                  </label>
+                )
+              })}
+              {!isLoadingSystemChromeProfiles && displayedSystemChromeProfiles.length === 0 ? (
+                <div className="text-xs text-amber-300">
+                  还没有读取到系统 Chrome Profiles。请确认本机已安装 Chrome，并至少启动过一次。
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">

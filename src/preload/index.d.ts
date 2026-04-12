@@ -216,9 +216,11 @@ declare global {
   }
 
   type LocalGatewayConfig = import('../shared/localGatewayTypes').LocalGatewayConfig
+  type LocalGatewayAccountSummary = import('../shared/localGatewayTypes').LocalGatewayAccountSummary
   type LocalGatewayChromeProfile = import('../shared/localGatewayTypes').LocalGatewayChromeProfile
   type LocalGatewayInitializationResult = import('../shared/localGatewayTypes').LocalGatewayInitializationResult
   type LocalGatewayState = import('../shared/localGatewayTypes').LocalGatewayState
+  type LocalGatewaySystemChromeProfile = import('../shared/localGatewayTypes').LocalGatewaySystemChromeProfile
 
   type SyncDouyinHotMusicResult = {
     success: boolean
@@ -1484,6 +1486,11 @@ declare global {
     getLocalGatewayState: () => Promise<LocalGatewayState>
     retryStartLocalGateway: () => Promise<LocalGatewayState>
     listLocalGatewayChromeProfiles: () => Promise<LocalGatewayChromeProfile[]>
+    listLocalGatewaySystemChromeProfiles: () => Promise<LocalGatewaySystemChromeProfile[]>
+    listLocalGatewayAccounts: () => Promise<LocalGatewayAccountSummary[]>
+    syncLocalGatewayAccounts: (payload: {
+      profiles: LocalGatewaySystemChromeProfile[]
+    }) => Promise<LocalGatewayAccountSummary[]>
     ensureLocalGatewayProfile: () => Promise<LocalGatewayChromeProfile>
     openLocalGatewayProfileLogin: () => Promise<{ success: true; profileId: string }>
     initializeLocalGateway: (payload?: {

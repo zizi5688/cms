@@ -8,10 +8,12 @@ import type {
   CmsPublishSafetyCheck
 } from '../shared/cmsChromeProfileTypes'
 import type {
+  LocalGatewayAccountSummary,
   LocalGatewayChromeProfile,
   LocalGatewayConfig,
   LocalGatewayInitializationResult,
-  LocalGatewayState
+  LocalGatewayState,
+  LocalGatewaySystemChromeProfile
 } from '../shared/localGatewayTypes.ts'
 
 type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
@@ -1667,6 +1669,13 @@ const electronAPI = {
   retryStartLocalGateway: (): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:retry-start'),
   listLocalGatewayChromeProfiles: (): Promise<LocalGatewayChromeProfile[]> =>
     ipcRenderer.invoke('local-gateway:list-chrome-profiles'),
+  listLocalGatewaySystemChromeProfiles: (): Promise<LocalGatewaySystemChromeProfile[]> =>
+    ipcRenderer.invoke('local-gateway:list-system-chrome-profiles'),
+  listLocalGatewayAccounts: (): Promise<LocalGatewayAccountSummary[]> =>
+    ipcRenderer.invoke('local-gateway:list-accounts'),
+  syncLocalGatewayAccounts: (payload: {
+    profiles: LocalGatewaySystemChromeProfile[]
+  }): Promise<LocalGatewayAccountSummary[]> => ipcRenderer.invoke('local-gateway:sync-accounts', payload),
   ensureLocalGatewayProfile: (): Promise<LocalGatewayChromeProfile> =>
     ipcRenderer.invoke('local-gateway:ensure-gateway-profile'),
   openLocalGatewayProfileLogin: (): Promise<{ success: true; profileId: string }> =>

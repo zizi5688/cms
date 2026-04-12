@@ -16,19 +16,26 @@ test('normalizeLocalGatewayConfig falls back to defaults', () => {
 test('mergeLocalGatewayConfig applies partial patch and keeps defaults', () => {
   const config = mergeLocalGatewayConfig(createDefaultLocalGatewayConfig(), {
     enabled: true,
-    startAdminUi: false
+    startAdminUi: false,
+    chromeProfileDirectories: ['Profile 10', 'Profile 11']
   })
   assert.equal(config.enabled, true)
   assert.equal(config.startAdminUi, false)
   assert.equal(config.startCdpProxy, true)
   assert.equal(config.gatewayCmsProfileId, '')
+  assert.deepEqual(config.chromeProfileDirectories, ['Profile 10', 'Profile 11'])
 })
 
 test('readLocalGatewayConfigFromStore normalizes persisted values', () => {
   const values = new Map([
     [
       'localGateway',
-      { enabled: true, bundlePath: ' /tmp/gateway ', gatewayCmsProfileId: ' cms-gateway-profile ' }
+      {
+        enabled: true,
+        bundlePath: ' /tmp/gateway ',
+        gatewayCmsProfileId: ' cms-gateway-profile ',
+        chromeProfileDirectory: ' Profile 10 '
+      }
     ]
   ])
   const store = {
@@ -44,5 +51,6 @@ test('readLocalGatewayConfigFromStore normalizes persisted values', () => {
   assert.equal(config.enabled, true)
   assert.equal(config.bundlePath, '/tmp/gateway')
   assert.equal(config.gatewayCmsProfileId, 'cms-gateway-profile')
+  assert.deepEqual(config.chromeProfileDirectories, ['Profile 10'])
   assert.deepEqual(values.get('localGateway'), config)
 })
