@@ -16,7 +16,7 @@ import sharp from 'sharp'
 import pLimit from 'p-limit'
 import { fileURLToPath } from 'url'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
-import type { LocalGatewayConfig } from '../shared/localGatewayTypes.ts'
+import type { LocalGatewayConfig, LocalGatewaySystemChromeProfile } from '../shared/localGatewayTypes.ts'
 import type { CmsPublishMode } from '../shared/cmsChromeProfileTypes.ts'
 import { AccountManager } from './services/accountManager'
 import { dispatchAiTask, type AiTaskRequest } from './services/aiTaskDispatcher'
@@ -3910,6 +3910,32 @@ app.whenReady().then(async () => {
     }
     return localGatewayManager.listChromeProfiles()
   })
+
+  ipcMain.handle('local-gateway:list-system-chrome-profiles', async () => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.listSystemChromeProfiles()
+  })
+
+  ipcMain.handle('local-gateway:list-accounts', async () => {
+    if (!localGatewayManager) {
+      throw new Error('本地网关管理器尚未初始化。')
+    }
+    return localGatewayManager.listGatewayAccounts()
+  })
+
+  ipcMain.handle(
+    'local-gateway:sync-accounts',
+    async (_event, payload: { profiles?: LocalGatewaySystemChromeProfile[] } | null | undefined) => {
+      if (!localGatewayManager) {
+        throw new Error('本地网关管理器尚未初始化。')
+      }
+      return localGatewayManager.syncGatewayAccounts(
+        Array.isArray(payload?.profiles) ? payload.profiles : []
+      )
+    }
+  )
 
   ipcMain.handle('local-gateway:ensure-gateway-profile', async () => {
     if (!localGatewayManager) {

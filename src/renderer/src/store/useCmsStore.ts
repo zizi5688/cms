@@ -214,7 +214,7 @@ const initialConfig: CmsConfig = {
     startAdminUi: true,
     startCdpProxy: true,
     allowDedicatedChrome: true,
-    chromeProfileDirectory: '',
+    chromeProfileDirectories: [],
     gatewayCmsProfileId: '',
     prewarmImageOnLaunch: false
   }
