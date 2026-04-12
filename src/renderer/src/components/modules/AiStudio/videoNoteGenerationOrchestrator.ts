@@ -1,4 +1,5 @@
 import type { GeneratedVideoNoteAsset } from './videoNotePreviewHelpers.ts'
+import type { SmartGenerationPhase } from '../../ui/smartGenerationOverlayHelpers.ts'
 
 export type VideoNoteGenerationBranchStatus = 'idle' | 'running' | 'success' | 'error'
 export type VideoNoteCopyFailureRecord = {
@@ -19,6 +20,7 @@ export type VideoNoteGenerationState = {
   renderStatus: VideoNoteGenerationBranchStatus
   csvText: string
   rawCopyText: string
+  copyLifecyclePhase: SmartGenerationPhase
   previewAssets: GeneratedVideoNoteAsset[]
   copyError: string
   renderError: string
@@ -34,6 +36,8 @@ export type VideoNoteGenerationState = {
 type VideoNoteGenerationUpdate =
   | { type: 'start' }
   | { type: 'copy-attempt-start'; providerName: string }
+  | { type: 'copy-generating-start' }
+  | { type: 'copy-parsing-start'; rawCopyText: string }
   | {
       type: 'copy-fallback-start'
       failedProviderName: string
@@ -118,6 +122,7 @@ function withDerivedStatus(state: VideoNoteGenerationState): VideoNoteGeneration
   return {
     ...state,
     rawCopyText: normalizeText(state.rawCopyText),
+    copyLifecyclePhase: state.copyLifecyclePhase,
     previewAssets,
     copyAttemptProviderName: normalizeText(state.copyAttemptProviderName),
     copyFallbackProviderName: normalizeText(state.copyFallbackProviderName),
@@ -133,9 +138,10 @@ export function createInitialVideoNoteGenerationState(): VideoNoteGenerationStat
   return withDerivedStatus({
     copyStatus: 'idle',
     renderStatus: 'idle',
-    csvText: '',
-    rawCopyText: '',
-    previewAssets: [],
+      csvText: '',
+      rawCopyText: '',
+      copyLifecyclePhase: null,
+      previewAssets: [],
     copyError: '',
     renderError: '',
     copyAttemptProviderName: '',
@@ -159,6 +165,7 @@ export function applyVideoNoteGenerationUpdate(
         renderStatus: 'running',
         csvText: '',
         rawCopyText: '',
+        copyLifecyclePhase: 'connecting',
         previewAssets: [],
         copyError: '',
         renderError: '',
@@ -177,16 +184,30 @@ export function applyVideoNoteGenerationUpdate(
         copyStatus: 'running',
         csvText: '',
         rawCopyText: '',
+        copyLifecyclePhase: 'connecting',
         copyError: '',
         copyAttemptProviderName: providerName,
         copyAttemptCount: providerName ? state.copyAttemptCount + 1 : state.copyAttemptCount
       })
     }
+    case 'copy-generating-start':
+      return withDerivedStatus({
+        ...state,
+        copyLifecyclePhase: null
+      })
+    case 'copy-parsing-start':
+      return withDerivedStatus({
+        ...state,
+        rawCopyText: normalizeText(update.rawCopyText),
+        copyLifecyclePhase: 'parsing'
+      })
     case 'copy-fallback-start': {
       const providerName = normalizeText(update.providerName)
       return withDerivedStatus({
         ...state,
         copyStatus: 'running',
+        rawCopyText: '',
+        copyLifecyclePhase: 'connecting',
         copyError: '',
         copyAttemptProviderName: providerName,
         copyFallbackProviderName: providerName,
@@ -203,6 +224,7 @@ export function applyVideoNoteGenerationUpdate(
         copyStatus: 'success',
         csvText: normalizeText(update.csvText),
         rawCopyText: normalizeText(update.rawCopyText) || normalizeText(update.csvText),
+        copyLifecyclePhase: null,
         copyError: ''
       })
     case 'copy-error':
@@ -210,6 +232,7 @@ export function applyVideoNoteGenerationUpdate(
         ...state,
         copyStatus: 'error',
         copyError: normalizeText(update.message),
+        copyLifecyclePhase: null,
         copyAttemptProviderName:
           normalizeText(update.providerName) || normalizeText(state.copyAttemptProviderName),
         copyFailureHistory: appendCopyFailureRecord(state.copyFailureHistory, {
@@ -228,6 +251,7 @@ export function applyVideoNoteGenerationUpdate(
       return withDerivedStatus({
         ...state,
         renderStatus: 'error',
+        copyLifecyclePhase: null,
         renderError: normalizeText(update.message)
       })
   }

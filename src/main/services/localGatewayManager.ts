@@ -19,6 +19,10 @@ import {
 import { listLocalGatewayChromeProfiles } from './localGatewayChromeProfiles.ts'
 import { readLocalGatewayConfigFromStore } from './localGatewayConfig.ts'
 import { LocalGatewayProcessManager } from './localGatewayProcessManager.ts'
+import {
+  resolveLocalGatewayChromeDebugPort,
+  resolveLocalGatewayDedicatedChromeUserDataDir
+} from './localGatewayRuntime.ts'
 
 type LocalGatewayStore = {
   get: (key: string) => unknown
@@ -309,6 +313,9 @@ export class LocalGatewayManager {
       ...process.env,
       CHROME_PROFILE_DIRECTORY: profileDirectory,
       LOCAL_AI_GATEWAY_ALLOW_DEDICATED_CHROME: config.allowDedicatedChrome ? '1' : '0',
+      LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT: String(resolveLocalGatewayChromeDebugPort()),
+      CDP_PROXY_CHROME_PORT: String(resolveLocalGatewayChromeDebugPort()),
+      CDP_PROXY_CHROME_USER_DATA_DIR: resolveLocalGatewayDedicatedChromeUserDataDir(bundlePath),
       LOCAL_AI_GATEWAY_SMOKE_IMAGE:
         options?.smokeImage || config.prewarmImageOnLaunch ? '1' : '0'
     }

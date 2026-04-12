@@ -8,6 +8,7 @@ import { Card } from '@renderer/components/ui/card'
 import { countManifestCsvRows, generateManifest } from '@renderer/lib/cms-engine'
 import { cn } from '@renderer/lib/utils'
 import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
+import type { SmartGenerationPhase } from '../../ui/smartGenerationOverlayHelpers'
 
 import { BatchPickCanvas } from './BatchPickCanvas'
 import {
@@ -303,6 +304,8 @@ function AiStudio(): React.JSX.Element {
   const [noteMaxReuseDraft, setNoteMaxReuseDraft] = useState(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
   const [notePreviewTasks, setNotePreviewTasks] = useState<Task[]>([])
   const [isGeneratingNotePreview, setIsGeneratingNotePreview] = useState(false)
+  const [smartGenPhase, setSmartGenPhase] = useState<SmartGenerationPhase>(null)
+  const [smartGenError, setSmartGenError] = useState<string | null>(null)
   const [videoNoteGenerationState, setVideoNoteGenerationState] =
     useState<VideoNoteGenerationState>(() => createInitialVideoNoteGenerationState())
   const [noteDispatchProgress, setNoteDispatchProgress] =
@@ -347,6 +350,8 @@ function AiStudio(): React.JSX.Element {
     setNoteMaxImagesDraft(NOTE_SIDEBAR_DEFAULTS.maxImagesDraft)
     setNoteMaxReuseDraft(NOTE_SIDEBAR_DEFAULTS.maxReuseDraft)
     setNotePreviewTasks([])
+    setSmartGenPhase(null)
+    setSmartGenError(null)
     setVideoNoteGenerationState(createInitialVideoNoteGenerationState())
     setNoteDispatchProgress(null)
     setNoteUploadedMaterialPaths([])
@@ -553,34 +558,42 @@ function AiStudio(): React.JSX.Element {
   }
 
   const handleGenerateSmartNotePreview = async (): Promise<void> => {
+    setSmartGenError(null)
     setIsGeneratingNotePreview(true)
     try {
       const chatInput = buildSmartNoteChatInput({
         userExtraPrompt: noteSmartPromptDraft,
         groupCount: Number(noteGroupCountDraft)
       })
+      setSmartGenPhase('connecting')
       addLog('[AI Studio] 已发送图文智能生成请求（临时降级为纯文字模式，不附带参考图）。')
+      setSmartGenPhase('generating')
       const result = (await state.startChatRun({
         promptText: chatInput.prompt,
         imagePaths: chatInput.imagePaths
       })) as {
         outputText?: unknown
       }
+      setSmartGenPhase('parsing')
       const csvText = extractCsvFromSmartNoteResponse(String(result?.outputText ?? ''))
       setNoteCsvDraft(csvText)
       const nextTasks = buildImageNotePreviewTasksFromCsv(csvText)
       if (nextTasks.length === 0) return
       setNotePreviewTasks(nextTasks)
       setNoteSidebarPhase('preview')
+      setSmartGenPhase(null)
+      setSmartGenError(null)
       addLog(`[AI Studio] 智能生成已返回 CSV，并生成 ${nextTasks.length} 组图文笔记预览。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       addLog(`[AI Studio] 图文智能生成失败：${message}`)
+      setSmartGenError(message)
+      setSmartGenPhase(null)
       flushSync(() => {
         setIsGeneratingNotePreview(false)
       })
-      window.alert(message)
     } finally {
+      setSmartGenPhase(null)
       setIsGeneratingNotePreview(false)
     }
   }
@@ -626,11 +639,16 @@ function AiStudio(): React.JSX.Element {
       options?: {
         successLog?: string
         emptyAlert?: string
+        onEmpty?: (message: string) => void
       }
     ): boolean => {
       const nextTasks = buildGeneratedVideoNotePreviewTasks(csvText, previewAssets)
       if (nextTasks.length === 0) {
-        window.alert(options?.emptyAlert || '已生成视频，但未能构建视频笔记结果，请检查 CSV 与输出数量。')
+        const message = options?.emptyAlert || '已生成视频，但未能构建视频笔记结果，请检查 CSV 与输出数量。'
+        options?.onEmpty?.(message)
+        if (!options?.onEmpty) {
+          window.alert(message)
+        }
         return false
       }
 
@@ -754,6 +772,7 @@ function AiStudio(): React.JSX.Element {
   ])
 
   const handleGenerateSmartVideoNotePreview = useCallback(async (): Promise<void> => {
+    setSmartGenError(null)
     const isCopyOnlyRetry =
       videoNoteGenerationState.canRetryCopyOnly && videoNoteGenerationState.previewAssets.length > 0
     let chatInput: ReturnType<typeof buildVideoSmartNoteChatInput>
@@ -766,7 +785,7 @@ function AiStudio(): React.JSX.Element {
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      window.alert(message)
+      setSmartGenError(message)
       return
     }
 
@@ -822,7 +841,10 @@ function AiStudio(): React.JSX.Element {
         openVideoNotePreviewFromAssets(copyResult.csvText, renderResult.assets, {
           successLog: isCopyOnlyRetry
             ? `[AI Studio] 视频笔记文案重试完成，并复用 ${renderResult.assets.length} 组视频预览。`
-            : `[AI Studio] 视频笔记智能生成完成，并生成 ${renderResult.assets.length} 组预览。`
+            : `[AI Studio] 视频笔记智能生成完成，并生成 ${renderResult.assets.length} 组预览。`,
+          onEmpty: (message) => {
+            setSmartGenError(message)
+          }
         })
         return
       }
@@ -832,7 +854,7 @@ function AiStudio(): React.JSX.Element {
         renderResult.ok ? '' : renderResult.message
       ].filter(Boolean)
       if (messages.length > 0) {
-        window.alert(messages.join('\n'))
+        setSmartGenError(messages.join('\n'))
       }
     } finally {
       setIsGeneratingNotePreview(false)
@@ -1011,6 +1033,8 @@ function AiStudio(): React.JSX.Element {
       maxReuseDraft={noteMaxReuseDraft}
       videoEntryMode={videoNoteEntryMode}
       videoGenerationState={videoNoteGenerationState}
+      smartGenerationPhase={smartGenPhase}
+      smartGenerationError={smartGenError}
       isVideoGenerateDisabled={isVideoGenerateDisabled}
       isGenerating={isGeneratingNotePreview}
       dispatchProgress={noteDispatchProgress}

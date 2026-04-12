@@ -1,6 +1,29 @@
 import type { VideoNoteGenerationState } from './videoNoteGenerationOrchestrator.ts'
+import type { SmartGenerationPhase } from '../../ui/smartGenerationOverlayHelpers.ts'
 
 export type VideoNoteEntryMode = 'smart' | 'manual'
+
+export function resolveVideoSmartGenerationPhase(payload: {
+  generationState: VideoNoteGenerationState
+  isGenerating: boolean
+}): SmartGenerationPhase {
+  const { generationState, isGenerating } = payload
+  if (!isGenerating) return null
+  if (
+    generationState.copyLifecyclePhase === 'connecting' ||
+    generationState.copyLifecyclePhase === 'parsing'
+  ) {
+    return generationState.copyLifecyclePhase
+  }
+  if (
+    generationState.mergeStatus === 'running-both' ||
+    generationState.mergeStatus === 'waiting-copy' ||
+    generationState.mergeStatus === 'waiting-video'
+  ) {
+    return 'generating'
+  }
+  return null
+}
 
 export function buildVideoNoteEditorViewModel({
   entryMode,
@@ -15,13 +38,15 @@ export function buildVideoNoteEditorViewModel({
   generateButtonLabel: string
   entryToggleLabel: string
   statusText: string
+  overlayPhase: SmartGenerationPhase
 } {
   if (entryMode === 'manual') {
     return {
       textareaPlaceholder: '输入 CSV 格式文案',
       generateButtonLabel: isGenerating ? '生成中' : '开始生成',
       entryToggleLabel: '智能生成',
-      statusText: ''
+      statusText: '',
+      overlayPhase: null
     }
   }
 
@@ -44,12 +69,12 @@ export function buildVideoNoteEditorViewModel({
 
   return {
     textareaPlaceholder: '输入商品信息和额外说明提示词',
-    generateButtonLabel: isGenerating
-      ? '生成中'
-      : generationState.canRetryCopyOnly
-        ? '重试文案'
-        : '智能生成',
+    generateButtonLabel: generationState.canRetryCopyOnly ? '重试文案' : '智能生成',
     entryToggleLabel: '手动录入',
-    statusText
+    statusText,
+    overlayPhase: resolveVideoSmartGenerationPhase({
+      generationState,
+      isGenerating
+    })
   }
 }

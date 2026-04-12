@@ -4,6 +4,10 @@ import process from 'node:process'
 import { join } from 'path'
 
 import type { LocalGatewayConfig } from '../../shared/localGatewayTypes.ts'
+import {
+  resolveLocalGatewayChromeDebugPort,
+  resolveLocalGatewayDedicatedChromeUserDataDir
+} from './localGatewayRuntime.ts'
 
 type ManagedServiceName = 'adapter' | 'gateway' | 'adminUi' | 'cdpProxy'
 
@@ -127,12 +131,21 @@ export class LocalGatewayProcessManager {
 
       const logPath = join(this.logsDir, `${definition.name}.log`)
       const stream = createWriteStream(logPath, { flags: 'a' })
+      const dedicatedChromePort = String(resolveLocalGatewayChromeDebugPort())
+      const dedicatedChromeUserDataDir = resolveLocalGatewayDedicatedChromeUserDataDir(config.bundlePath)
       const childEnv =
         definition.name === 'gateway'
           ? {
               ...process.env,
               CHROME_PROFILE_DIRECTORY: config.chromeProfileDirectory
             }
+          : definition.name === 'cdpProxy'
+            ? {
+                ...process.env,
+                CDP_PROXY_CHROME_PORT: dedicatedChromePort,
+                CDP_PROXY_CHROME_USER_DATA_DIR: dedicatedChromeUserDataDir,
+                LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT: dedicatedChromePort
+              }
           : process.env
       const child = this.spawnImpl(this.shellPath, ['-lc', definition.command], {
         cwd: definition.cwd,

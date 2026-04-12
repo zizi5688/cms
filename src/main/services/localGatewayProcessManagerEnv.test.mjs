@@ -21,10 +21,11 @@ function createConfig(root) {
   }
 }
 
-test('LocalGatewayProcessManager injects CHROME_PROFILE_DIRECTORY only into the gateway child process', async () => {
+test('LocalGatewayProcessManager injects gateway and cdp proxy environment for dedicated chrome routing', async () => {
   const root = mkdtempSync(join(tmpdir(), 'local-gateway-process-env-'))
   mkdirSync(join(root, 'local-ai-gateway', 'python_adapter', '.venv', 'bin'), { recursive: true })
   mkdirSync(join(root, 'local-ai-gateway'), { recursive: true })
+  mkdirSync(join(root, 'tools'), { recursive: true })
 
   const spawnCalls = []
   const healthChecks = new Map()
@@ -47,9 +48,17 @@ test('LocalGatewayProcessManager injects CHROME_PROFILE_DIRECTORY only into the 
     }
   })
 
-  await manager.ensureServices(createConfig(root))
+  await manager.ensureServices({
+    ...createConfig(root),
+    startCdpProxy: true
+  })
 
-  assert.equal(spawnCalls.length, 2)
+  assert.equal(spawnCalls.length, 3)
   assert.equal(spawnCalls[0].options.env.CHROME_PROFILE_DIRECTORY, undefined)
   assert.equal(spawnCalls[1].options.env.CHROME_PROFILE_DIRECTORY, 'Profile 10')
+  assert.equal(spawnCalls[2].options.env.CDP_PROXY_CHROME_PORT, '9333')
+  assert.equal(
+    spawnCalls[2].options.env.CDP_PROXY_CHROME_USER_DATA_DIR,
+    join(root, 'runtime', 'chrome-remote-debug-user-data')
+  )
 })
