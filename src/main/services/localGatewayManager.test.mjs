@@ -248,3 +248,47 @@ echo "bootstrap run \${count}"
 
   rmSync(root, { recursive: true, force: true })
 })
+
+test('LocalGatewayManager ensureReadyForCapability does not require CMS gateway profile for chat', async () => {
+  const root = join(tmpdir(), `local-gateway-ensure-chat-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: ''
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => {
+        throw new Error('chat readiness should not resolve CMS gateway profile')
+      }
+    },
+    healthDeps: {
+      fetch: async (url) => {
+        const normalized = String(url)
+        if (normalized.includes('8766/health') || normalized.includes('4174/health')) {
+          return { ok: true, status: 200 }
+        }
+        if (normalized.includes('4175') || normalized.includes('3456/health')) {
+          return { ok: false, status: 503 }
+        }
+        return { ok: false, status: 500 }
+      },
+      isPortListening: async () => false
+    }
+  })
+
+  const state = await manager.ensureReadyForCapability('chat')
+
+  assert.equal(state.overallStatus, 'degraded')
+  assert.equal(manager.getState().overallStatus, 'degraded')
+
+  rmSync(root, { recursive: true, force: true })
+})

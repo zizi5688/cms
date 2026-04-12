@@ -14,7 +14,6 @@ import type {
   LocalGatewayChromeProfile,
   LocalGatewayConfig,
   LocalGatewayInitializationResult,
-  LocalGatewayServiceName,
   LocalGatewaySystemChromeProfile,
   LocalGatewayState
 } from '../../shared/localGatewayTypes.ts'
@@ -283,10 +282,6 @@ export class LocalGatewayManager {
     return { success: true, profileId }
   }
 
-  private getServiceOk(name: LocalGatewayServiceName): boolean {
-    return this.state.services.find((service) => service.name === name)?.ok === true
-  }
-
   private markCapabilityEnsured(capability: AiCapability): void {
     if (capability === 'image') {
       this.ensuredCapabilities.add('chat')
@@ -321,21 +316,7 @@ export class LocalGatewayManager {
       if (this.ensuredCapabilities.has('chat')) {
         return state
       }
-
-      const chromeReady = this.getServiceOk('chromeDebug')
-      const cdpReady = this.getServiceOk('cdpProxy')
-      if (chromeReady && cdpReady) {
-        this.markCapabilityEnsured('chat')
-        return this.getState()
-      }
-
-      if (!config.gatewayCmsProfileId.trim()) {
-        throw new Error('本地网关聊天能力未就绪：请先初始化并登录 CMS 网关专用 Profile。')
-      }
-
-      await this.initializeGateway({
-        smokeImage: false
-      })
+      this.markCapabilityEnsured('chat')
       return this.getState()
     }
 
