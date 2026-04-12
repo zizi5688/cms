@@ -39,6 +39,56 @@ Use this decision order:
 3. Name branch with prefix `codex/`.
 Use `codex/<scope>-<goal>` (example: `codex/publish-progress-timeout`).
 
+## Concurrent Session Isolation
+
+When multiple Codex sessions work on the same repository at the same time, follow these rules to prevent merge conflicts and lost work.
+
+### Branch Creation for Concurrent Work
+
+1. Always create your branch from `origin/main`, not local `main`.
+Local `main` may be stale if another session already merged something.
+
+```bash
+git fetch origin
+git checkout -b codex/<scope>-<goal> origin/main
+```
+
+2. Branch names must be unique and descriptive enough to avoid collisions.
+Bad: `codex/fix`, `codex/update`.
+Good: `codex/cdp-humanization`, `codex/flow-async-task`, `codex/video-note-smart-manual`.
+
+3. Before starting work, check what other branches exist:
+
+```bash
+git branch -a | grep codex/
+```
+
+If another active branch touches the same files you plan to modify, stop and report the conflict risk to the user before proceeding.
+
+### File Boundary Rule
+
+4. Each concurrent task should declare its file scope at the start.
+List the directories and files this task will modify in the first checkpoint summary.
+
+5. If two concurrent tasks need to modify the same file, they must not run in parallel.
+The user should either serialize them or explicitly accept the merge conflict risk.
+
+6. Shared files that multiple tasks commonly touch (e.g., `package.json` version field, `CHANGELOG.md`, barrel exports like `index.ts`) should only be modified by the last task to merge, or by the release loop.
+
+### Session Awareness
+
+7. Do not assume you are the only session working on this repository.
+Before any destructive operation (branch deletion, force push, worktree removal), check:
+
+```bash
+git worktree list
+git branch -vv | grep codex/
+```
+
+8. Never delete a branch that is checked out in another worktree.
+
+9. If you encounter unexpected commits on `main` that were not there when you started, do not panic. Fetch and rebase or merge as appropriate, then re-run validation.
+
 ## Commit Checkpoint Policy
 
 Propose a commit checkpoint when any of these occurs:
@@ -74,19 +124,21 @@ At every checkpoint:
 ## Working Sequence
 
 1. Inspect baseline:
-`git status --short`, current branch, remote status.
+`git status --short`, current branch, remote status, active worktrees, active `codex/` branches.
 2. Decide branch using Branch Decision Policy.
-3. Implement change.
-4. Run validations relevant to touched modules.
-5. Evaluate checkpoint using Commit Checkpoint Policy.
-6. Run Commit Gate Protocol.
-7. Repeat until task complete.
+3. If concurrent sessions are likely, apply Concurrent Session Isolation rules.
+4. Implement change.
+5. Run validations relevant to touched modules.
+6. Evaluate checkpoint using Commit Checkpoint Policy.
+7. Run Commit Gate Protocol.
+8. Repeat until task complete.
 
 ## Safety Constraints
 
 1. Do not amend, rebase, force-push, or reset unless user explicitly requests it.
 2. Do not include generated binaries, build outputs, databases, or logs unless user explicitly requests.
 3. Call out unexpected repository state immediately before proceeding.
+4. When in doubt about whether another session is active, ask the user before proceeding with branch operations.
 
 ## Output Template At Checkpoint
 
@@ -96,4 +148,5 @@ Use this concise format:
 2. `Files`: <key paths>
 3. `Validation`: <pass/fail and command>
 4. `Risk`: <none/low/medium + why>
-5. `Question`: `是否现在提交这个节点？`
+5. `Concurrent`: <file overlap risk with other active branches, if any>
+6. `Question`: `是否现在提交这个节点？`
