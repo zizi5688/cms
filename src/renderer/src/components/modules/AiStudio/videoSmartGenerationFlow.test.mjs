@@ -145,8 +145,34 @@ test('video smart generation preserves rendered videos when both copy providers 
   assert.equal(result.renderResult.ok, true)
   assert.equal(harness.state.renderStatus, 'success')
   assert.equal(harness.state.copyStatus, 'error')
+  assert.equal(harness.state.copyLifecyclePhase, null)
   assert.equal(harness.state.canRetryCopyOnly, true)
   assert.equal(harness.state.previewAssets.length, 1)
+})
+
+test('video smart generation clears overlay lifecycle when render fails before copy returns', async () => {
+  const harness = createFlowHarness({
+    initialState: applyVideoNoteGenerationUpdate(createInitialVideoNoteGenerationState(), {
+      type: 'start'
+    }),
+    startVideoRenderImpl: async () => {
+      throw new Error('network disconnected')
+    },
+    startChatRunImpl: async () =>
+      new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({
+            outputText: '标题,正文\nok,"正文"'
+          })
+        }, 10)
+      })
+  })
+
+  const result = await harness.run()
+
+  assert.equal(result.renderResult.ok, false)
+  assert.equal(harness.state.renderStatus, 'error')
+  assert.equal(harness.state.copyLifecyclePhase, null)
 })
 
 test('video smart generation copy-only retry reuses existing rendered assets', async () => {

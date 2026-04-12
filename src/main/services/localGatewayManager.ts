@@ -24,6 +24,10 @@ import {
 import { listLocalGatewayChromeProfiles } from './localGatewayChromeProfiles.ts'
 import { readLocalGatewayConfigFromStore } from './localGatewayConfig.ts'
 import { LocalGatewayProcessManager } from './localGatewayProcessManager.ts'
+import {
+  resolveLocalGatewayChromeDebugPort,
+  resolveLocalGatewayDedicatedChromeUserDataDir
+} from './localGatewayRuntime.ts'
 
 type LocalGatewayStore = {
   get: (key: string) => unknown
@@ -366,8 +370,11 @@ export class LocalGatewayManager {
       CHROME_PROFILE_DIRECTORY: profile.profileDir,
       CHROME_DEFAULT_USER_DATA_DIR: runtime.userDataDir,
       CHROME_APP_BIN: runtime.executablePath,
-      CHROME_DEBUG_USER_DATA_DIR: join(bundlePath, 'runtime', 'chrome-remote-debug-user-data'),
+      CHROME_DEBUG_USER_DATA_DIR: resolveLocalGatewayDedicatedChromeUserDataDir(bundlePath),
       LOCAL_AI_GATEWAY_ALLOW_DEDICATED_CHROME: '1',
+      LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT: String(resolveLocalGatewayChromeDebugPort()),
+      CDP_PROXY_CHROME_PORT: String(resolveLocalGatewayChromeDebugPort()),
+      CDP_PROXY_CHROME_USER_DATA_DIR: resolveLocalGatewayDedicatedChromeUserDataDir(bundlePath),
       LOCAL_AI_GATEWAY_SMOKE_IMAGE:
         options?.smokeImage || config.prewarmImageOnLaunch ? '1' : '0'
     }

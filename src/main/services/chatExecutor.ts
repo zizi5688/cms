@@ -49,6 +49,8 @@ type ChatExecutorOptions = {
 
 const DEFAULT_CHAT_REQUEST_TIMEOUT_MS = 20_000
 const DEFAULT_CHAT_MAX_ATTEMPTS = 3
+const LOCAL_GATEWAY_CHAT_REQUEST_TIMEOUT_MS = 120_000
+const LOCAL_GATEWAY_CHAT_MAX_ATTEMPTS = 1
 
 export class ChatExecutorError extends Error {
   code: string
@@ -317,6 +319,18 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500
 }
 
+function getDefaultChatTimeoutMs(requestUrl: string): number {
+  return isLoopbackRequestUrl(requestUrl)
+    ? LOCAL_GATEWAY_CHAT_REQUEST_TIMEOUT_MS
+    : DEFAULT_CHAT_REQUEST_TIMEOUT_MS
+}
+
+function getDefaultChatMaxAttempts(requestUrl: string): number {
+  return isLoopbackRequestUrl(requestUrl)
+    ? LOCAL_GATEWAY_CHAT_MAX_ATTEMPTS
+    : DEFAULT_CHAT_MAX_ATTEMPTS
+}
+
 function buildRetryDelayMs(attempt: number): number {
   return Math.min(1_500, 300 * 2 ** Math.max(0, attempt - 1))
 }
@@ -422,10 +436,12 @@ export async function executeChatTask(
   const payload = createChatCompletionPayload(input.route, normalizedRequest)
   const requestUrl = buildProviderUrl(input.route.baseUrl, input.route.endpointPath)
   const sleepImpl = options.sleep ?? sleep
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Number(options.timeoutMs)) : DEFAULT_CHAT_REQUEST_TIMEOUT_MS
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(1, Number(options.timeoutMs))
+    : getDefaultChatTimeoutMs(requestUrl)
   const maxAttempts = Number.isFinite(options.maxAttempts)
     ? Math.max(1, Math.floor(Number(options.maxAttempts)))
-    : DEFAULT_CHAT_MAX_ATTEMPTS
+    : getDefaultChatMaxAttempts(requestUrl)
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const abortController = new AbortController()

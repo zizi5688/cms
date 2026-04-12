@@ -14,6 +14,8 @@ type VideoComposerGenerateResult = {
 
 type VideoSmartGenerationUpdate =
   | { type: 'copy-attempt-start'; providerName: string }
+  | { type: 'copy-generating-start' }
+  | { type: 'copy-parsing-start'; rawCopyText: string }
   | {
       type: 'copy-fallback-start'
       failedProviderName: string
@@ -200,12 +202,19 @@ export async function runVideoSmartGenerationFlow({
       }
 
       try {
+        applyGenerationUpdate({
+          type: 'copy-generating-start'
+        })
         const result = await startChatRun({
           promptText: chatInput.prompt,
           imagePaths: chatInput.imagePaths,
           ...(candidate ? { routeOverride: candidate } : {})
         })
         const rawCopyText = normalizeText(result?.outputText)
+        applyGenerationUpdate({
+          type: 'copy-parsing-start',
+          rawCopyText
+        })
         const csvText = normalizeText(extractCsvFromResponse(rawCopyText))
         applyGenerationUpdate({
           type: 'copy-success',

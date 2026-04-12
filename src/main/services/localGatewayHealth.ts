@@ -4,6 +4,7 @@ import type {
   LocalGatewayServiceStatus,
   LocalGatewayState
 } from '../../shared/localGatewayTypes.ts'
+import { resolveLocalGatewayChromeDebugPort } from './localGatewayRuntime.ts'
 
 export type LocalGatewayHealthDependency = {
   fetch: typeof fetch
@@ -28,6 +29,52 @@ async function getHttpStatus(
   }
 }
 
+async function getCdpProxyStatus(fetchImpl: typeof fetch): Promise<{ ok: boolean; message: string | null }> {
+  try {
+    const response = await fetchImpl('http://127.0.0.1:3456/health')
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: `HTTP ${response.status}`
+      }
+    }
+
+    const payload =
+      typeof response.json === 'function'
+        ? ((await response.json().catch(() => null)) as { connected?: unknown; message?: unknown } | null)
+        : null
+
+    if (!payload) {
+      return { ok: true, message: null }
+    }
+
+    if (payload.connected === true) {
+      return { ok: true, message: null }
+    }
+
+    const message =
+      typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
+        : payload.connected === false
+          ? 'Chrome 未启动，需要执行初始化。'
+          : null
+
+    if (!message) {
+      return { ok: true, message: null }
+    }
+
+    return {
+      ok: false,
+      message
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : DEFAULT_ERROR_MESSAGE
+    }
+  }
+}
+
 export async function collectLocalGatewayServiceStatuses(
   config: LocalGatewayConfig,
   deps: LocalGatewayHealthDependency
@@ -38,9 +85,10 @@ export async function collectLocalGatewayServiceStatuses(
     ? await getHttpStatus('http://127.0.0.1:4175', deps.fetch)
     : { ok: false, message: '未启用管理后台。' }
   const cdpProxy = config.startCdpProxy
-    ? await getHttpStatus('http://127.0.0.1:3456/health', deps.fetch)
+    ? await getCdpProxyStatus(deps.fetch)
     : { ok: false, message: '未启用 CDP 代理。' }
-  const chromeDebugListening = await deps.isPortListening(9222)
+  const chromeDebugPort = resolveLocalGatewayChromeDebugPort()
+  const chromeDebugListening = await deps.isPortListening(chromeDebugPort)
 
   return [
     { name: 'adapter', ok: adapter.ok, port: 8766, message: adapter.message },
@@ -60,7 +108,7 @@ export async function collectLocalGatewayServiceStatuses(
     {
       name: 'chromeDebug',
       ok: chromeDebugListening,
-      port: 9222,
+      port: chromeDebugPort,
       message: chromeDebugListening ? null : 'Chrome 未开启远程调试端口。'
     }
   ]

@@ -2405,6 +2405,7 @@ function findCoverModalConfirmButton(modalRoot: HTMLElement): HTMLElement | null
   const candidates = Array.from(modalRoot.querySelectorAll('button, [role="button"], a, div[tabindex], span[tabindex]')).filter(
     (el): el is HTMLElement => el instanceof HTMLElement && isVisible(el)
   )
+  const modalRect = modalRoot.getBoundingClientRect()
 
   const scored = candidates
     .map((el) => {
@@ -2422,9 +2423,13 @@ function findCoverModalConfirmButton(modalRoot: HTMLElement): HTMLElement | null
       if (className.includes('primary') || className.includes('Primary') || className.includes('ant-btn-primary')) score += 260
       if (isLikelyRedButton(el)) score += 240
       const rect = el.getBoundingClientRect()
-      // 通常在弹窗底部靠右
-      score += Math.max(0, rect.top) * 0.01
-      score += Math.max(0, rect.left) * 0.01
+      if (rect.width < 56 || rect.height < 28) score -= 120
+      const bottomDistance = Math.abs(modalRect.bottom - rect.bottom)
+      const rightDistance = Math.abs(modalRect.right - rect.right)
+      score += Math.max(0, 260 - bottomDistance) * 1.2
+      score += Math.max(0, 240 - rightDistance) * 1.1
+      if (rect.left >= modalRect.left + modalRect.width * 0.45) score += 80
+      if (rect.top >= modalRect.top + modalRect.height * 0.45) score += 80
       return { el, score }
     })
     .filter((x): x is { el: HTMLElement; score: number } => Boolean(x))
@@ -2481,7 +2486,7 @@ function snapshotCoverModalUploadState(modalRoot: HTMLElement): CoverModalUpload
     .map((img) => normalizeImageSrcForCompare(String(img.currentSrc || img.src || '')))
     .filter(Boolean)
     .slice(0, 40)
-  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(
+  const fileInputs = Array.from(modalRoot.querySelectorAll('input[type="file"]')).filter(
     (el): el is HTMLInputElement => el instanceof HTMLInputElement
   )
   const selectedFileCount = fileInputs.reduce((sum, input) => sum + (input.files?.length ?? 0), 0)
@@ -2489,7 +2494,18 @@ function snapshotCoverModalUploadState(modalRoot: HTMLElement): CoverModalUpload
     .map((input) => String(input.value || '').trim().toLowerCase())
     .filter(Boolean)
     .slice(0, 20)
-  return { text, imageSources, selectedFileCount, fileValues }
+  const htmlSignature = safeOuterHtml(modalRoot)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 4000)
+
+  return {
+    text,
+    imageSources,
+    selectedFileCount,
+    fileValues,
+    htmlSignature
+  }
 }
 
 async function tryDirectCoverInputUpload(
@@ -2518,6 +2534,10 @@ async function tryDirectCoverInputUpload(
       timeoutMessage: '直接注入隐藏图片输入框后，未检测到封面选中信号。'
     }
   ).catch(() => null)
+
+  if (selectionReady) {
+    logPlain('封面弹窗已确认接收到注入图片')
+  }
 
   return Boolean(selectionReady)
 }
@@ -2613,6 +2633,7 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
 
         if (pickOk) {
           nativePickSuccess = true
+          logPlain('系统文件选择器已返回成功，等待封面弹窗内缩略图确认')
           break
         }
 
@@ -2648,7 +2669,7 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
     await sleep(Math.min(900, Math.max(320, timeLeft())))
     ensureTime()
 
-    const confirmBtn = await waitFor(() => findCoverModalConfirmButton(modalRoot) || findConfirmButtonInScope(modalRoot) || null, {
+    const confirmBtn = await waitFor(() => findCoverModalConfirmButton(modalRoot) || null, {
       timeoutMs: Math.min(6_000, timeLeft()),
       intervalMs: 180,
       timeoutMessage: '未找到封面弹窗“确定”按钮。'
@@ -2660,6 +2681,7 @@ async function setVideoCover(coverImagePath: string): Promise<void> {
       intervalMs: 180,
       timeoutMessage: '封面弹窗未关闭。'
     }).catch(() => void 0)
+    await sleep(Math.min(600, Math.max(220, timeLeft())))
   } catch (error) {
     const message = stringifyUnknownError(error)
     logPlain('[Error] 封面设置失败，已停止当前发布', { error: message })

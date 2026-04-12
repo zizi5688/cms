@@ -21,6 +21,8 @@ import { resolveLocalImage } from '@renderer/lib/resolveLocalImage'
 import { cn } from '@renderer/lib/utils'
 import { resolveTaskSelectedProductIds } from '@renderer/lib/cmsTaskProductHelpers'
 import { useCmsStore, type Task } from '@renderer/store/useCmsStore'
+import { SmartGenerationOverlay } from '../../ui/SmartGenerationOverlay'
+import type { SmartGenerationPhase } from '../../ui/smartGenerationOverlayHelpers'
 import {
   buildSelectedWorkshopProducts,
   resolveWorkshopAccountId
@@ -78,6 +80,8 @@ type NoteSidebarProps = {
   maxReuseDraft: string
   videoEntryMode: VideoNoteEntryMode
   videoGenerationState: VideoNoteGenerationState
+  smartGenerationPhase?: SmartGenerationPhase
+  smartGenerationError?: string | null
   isVideoGenerateDisabled?: boolean
   isGenerating?: boolean
   dispatchProgress?: NoteDispatchProgressState | null
@@ -1178,7 +1182,8 @@ function VideoNoteEditor({
   generationState,
   isGenerating,
   isGenerateDisabled,
-  onEntryModeChange
+  onEntryModeChange,
+  smartGenerationError = null
 }: {
   csvDraft: string
   smartPromptDraft: string
@@ -1192,6 +1197,7 @@ function VideoNoteEditor({
   isGenerating: boolean
   isGenerateDisabled: boolean
   onEntryModeChange: (value: VideoNoteEntryMode) => void
+  smartGenerationError?: string | null
 }): React.JSX.Element {
   const revealInFolder = async (filePath: string): Promise<void> => {
     const normalized = String(filePath ?? '').trim()
@@ -1594,7 +1600,16 @@ function VideoNoteEditor({
                 {viewModel.entryToggleLabel}
               </button>
             </div>
-            <section className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+            <section
+              className={cn(
+                'relative overflow-hidden rounded-[22px] px-4 py-3',
+                NOTE_SIDEBAR_CARD_SURFACE_CLASS
+              )}
+            >
+              <SmartGenerationOverlay
+                phase={viewModel.overlayPhase}
+                errorMessage={entryMode === 'manual' ? null : smartGenerationError}
+              />
               <Textarea
                 value={textareaValue}
                 onChange={(event) =>
@@ -1642,6 +1657,8 @@ function NoteSidebar({
   maxReuseDraft,
   videoEntryMode,
   videoGenerationState,
+  smartGenerationPhase = null,
+  smartGenerationError = null,
   isVideoGenerateDisabled = false,
   isGenerating = false,
   dispatchProgress = null,
@@ -1722,6 +1739,12 @@ function NoteSidebar({
     : '输入商品信息和额外说明提示词'
   const imageNoteGenerateButtonLabel = isManualImageNoteEntry ? '生成笔记' : '智能生成'
   const imageNoteEntryToggleLabel = isManualImageNoteEntry ? '智能生成' : '手动录入'
+  const isImageSmartGenerating = !isManualImageNoteEntry && smartGenerationPhase !== null
+  const imageNoteButtonLabel = isManualImageNoteEntry
+    ? isGenerating
+      ? '生成中'
+      : imageNoteGenerateButtonLabel
+    : imageNoteGenerateButtonLabel
   const previewSelectionOverlayStyle = previewSelectionBox
     ? {
         left: `${Math.min(previewSelectionBox.startX, previewSelectionBox.endX)}px`,
@@ -1956,6 +1979,7 @@ function NoteSidebar({
             isGenerating={isGenerating}
             isGenerateDisabled={isVideoGenerateDisabled}
             onEntryModeChange={onVideoEntryModeChange}
+            smartGenerationError={smartGenerationError}
           />
         ) : null}
 
@@ -2194,7 +2218,16 @@ function NoteSidebar({
                       {imageNoteEntryToggleLabel}
                     </button>
                   </div>
-                  <div className={cn('rounded-[22px] px-4 py-3', NOTE_SIDEBAR_CARD_SURFACE_CLASS)}>
+                  <div
+                    className={cn(
+                      'relative overflow-hidden rounded-[22px] px-4 py-3',
+                      NOTE_SIDEBAR_CARD_SURFACE_CLASS
+                    )}
+                  >
+                    <SmartGenerationOverlay
+                      phase={isManualImageNoteEntry ? null : smartGenerationPhase}
+                      errorMessage={isManualImageNoteEntry ? null : smartGenerationError}
+                    />
                     <Textarea
                       value={imageNoteTextareaValue}
                       onChange={(event) =>
@@ -2239,10 +2272,10 @@ function NoteSidebar({
                         <Button
                           type="button"
                           onClick={() => onGenerate({ imageNoteEntryMode })}
-                          disabled={isGenerating}
+                          disabled={isGenerating || isImageSmartGenerating}
                           className="h-7 rounded-full border border-transparent bg-zinc-900 px-3.5 text-[11px] font-medium text-white shadow-[0_10px_22px_rgba(15,23,42,0.08)] transition hover:bg-zinc-800 disabled:opacity-60"
                         >
-                          {isGenerating ? '生成中' : imageNoteGenerateButtonLabel}
+                          {imageNoteButtonLabel}
                         </Button>
                       </div>
                     </div>

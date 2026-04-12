@@ -1,6 +1,6 @@
 ---
 name: phase-release-loop
-description: Use when the user asks for Mac end-of-phase release closeout, including commit/push, merge to main, DMG build/install, GitHub Release publication for mac remote update, app relaunch, or post-release cleanup.
+description: Execute the end-of-phase desktop delivery loop in this repository. Use when the user asks for stage closeout or says “提交并推送”, “合并到 main”, “打包 DMG”, “覆盖安装旧版”, “重启应用”, or similar release-chain requests.
 ---
 
 # Phase Release Loop
@@ -15,12 +15,13 @@ Run a deterministic Mac release loop while keeping the source workspace safe and
 4. push the merge result to `main`
 5. build the mac release artifacts needed for both local install and remote update
 6. publish the mac remote-update artifacts to GitHub Releases
-7. copy the final DMG back to the repo-root `release/` directory
+7. copy the final DMG back to the repo-root `release/` directory and prune stale local release artifacts
 8. install over `/Applications/Super CMS.app`
 9. relaunch and report
 10. refresh a local `main` checkout so this machine's `main` also stays current
-11. clean up temporary release branches/worktrees and merged local `codex/` branches that are no longer active
-12. use GitHub's latest published/tagged version as the release baseline, then explicitly ask the user which version to release before any version bump or publish step
+11. ask whether to switch any user-visible workspace back to `main`; default is no
+12. clean up temporary release branches/worktrees and merged local `codex/` branches that are no longer active
+13. use GitHub's latest published/tagged version as the release baseline, then explicitly ask the user which version to release before any version bump or publish step
 
 ## Required Inputs
 
@@ -124,7 +125,7 @@ Rules:
 1. Use the release worktree as the only place for merge, build, packaging, and install.
 2. Do not mix release actions into a dirty feature worktree.
 3. Report the full release worktree path before continuing.
-4. If the release worktree has no `node_modules`, reuse the repo-root dependency directory (for example by symlink) before building.
+4. If the release worktree has no `node_modules`, reuse the repo-root dependency directory before building.
 
 ### 5) Merge To Main Through Release Worktree
 
@@ -152,41 +153,29 @@ git push origin <release-branch>
 git push origin <release-branch>:main
 ```
 
-6. If repository governance blocks direct push to `main` but the user explicitly requested the full release loop, use the repo-provided bypass instead of force-push or rebase. Example:
-
-```bash
-ALLOW_MAIN_PUSH=1 git push origin <release-branch>:main
-```
-
+6. If repository governance blocks direct push to `main` but the user explicitly requested the full release loop, use the repo-provided bypass instead of force-push or rebase.
 7. Never use rebase, force-push, or history rewrite unless the user explicitly requests it.
 
 ### 6) Build macOS Release Artifacts From Release Worktree
 
-Use the project standard build first:
+Preferred command shape:
+
+```bash
+npm run publish:mac
+```
+
+If the repo needs a separate local-only validation build first, it is acceptable to run:
 
 ```bash
 npm run build:mac
 ```
 
-Then locate the newest DMG in the release worktree:
-
-```bash
-ls -t release/*.dmg | head -n 1
-```
-
 Rules:
 
 1. Build inside the release worktree, not the source worktree.
-2. The build must produce both the maintainer-facing DMG and the updater-facing macOS release files required for GitHub Releases remote update.
-3. Verify the release directory contains the mac updater metadata file (for example `latest-mac.yml`) before continuing.
-4. If the full build already produced app artifacts but DMG creation failed, it is acceptable to rerun only the packaging step:
-
-```bash
-npm exec electron-builder -- --mac --config electron-builder.json
-```
-
-5. If sandboxing blocks `hdiutil` or DMG creation, rerun the packaging step with escalation instead of changing build logic.
-6. If the repository's mac publish script already performs build + verify + publish in one command, it is acceptable to use that single command as the authoritative build/publish step and reuse the emitted artifacts for local install, instead of rebuilding twice.
+2. Prefer the repo's publish script when it already performs clean + build + verify + GitHub Release publication in one command.
+3. If only a local validation build is used, call out that the release worktree `release/` directory may still contain older local artifacts until a publish/cleanup step runs.
+4. Verify the release directory contains the mac updater metadata file (for example `latest-mac.yml`) before continuing.
 
 ### 7) Publish macOS Remote-Update Artifacts
 
@@ -198,15 +187,12 @@ Preferred command shape:
 npm run publish:mac
 ```
 
-If the repo uses a script directly, use that exact script instead.
-
 Rules:
 
 1. Remote publication is a required step for Mac remote-update support, not an optional postscript.
 2. Stop immediately if GitHub publication fails. Do not report the release as complete if only the local DMG exists.
 3. Confirm that the macOS updater metadata and downloadable artifact were included in the published release.
 4. Report the tag/version that was published.
-5. If the publish script already includes the build, do not rerun a separate full packaging step unless the user explicitly wants an additional local-only verification build.
 
 ### 8) Copy Artifact Back To Canonical Repo Path
 
@@ -220,7 +206,9 @@ ditto "<release-worktree>/release/<latest>.dmg" "<repo-root>/release/<latest>.dm
 Rules:
 
 1. Always report the repo-root path as the primary artifact path.
-2. Do not make the user dig inside hidden `.worktrees/` paths to find the installer.
+2. After a successful publish, prune stale versioned installer artifacts in `<repo-root>/release/` and keep only the current release's DMG plus any files the user explicitly asked to retain.
+3. Do not make the user dig inside hidden `.worktrees/` paths to find the installer.
+4. Treat the release worktree `release/` directory as disposable scratch output; the repo-root `release/` directory is the canonical handoff location.
 
 ### 9) Install And Replace App
 
@@ -238,7 +226,7 @@ hdiutil detach "$VOLUME_PATH"
 Rules:
 
 1. Do not assume the mounted volume path has no spaces.
-2. Do not parse the mount path with `awk '{print $3}'`; it breaks on names like `/Volumes/Super CMS 1.0.13-arm64`.
+2. Do not parse the mount path with `awk '{print $3}'`; it breaks on names like `/Volumes/Super CMS 1.1.1-arm64`.
 3. If app bundle name differs, detect `*.app` dynamically.
 4. Never delete the old app manually before copy unless the user explicitly asks.
 
@@ -271,7 +259,21 @@ Rules:
 3. If no safe `main` checkout is available, stop and report which workspace blocked the refresh instead of risking local changes.
 4. Report the exact path where local `main` was refreshed.
 
-### 12) Default Cleanup After Successful Release
+### 12) Ask Before Switching A User Workspace Back To `main`
+
+After the release is complete, ask one explicit question before switching any user-visible workspace:
+
+`是否切回 main？`
+
+Rules:
+
+1. Default is no. Do not automatically switch the user's current workspace back to `main`.
+2. This question must be asked only after release, publish, install, relaunch, and cleanup are otherwise complete.
+3. The reason is session safety: another parallel session may still be using the current feature workspace.
+4. If the user says no, leave the current workspace untouched and only report which clean path already has up-to-date `main`.
+5. If the user says yes, switch only a safe clean workspace that is not carrying unrelated local edits.
+
+### 13) Default Cleanup After Successful Release
 
 After `main` is refreshed, perform cleanup by default for stage-closeout requests:
 
@@ -290,7 +292,7 @@ Rules:
 5. If the source feature branch is still attached to a live worktree or that worktree has ongoing local changes, keep it and report why it was retained instead of switching the user's workspace behind their back.
 6. Do not silently delete stashes or active worktrees.
 
-### 13) Optional Extended Cleanup
+### 14) Optional Extended Cleanup
 
 If the user explicitly asks for deeper repo cleanup, also:
 
@@ -318,7 +320,10 @@ If the user explicitly asks for deeper repo cleanup, also:
 6. DMG exists but user cannot find it:
    - likely cause: build happened in a hidden release worktree
    - fix: always copy the final DMG back to `<repo-root>/release/`
-7. cleanup wants to delete the current feature branch:
+7. local release directory keeps stacking old installers:
+   - likely cause: repeated local builds without pruning canonical handoff artifacts
+   - fix: after a successful publish, keep only the current version in `<repo-root>/release/` unless the user explicitly wants history retained
+8. cleanup wants to delete the current feature branch:
    - likely cause: that branch is still the active source workspace
    - fix: keep the branch, report it as retained, and only delete inactive merged branches
 
@@ -336,7 +341,8 @@ Return a concise release report with:
 8. install result (`/Applications/Super CMS.app`)
 9. relaunch process status (PID or failure reason)
 10. local `main` refresh status and path
-11. cleanup status for the temporary release branch/worktree, deleted merged local branches, and any retained active branches
+11. whether switching a user workspace back to `main` was offered, accepted, or intentionally skipped
+12. cleanup status for the temporary release branch/worktree, deleted merged local branches, and any retained active branches
 
 ## Safety Rules
 

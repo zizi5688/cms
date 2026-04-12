@@ -27,6 +27,23 @@ test('video note editor view model switches labels for smart entry mode', () => 
   assert.equal(result.textareaPlaceholder, '输入商品信息和额外说明提示词')
   assert.equal(result.generateButtonLabel, '智能生成')
   assert.equal(result.entryToggleLabel, '手动录入')
+  assert.equal(result.overlayPhase, null)
+})
+
+test('video note editor view model keeps smart button label stable while generation is running', () => {
+  const result = buildVideoNoteEditorViewModel({
+    entryMode: 'smart',
+    generationState: {
+      ...createInitialVideoNoteGenerationState(),
+      copyStatus: 'running',
+      renderStatus: 'running',
+      mergeStatus: 'running-both'
+    },
+    isGenerating: true
+  })
+
+  assert.equal(result.generateButtonLabel, '智能生成')
+  assert.equal(result.overlayPhase, 'generating')
 })
 
 test('video note editor view model explains waiting states and partial failures', () => {
@@ -106,4 +123,32 @@ test('video note editor view model explains fallback-in-progress messaging', () 
   })
 
   assert.equal(fallbackWaiting.statusText, '主文案失败，已切换备用供应商，等待文案返回')
+})
+
+test('video note editor view model exposes connecting and parsing overlay phases', () => {
+  const connecting = buildVideoNoteEditorViewModel({
+    entryMode: 'smart',
+    generationState: {
+      ...createInitialVideoNoteGenerationState(),
+      copyStatus: 'running',
+      renderStatus: 'running',
+      mergeStatus: 'running-both',
+      copyLifecyclePhase: 'connecting'
+    },
+    isGenerating: true
+  })
+  assert.equal(connecting.overlayPhase, 'connecting')
+
+  const parsing = buildVideoNoteEditorViewModel({
+    entryMode: 'smart',
+    generationState: {
+      ...createInitialVideoNoteGenerationState(),
+      copyStatus: 'running',
+      renderStatus: 'running',
+      mergeStatus: 'running-both',
+      copyLifecyclePhase: 'parsing'
+    },
+    isGenerating: true
+  })
+  assert.equal(parsing.overlayPhase, 'parsing')
 })

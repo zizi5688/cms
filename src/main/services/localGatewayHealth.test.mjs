@@ -17,18 +17,94 @@ function createResponse(ok, status = ok ? 200 : 500) {
 
 test('collectLocalGatewayServiceStatuses reports enabled services and chrome debug port', async () => {
   const calls = []
+  const previousPort = process.env.LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT
+  process.env.LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT = '9333'
+  try {
+    const services = await collectLocalGatewayServiceStatuses(createDefaultLocalGatewayConfig(), {
+      fetch: async (url) => {
+        calls.push(url)
+        if (String(url).includes('3456')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              status: 'ok',
+              connected: true,
+              chromePort: 9333
+            })
+          }
+        }
+        return createResponse(!String(url).includes('4175'))
+      },
+      isPortListening: async (port) => port === 9333
+    })
+
+    assert.equal(services.find((item) => item.name === 'adapter')?.ok, true)
+    assert.equal(services.find((item) => item.name === 'adminUi')?.ok, false)
+    assert.equal(services.find((item) => item.name === 'chromeDebug')?.ok, true)
+    assert.equal(services.find((item) => item.name === 'chromeDebug')?.port, 9333)
+    assert.equal(calls.length >= 4, true)
+  } finally {
+    if (previousPort === undefined) {
+      delete process.env.LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT
+    } else {
+      process.env.LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT = previousPort
+    }
+  }
+})
+
+test('collectLocalGatewayServiceStatuses marks cdp proxy degraded when dedicated chrome is not connected', async () => {
   const services = await collectLocalGatewayServiceStatuses(createDefaultLocalGatewayConfig(), {
     fetch: async (url) => {
-      calls.push(url)
-      return createResponse(!String(url).includes('4175'))
+      if (String(url).includes('3456')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            connected: false,
+            message: 'Chrome 未启动，需要执行初始化。'
+          })
+        }
+      }
+      return createResponse(true)
     },
-    isPortListening: async (port) => port === 9222
+    isPortListening: async () => false
   })
 
-  assert.equal(services.find((item) => item.name === 'adapter')?.ok, true)
-  assert.equal(services.find((item) => item.name === 'adminUi')?.ok, false)
-  assert.equal(services.find((item) => item.name === 'chromeDebug')?.ok, true)
-  assert.equal(calls.length >= 4, true)
+  assert.deepEqual(services.find((item) => item.name === 'cdpProxy'), {
+    name: 'cdpProxy',
+    ok: false,
+    port: 3456,
+    message: 'Chrome 未启动，需要执行初始化。'
+  })
+})
+
+test('collectLocalGatewayServiceStatuses treats legacy cdp proxy payload with message as degraded', async () => {
+  const services = await collectLocalGatewayServiceStatuses(createDefaultLocalGatewayConfig(), {
+    fetch: async (url) => {
+      if (String(url).includes('3456')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'ok',
+            connected: null,
+            message: 'Chrome 未启动，需要执行初始化。'
+          })
+        }
+      }
+      return createResponse(true)
+    },
+    isPortListening: async () => false
+  })
+
+  assert.deepEqual(services.find((item) => item.name === 'cdpProxy'), {
+    name: 'cdpProxy',
+    ok: false,
+    port: 3456,
+    message: 'Chrome 未启动，需要执行初始化。'
+  })
 })
 
 test('resolveLocalGatewayOverallStatus returns services_ready when core services are healthy', () => {
