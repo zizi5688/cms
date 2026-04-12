@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0] - 2026-04-12
+
+### Feat (特性)
+- **Gateway Chat Stability**: 本地网关 Chat 链路稳定性大幅提升：从 Chrome Profile 读取完整 cookie 替代手动配置，`GeminiClient` 单例复用减少重复初始化。
+- **Multi-account Rotation**: 支持多 Google 账号轮询：一个账号 cookie 过期或连续失败后自动切换到下一个，5 分钟后自动恢复。
+- **Settings UI**: 本地网关设置页重新整理：状态总览按功能分组、Chat 账号管理、高级设置折叠。
+
+### Changed (调整)
+- **Generation Feedback**: 智能生成加载体验优化：新增阶段提示（连接中→生成中→解析中）、已等待计时、失败内联提示，替代原有 `window.alert` 弹窗。
+- **Dedicated Chrome**: dedicated Chrome 端口分离（`9333`），不再干扰用户日常 Chrome。
+- **Gateway Timeout**: 长输出场景超时调整：本地网关路由 120 秒超时 + 1 次重试。
+
+### Fix (修复)
+- **XHS Cover Upload**: 小红书封面上传弹窗信号检测增强。
+
 ## [1.2.1] - 2026-04-11
 
 ### Fix (修复)
