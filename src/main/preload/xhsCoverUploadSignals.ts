@@ -5,6 +5,7 @@ export type CoverModalUploadSnapshot = {
   imageSources: string[]
   selectedFileCount: number
   fileValues: string[]
+  htmlSignature: string
 }
 
 export function normalizeImageSrcForCompare(src: string): string {
@@ -27,9 +28,14 @@ export function hasCoverSelectionSignal(
   if (coverStem && coverStem.length >= 6 && now.text.includes(coverStem)) return true
 
   const imageChanged = now.imageSources.join('|') !== baseline.imageSources.join('|')
+  if (imageChanged) return true
+
+  const htmlChanged = now.htmlSignature !== baseline.htmlSignature
+  if (htmlChanged) return true
+
   const textChanged = now.text !== baseline.text
   const uploadWords = ['上传中', '处理中', '已上传', '上传成功', '重新上传', '替换', '更换']
-  if (uploadWords.some((w) => now.text.includes(w)) && (imageChanged || textChanged)) return true
+  if (uploadWords.some((w) => now.text.includes(w)) && textChanged) return true
 
   return false
 }
