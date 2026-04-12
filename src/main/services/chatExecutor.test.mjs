@@ -350,3 +350,94 @@ test('executeChatTask retries retryable HTTP errors and preserves provider messa
     }
   )
 })
+
+test('executeChatTask uses a single attempt by default for local gateway routes', async () => {
+  let attempts = 0
+
+  await assert.rejects(
+    () =>
+      executeChatTask(
+        {
+          route: {
+            ...ROUTE,
+            baseUrl: 'http://127.0.0.1:4174',
+            apiKey: 'local-dev-secret',
+            modelName: 'gemini-web-chat',
+            endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+            protocol: 'google-genai'
+          },
+          request: {
+            capability: 'chat',
+            input: {
+              prompt: '长输出测试'
+            }
+          }
+        },
+        async () => {
+          attempts += 1
+          throw new TypeError('fetch failed')
+        }
+      ),
+    (error) => {
+      assert.equal(error instanceof ChatExecutorError, true)
+      assert.equal(error.code, 'AI_CHAT_NETWORK_ERROR')
+      assert.equal(attempts, 1)
+      assert.doesNotMatch(error.message, /已重试/)
+      return true
+    }
+  )
+})
+
+test('executeChatTask uses 120s timeout by default for local gateway routes', async () => {
+  const originalSetTimeout = globalThis.setTimeout
+  let capturedTimeoutMs = null
+
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (capturedTimeoutMs === null) {
+      capturedTimeoutMs = Number(delay)
+    }
+    return originalSetTimeout(callback, 0, ...args)
+  }
+
+  try {
+    const result = await executeChatTask(
+      {
+        route: {
+          ...ROUTE,
+          baseUrl: 'http://127.0.0.1:4174',
+          apiKey: 'local-dev-secret',
+          modelName: 'gemini-web-chat',
+          endpointPath: '/v1beta/models/gemini-web-chat:generateContent',
+          protocol: 'google-genai'
+        },
+        request: {
+          capability: 'chat',
+          input: {
+            prompt: '只回复 ok'
+          }
+        }
+      },
+      async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            candidates: [
+              {
+                content: {
+                  role: 'model',
+                  parts: [{ text: 'ok' }]
+                }
+              }
+            ]
+          }
+        }
+      })
+    )
+
+    assert.equal(result.outputText, 'ok')
+    assert.equal(capturedTimeoutMs, 120_000)
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+  }
+})

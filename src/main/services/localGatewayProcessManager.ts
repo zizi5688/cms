@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { createWriteStream, existsSync, mkdirSync } from 'fs'
+import process from 'node:process'
 import { join } from 'path'
 
 import type { LocalGatewayConfig } from '../../shared/localGatewayTypes.ts'
@@ -25,8 +26,11 @@ type CreateLocalGatewayProcessManagerOptions = {
   logsDir: string
   fetchImpl?: typeof fetch
   shellPath?: string
+  spawnImpl?: typeof spawn
   waitTimeoutMs?: number
 }
+
+type SpawnLike = typeof spawn
 
 async function waitForService(
   healthUrl: string,
@@ -94,6 +98,7 @@ export class LocalGatewayProcessManager {
   private readonly logsDir: string
   private readonly fetchImpl: typeof fetch
   private readonly shellPath: string
+  private readonly spawnImpl: SpawnLike
   private readonly waitTimeoutMs: number
   private readonly records = new Map<ManagedServiceName, ManagedServiceRecord>()
 
@@ -101,6 +106,7 @@ export class LocalGatewayProcessManager {
     this.logsDir = options.logsDir
     this.fetchImpl = options.fetchImpl ?? fetch
     this.shellPath = options.shellPath ?? '/bin/zsh'
+    this.spawnImpl = options.spawnImpl ?? spawn
     this.waitTimeoutMs = options.waitTimeoutMs ?? 30_000
   }
 
@@ -121,9 +127,16 @@ export class LocalGatewayProcessManager {
 
       const logPath = join(this.logsDir, `${definition.name}.log`)
       const stream = createWriteStream(logPath, { flags: 'a' })
-      const child = spawn(this.shellPath, ['-lc', definition.command], {
+      const childEnv =
+        definition.name === 'gateway'
+          ? {
+              ...process.env,
+              CHROME_PROFILE_DIRECTORY: config.chromeProfileDirectory
+            }
+          : process.env
+      const child = this.spawnImpl(this.shellPath, ['-lc', definition.command], {
         cwd: definition.cwd,
-        env: process.env,
+        env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe']
       })
 
