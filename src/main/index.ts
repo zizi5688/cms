@@ -65,6 +65,10 @@ import { getAppReleaseMeta } from './services/releaseMeta'
 import { initAutoUpdate } from './services/autoUpdate'
 import { StorageMaintenanceService } from './services/storageMaintenanceService'
 import {
+  detectMacNativeArtifactGatekeeperIssue,
+  promptForMacNativeArtifactRepair
+} from './services/macNativeArtifactGatekeeperGuard.ts'
+import {
   mergeLocalGatewayConfig,
   readLocalGatewayConfigFromStore
 } from './services/localGatewayConfig.ts'
@@ -1304,6 +1308,24 @@ app.whenReady().then(async () => {
       app.dock?.setIcon(devDockIcon)
     } catch (error) {
       void error
+    }
+  }
+
+  const nativeArtifactGatekeeperIssue = detectMacNativeArtifactGatekeeperIssue({
+    appName: app.getName()
+  })
+  if (nativeArtifactGatekeeperIssue) {
+    console.warn(
+      `[mac-native-artifact-guard] blocked module ${nativeArtifactGatekeeperIssue.moduleName}: ${nativeArtifactGatekeeperIssue.detail}`
+    )
+    try {
+      await promptForMacNativeArtifactRepair({
+        issue: nativeArtifactGatekeeperIssue,
+        showMessageBox: (payload) => dialog.showMessageBox(payload),
+        writeClipboardText: (text) => clipboard.writeText(text)
+      })
+    } catch (error) {
+      console.warn('[mac-native-artifact-guard] failed to show repair dialog:', error)
     }
   }
 
