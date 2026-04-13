@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.1] - 2026-04-13
+
+### Fix (修复)
+- **Legacy Publish Config Migration**: 生产环境升级到 1.4.1 后，会把历史遗留的 `publishMode=cdp` 默认配置一次性迁回 Electron，避免旧配置覆盖新版本默认值，导致设置页仍显示 Chrome CDP。
+- **Electron Startup Guard**: 旧配置完成迁移后，Electron 模式下不会再因为残留的本地网关开机自启动设置而误拉 dedicated Chrome；Flow 图片能力仍保持按需 readiness，不影响后续生图。
+
 ## [1.4.0] - 2026-04-13
 
 ### Changed (调整)
