@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.0] - 2026-04-13
+
+### Changed (调整)
+- **Electron Default Publish Mode**: CMS 现已默认使用 Electron 发布模式，避免开发版或新环境首次启动时误切到 Chrome CDP 发布链路。
+- **Electron Publish Action**: Electron 发布新增“发布方式”配置，支持“自动发布”和“保存草稿”；默认改为“保存草稿”。
+
+### Fix (修复)
+- **Draft Save Flow**: Electron 图文/视频发布在“保存草稿”模式下，完成素材上传、标题正文、封面和挂车后会直接关闭发布窗口，由小红书自动保存草稿，不再误点发布按钮。
+- **Startup Chrome Popup**: 当发布模式是 Electron 时，CMS 启动阶段不再自动拉起本地网关的 dedicated Chrome，修复启动时偶发弹出 Chrome“打开您的个人资料时出了点问题”的干扰。
+- **Flow Image Readiness**: AI Studio / Flow 生图链路改为按需启动本地网关图片能力，请求前自动补做 readiness，避免关闭开机自启动后首次生图直接命中 `127.0.0.1:4174` 未启动错误。
+
 ## [1.3.2] - 2026-04-13
 
 ### Fix (修复)
