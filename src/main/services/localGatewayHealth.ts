@@ -13,6 +13,13 @@ export type LocalGatewayHealthDependency = {
 
 const DEFAULT_ERROR_MESSAGE = '服务未就绪。'
 
+function findService(
+  services: LocalGatewayServiceStatus[],
+  name: LocalGatewayServiceStatus['name']
+): LocalGatewayServiceStatus | undefined {
+  return services.find((service) => service.name === name)
+}
+
 async function getHttpStatus(
   url: string,
   fetchImpl: typeof fetch
@@ -112,6 +119,25 @@ export async function collectLocalGatewayServiceStatuses(
       message: chromeDebugListening ? null : 'Chrome 未开启远程调试端口。'
     }
   ]
+}
+
+export function isLocalGatewayImageRuntimeReady(input: {
+  config: LocalGatewayConfig
+  services: LocalGatewayServiceStatus[]
+}): boolean {
+  const adapter = findService(input.services, 'adapter')
+  const gateway = findService(input.services, 'gateway')
+  if (!adapter?.ok || !gateway?.ok) {
+    return false
+  }
+
+  if (!input.config.startCdpProxy) {
+    return false
+  }
+
+  const cdpProxy = findService(input.services, 'cdpProxy')
+  const chromeDebug = findService(input.services, 'chromeDebug')
+  return Boolean(cdpProxy?.ok && chromeDebug?.ok)
 }
 
 export function resolveLocalGatewayOverallStatus(input: {

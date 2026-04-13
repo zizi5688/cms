@@ -5,6 +5,7 @@ import { createDefaultLocalGatewayConfig } from './localGatewayConfig.ts'
 import {
   collectLocalGatewayServiceStatuses,
   createLocalGatewayState,
+  isLocalGatewayImageRuntimeReady,
   resolveLocalGatewayOverallStatus
 } from './localGatewayHealth.ts'
 
@@ -121,6 +122,51 @@ test('resolveLocalGatewayOverallStatus returns services_ready when core services
     ]
   })
   assert.equal(status, 'services_ready')
+})
+
+test('isLocalGatewayImageRuntimeReady requires cdp proxy and chrome debug to stay ready', () => {
+  const config = { ...createDefaultLocalGatewayConfig(), enabled: true, startCdpProxy: true }
+  const baseServices = [
+    { name: 'adapter', ok: true, port: 8766, message: null },
+    { name: 'gateway', ok: true, port: 4174, message: null },
+    { name: 'adminUi', ok: true, port: 4175, message: null }
+  ]
+
+  assert.equal(
+    isLocalGatewayImageRuntimeReady({
+      config,
+      services: [
+        ...baseServices,
+        { name: 'cdpProxy', ok: false, port: 3456, message: 'Chrome 未启动，需要执行初始化。' },
+        { name: 'chromeDebug', ok: true, port: 9333, message: null }
+      ]
+    }),
+    false
+  )
+
+  assert.equal(
+    isLocalGatewayImageRuntimeReady({
+      config,
+      services: [
+        ...baseServices,
+        { name: 'cdpProxy', ok: true, port: 3456, message: null },
+        { name: 'chromeDebug', ok: false, port: 9333, message: 'Chrome 未开启远程调试端口。' }
+      ]
+    }),
+    false
+  )
+
+  assert.equal(
+    isLocalGatewayImageRuntimeReady({
+      config,
+      services: [
+        ...baseServices,
+        { name: 'cdpProxy', ok: true, port: 3456, message: null },
+        { name: 'chromeDebug', ok: true, port: 9333, message: null }
+      ]
+    }),
+    true
+  )
 })
 
 test('createLocalGatewayState keeps last error and degraded status', () => {

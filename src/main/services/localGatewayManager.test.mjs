@@ -29,6 +29,46 @@ function createConfiguredBundleRoot(root) {
   writeFileSync(join(root, 'local-ai-gateway', 'python_adapter', '.venv', 'bin', 'activate'), 'echo ok\n')
 }
 
+function writeImageRuntimeHealth(root, value) {
+  writeFileSync(join(root, 'image-runtime-health.json'), JSON.stringify(value), 'utf-8')
+}
+
+function createImageRuntimeHealthDeps(root) {
+  return {
+    fetch: async (url) => {
+      const normalized = String(url)
+      if (normalized.includes('8766/health') || normalized.includes('4174/health') || normalized.includes('4175')) {
+        return { ok: true, status: 200 }
+      }
+      if (normalized.includes('3456/health')) {
+        const payload = JSON.parse(readFileSync(join(root, 'image-runtime-health.json'), 'utf-8'))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            connected: payload.cdpProxy,
+            message: payload.cdpProxy ? null : 'Chrome 未启动，需要执行初始化。'
+          })
+        }
+      }
+      return { ok: false, status: 404 }
+    },
+    isPortListening: async () => {
+      const payload = JSON.parse(readFileSync(join(root, 'image-runtime-health.json'), 'utf-8'))
+      return payload.chromeDebug
+    }
+  }
+}
+
+async function waitFor(fn, timeoutMs = 1500) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await fn()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`)
+}
+
 test('LocalGatewayManager returns unconfigured when bundle is missing', async () => {
   const manager = new LocalGatewayManager({
     store: createStore({
@@ -244,17 +284,20 @@ test('LocalGatewayManager initializeGateway allows bootstrap when adapter venv i
 test('LocalGatewayManager ensureReadyForCapability initializes image bootstrap only once per app session', async () => {
   const root = join(tmpdir(), `local-gateway-ensure-image-${Date.now()}`)
   createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: false, chromeDebug: false })
   writeFileSync(
     join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
     `#!/usr/bin/env bash
 set -euo pipefail
 COUNT_FILE="${root}/init-count.txt"
+HEALTH_FILE="${root}/image-runtime-health.json"
 count=0
 if [[ -f "${root}/init-count.txt" ]]; then
   count="$(cat "${root}/init-count.txt")"
 fi
 count=$((count + 1))
 printf '%s' "\${count}" > "${root}/init-count.txt"
+printf '%s' '{"cdpProxy":true,"chromeDebug":true}' > "${root}/image-runtime-health.json"
 echo "bootstrap run \${count}"
 `,
     'utf-8'
@@ -288,10 +331,7 @@ echo "bootstrap run \${count}"
         }
       })
     },
-    healthDeps: {
-      fetch: async () => ({ ok: true, status: 200 }),
-      isPortListening: async () => true
-    }
+    healthDeps: createImageRuntimeHealthDeps(root)
   })
 
   await manager.ensureReadyForCapability('image')
@@ -344,5 +384,141 @@ test('LocalGatewayManager ensureReadyForCapability does not require CMS gateway 
   assert.equal(state.overallStatus, 'degraded')
   assert.equal(manager.getState().overallStatus, 'degraded')
 
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager ensureReadyForCapability reinitializes image when cdp proxy disconnects after caching readiness', async () => {
+  const root = join(tmpdir(), `local-gateway-image-recover-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: false, chromeDebug: false })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+COUNT_FILE="${root}/init-count.txt"
+HEALTH_FILE="${root}/image-runtime-health.json"
+count=0
+if [[ -f "${root}/init-count.txt" ]]; then
+  count="$(cat "${root}/init-count.txt")"
+fi
+count=$((count + 1))
+printf '%s' "\${count}" > "${root}/init-count.txt"
+printf '%s' '{"cdpProxy":true,"chromeDebug":true}' > "${root}/image-runtime-health.json"
+echo "bootstrap run \${count}"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: createImageRuntimeHealthDeps(root)
+  })
+
+  await manager.ensureReadyForCapability('image')
+  assert.equal(readFileSync(join(root, 'init-count.txt'), 'utf-8'), '1')
+
+  writeImageRuntimeHealth(root, { cdpProxy: false, chromeDebug: true })
+  await manager.ensureReadyForCapability('image')
+
+  assert.equal(readFileSync(join(root, 'init-count.txt'), 'utf-8'), '2')
+  assert.equal(manager.getState().overallStatus, 'services_ready')
+
+  manager.dispose()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager self-heal poll reinitializes image when dedicated chrome drops', async () => {
+  const root = join(tmpdir(), `local-gateway-image-poll-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: false, chromeDebug: false })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+COUNT_FILE="${root}/init-count.txt"
+HEALTH_FILE="${root}/image-runtime-health.json"
+count=0
+if [[ -f "${root}/init-count.txt" ]]; then
+  count="$(cat "${root}/init-count.txt")"
+fi
+count=$((count + 1))
+printf '%s' "\${count}" > "${root}/init-count.txt"
+printf '%s' '{"cdpProxy":true,"chromeDebug":true}' > "${root}/image-runtime-health.json"
+echo "bootstrap run \${count}"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: createImageRuntimeHealthDeps(root),
+    imageHealthPollIntervalMs: 20
+  })
+
+  await manager.ensureReadyForCapability('image')
+  assert.equal(readFileSync(join(root, 'init-count.txt'), 'utf-8'), '1')
+
+  writeImageRuntimeHealth(root, { cdpProxy: false, chromeDebug: false })
+
+  await waitFor(
+    async () => readFileSync(join(root, 'init-count.txt'), 'utf-8') === '2',
+    2000
+  )
+
+  assert.equal(manager.getState().overallStatus, 'services_ready')
+
+  manager.dispose()
   rmSync(root, { recursive: true, force: true })
 })
