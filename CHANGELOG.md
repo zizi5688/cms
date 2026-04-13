@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1] - 2026-04-13
+
+### Fix (修复)
+- **macOS Packaging**: 在 after-pack 阶段为复制进应用资源目录的 `.node` 与 `.dylib` 原生制品补做 ad-hoc 签名，降低 DMG 安装后被 Gatekeeper 拦截的概率。
+- **macOS Launch Guard**: 应用首次启动时增加原生模块加载检测；如果遇到 quarantine 或 not verified 拦截，会弹出提示并提供可直接复制的 `xattr -cr /Applications/Super\ CMS.app` 修复命令。
+- **Local Gateway Adapter**: 修复 Python adapter 在新电脑上因 venv 绝对路径 shebang 失效而无法启动的问题；启动前会自动校验并重建 `.venv`，同时统一改用 `.venv/bin/python -m uvicorn` 启动。
+
 ## [1.3.0] - 2026-04-12
 
 ### Feat (特性)
