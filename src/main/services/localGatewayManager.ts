@@ -102,9 +102,19 @@ function getBundleConfigurationError(config: LocalGatewayConfig): string | null 
     return `未找到网关代码目录：${gatewayRoot}`
   }
 
-  const pythonActivate = join(gatewayRoot, 'python_adapter', '.venv', 'bin', 'activate')
-  if (!existsSync(pythonActivate)) {
-    return `未找到 Python 虚拟环境：${pythonActivate}`
+  const pythonAdapterRoot = join(gatewayRoot, 'python_adapter')
+  if (!existsSync(pythonAdapterRoot)) {
+    return `未找到 Python adapter 目录：${pythonAdapterRoot}`
+  }
+
+  const pythonRequirements = join(pythonAdapterRoot, 'requirements.txt')
+  if (!existsSync(pythonRequirements)) {
+    return `未找到 Python adapter 依赖清单：${pythonRequirements}`
+  }
+
+  const pythonApp = join(pythonAdapterRoot, 'app.py')
+  if (!existsSync(pythonApp)) {
+    return `未找到 Python adapter 应用入口：${pythonApp}`
   }
 
   if (config.startCdpProxy) {

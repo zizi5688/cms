@@ -65,7 +65,7 @@ function buildServiceDefinitions(config: LocalGatewayConfig): ServiceDefinition[
   const definitions: ServiceDefinition[] = [
     {
       name: 'adapter',
-      command: '.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8766',
+      command: '.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8766',
       cwd: pythonRoot,
       healthUrl: 'http://127.0.0.1:8766/health'
     },

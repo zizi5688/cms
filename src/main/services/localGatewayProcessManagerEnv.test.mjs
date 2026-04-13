@@ -54,6 +54,10 @@ test('LocalGatewayProcessManager injects gateway and cdp proxy environment for d
   })
 
   assert.equal(spawnCalls.length, 3)
+  assert.equal(
+    spawnCalls[0].args[1],
+    '.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8766'
+  )
   assert.equal(spawnCalls[0].options.env.CHROME_PROFILE_DIRECTORY, undefined)
   assert.equal(spawnCalls[1].options.env.CHROME_PROFILE_DIRECTORY, 'Profile 10')
   assert.equal(spawnCalls[2].options.env.CDP_PROXY_CHROME_PORT, '9333')

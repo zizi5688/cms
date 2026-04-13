@@ -24,6 +24,8 @@ function createConfiguredBundleRoot(root) {
   mkdirSync(join(root, 'tools'), { recursive: true })
   mkdirSync(join(root, 'logs'), { recursive: true })
   writeFileSync(join(root, 'tools', 'cdp-proxy.mjs'), 'console.log("ok")\n')
+  writeFileSync(join(root, 'local-ai-gateway', 'python_adapter', 'app.py'), 'app = object()\n')
+  writeFileSync(join(root, 'local-ai-gateway', 'python_adapter', 'requirements.txt'), 'uvicorn\n')
   writeFileSync(join(root, 'local-ai-gateway', 'python_adapter', '.venv', 'bin', 'activate'), 'echo ok\n')
 }
 
@@ -183,6 +185,58 @@ test('LocalGatewayManager initializeGateway records failure in state when bootst
   assert.match(String(state.lastError), /bootstrap failed/)
   assert.equal(state.overallStatus, 'degraded')
   assert.equal(state.lastStartedAt, null)
+
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager initializeGateway allows bootstrap when adapter venv is missing', async () => {
+  const root = join(tmpdir(), `local-gateway-init-no-venv-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  rmSync(join(root, 'local-ai-gateway', 'python_adapter', '.venv'), { recursive: true, force: true })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    'echo "bootstrap repaired venv"\n',
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: {
+      fetch: async () => ({ ok: true, status: 200 }),
+      isPortListening: async () => true
+    }
+  })
+
+  const result = await manager.initializeGateway()
+
+  assert.equal(result.success, true)
+  assert.match(result.output, /bootstrap repaired venv/)
 
   rmSync(root, { recursive: true, force: true })
 })
