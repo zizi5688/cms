@@ -20,6 +20,7 @@ import type {
 import {
   createLocalGatewayState,
   collectLocalGatewayServiceStatuses,
+  isLocalGatewayImageRuntimeReady,
   type LocalGatewayHealthDependency
 } from './localGatewayHealth.ts'
 import {
@@ -47,6 +48,7 @@ type CreateLocalGatewayManagerOptions = {
   logsDir: string
   healthDeps?: Partial<LocalGatewayHealthDependency>
   processManager?: LocalGatewayProcessManagerHandle
+  imageHealthPollIntervalMs?: number
   chromeDeps?: {
     ensureGatewayProfile?: typeof ensureCmsGatewayProfileRecord
     resolveCmsProfile?: typeof resolveCmsChromeProfile
@@ -54,10 +56,13 @@ type CreateLocalGatewayManagerOptions = {
   }
 }
 
+const DEFAULT_IMAGE_HEALTH_POLL_INTERVAL_MS = 30_000
+
 function createReadinessConfigKey(config: LocalGatewayConfig): string {
   return JSON.stringify({
     enabled: config.enabled,
     bundlePath: config.bundlePath.trim(),
+    startCdpProxy: config.startCdpProxy,
     gatewayCmsProfileId: config.gatewayCmsProfileId.trim(),
     prewarmImageOnLaunch: config.prewarmImageOnLaunch
   })
@@ -141,6 +146,10 @@ export class LocalGatewayManager {
   private lastError: string | null = null
   private readonly ensuredCapabilities = new Set<AiCapability>()
   private readinessConfigKey: string | null = null
+  private readonly imageHealthPollIntervalMs: number
+  private imageHealthPollTimer: ReturnType<typeof setInterval> | null = null
+  private imageHealthPollInFlight = false
+  private imageCapabilityWanted = false
 
   constructor(options: CreateLocalGatewayManagerOptions) {
     this.store = options.store
@@ -155,6 +164,7 @@ export class LocalGatewayManager {
         logsDir: options.logsDir,
         fetchImpl: this.fetchImpl
       })
+    this.imageHealthPollIntervalMs = options.imageHealthPollIntervalMs ?? DEFAULT_IMAGE_HEALTH_POLL_INTERVAL_MS
     const config = readLocalGatewayConfigFromStore(this.store)
     this.readinessConfigKey = createReadinessConfigKey(config)
     this.state = createLocalGatewayState({
@@ -165,6 +175,7 @@ export class LocalGatewayManager {
       lastStartedAt: null,
       lastError: null
     })
+    this.startImageHealthPoll()
   }
 
   getState(): LocalGatewayState {
@@ -176,6 +187,7 @@ export class LocalGatewayManager {
     const nextReadinessConfigKey = createReadinessConfigKey(config)
     if (this.readinessConfigKey !== nextReadinessConfigKey) {
       this.ensuredCapabilities.clear()
+      this.imageCapabilityWanted = false
       this.readinessConfigKey = nextReadinessConfigKey
     }
     const configured = isBundleConfigured(config)
@@ -198,6 +210,11 @@ export class LocalGatewayManager {
     })
     if (!areGatewayBaseServicesReady(this.state) || this.state.lastError) {
       this.ensuredCapabilities.clear()
+      if (!config.enabled) {
+        this.imageCapabilityWanted = false
+      }
+    } else if (!isLocalGatewayImageRuntimeReady({ config, services: this.state.services })) {
+      this.ensuredCapabilities.delete('image')
     }
     return this.state
   }
@@ -241,6 +258,10 @@ export class LocalGatewayManager {
   }
 
   dispose(): void {
+    if (this.imageHealthPollTimer) {
+      clearInterval(this.imageHealthPollTimer)
+      this.imageHealthPollTimer = null
+    }
     this.processManager.dispose()
   }
 
@@ -294,12 +315,49 @@ export class LocalGatewayManager {
 
   private markCapabilityEnsured(capability: AiCapability): void {
     if (capability === 'image') {
+      this.imageCapabilityWanted = true
       this.ensuredCapabilities.add('chat')
       this.ensuredCapabilities.add('image')
       return
     }
     if (capability === 'chat') {
       this.ensuredCapabilities.add('chat')
+    }
+  }
+
+  private startImageHealthPoll(): void {
+    this.imageHealthPollTimer = setInterval(() => {
+      void this.healImageCapabilityIfNeeded()
+    }, this.imageHealthPollIntervalMs)
+    this.imageHealthPollTimer.unref?.()
+  }
+
+  private async healImageCapabilityIfNeeded(): Promise<void> {
+    if (this.starting || this.imageHealthPollInFlight || !this.imageCapabilityWanted) {
+      return
+    }
+
+    const config = readLocalGatewayConfigFromStore(this.store)
+    if (!config.enabled || !config.startCdpProxy || !config.gatewayCmsProfileId.trim()) {
+      return
+    }
+
+    this.imageHealthPollInFlight = true
+    try {
+      const state = await this.refreshState()
+      if (!areGatewayBaseServicesReady(state)) {
+        return
+      }
+      if (isLocalGatewayImageRuntimeReady({ config, services: state.services })) {
+        return
+      }
+      await this.initializeGateway({
+        smokeImage: config.prewarmImageOnLaunch
+      })
+    } catch {
+      // refreshState/initializeGateway already recorded the latest error state
+    } finally {
+      this.imageHealthPollInFlight = false
     }
   }
 
@@ -327,6 +385,11 @@ export class LocalGatewayManager {
         return state
       }
       this.markCapabilityEnsured('chat')
+      return this.getState()
+    }
+
+    if (isLocalGatewayImageRuntimeReady({ config, services: state.services })) {
+      this.markCapabilityEnsured('image')
       return this.getState()
     }
 
