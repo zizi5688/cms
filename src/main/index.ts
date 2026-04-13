@@ -77,6 +77,7 @@ import {
   readLocalGatewayConfigFromStore
 } from './services/localGatewayConfig.ts'
 import { LocalGatewayManager } from './services/localGatewayManager.ts'
+import { applyCmsPublishDefaultsMigration } from './services/cmsPublishDefaultsMigration.ts'
 import { buildXhsSendKeyEvents } from './xhsInputEvents'
 import {
   pickFileInMacNativeDialog,
@@ -920,6 +921,7 @@ const configStore = new StoreCtor<{
   watermarkBox: { x: number; y: number; width: number; height: number }
   publishMode?: CmsPublishMode
   electronPublishAction?: CmsElectronPublishAction
+  cmsPublishDefaultsMigrationVersion?: string
   chromeExecutablePath?: string
   cmsChromeDataDir?: string
   defaultStartTime?: string
@@ -933,6 +935,8 @@ const configStore = new StoreCtor<{
     cooldownDurationMs?: number
   }
 }>()
+
+applyCmsPublishDefaultsMigration(configStore)
 
 function resolveAiRouteByCapability(
   capability: AiCapability,
@@ -3681,16 +3685,7 @@ app.whenReady().then(async () => {
       cooldownAfterNTasks: Math.max(1, Math.floor(Number(storedQueueConfig?.cooldownAfterNTasks) || 5)),
       cooldownDurationMs: Math.max(0, Math.floor(Number(storedQueueConfig?.cooldownDurationMs) || 300000))
     }
-    const storedPublishMode = configStore.get('publishMode')
-    const publishMode = normalizeCmsPublishMode(storedPublishMode)
-    if (storedPublishMode !== publishMode) {
-      configStore.set('publishMode', publishMode)
-    }
-    const storedElectronPublishAction = configStore.get('electronPublishAction')
-    const electronPublishAction = normalizeStoredElectronPublishAction(storedElectronPublishAction)
-    if (storedElectronPublishAction !== electronPublishAction) {
-      configStore.set('electronPublishAction', electronPublishAction)
-    }
+    const { publishMode, electronPublishAction } = applyCmsPublishDefaultsMigration(configStore)
     const storedChromeExecutablePath = configStore.get('chromeExecutablePath')
     const chromeExecutablePath = normalizeChromeExecutablePath(storedChromeExecutablePath)
     if (storedChromeExecutablePath !== chromeExecutablePath) {
