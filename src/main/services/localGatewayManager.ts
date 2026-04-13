@@ -68,6 +68,10 @@ function createReadinessConfigKey(config: LocalGatewayConfig): string {
   })
 }
 
+function resolveStoredPublishMode(store: LocalGatewayStore): 'electron' | 'cdp' {
+  return store.get('publishMode') === 'cdp' ? 'cdp' : 'electron'
+}
+
 function areGatewayBaseServicesReady(state: LocalGatewayState): boolean {
   const adapter = state.services.find((service) => service.name === 'adapter')
   const gateway = state.services.find((service) => service.name === 'gateway')
@@ -222,6 +226,9 @@ export class LocalGatewayManager {
   async autoStartIfEnabled(): Promise<LocalGatewayState> {
     const config = readLocalGatewayConfigFromStore(this.store)
     if (!config.enabled || !config.autoStartOnAppLaunch) {
+      return this.refreshState()
+    }
+    if (config.startCdpProxy && resolveStoredPublishMode(this.store) !== 'cdp') {
       return this.refreshState()
     }
     if (!config.gatewayCmsProfileId.trim()) {

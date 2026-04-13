@@ -1,4 +1,5 @@
 export type CmsPublishMode = 'electron' | 'cdp'
+export type CmsElectronPublishAction = 'auto_publish' | 'save_draft'
 export type CmsChromeProfilePurpose = 'publisher' | 'gateway' | 'shared'
 
 export type CmsPublishSafetyCheck = {
@@ -33,4 +34,8 @@ export type CmsChromeLoginVerificationResult = {
   reason: string
   finalUrl: string
   checkedAt: string
+}
+
+export function normalizeCmsElectronPublishAction(value: unknown): CmsElectronPublishAction {
+  return value === 'auto_publish' ? 'auto_publish' : 'save_draft'
 }

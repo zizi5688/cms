@@ -4,7 +4,7 @@ import {
   type AiProviderProfile,
   type AiRuntimeDefaults
 } from '../../../shared/ai/aiProviderTypes'
-import type { CmsPublishMode } from '../../../shared/cmsChromeProfileTypes'
+import type { CmsElectronPublishAction, CmsPublishMode } from '../../../shared/cmsChromeProfileTypes'
 import type { LocalGatewayConfig } from '../../../shared/localGatewayTypes'
 import { DEFAULT_ACTIVE_MODULE } from '../components/layout/navigationDefaults'
 
@@ -82,6 +82,7 @@ export type { AiCapability, AiCapabilityProfile, AiModelProfile, AiProviderProfi
 
 export interface CmsConfig {
   publishMode: CmsPublishMode
+  electronPublishAction: CmsElectronPublishAction
   chromeExecutablePath: string
   cmsChromeDataDir: string
   appId: string
@@ -176,7 +177,8 @@ export interface CmsState {
 }
 
 const initialConfig: CmsConfig = {
-  publishMode: 'cdp',
+  publishMode: 'electron',
+  electronPublishAction: 'save_draft',
   chromeExecutablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   cmsChromeDataDir: '',
   appId: '',
