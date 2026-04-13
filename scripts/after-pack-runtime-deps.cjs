@@ -1,5 +1,8 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { execSync } = require('node:child_process')
+
+const NATIVE_ARTIFACT_EXTENSIONS = ['.node', '.dylib']
 
 function splitPackageName(name) {
   return name.startsWith('@') ? name.split('/').slice(0, 2) : [name]
@@ -160,6 +163,50 @@ function resourcesDirFromContext(context) {
   return path.join(context.appOutDir, 'resources')
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function signNativeModules(context, options = {}) {
+  const runtimePlatform = options.platform ?? process.platform
+  if (runtimePlatform !== 'darwin' || context.electronPlatformName !== 'darwin') {
+    return
+  }
+
+  const execSyncImpl = options.execSyncImpl ?? execSync
+  const logImpl = options.logImpl ?? console.log
+  const warnImpl = options.warnImpl ?? console.warn
+  const resourcesDir = resourcesDirFromContext(context)
+
+  function walkDir(dir) {
+    if (!exists(dir)) return
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walkDir(fullPath)
+        continue
+      }
+      if (!NATIVE_ARTIFACT_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
+        continue
+      }
+      try {
+        execSyncImpl(
+          `codesign --sign - --force --preserve-metadata=entitlements ${shellQuote(fullPath)}`,
+          { stdio: 'pipe' }
+        )
+        logImpl(`[afterPack:runtime-deps] codesign native artifact: ${entry.name}`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        warnImpl(`[afterPack:runtime-deps] codesign failed for ${entry.name}: ${message}`)
+      }
+    }
+  }
+
+  logImpl('[afterPack:runtime-deps] signing native artifacts in resources')
+  walkDir(resourcesDir)
+}
+
 async function afterPack(context) {
   const projectDir = fs.realpathSync(context.packager.projectDir)
   const nodeModulesRoot = path.join(projectDir, 'node_modules')
@@ -179,9 +226,11 @@ async function afterPack(context) {
   console.log(`[afterPack:runtime-deps] resourcesDir=${resourcesDir}`)
   console.log(`[afterPack:runtime-deps] entryPackages=${entryPackages.length}`)
   console.log(`[afterPack:runtime-deps] copiedPackages=${closure.length}`)
+  signNativeModules(context)
 }
 
 module.exports = {
+  NATIVE_ARTIFACT_EXTENSIONS,
   splitPackageName,
   packageDirFromName,
   readJson,
@@ -194,5 +243,6 @@ module.exports = {
   readRuntimeEntryPackages,
   collectRuntimeClosure,
   resourcesDirFromContext,
+  signNativeModules,
   default: afterPack
 }
