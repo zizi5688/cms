@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2] - 2026-04-13
+
+### Fix (修复)
+- **Local Gateway Image Recovery**: 本地网关图片链路现在会持续检查 `cdpProxy` 与 dedicated Chrome 会话状态；一旦检测到图片会话掉线，会自动清空就绪缓存并重新初始化，避免生成请求直接失败。
+- **Image Session Health Cache**: 图片能力就绪判断不再只依赖 adapter 和 gateway，而是把 `cdpProxy.connected` 与 Chrome 调试状态一起纳入健康检查，降低长时间运行后的假阳性“已就绪”状态。
+
 ## [1.3.1] - 2026-04-13
 
 ### Fix (修复)
