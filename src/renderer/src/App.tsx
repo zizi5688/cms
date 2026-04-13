@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { MainLayout } from '@renderer/components/layout/MainLayout'
 import { useCmsStore } from '@renderer/store/useCmsStore'
+import { normalizeCmsElectronPublishAction } from '../../shared/cmsChromeProfileTypes'
 
 function isValidWatermarkBox(
   value: unknown
@@ -55,6 +56,7 @@ function App(): React.JSX.Element {
         if (!cancelled && saved) {
           const patch: Parameters<typeof updateConfig>[0] = {
             publishMode: saved.publishMode === 'cdp' ? 'cdp' : 'electron',
+            electronPublishAction: normalizeCmsElectronPublishAction(saved.electronPublishAction),
             chromeExecutablePath: saved.chromeExecutablePath ?? '',
             cmsChromeDataDir: saved.cmsChromeDataDir ?? '',
             aiProvider:

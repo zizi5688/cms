@@ -4,6 +4,7 @@ import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shar
 import type {
   CmsChromeLoginVerificationResult,
   CmsChromeProfileRecord,
+  CmsElectronPublishAction,
   CmsPublishMode,
   CmsPublishSafetyCheck
 } from '../shared/cmsChromeProfileTypes'
@@ -16,7 +17,13 @@ import type {
   LocalGatewaySystemChromeProfile
 } from '../shared/localGatewayTypes.ts'
 
-type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
+type PublisherResult = {
+  success: boolean
+  time?: string
+  savedAsDraft?: boolean
+  error?: string
+  safetyCheck?: CmsPublishSafetyCheck
+}
 
 type CmsPublishTaskStatus =
   | 'pending'
@@ -627,7 +634,7 @@ const api = {
           productName?: string
           linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
           dryRun?: boolean
-          mode?: 'immediate'
+          mode?: CmsElectronPublishAction
         }
       ): Promise<PublisherResult> =>
         ipcRenderer.invoke('publisher.publish', { accountId, taskData }),
@@ -1599,6 +1606,7 @@ const electronAPI = {
   relaunch: (): Promise<{ success: true }> => ipcRenderer.invoke('workspace.relaunch'),
   getConfig: (): Promise<{
     publishMode: CmsPublishMode
+    electronPublishAction: CmsElectronPublishAction
     chromeExecutablePath: string
     cmsChromeDataDir: string
     aiProvider: string
@@ -1633,6 +1641,7 @@ const electronAPI = {
   }> => ipcRenderer.invoke('get-config'),
   saveConfig: (patch: {
     publishMode?: CmsPublishMode
+    electronPublishAction?: CmsElectronPublishAction
     chromeExecutablePath?: string
     cmsChromeDataDir?: string
     aiProvider?: string

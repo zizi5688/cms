@@ -22,6 +22,11 @@ import {
   normalizeAiStudioProviderTransportErrorMessage,
   resolveAiStudioProviderRequestTimeoutMs
 } from './aiStudioProviderErrorHelpers'
+import {
+  ensureAiStudioProviderReady,
+  type AiStudioEnsureProviderReady,
+  type AiStudioProviderCapability
+} from './aiStudioProviderReadiness'
 import { readWorkflowSourceDescriptor } from './aiStudioWorkflowSourceHelpers'
 import { resolveAiStudioProviderConfig } from './aiStudioProviderConfigHelpers'
 import {
@@ -1446,7 +1451,8 @@ function mapRunRow(row: Record<string, unknown>): AiStudioRunRecord {
 export class AiStudioService {
   constructor(
     private readonly resolveWorkspacePath: () => string,
-    private readonly resolveProviderConfig: () => Partial<AiStudioProviderConfig> = () => ({})
+    private readonly resolveProviderConfig: () => Partial<AiStudioProviderConfig> = () => ({}),
+    private readonly ensureProviderReady: AiStudioEnsureProviderReady = undefined
   ) {}
 
   private get db(): DbConnection {
@@ -1665,6 +1671,7 @@ export class AiStudioService {
     apiPath: string,
     payload: Record<string, unknown>,
     options?: {
+      capability?: AiStudioProviderCapability
       method?: 'POST' | 'OPTIONS' | 'GET' | 'HEAD'
       allowStatusCodes?: number[]
       allowProviderCodes?: number[]
@@ -1678,6 +1685,11 @@ export class AiStudioService {
     if (!config.apiKey) {
       throw new Error('[AI Studio] 未配置 AI API Key。')
     }
+    await ensureAiStudioProviderReady({
+      config,
+      capability: options?.capability ?? 'image',
+      ensureReady: this.ensureProviderReady
+    })
 
     const method = options?.method ?? 'POST'
     const headers: Record<string, string> = {
@@ -2264,6 +2276,11 @@ export class AiStudioService {
     const looksLikeChatCompletions = isChatCompletionsPath(connectionApiPath)
     const looksLikeSeedanceTaskEndpoint = isVolcContentGenerationTasksPath(connectionApiPath)
     const looksLikeVideoCreateEndpoint = isCustomEndpoint && isVideoCreatePath(connectionApiPath)
+    const connectionCapability: AiStudioProviderCapability = looksLikeChatCompletions
+      ? 'chat'
+      : looksLikeSeedanceTaskEndpoint || looksLikeVideoCreateEndpoint
+        ? 'video'
+        : 'image'
 
     const probePayload = looksLikeChatCompletions
       ? {
@@ -2302,23 +2319,30 @@ export class AiStudioService {
       connectionApiPath,
       probePayload,
       looksLikeChatCompletions || looksLikeGeminiGenerateContent
-        ? { providerConfig: config }
+        ? { providerConfig: config, capability: connectionCapability }
         : looksLikeSeedanceTaskEndpoint
           ? {
               method: 'POST',
               allowStatusCodes: [400, 422],
-              providerConfig: config
+              providerConfig: config,
+              capability: connectionCapability
             }
           : looksLikeVideoCreateEndpoint
-            ? { method: 'POST', providerConfig: config }
+            ? { method: 'POST', providerConfig: config, capability: connectionCapability }
             : isCustomEndpoint
               ? {
                   method: 'POST',
                   allowStatusCodes: [400, 405, 422],
                   allowProviderCodes: [-22],
-                  providerConfig: config
+                  providerConfig: config,
+                  capability: connectionCapability
                 }
-              : { allowStatusCodes: [400], allowProviderCodes: [-22], providerConfig: config }
+              : {
+                  allowStatusCodes: [400],
+                  allowProviderCodes: [-22],
+                  providerConfig: config,
+                  capability: connectionCapability
+                }
     )
     return {
       success: true,
@@ -2392,15 +2416,16 @@ export class AiStudioService {
             })
           : context.requestPayload,
         {
-        providerConfig: config,
-        debugLogKind: 'image',
-        debugContext: {
-          flow: usesAsyncFlowTask ? 'image-submit-async-task' : 'image-submit',
-          taskId,
-          model: context.model,
-          submitPath: usesAsyncFlowTask ? AI_STUDIO_FLOW_TASK_SUBMIT_PATH : submitApiPath
+          providerConfig: config,
+          capability: 'image',
+          debugLogKind: 'image',
+          debugContext: {
+            flow: usesAsyncFlowTask ? 'image-submit-async-task' : 'image-submit',
+            taskId,
+            model: context.model,
+            submitPath: usesAsyncFlowTask ? AI_STUDIO_FLOW_TASK_SUBMIT_PATH : submitApiPath
+          }
         }
-      }
       )
       this.persistLatestSubmittedPrompt(taskId, context.requestSnapshot)
       const directResultItems = extractResultItems(response.payload)
@@ -2520,6 +2545,7 @@ export class AiStudioService {
     try {
       const response = await this.requestProvider(context.submitPath, context.requestPayload, {
         providerConfig: config,
+        capability: 'video',
         timeoutMs: null,
         debugContext: {
           flow: 'video-submit',
@@ -2782,6 +2808,7 @@ export class AiStudioService {
       {
         method: 'GET',
         providerConfig,
+        capability: 'video',
         timeoutMs: null,
         debugContext: {
           flow: 'video-poll',
@@ -2879,6 +2906,7 @@ export class AiStudioService {
         ? {
             method: 'GET',
             providerConfig,
+            capability: 'image',
             debugLogKind: 'image',
             debugContext: {
               flow: 'image-poll-async-task',
@@ -2887,7 +2915,7 @@ export class AiStudioService {
               remoteTaskId: existingRun.remoteTaskId
             }
           }
-        : undefined
+        : { capability: 'image' }
     )
     const normalizedResponsePayload = usesAsyncFlowTask
       ? normalizeAiStudioAsyncFlowTaskPayload(response.payload)

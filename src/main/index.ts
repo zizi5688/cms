@@ -17,7 +17,11 @@ import pLimit from 'p-limit'
 import { fileURLToPath } from 'url'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
 import type { LocalGatewayConfig, LocalGatewaySystemChromeProfile } from '../shared/localGatewayTypes.ts'
-import type { CmsPublishMode } from '../shared/cmsChromeProfileTypes.ts'
+import {
+  normalizeCmsElectronPublishAction,
+  type CmsElectronPublishAction,
+  type CmsPublishMode
+} from '../shared/cmsChromeProfileTypes.ts'
 import { AccountManager } from './services/accountManager'
 import { dispatchAiTask, type AiTaskRequest } from './services/aiTaskDispatcher'
 import { executeChatTask } from './services/chatExecutor'
@@ -790,7 +794,8 @@ const defaultDynamicWatermarkTrajectory = 'pseudoRandom'
 const defaultStorageMaintenanceEnabled = false
 const defaultStorageMaintenanceStartTime = '02:30'
 const defaultStorageMaintenanceRetainDays = 7
-const defaultPublishMode: CmsPublishMode = 'cdp'
+const defaultPublishMode: CmsPublishMode = 'electron'
+const defaultElectronPublishAction: CmsElectronPublishAction = 'save_draft'
 const defaultChromeExecutablePath =
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const productionCmsChromeDataDir = join(homedir(), 'chrome-cms-data')
@@ -863,6 +868,11 @@ function normalizeCmsPublishMode(value: unknown): CmsPublishMode {
   return value === 'cdp' ? 'cdp' : defaultPublishMode
 }
 
+function normalizeStoredElectronPublishAction(value: unknown): CmsElectronPublishAction {
+  const normalized = normalizeCmsElectronPublishAction(value)
+  return normalized || defaultElectronPublishAction
+}
+
 function normalizeChromeExecutablePath(value: unknown): string {
   const normalized = typeof value === 'string' ? value.trim() : ''
   return normalized || defaultChromeExecutablePath
@@ -909,6 +919,7 @@ const configStore = new StoreCtor<{
   localGateway?: LocalGatewayConfig
   watermarkBox: { x: number; y: number; width: number; height: number }
   publishMode?: CmsPublishMode
+  electronPublishAction?: CmsElectronPublishAction
   chromeExecutablePath?: string
   cmsChromeDataDir?: string
   defaultStartTime?: string
@@ -1406,6 +1417,10 @@ app.whenReady().then(async () => {
         endpointPath: aiState.aiEndpointPath,
         providerProfiles: aiState.aiProviderProfiles
       }
+    },
+    async (_config, capability) => {
+      if (!localGatewayManager) return
+      await localGatewayManager.ensureReadyForCapability(capability)
     }
   )
   if (sqliteReady) {
@@ -2501,7 +2516,12 @@ app.whenReady().then(async () => {
           })
         : undefined,
       dryRun: taskData.dryRun === false ? false : true,
-      mode: 'immediate'
+      mode:
+        taskData.mode === 'auto_publish'
+          ? 'auto_publish'
+          : taskData.mode === 'save_draft'
+            ? 'save_draft'
+            : undefined
     })
   })
 
@@ -3666,6 +3686,11 @@ app.whenReady().then(async () => {
     if (storedPublishMode !== publishMode) {
       configStore.set('publishMode', publishMode)
     }
+    const storedElectronPublishAction = configStore.get('electronPublishAction')
+    const electronPublishAction = normalizeStoredElectronPublishAction(storedElectronPublishAction)
+    if (storedElectronPublishAction !== electronPublishAction) {
+      configStore.set('electronPublishAction', electronPublishAction)
+    }
     const storedChromeExecutablePath = configStore.get('chromeExecutablePath')
     const chromeExecutablePath = normalizeChromeExecutablePath(storedChromeExecutablePath)
     if (storedChromeExecutablePath !== chromeExecutablePath) {
@@ -3693,6 +3718,7 @@ app.whenReady().then(async () => {
       scoutDashboardAutoImportDir,
       watermarkBox,
       publishMode,
+      electronPublishAction,
       chromeExecutablePath,
       cmsChromeDataDir,
       defaultStartTime,
@@ -3739,6 +3765,7 @@ app.whenReady().then(async () => {
             localGateway?: Partial<LocalGatewayConfig>
             watermarkBox?: { x: number; y: number; width: number; height: number }
             publishMode?: CmsPublishMode
+            electronPublishAction?: CmsElectronPublishAction
             chromeExecutablePath?: string
             cmsChromeDataDir?: string
             defaultStartTime?: string
@@ -3847,6 +3874,12 @@ app.whenReady().then(async () => {
       }
       if (patch?.publishMode !== undefined) {
         configStore.set('publishMode', normalizeCmsPublishMode(patch.publishMode))
+      }
+      if (patch?.electronPublishAction !== undefined) {
+        configStore.set(
+          'electronPublishAction',
+          normalizeStoredElectronPublishAction(patch.electronPublishAction)
+        )
       }
       if (patch?.chromeExecutablePath !== undefined) {
         configStore.set(

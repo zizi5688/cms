@@ -223,6 +223,27 @@ export class QueueService {
       .run('published', normalizedId)
   }
 
+  returnTaskToPending(id: string): void {
+    const sqlite = SqliteService.getInstance()
+    if (!sqlite.isInitialized) return
+    const normalizedId = String(id ?? '').trim()
+    if (!normalizedId) return
+
+    sqlite.connection
+      .prepare(
+        `
+          UPDATE tasks
+          SET status = 'pending',
+              scheduledAt = NULL,
+              locked_at = NULL,
+              errorMsg = '',
+              errorMessage = ''
+          WHERE id = ?
+        `
+      )
+      .run(normalizedId)
+  }
+
   failTask(
     id: string,
     errorMsg: string,

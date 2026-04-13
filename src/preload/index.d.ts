@@ -3,6 +3,7 @@ import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shar
 import type {
   CmsChromeLoginVerificationResult,
   CmsChromeProfileRecord,
+  CmsElectronPublishAction,
   CmsPublishMode,
   CmsPublishSafetyCheck
 } from '../shared/cmsChromeProfileTypes'
@@ -19,7 +20,13 @@ declare global {
     cmsProfileId: string | null
   }
 
-  type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
+  type PublisherResult = {
+    success: boolean
+    time?: string
+    savedAsDraft?: boolean
+    error?: string
+    safetyCheck?: CmsPublishSafetyCheck
+  }
 
   type CmsProductRecord = {
     id: string
@@ -583,7 +590,7 @@ declare global {
             productName?: string
             linkedProducts?: CmsLinkedProductRecord[]
             dryRun?: boolean
-            mode?: 'immediate'
+            mode?: CmsElectronPublishAction
           }
         ) => Promise<PublisherResult>
         onAutomationLog: (listener: (message: string) => void) => () => void
@@ -1417,6 +1424,7 @@ declare global {
     relaunch: () => Promise<{ success: true }>
     getConfig: () => Promise<{
       publishMode: CmsPublishMode
+      electronPublishAction: CmsElectronPublishAction
       chromeExecutablePath: string
       cmsChromeDataDir: string
       aiProvider: string
@@ -1451,6 +1459,7 @@ declare global {
     }>
     saveConfig: (patch: {
       publishMode?: CmsPublishMode
+      electronPublishAction?: CmsElectronPublishAction
       chromeExecutablePath?: string
       cmsChromeDataDir?: string
       aiProvider?: string

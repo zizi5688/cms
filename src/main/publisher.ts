@@ -5,11 +5,17 @@ import ElectronStore from 'electron-store'
 import { is } from '@electron-toolkit/utils'
 import { closeChrome, launchChrome } from '../cdp/chrome-launcher'
 import { runXhsPublishWithCdp } from '../cdp/xhs-publisher'
-import type { CmsPublishMode, CmsPublishSafetyCheck } from '../shared/cmsChromeProfileTypes'
+import {
+  normalizeCmsElectronPublishAction,
+  type CmsElectronPublishAction,
+  type CmsPublishMode,
+  type CmsPublishSafetyCheck
+} from '../shared/cmsChromeProfileTypes'
 import type { AccountManager } from './services/accountManager'
 import type { TaskManager } from './taskManager'
 import { QueueService } from './services/queueService'
 import { DiagnosticsService } from './services/diagnostics'
+import { resolveQueuePublishOutcome } from './publisherResultClassifier'
 import {
   buildPublishNotificationPayload,
   buildPublishWorkerWindowOptions,
@@ -74,6 +80,11 @@ function resolvePublishMode(): CmsPublishMode {
   return stored === 'cdp' ? 'cdp' : 'electron'
 }
 
+function resolveElectronPublishAction(): CmsElectronPublishAction {
+  const store = new StoreCtor<{ electronPublishAction?: CmsElectronPublishAction }>()
+  return normalizeCmsElectronPublishAction(store.get('electronPublishAction'))
+}
+
 /** Box-Muller 高斯随机延迟 */
 function gaussianDelay(minMs: number, maxMs: number): number {
   const u1 = Math.random() || 1e-10
@@ -97,7 +108,7 @@ export type PublisherTaskData = {
   productName?: string
   linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   dryRun?: boolean
-  mode?: 'immediate'
+  mode?: CmsElectronPublishAction
 }
 
 export type XhsProductRecord = {
@@ -108,7 +119,13 @@ export type XhsProductRecord = {
   productUrl: string
 }
 
-export type PublisherResult = { success: boolean; time?: string; error?: string; safetyCheck?: CmsPublishSafetyCheck }
+export type PublisherResult = {
+  success: boolean
+  time?: string
+  savedAsDraft?: boolean
+  error?: string
+  safetyCheck?: CmsPublishSafetyCheck
+}
 
 type AutomationTaskPayload = {
   taskId: string
@@ -124,7 +141,7 @@ type AutomationTaskPayload = {
     linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   }
   dryRun?: boolean
-  mode?: 'immediate'
+  mode?: CmsElectronPublishAction
 }
 
 const XHS_PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish'
@@ -152,7 +169,7 @@ function normalizeTask(taskData: PublisherTaskData): {
   productName?: string
   linkedProducts?: Array<{ id: string; name: string; cover: string; productUrl: string }>
   dryRun: boolean
-  mode: 'immediate'
+  mode?: CmsElectronPublishAction
 } {
   const queueTaskId = typeof taskData?.queueTaskId === 'string' && taskData.queueTaskId.trim() ? taskData.queueTaskId.trim() : undefined
   const title = typeof taskData?.title === 'string' ? taskData.title : ''
@@ -178,7 +195,7 @@ function normalizeTask(taskData: PublisherTaskData): {
         }))
     : undefined
   const dryRun = taskData?.dryRun === false ? false : true
-  const mode: 'immediate' = 'immediate'
+  const mode = taskData?.mode === undefined ? undefined : normalizeCmsElectronPublishAction(taskData.mode)
   return { queueTaskId, title, content, mediaType, videoPath, videoCoverMode, images, productId, productName, linkedProducts, dryRun, mode }
 }
 
@@ -237,7 +254,7 @@ function waitForAutomationResult(options: {
   webContents: WebContents
   taskId: string
   timeoutMs: number
-}): Promise<{ published?: boolean; time?: string }> {
+}): Promise<{ published?: boolean; savedAsDraft?: boolean; time?: string }> {
   const { webContents, taskId, timeoutMs } = options
   const targetWebContentsId = webContents.id
 
@@ -249,7 +266,14 @@ function waitForAutomationResult(options: {
 
     const handler = (
       event: Electron.IpcMainEvent,
-      payload: { taskId?: string; ok?: boolean; error?: string; published?: boolean; time?: string }
+      payload: {
+        taskId?: string
+        ok?: boolean
+        error?: string
+        published?: boolean
+        savedAsDraft?: boolean
+        time?: string
+      }
     ): void => {
       if (event.sender.id !== targetWebContentsId) return
       if (!payload || typeof payload !== 'object') return
@@ -260,6 +284,7 @@ function waitForAutomationResult(options: {
       if (payload.ok === true) {
         resolve({
           published: typeof payload.published === 'boolean' ? payload.published : undefined,
+          savedAsDraft: payload.savedAsDraft === true,
           time: typeof payload.time === 'string' && payload.time.trim().length > 0 ? payload.time : undefined
         })
         return
@@ -454,8 +479,10 @@ export class PublisherService {
       taskTitle: normalizedTask.title
     })
 
-    const publishDebugState = readPublishDebugState()
     const publishMode = resolvePublishMode()
+    const publishDebugState = readPublishDebugState()
+    const effectiveElectronPublishAction =
+      normalizedTask.mode ?? resolveElectronPublishAction()
 
     if (publishMode === 'cdp') {
       if (!account.cmsProfileId) {
@@ -556,6 +583,7 @@ export class PublisherService {
         showWindow: publishDebugState.visual
       })
     )
+    let shouldForceCloseWorker = false
 
     worker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
@@ -605,7 +633,7 @@ export class PublisherService {
           linkedProducts: normalizedTask.linkedProducts
         },
         dryRun: normalizedTask.dryRun,
-        mode: normalizedTask.mode
+        mode: effectiveElectronPublishAction
       }
 
       const resultPromise = waitForAutomationResult({
@@ -616,7 +644,10 @@ export class PublisherService {
 
       worker.webContents.send('publisher:task', payload)
       const automationResult = await resultPromise
-      if (!normalizedTask.dryRun && !automationResult.time) {
+      if (automationResult.savedAsDraft === true) {
+        shouldForceCloseWorker = true
+      }
+      if (!normalizedTask.dryRun && automationResult.savedAsDraft !== true && !automationResult.time) {
         throw new Error('发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。')
       }
       session = completePublishSession(session)
@@ -627,7 +658,11 @@ export class PublisherService {
         taskTitle: normalizedTask.title,
         success: true
       })
-      return { success: true, time: automationResult.time }
+      return {
+        success: true,
+        time: automationResult.time,
+        savedAsDraft: automationResult.savedAsDraft
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const failure = buildPublishFailureSummary(message, normalizedTask.mediaType)
@@ -647,7 +682,9 @@ export class PublisherService {
     } finally {
       ipcMain.off('automation-log', automationLogHandler)
       diagnostics.detach()
-      if (!worker.isDestroyed() && !publishDebugState.keepWindowOpen) worker.close()
+      if (!worker.isDestroyed() && (shouldForceCloseWorker || !publishDebugState.keepWindowOpen)) {
+        worker.close()
+      }
     }
   }
 
@@ -717,12 +754,32 @@ export class PublisherService {
         productId: task.productId,
         productName: task.productName,
         linkedProducts: task.linkedProducts,
-        dryRun: QUEUE_DRY_RUN_ENABLED,
-        mode: 'immediate'
+        dryRun: QUEUE_DRY_RUN_ENABLED
       })
 
-      if (result.success) {
-        if (!result.time) {
+      const outcome = resolveQueuePublishOutcome(result)
+
+      if (outcome.kind === 'published') {
+        succeeded += 1
+        queueService.completeTask(task.id)
+        const updated = taskManager.updateBatch([task.id], {
+          publishedAt: outcome.time,
+          errorMsg: '',
+          scheduledAt: null,
+          ...(result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})
+        })[0]
+        if (updated) broadcastToRenderers('cms.task.updated', updated)
+      } else if (outcome.kind === 'draft_saved') {
+        succeeded += 1
+        queueService.returnTaskToPending(task.id)
+        const updated = taskManager.updateBatch([task.id], {
+          publishedAt: null,
+          errorMsg: '',
+          scheduledAt: null,
+          ...(result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})
+        })[0]
+        if (updated) broadcastToRenderers('cms.task.updated', updated)
+      } else if (outcome.kind === 'invalid_success') {
           failed += 1
           queueService.failTask(task.id, '发布成功但未获取到 publishedAt 时间戳，请人工确认发布结果。', {
             returnToPendingPool: true,
@@ -731,20 +788,9 @@ export class PublisherService {
           })
           const updated = taskManager.updateBatch([task.id], {})[0]
           if (updated) broadcastToRenderers('cms.task.updated', updated)
-        } else {
-          succeeded += 1
-          queueService.completeTask(task.id)
-          const updated = taskManager.updateBatch([task.id], {
-            publishedAt: result.time,
-            errorMsg: '',
-            scheduledAt: null,
-            ...(result.safetyCheck ? { safetyCheck: result.safetyCheck } : {})
-          })[0]
-          if (updated) broadcastToRenderers('cms.task.updated', updated)
-        }
       } else {
         failed += 1
-        queueService.failTask(task.id, result.error ?? '发布失败，请检查后重新排期。', {
+        queueService.failTask(task.id, outcome.error, {
           returnToPendingPool: true,
           status: 'publish_failed',
           resetRetryCount: true

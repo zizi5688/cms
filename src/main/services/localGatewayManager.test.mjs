@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import test from 'node:test'
@@ -72,6 +72,7 @@ async function waitFor(fn, timeoutMs = 1500) {
 test('LocalGatewayManager returns unconfigured when bundle is missing', async () => {
   const manager = new LocalGatewayManager({
     store: createStore({
+      publishMode: 'cdp',
       localGateway: {
         enabled: true,
         bundlePath: '/tmp/does-not-exist',
@@ -91,6 +92,62 @@ test('LocalGatewayManager returns unconfigured when bundle is missing', async ()
   const state = await manager.autoStartIfEnabled()
   assert.equal(state.overallStatus, 'unconfigured')
   assert.match(String(state.lastError), /不存在/)
+})
+
+test('LocalGatewayManager autoStartIfEnabled skips gateway bootstrap when publish mode is electron', async () => {
+  const root = join(tmpdir(), `local-gateway-autostart-electron-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' 'started' > "${root}/bootstrap-ran.txt"
+echo "bootstrap ok"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      publishMode: 'electron',
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: true,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: {
+      fetch: async () => ({ ok: false, status: 503 }),
+      isPortListening: async () => false
+    }
+  })
+
+  const state = await manager.autoStartIfEnabled()
+
+  assert.equal(existsSync(join(root, 'bootstrap-ran.txt')), false)
+  assert.equal(state.lastStartedAt, null)
+
+  rmSync(root, { recursive: true, force: true })
 })
 
 test('LocalGatewayManager reports services_ready when core services are healthy', async () => {

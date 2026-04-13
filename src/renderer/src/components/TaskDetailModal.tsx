@@ -1062,7 +1062,7 @@ function TaskDetailModal({
         productName: currentTask.productName,
         linkedProducts: currentTask.linkedProducts,
         dryRun: true,
-        mode: 'immediate'
+        mode: 'auto_publish'
       })
       if (!result.success) {
         throw new Error(result.error || '测试发布失败')

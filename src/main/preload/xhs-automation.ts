@@ -2879,16 +2879,15 @@ type TaskData = {
   linkedProducts?: unknown
 }
 
-type PublishMode = 'immediate'
+type PublishMode = 'auto_publish' | 'save_draft'
 
-type RunTaskResult = { success: true; published: boolean; time?: string }
+type RunTaskResult = { success: true; published: boolean; savedAsDraft?: boolean; time?: string }
 
 async function runTask(
   taskData: TaskData,
-  { dryRun = false, mode = 'immediate' }: { dryRun?: boolean; mode?: PublishMode } = {}
+  { dryRun = false, mode = 'auto_publish' }: { dryRun?: boolean; mode?: PublishMode } = {}
 ): Promise<RunTaskResult> {
   try {
-    void mode
     const imagesFromArray = Array.isArray(taskData?.images)
       ? (taskData.images as unknown[]).filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
       : []
@@ -2969,6 +2968,13 @@ async function runTask(
       }
     })
 
+    if (mode === 'save_draft') {
+      await runStep('关闭窗口以触发草稿自动保存', async () => {
+        logPlain('[时间] 当前为保存草稿模式：主进程将直接关闭发布窗口，由小红书自动保存草稿。')
+      })
+      return { success: true, published: false, savedAsDraft: true }
+    }
+
     await runStep('点击发布并等待成功', async () => {
       logPlain('[时间] 正在点击发布按钮...')
       await scrollPageToBottom()
@@ -2990,7 +2996,7 @@ type PublishTaskResult = RunTaskResult
 
 async function publishVideoTask(
   taskData: TaskData,
-  { dryRun = false, mode = 'immediate' }: { dryRun?: boolean; mode?: PublishMode } = {}
+  { dryRun = false, mode = 'auto_publish' }: { dryRun?: boolean; mode?: PublishMode } = {}
 ): Promise<PublishTaskResult> {
   const mediaType = typeof taskData?.mediaType === 'string' ? String(taskData.mediaType).trim() : ''
   const videoPath = typeof taskData?.videoPath === 'string' ? String(taskData.videoPath).trim() : ''
@@ -3061,8 +3067,6 @@ async function publishVideoTask(
     await addProductsIfNeeded(linkedProducts, productId, productName)
   })
 
-  void mode
-
   await runStep('发布前校验', async () => {
     const errNode = findLikelyErrorNode(document.body)
     if (errNode) {
@@ -3082,6 +3086,13 @@ async function publishVideoTask(
     highlightWithRedBorder(btn)
     logPlain('[时间] [干跑] 模式:立即发布。已定位发布按钮（未点击）。')
     return { success: true, published: false }
+  }
+
+  if (mode === 'save_draft') {
+    await runStep('关闭窗口以触发草稿自动保存', async () => {
+      logPlain('[时间] 当前为保存草稿模式：主进程将直接关闭发布窗口，由小红书自动保存草稿。')
+    })
+    return { success: true, published: false, savedAsDraft: true }
   }
 
   await runStep('点击发布并等待成功', async () => {
@@ -3125,7 +3136,7 @@ async function publishVideoTask(
 
 async function publishTask(
   taskData: TaskData,
-  { dryRun = false, mode = 'immediate' }: { dryRun?: boolean; mode?: PublishMode } = {}
+  { dryRun = false, mode = 'auto_publish' }: { dryRun?: boolean; mode?: PublishMode } = {}
 ): Promise<PublishTaskResult> {
   if (taskData?.mediaType === 'video') return publishVideoTask(taskData, { dryRun, mode })
   return runTask(taskData, { dryRun, mode })
@@ -3521,7 +3532,14 @@ ipcRenderer.on('publisher:task', async (_event, payload: unknown) => {
     const type = payload && typeof payload === 'object' ? (payload as { type?: unknown }).type : undefined
     if (type === 'publish_draft') {
       const result = await handlePublishDraft(payload)
-      ipcRenderer.send('publisher:result', { taskId, ok: true, success: true, published: result.published, time: result.time })
+      ipcRenderer.send('publisher:result', {
+        taskId,
+        ok: true,
+        success: true,
+        published: result.published,
+        savedAsDraft: result.savedAsDraft,
+        time: result.time
+      })
       return
     }
 
@@ -3531,12 +3549,24 @@ ipcRenderer.on('publisher:task', async (_event, payload: unknown) => {
     if (!mode && taskData && typeof taskData === 'object') {
       mode = (taskData as { publishMode?: unknown }).publishMode
     }
-    logStep(0, '接收任务参数', { taskId, mode: mode || 'default(immediate)', originMode: (taskData as any)?.publishMode })
+    const resolvedMode = mode === 'save_draft' ? 'save_draft' : 'auto_publish'
+    logStep(0, '接收任务参数', {
+      taskId,
+      mode: resolvedMode,
+      originMode: (taskData as any)?.publishMode
+    })
     const result = await publishTask(taskData as TaskData, {
       dryRun: dryRun === true,
-      mode: 'immediate'
+      mode: resolvedMode
     })
-    ipcRenderer.send('publisher:result', { taskId, ok: true, success: true, published: result.published, time: result.time })
+    ipcRenderer.send('publisher:result', {
+      taskId,
+      ok: true,
+      success: true,
+      published: result.published,
+      savedAsDraft: result.savedAsDraft,
+      time: result.time
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     ipcRenderer.send('publisher:result', { taskId, ok: false, success: false, error: message })
@@ -3548,7 +3578,7 @@ contextBridge.exposeInMainWorld('__xhsAutomation', {
     try {
       logStep(0, '主世界调用 publish()')
       const result = await publishTask(taskData as TaskData)
-      return { ok: true, published: result.published, time: result.time }
+      return { ok: true, published: result.published, savedAsDraft: result.savedAsDraft, time: result.time }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return { ok: false, error: message }
@@ -3558,7 +3588,7 @@ contextBridge.exposeInMainWorld('__xhsAutomation', {
     try {
       logStep(0, '主世界调用 publishDraftByTitle()')
       const result = await publishDraftByTitle(typeof title === 'string' ? title : String(title ?? ''), dryRun === false ? false : true)
-      return { ok: true, published: result.published, time: result.time }
+      return { ok: true, published: result.published, savedAsDraft: result.savedAsDraft, time: result.time }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return { ok: false, error: message }
