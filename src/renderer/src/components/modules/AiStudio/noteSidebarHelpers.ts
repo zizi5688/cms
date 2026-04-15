@@ -62,6 +62,11 @@ export type NotePreviewSelectionRect = {
   bottom: number
 }
 
+export type NoteSidebarMaterialDropContext = {
+  mode: 'image-note' | 'video-note'
+  phase: 'editing' | 'preview'
+}
+
 function numberOr(value: string, fallback: number): number {
   const normalized = String(value ?? '').trim()
   if (!normalized) return fallback
@@ -233,6 +238,12 @@ export function shouldAutoOpenBatchPickForVideoPreview(
   tasks: Array<Pick<NotePreviewTask, 'mediaType'>>
 ): boolean {
   return tasks.some((task) => trimText(task.mediaType) === 'video')
+}
+
+export function shouldEnableSidebarMaterialDrop(
+  context: NoteSidebarMaterialDropContext
+): boolean {
+  return trimText(context.mode) === 'image-note' && trimText(context.phase) === 'editing'
 }
 
 export function canToggleNotePreviewSelection(

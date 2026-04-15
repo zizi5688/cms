@@ -38,7 +38,8 @@ import {
   collectDispatchableNotePreviewTaskIds,
   countUndispatchedNotePreviewTasks,
   isNotePreviewTaskDispatched,
-  resolveIntersectedNotePreviewTaskIds
+  resolveIntersectedNotePreviewTaskIds,
+  shouldEnableSidebarMaterialDrop
 } from './noteSidebarHelpers'
 import {
   buildVideoNoteEditorViewModel,
@@ -170,6 +171,23 @@ function readDroppedMaterialPaths(event: React.DragEvent<HTMLElement>): string[]
       .map((file) => window.electronAPI.getPathForFile(file))
       .filter(isSupportedImagePath)
   )
+}
+
+function hasPotentialMaterialDrop(event: React.DragEvent<HTMLElement>): boolean {
+  const dragTypes = new Set(
+    Array.from(event.dataTransfer.types ?? []).map((value) => String(value ?? '').trim())
+  )
+  return (
+    dragTypes.has(AI_STUDIO_NOTE_MATERIAL_DRAG_MIME) ||
+    dragTypes.has('Files') ||
+    dragTypes.has('text/plain')
+  )
+}
+
+function isDedicatedMaterialDropTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    ? Boolean(target.closest('[data-note-material-drop-zone="true"]'))
+    : false
 }
 
 function deriveSelectedDispatchBinding(tasks: Task[]): {
@@ -320,6 +338,7 @@ function EmptyMaterialStrip({
 
   const handleDrop: React.DragEventHandler<HTMLButtonElement> = (event) => {
     event.preventDefault()
+    event.stopPropagation()
     setDragging(false)
     const paths = readDroppedMaterialPaths(event)
     if (paths.length > 0) onAddMaterials(paths)
@@ -327,6 +346,7 @@ function EmptyMaterialStrip({
 
   return (
     <button
+      data-note-material-drop-zone="true"
       type="button"
       onClick={() => void handlePick()}
       onDragEnter={(event) => {
@@ -335,6 +355,7 @@ function EmptyMaterialStrip({
       }}
       onDragOver={(event) => {
         event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
         setDragging(true)
       }}
       onDragLeave={(event) => {
@@ -387,6 +408,7 @@ function MaterialStrip({
 
   return (
     <div
+      data-note-material-drop-zone="true"
       onDragEnter={(event) => {
         event.preventDefault()
         setDragging(true)
@@ -403,6 +425,7 @@ function MaterialStrip({
       }}
       onDrop={(event) => {
         event.preventDefault()
+        event.stopPropagation()
         setDragging(false)
         const paths = readDroppedMaterialPaths(event)
         if (paths.length > 0) onAddMaterials(paths)
@@ -1732,6 +1755,8 @@ function NoteSidebar({
     showPreview && activePreviewTaskId
       ? (previewTasks.find((task) => task.id === activePreviewTaskId) ?? null)
       : null
+  const sidebarMaterialDropEnabled = shouldEnableSidebarMaterialDrop({ mode, phase })
+  const [isSidebarMaterialDragActive, setIsSidebarMaterialDragActive] = useState(false)
   const isManualImageNoteEntry = imageNoteEntryMode === 'manual'
   const imageNoteTextareaValue = isManualImageNoteEntry ? csvDraft : smartPromptDraft
   const imageNoteTextareaPlaceholder = isManualImageNoteEntry
@@ -1850,6 +1875,11 @@ function NoteSidebar({
     )
   }, [dispatchAccountIdDraft, products])
 
+  useEffect(() => {
+    if (sidebarMaterialDropEnabled) return
+    setIsSidebarMaterialDragActive(false)
+  }, [sidebarMaterialDropEnabled])
+
   if (!isOpen) {
     return null
   }
@@ -1934,12 +1964,54 @@ function NoteSidebar({
     setImageNoteEntryMode((current) => (current === 'manual' ? 'smart' : 'manual'))
   }
 
+  const handleSidebarMaterialDragEnterCapture = (
+    event: React.DragEvent<HTMLElement>
+  ): void => {
+    if (!sidebarMaterialDropEnabled || !hasPotentialMaterialDrop(event)) return
+    event.preventDefault()
+    setIsSidebarMaterialDragActive(true)
+  }
+
+  const handleSidebarMaterialDragOverCapture = (
+    event: React.DragEvent<HTMLElement>
+  ): void => {
+    if (!sidebarMaterialDropEnabled || !hasPotentialMaterialDrop(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    if (!isSidebarMaterialDragActive) {
+      setIsSidebarMaterialDragActive(true)
+    }
+  }
+
+  const handleSidebarMaterialDragLeaveCapture = (
+    event: React.DragEvent<HTMLElement>
+  ): void => {
+    if (!sidebarMaterialDropEnabled) return
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setIsSidebarMaterialDragActive(false)
+  }
+
+  const handleSidebarMaterialDrop = (event: React.DragEvent<HTMLElement>): void => {
+    if (!sidebarMaterialDropEnabled || isDedicatedMaterialDropTarget(event.target)) return
+    event.preventDefault()
+    setIsSidebarMaterialDragActive(false)
+    const paths = readDroppedMaterialPaths(event)
+    if (paths.length > 0) onAddMaterials(paths)
+  }
+
   return (
     <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-40 flex w-[352px] max-w-[calc(100%-1.5rem)] justify-end">
       <aside
+        onDragEnterCapture={handleSidebarMaterialDragEnterCapture}
+        onDragOverCapture={handleSidebarMaterialDragOverCapture}
+        onDragLeaveCapture={handleSidebarMaterialDragLeaveCapture}
+        onDrop={handleSidebarMaterialDrop}
         className={cn(
-          'pointer-events-auto flex h-full w-full flex-col overflow-hidden shadow-[-18px_0_48px_rgba(15,23,42,0.04)]',
-          NOTE_SIDEBAR_BASE_SURFACE_CLASS
+          'pointer-events-auto flex h-full w-full flex-col overflow-hidden shadow-[-18px_0_48px_rgba(15,23,42,0.04)] transition-[background-color,box-shadow]',
+          NOTE_SIDEBAR_BASE_SURFACE_CLASS,
+          sidebarMaterialDropEnabled && isSidebarMaterialDragActive
+            ? 'bg-sky-50/35 ring-1 ring-inset ring-sky-200/90 shadow-[-18px_0_48px_rgba(56,189,248,0.10)]'
+            : null
         )}
       >
         <div className="flex items-center justify-between px-4 pb-3 pt-4">

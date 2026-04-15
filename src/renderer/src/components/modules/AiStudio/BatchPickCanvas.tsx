@@ -80,6 +80,7 @@ const BatchPickTile = memo(function BatchPickTile({
         }
         event.dataTransfer.effectAllowed = 'copy'
         event.dataTransfer.setData(AI_STUDIO_NOTE_MATERIAL_DRAG_MIME, dragPayload)
+        event.dataTransfer.setData('text/plain', dragPayload)
       }}
       className={cn(
         'group relative overflow-hidden rounded-[8px] border bg-transparent text-left transition-transform duration-150 ease-out',

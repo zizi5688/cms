@@ -13,6 +13,7 @@ import {
   normalizeNoteSidebarConstraints,
   replaceVideoPreviewCoverImage,
   resolveIntersectedNotePreviewTaskIds,
+  shouldEnableSidebarMaterialDrop,
   shouldAutoOpenBatchPickForVideoPreview
 } from './noteSidebarHelpers.ts'
 
@@ -252,6 +253,30 @@ test('shouldAutoOpenBatchPickForVideoPreview only opens for video preview tasks'
         log: ''
       }
     ]),
+    false
+  )
+})
+
+test('shouldEnableSidebarMaterialDrop only enables fallback drop for image-note editing', () => {
+  assert.equal(
+    shouldEnableSidebarMaterialDrop({
+      mode: 'image-note',
+      phase: 'editing'
+    }),
+    true
+  )
+  assert.equal(
+    shouldEnableSidebarMaterialDrop({
+      mode: 'image-note',
+      phase: 'preview'
+    }),
+    false
+  )
+  assert.equal(
+    shouldEnableSidebarMaterialDrop({
+      mode: 'video-note',
+      phase: 'editing'
+    }),
     false
   )
 })
