@@ -34,7 +34,10 @@ import {
   resolveLocalGatewayChromeDebugPort,
   resolveLocalGatewayDedicatedChromeUserDataDir
 } from './localGatewayRuntime.ts'
-import { listSystemChromeProfiles as readSystemChromeProfiles } from './systemChromeProfiles.ts'
+import {
+  getChromeUserDataDir,
+  listSystemChromeProfiles as readSystemChromeProfiles
+} from './systemChromeProfiles.ts'
 
 type LocalGatewayStore = {
   get: (key: string) => unknown
@@ -53,16 +56,87 @@ type CreateLocalGatewayManagerOptions = {
     ensureGatewayProfile?: typeof ensureCmsGatewayProfileRecord
     resolveCmsProfile?: typeof resolveCmsChromeProfile
     openCmsProfileLogin?: typeof openCmsProfileLoginBrowser
+    openSystemProfileLogin?: (input: {
+      profileDirectory: string
+      executablePath: string
+      url?: string
+    }) => Promise<void>
   }
 }
 
 const DEFAULT_IMAGE_HEALTH_POLL_INTERVAL_MS = 30_000
+const DEFAULT_CHROME_EXECUTABLE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+type GatewayChromeTarget =
+  | {
+      kind: 'system'
+      profileId: string
+      profileDirectory: string
+      executablePath: string
+      userDataDir: string
+    }
+  | {
+      kind: 'cms'
+      profileId: string
+      profileDirectory: string
+      executablePath: string
+      userDataDir: string
+    }
+
+function normalizeNonEmptyString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function resolvePrimarySystemChromeProfileDirectory(config: LocalGatewayConfig): string {
+  if (!Array.isArray(config.chromeProfileDirectories)) return ''
+  return (
+    config.chromeProfileDirectories.find(
+      (value) => typeof value === 'string' && value.trim().length > 0
+    ) ?? ''
+  ).trim()
+}
+
+function hasGatewayChromeTarget(config: LocalGatewayConfig): boolean {
+  return Boolean(
+    resolvePrimarySystemChromeProfileDirectory(config) || config.gatewayCmsProfileId.trim()
+  )
+}
+
+function resolveStoredChromeExecutablePath(store: LocalGatewayStore): string {
+  return normalizeNonEmptyString(store.get('chromeExecutablePath')) || DEFAULT_CHROME_EXECUTABLE
+}
+
+function openSystemChromeProfileLogin(input: {
+  profileDirectory: string
+  executablePath: string
+  url?: string
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = [`--profile-directory=${input.profileDirectory}`]
+    const targetUrl = normalizeNonEmptyString(input.url)
+    if (targetUrl) {
+      args.push(targetUrl)
+    }
+
+    const child = spawn(input.executablePath, args, {
+      detached: true,
+      stdio: 'ignore'
+    })
+
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.unref()
+      resolve()
+    })
+  })
+}
 
 function createReadinessConfigKey(config: LocalGatewayConfig): string {
   return JSON.stringify({
     enabled: config.enabled,
     bundlePath: config.bundlePath.trim(),
     startCdpProxy: config.startCdpProxy,
+    primaryChromeProfileDirectory: resolvePrimarySystemChromeProfileDirectory(config),
     gatewayCmsProfileId: config.gatewayCmsProfileId.trim(),
     prewarmImageOnLaunch: config.prewarmImageOnLaunch
   })
@@ -142,6 +216,11 @@ export class LocalGatewayManager {
   private readonly ensureGatewayProfileImpl: typeof ensureCmsGatewayProfileRecord
   private readonly resolveCmsProfileImpl: typeof resolveCmsChromeProfile
   private readonly openCmsProfileLoginImpl: typeof openCmsProfileLoginBrowser
+  private readonly openSystemProfileLoginImpl: (input: {
+    profileDirectory: string
+    executablePath: string
+    url?: string
+  }) => Promise<void>
   private readonly fetchImpl: typeof fetch
   private readonly isPortListening: (port: number) => Promise<boolean>
   private state: LocalGatewayState
@@ -162,6 +241,8 @@ export class LocalGatewayManager {
     this.ensureGatewayProfileImpl = options.chromeDeps?.ensureGatewayProfile ?? ensureCmsGatewayProfileRecord
     this.resolveCmsProfileImpl = options.chromeDeps?.resolveCmsProfile ?? resolveCmsChromeProfile
     this.openCmsProfileLoginImpl = options.chromeDeps?.openCmsProfileLogin ?? openCmsProfileLoginBrowser
+    this.openSystemProfileLoginImpl =
+      options.chromeDeps?.openSystemProfileLogin ?? openSystemChromeProfileLogin
     this.processManager =
       options.processManager ??
       new LocalGatewayProcessManager({
@@ -180,6 +261,35 @@ export class LocalGatewayManager {
       lastError: null
     })
     this.startImageHealthPoll()
+  }
+
+  private async resolveGatewayChromeTarget(
+    config: LocalGatewayConfig
+  ): Promise<GatewayChromeTarget | null> {
+    const systemProfileDirectory = resolvePrimarySystemChromeProfileDirectory(config)
+    if (systemProfileDirectory) {
+      return {
+        kind: 'system',
+        profileId: systemProfileDirectory,
+        profileDirectory: systemProfileDirectory,
+        executablePath: resolveStoredChromeExecutablePath(this.store),
+        userDataDir: getChromeUserDataDir()
+      }
+    }
+
+    const legacyProfileId = config.gatewayCmsProfileId.trim()
+    if (!legacyProfileId) {
+      return null
+    }
+
+    const { profile, runtime } = await this.resolveCmsProfileImpl(legacyProfileId)
+    return {
+      kind: 'cms',
+      profileId: profile.id,
+      profileDirectory: profile.profileDir,
+      executablePath: runtime.executablePath,
+      userDataDir: runtime.userDataDir
+    }
   }
 
   getState(): LocalGatewayState {
@@ -231,8 +341,8 @@ export class LocalGatewayManager {
     if (config.startCdpProxy && resolveStoredPublishMode(this.store) !== 'cdp') {
       return this.refreshState()
     }
-    if (!config.gatewayCmsProfileId.trim()) {
-      this.lastError = '本地网关已启用自动恢复，但尚未配置 CMS 网关专用 Profile。'
+    if (!hasGatewayChromeTarget(config)) {
+      this.lastError = '本地网关已启用自动恢复，但尚未选择可复用的 Chrome Profile。'
       return this.refreshState()
     }
     try {
@@ -250,8 +360,8 @@ export class LocalGatewayManager {
     if (!config.enabled) {
       return this.refreshState()
     }
-    if (!config.gatewayCmsProfileId.trim()) {
-      this.lastError = '请先初始化一个 CMS 网关专用 Profile。'
+    if (!hasGatewayChromeTarget(config)) {
+      this.lastError = '请先在 Chat 账号中选择一个真实 Chrome Profile。'
       return this.refreshState()
     }
     try {
@@ -312,7 +422,18 @@ export class LocalGatewayManager {
 
   async openGatewayLogin(): Promise<{ success: true; profileId: string }> {
     const config = readLocalGatewayConfigFromStore(this.store)
-    const profileId = config.gatewayCmsProfileId.trim() || (await this.ensureGatewayProfile()).id
+    const target = await this.resolveGatewayChromeTarget(config)
+
+    if (target?.kind === 'system') {
+      await this.openSystemProfileLoginImpl({
+        profileDirectory: target.profileDirectory,
+        executablePath: target.executablePath,
+        url: 'https://labs.google/fx/tools/flow'
+      })
+      return { success: true, profileId: target.profileId }
+    }
+
+    const profileId = target?.profileId || (await this.ensureGatewayProfile()).id
     await this.openCmsProfileLoginImpl({
       profileId,
       url: 'https://labs.google/fx/tools/flow'
@@ -345,7 +466,7 @@ export class LocalGatewayManager {
     }
 
     const config = readLocalGatewayConfigFromStore(this.store)
-    if (!config.enabled || !config.startCdpProxy || !config.gatewayCmsProfileId.trim()) {
+    if (!config.enabled || !config.startCdpProxy || !hasGatewayChromeTarget(config)) {
       return
     }
 
@@ -404,8 +525,8 @@ export class LocalGatewayManager {
       return state
     }
 
-    if (!config.gatewayCmsProfileId.trim()) {
-      throw new Error('本地网关图片能力首次使用前，请先初始化并登录 CMS 网关专用 Profile。')
+    if (!hasGatewayChromeTarget(config)) {
+      throw new Error('本地网关图片能力首次使用前，请先在 Chat 账号里选择一个真实 Chrome Profile。')
     }
 
     await this.initializeGateway({
@@ -418,15 +539,14 @@ export class LocalGatewayManager {
     smokeImage?: boolean
   }): Promise<LocalGatewayInitializationResult> {
     const config = readLocalGatewayConfigFromStore(this.store)
-    const profileId = config.gatewayCmsProfileId.trim()
     const bundlePath = config.bundlePath.trim()
     const scriptPath = join(bundlePath, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh')
 
     if (!config.enabled) {
       throw new Error('请先启用本地网关管理。')
     }
-    if (!profileId) {
-      throw new Error('请先初始化并选择 CMS 网关专用 Profile。')
+    if (!hasGatewayChromeTarget(config)) {
+      throw new Error('请先在 Chat 账号里选择一个真实 Chrome Profile。')
     }
     const configError = getBundleConfigurationError(config)
     if (configError) {
@@ -434,7 +554,10 @@ export class LocalGatewayManager {
       await this.refreshState()
       throw new Error(configError)
     }
-    const { profile, runtime } = await this.resolveCmsProfileImpl(profileId)
+    const target = await this.resolveGatewayChromeTarget(config)
+    if (!target) {
+      throw new Error('请先在 Chat 账号里选择一个真实 Chrome Profile。')
+    }
     if (!existsSync(scriptPath)) {
       this.lastError = `未找到初始化脚本：${scriptPath}`
       await this.refreshState()
@@ -443,9 +566,9 @@ export class LocalGatewayManager {
 
     const env = {
       ...process.env,
-      CHROME_PROFILE_DIRECTORY: profile.profileDir,
-      CHROME_DEFAULT_USER_DATA_DIR: runtime.userDataDir,
-      CHROME_APP_BIN: runtime.executablePath,
+      CHROME_PROFILE_DIRECTORY: target.profileDirectory,
+      CHROME_DEFAULT_USER_DATA_DIR: target.userDataDir,
+      CHROME_APP_BIN: target.executablePath,
       CHROME_DEBUG_USER_DATA_DIR: resolveLocalGatewayDedicatedChromeUserDataDir(bundlePath),
       LOCAL_AI_GATEWAY_ALLOW_DEDICATED_CHROME: '1',
       LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT: String(resolveLocalGatewayChromeDebugPort()),
@@ -505,8 +628,8 @@ export class LocalGatewayManager {
 
     return {
       success: true,
-      profileId: profile.id,
-      profileDirectory: profile.profileDir,
+      profileId: target.profileId,
+      profileDirectory: target.profileDirectory,
       output
     }
   }

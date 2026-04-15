@@ -338,6 +338,94 @@ test('LocalGatewayManager initializeGateway allows bootstrap when adapter venv i
   rmSync(root, { recursive: true, force: true })
 })
 
+test('LocalGatewayManager initializeGateway uses selected system Chrome profile when CMS profile is not configured', async () => {
+  const root = join(tmpdir(), `local-gateway-init-system-profile-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+echo "profile=\${CHROME_PROFILE_DIRECTORY}"
+echo "userData=\${CHROME_DEFAULT_USER_DATA_DIR}"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        chromeProfileDirectories: ['Profile 7'],
+        gatewayCmsProfileId: ''
+      },
+      chromeExecutablePath: '/Applications/Test Chrome.app/Contents/MacOS/Test Chrome'
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => {
+        throw new Error('system profile selection should bypass CMS profile resolution')
+      }
+    },
+    healthDeps: {
+      fetch: async () => ({ ok: true, status: 200 }),
+      isPortListening: async () => true
+    }
+  })
+
+  const result = await manager.initializeGateway()
+
+  assert.equal(result.success, true)
+  assert.equal(result.profileId, 'Profile 7')
+  assert.equal(result.profileDirectory, 'Profile 7')
+  assert.match(result.output, /profile=Profile 7/)
+  assert.match(result.output, /userData=.*Library\/Application Support\/Google\/Chrome/)
+
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager openGatewayLogin opens selected system Chrome profile when CMS profile is not configured', async () => {
+  const opened = []
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: '/tmp/unused',
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        chromeProfileDirectories: ['Profile 5'],
+        gatewayCmsProfileId: ''
+      },
+      chromeExecutablePath: '/Applications/Test Chrome.app/Contents/MacOS/Test Chrome'
+    }),
+    logsDir: join(tmpdir(), `local-gateway-open-login-${Date.now()}`),
+    chromeDeps: {
+      openCmsProfileLogin: async () => {
+        throw new Error('system profile selection should bypass CMS profile login')
+      },
+      openSystemProfileLogin: async (input) => {
+        opened.push(input)
+      }
+    }
+  })
+
+  const result = await manager.openGatewayLogin()
+
+  assert.deepEqual(opened, [
+    {
+      profileDirectory: 'Profile 5',
+      executablePath: '/Applications/Test Chrome.app/Contents/MacOS/Test Chrome',
+      url: 'https://labs.google/fx/tools/flow'
+    }
+  ])
+  assert.equal(result.success, true)
+  assert.equal(result.profileId, 'Profile 5')
+})
+
 test('LocalGatewayManager ensureReadyForCapability initializes image bootstrap only once per app session', async () => {
   const root = join(tmpdir(), `local-gateway-ensure-image-${Date.now()}`)
   createConfiguredBundleRoot(root)
@@ -573,6 +661,7 @@ echo "bootstrap run \${count}"
     async () => readFileSync(join(root, 'init-count.txt'), 'utf-8') === '2',
     2000
   )
+  await waitFor(async () => manager.getState().overallStatus === 'services_ready', 2000)
 
   assert.equal(manager.getState().overallStatus, 'services_ready')
 
