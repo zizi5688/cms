@@ -18,7 +18,6 @@ import { normalizeCmsElectronPublishAction } from '../../../../shared/cmsChromeP
 import type {
   LocalGatewayAccountStatus,
   LocalGatewayAccountSummary,
-  LocalGatewayChromeProfile,
   LocalGatewayOverallStatus,
   LocalGatewayServiceStatus,
   LocalGatewayState,
@@ -285,8 +284,6 @@ function Settings(): React.JSX.Element {
     useState<AutoImportScanProgress | null>(null)
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
   const [localGatewayState, setLocalGatewayState] = useState<LocalGatewayState | null>(null)
-  const [localGatewayProfiles, setLocalGatewayProfiles] = useState<LocalGatewayChromeProfile[]>([])
-  const [isLoadingLocalGatewayProfiles, setIsLoadingLocalGatewayProfiles] = useState(false)
   const [systemChromeProfiles, setSystemChromeProfiles] = useState<
     LocalGatewaySystemChromeProfile[]
   >([])
@@ -329,13 +326,6 @@ function Settings(): React.JSX.Element {
     }
     return next
   }, [config.localGateway.chromeProfileDirectories])
-  const selectedLocalGatewayProfile = useMemo(
-    () =>
-      localGatewayProfiles.find(
-        (profile) => profile.id === config.localGateway.gatewayCmsProfileId.trim()
-      ) ?? null,
-    [config.localGateway.gatewayCmsProfileId, localGatewayProfiles]
-  )
   const displayedSystemChromeProfiles = useMemo(() => {
     const existing = new Set(systemChromeProfiles.map((profile) => profile.profileDirectory))
     const fallbackProfiles = selectedChatChromeProfileDirectories
@@ -389,6 +379,10 @@ function Settings(): React.JSX.Element {
         account: localGatewayAccountsByProfileDirectory.get(profile.profileDirectory) ?? null
       })),
     [localGatewayAccountsByProfileDirectory, selectedSystemChromeProfiles]
+  )
+  const primaryGatewaySystemChromeProfile = selectedSystemChromeProfiles[0] ?? null
+  const hasGatewayChromeTarget = Boolean(
+    primaryGatewaySystemChromeProfile || config.localGateway.gatewayCmsProfileId.trim()
   )
   const manageableSystemChromeProfiles = useMemo(() => {
     if (showAllChatProfiles) return displayedSystemChromeProfiles
@@ -483,15 +477,14 @@ function Settings(): React.JSX.Element {
   const isRestartRecommended = primaryLocalGatewayAction.isRestartStyle
   const isPrimaryLocalGatewayActionBusy = isInitializingLocalGateway
   const isPrimaryLocalGatewayActionDisabled =
-    isInitializingLocalGateway || !config.localGateway.enabled
+    isInitializingLocalGateway || !config.localGateway.enabled || !hasGatewayChromeTarget
   const primaryLocalGatewayActionClassName = isRestartRecommended
     ? 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800'
     : 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400'
   const primaryLocalGatewayHint = !config.localGateway.enabled
     ? '可在“高级设置”中启用本地网关管理。'
-    : primaryLocalGatewayAction.isFlowRecoveryAction &&
-        !config.localGateway.gatewayCmsProfileId.trim()
-      ? '先在“高级设置”中选择或初始化 CMS Profile。'
+    : !hasGatewayChromeTarget
+      ? '先在上面的 Chat 账号里选择一个真实 Chrome Profile。'
       : overallLocalGatewayStatus === 'unconfigured'
         ? '先在“高级设置”中设置正确的网关安装目录。'
         : null
@@ -669,21 +662,6 @@ function Settings(): React.JSX.Element {
     }
   }, [addLog])
 
-  const refreshLocalGatewayProfiles = useCallback(async (): Promise<void> => {
-    if (typeof window.electronAPI.listLocalGatewayChromeProfiles !== 'function') return
-    setIsLoadingLocalGatewayProfiles(true)
-    try {
-      const profiles = await window.electronAPI.listLocalGatewayChromeProfiles()
-      setLocalGatewayProfiles(profiles)
-    } catch (error) {
-      addLog(
-        `[本地网关] 读取 CMS 网关 Profile 失败：${unwrapElectronInvokeError(extractErrorMessage(error))}`
-      )
-    } finally {
-      setIsLoadingLocalGatewayProfiles(false)
-    }
-  }, [addLog])
-
   const refreshSystemChromeProfiles = useCallback(async (): Promise<void> => {
     if (typeof window.electronAPI.listLocalGatewaySystemChromeProfiles !== 'function') return
     setIsLoadingSystemChromeProfiles(true)
@@ -760,10 +738,6 @@ function Settings(): React.JSX.Element {
   useEffect(() => {
     void refreshLocalGatewayState()
   }, [refreshLocalGatewayState])
-
-  useEffect(() => {
-    void refreshLocalGatewayProfiles()
-  }, [refreshLocalGatewayProfiles])
 
   useEffect(() => {
     void refreshSystemChromeProfiles()
@@ -1005,45 +979,17 @@ function Settings(): React.JSX.Element {
     }
   }
 
-  const ensureLocalGatewayProfile = async (): Promise<void> => {
-    if (typeof window.electronAPI.ensureLocalGatewayProfile !== 'function') return
-    setIsInitializingLocalGateway(true)
-    try {
-      const profile = await window.electronAPI.ensureLocalGatewayProfile()
-      updateConfig({
-        localGateway: {
-          ...config.localGateway,
-          gatewayCmsProfileId: profile.id,
-          allowDedicatedChrome: true
-        }
-      })
-      addLog(`[本地网关] 已准备网关专用 Profile：${profile.profileDir}`)
-      await refreshLocalGatewayProfiles()
-      await refreshLocalGatewayState()
-    } catch (error) {
-      addLog(`[本地网关] 初始化网关专用 Profile 失败：${extractErrorMessage(error)}`)
-    } finally {
-      setIsInitializingLocalGateway(false)
-    }
-  }
-
   const openLocalGatewayProfileLogin = async (): Promise<void> => {
     if (typeof window.electronAPI.openLocalGatewayProfileLogin !== 'function') return
     try {
       const result = await window.electronAPI.openLocalGatewayProfileLogin()
-      if (!config.localGateway.gatewayCmsProfileId.trim()) {
-        updateConfig({
-          localGateway: {
-            ...config.localGateway,
-            gatewayCmsProfileId: result.profileId,
-            allowDedicatedChrome: true
-          }
-        })
-      }
-      addLog(`[本地网关] 已打开网关专用 Profile，请在 Chrome 中完成 Google / Flow 登录。`)
-      await refreshLocalGatewayProfiles()
+      addLog(
+        `[本地网关] 已打开 ${
+          primaryGatewaySystemChromeProfile?.profileDirectory ?? result.profileId
+        }，请在 Chrome 中完成 Google / Flow 登录。`
+      )
     } catch (error) {
-      addLog(`[本地网关] 打开网关专用 Profile 失败：${extractErrorMessage(error)}`)
+      addLog(`[本地网关] 打开当前 Chrome Profile 失败：${extractErrorMessage(error)}`)
     }
   }
 
@@ -1987,8 +1933,37 @@ function Settings(): React.JSX.Element {
                         {showAllChatProfiles ? '仅显示有邮箱的 Profile' : '显示全部 Profile'}
                       </Button>
                     ) : null}
+
                   </div>
                 ) : null}
+
+                <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-3">
+                  <div className="text-xs text-zinc-400">网关登录与 Flow 复用</div>
+                  <div className="mt-2 text-sm text-zinc-200">
+                    {primaryGatewaySystemChromeProfile
+                      ? `${primaryGatewaySystemChromeProfile.displayName} / ${primaryGatewaySystemChromeProfile.profileDirectory}`
+                      : config.localGateway.gatewayCmsProfileId.trim()
+                        ? `兼容旧配置：${config.localGateway.gatewayCmsProfileId.trim()}`
+                        : '还没有选择可复用的真实 Chrome Profile。'}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    {primaryGatewaySystemChromeProfile
+                      ? '生图/Flow 会直接复用第一个已选 Chat Profile；如果你勾选多个，默认使用排在最前面的那个。'
+                      : config.localGateway.gatewayCmsProfileId.trim()
+                        ? '当前仍可兼容旧的 CMS 网关 Profile；重新勾选真实 Chrome Profile 后，会优先走新的复用逻辑。'
+                        : '先在上面的 Chat 账号里勾选一个真实 Chrome Profile，再去登录和启动网关。'}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void openLocalGatewayProfileLogin()}
+                      disabled={!hasGatewayChromeTarget || isInitializingLocalGateway}
+                    >
+                      打开并登录当前 Profile
+                    </Button>
+                  </div>
+                </div>
               </section>
 
               <section>
@@ -1998,7 +1973,7 @@ function Settings(): React.JSX.Element {
                       <div>
                         <div className="text-sm font-semibold text-zinc-100">高级设置</div>
                         <div className="text-xs text-zinc-500">
-                          目录、CMS Profile、调试信息和恢复入口
+                          目录、调试信息和恢复入口
                         </div>
                       </div>
                       <span className="text-xs text-zinc-500">点击展开</span>
@@ -2006,7 +1981,7 @@ function Settings(): React.JSX.Element {
                   </summary>
 
                   <div className="flex flex-col gap-4 border-t border-zinc-800 p-4">
-                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-4">
                       <div className="flex flex-col gap-2">
                         <div className="text-xs text-zinc-400">网关安装目录</div>
                         <Input
@@ -2035,76 +2010,11 @@ function Settings(): React.JSX.Element {
                           </Button>
                         </div>
                       </div>
+                    </div>
 
-                      <div className="flex flex-col gap-2">
-                        <div className="text-xs text-zinc-400">CMS Profile 选择</div>
-                        <select
-                          value={config.localGateway.gatewayCmsProfileId}
-                          onChange={(event) =>
-                            updateConfig({
-                              localGateway: {
-                                ...config.localGateway,
-                                gatewayCmsProfileId: event.target.value,
-                                allowDedicatedChrome: true
-                              }
-                            })
-                          }
-                          className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-200"
-                        >
-                          <option value="">请选择一个 CMS 网关 Profile</option>
-                          {localGatewayProfiles.map((profile) => (
-                            <option key={profile.id} value={profile.id}>
-                              {profile.label}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="text-xs text-zinc-500">
-                          这是 Flow / CDP 专用的 CMS Profile，不影响上面的 Chat 账号选择。
-                        </div>
-                        {selectedLocalGatewayProfile ? (
-                          <div className="text-xs text-emerald-300">
-                            当前选择：{selectedLocalGatewayProfile.nickname} /{' '}
-                            {selectedLocalGatewayProfile.profileDir}
-                          </div>
-                        ) : null}
-                        {!isLoadingLocalGatewayProfiles && localGatewayProfiles.length === 0 ? (
-                          <div className="text-xs text-amber-300">
-                            当前还没有网关专用 CMS Profile。先初始化，再打开登录 Flow。
-                          </div>
-                        ) : null}
-                        <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
-                          首次使用：先初始化一个“本地网关专用”CMS Profile，再打开它完成 Google /
-                          Flow 登录，最后执行初始化。
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => void ensureLocalGatewayProfile()}
-                            disabled={isInitializingLocalGateway}
-                          >
-                            初始化网关专用 Profile
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => void openLocalGatewayProfileLogin()}
-                            disabled={isInitializingLocalGateway}
-                          >
-                            打开并登录网关 Profile
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => void refreshLocalGatewayProfiles()}
-                            disabled={isLoadingLocalGatewayProfiles}
-                            className="h-auto px-1 text-xs text-zinc-400 hover:bg-transparent hover:text-zinc-100"
-                          >
-                            {isLoadingLocalGatewayProfiles ? '刷新中...' : '刷新 CMS Profiles'}
-                          </Button>
-                        </div>
-                      </div>
+                    <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+                      网关启动和 Flow 登录会复用上面已选的真实 Chrome Profile，不再单独维护一套 CMS
+                      Profile 选择。
                     </div>
 
                     <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -2236,17 +2146,6 @@ function Settings(): React.JSX.Element {
                         disabled={isRetryingLocalGateway || !config.localGateway.enabled}
                       >
                         {isRetryingLocalGateway ? '恢复中...' : '重试恢复'}
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={() => void initializeLocalGateway()}
-                        disabled={
-                          isInitializingLocalGateway ||
-                          !config.localGateway.enabled ||
-                          !config.localGateway.gatewayCmsProfileId.trim()
-                        }
-                      >
-                        {isInitializingLocalGateway ? '初始化中...' : '执行初始化'}
                       </Button>
                     </div>
                   </div>

@@ -54,6 +54,22 @@ async function requestGatewayJson<T>(
   return payload as T
 }
 
+function normalizeSelectedProfileDirectories(
+  profiles: LocalGatewaySystemChromeProfile[]
+): string[] {
+  const selected: string[] = []
+  const seen = new Set<string>()
+
+  for (const profile of profiles) {
+    const profileDirectory = normalizeNullableString(profile?.profileDirectory)
+    if (!profileDirectory || seen.has(profileDirectory)) continue
+    seen.add(profileDirectory)
+    selected.push(profileDirectory)
+  }
+
+  return selected
+}
+
 export async function listLocalGatewayAccounts(
   fetchImpl: typeof fetch
 ): Promise<LocalGatewayAccountSummary[]> {
@@ -68,16 +84,12 @@ export async function syncLocalGatewayAccounts(
   fetchImpl: typeof fetch,
   profiles: LocalGatewaySystemChromeProfile[]
 ): Promise<LocalGatewayAccountSummary[]> {
-  const payload = await requestGatewayJson<{ accounts: GatewayAccountResponse[] }>(fetchImpl, '/admin/accounts/sync', {
-    method: 'POST',
+  await requestGatewayJson(fetchImpl, '/admin/profile-selection', {
+    method: 'PUT',
     body: JSON.stringify({
-      profiles: profiles.map((profile) => ({
-        profileDirectory: profile.profileDirectory,
-        label: profile.displayName,
-        email: profile.email
-      }))
+      selected: normalizeSelectedProfileDirectories(profiles)
     })
   })
 
-  return Array.isArray(payload.accounts) ? payload.accounts.map(mapGatewayAccount) : []
+  return listLocalGatewayAccounts(fetchImpl)
 }
