@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.3] - 2026-04-15
+
+### Fix (修复)
+- **Local Gateway Profile Reuse**: 本地网关的 Chat 与 Flow 现在会统一复用用户在 CMS 中选定的真实 Chrome Profile，减少历史遗留独立 Profile 配置带来的登录态漂移和账号错配。
+- **AI Studio Sidebar Drop**: 修复 AI Studio 图池拖拽在 Electron 中只能起手、右侧接收不到拖拽的问题；现在右侧创作中心整栏都可作为图文编辑态的图片投放区，不再只限素材蓝框范围内放手。
+
 ## [1.4.2] - 2026-04-14
 
 ### Fix (修复)
