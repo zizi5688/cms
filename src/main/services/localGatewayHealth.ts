@@ -1,10 +1,12 @@
 import type {
+  LocalGatewayCapabilityChecks,
   LocalGatewayConfig,
   LocalGatewayOverallStatus,
   LocalGatewayServiceStatus,
   LocalGatewayState
 } from '../../shared/localGatewayTypes.ts'
 import { resolveLocalGatewayChromeDebugPort } from './localGatewayRuntime.ts'
+import { createDefaultLocalGatewayCapabilityChecks } from './localGatewayCapabilityChecks.ts'
 
 export type LocalGatewayHealthDependency = {
   fetch: typeof fetch
@@ -170,6 +172,7 @@ export function resolveLocalGatewayOverallStatus(input: {
 export function createLocalGatewayState(input: {
   config: LocalGatewayConfig
   services: LocalGatewayServiceStatus[]
+  capabilityChecks?: LocalGatewayCapabilityChecks
   bundlePath: string
   isConfigured: boolean
   isStarting?: boolean
@@ -185,6 +188,7 @@ export function createLocalGatewayState(input: {
       lastError: input.lastError
     }),
     services: input.services,
+    capabilityChecks: input.capabilityChecks ?? createDefaultLocalGatewayCapabilityChecks(),
     bundlePath: input.bundlePath,
     lastStartedAt: input.lastStartedAt ?? null,
     lastError: input.lastError ?? null

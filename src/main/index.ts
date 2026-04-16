@@ -16,7 +16,11 @@ import sharp from 'sharp'
 import pLimit from 'p-limit'
 import { fileURLToPath } from 'url'
 import type { AiCapability, AiProviderProfile, AiRuntimeDefaults } from '../shared/ai/aiProviderTypes.ts'
-import type { LocalGatewayConfig, LocalGatewaySystemChromeProfile } from '../shared/localGatewayTypes.ts'
+import type {
+  LocalGatewayConfig,
+  LocalGatewayProbeMode,
+  LocalGatewaySystemChromeProfile
+} from '../shared/localGatewayTypes.ts'
 import {
   normalizeCmsElectronPublishAction,
   type CmsElectronPublishAction,
@@ -77,6 +81,7 @@ import {
   readLocalGatewayConfigFromStore
 } from './services/localGatewayConfig.ts'
 import { LocalGatewayManager } from './services/localGatewayManager.ts'
+import { createDefaultLocalGatewayCapabilityChecks } from './services/localGatewayCapabilityChecks.ts'
 import { applyCmsPublishDefaultsMigration } from './services/cmsPublishDefaultsMigration.ts'
 import { buildXhsSendKeyEvents } from './xhsInputEvents'
 import {
@@ -3933,19 +3938,25 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('local-gateway:get-state', async () => {
-    if (!localGatewayManager) {
-      const localGateway = readLocalGatewayConfigFromStore(configStore)
-      return {
-        overallStatus: localGateway.enabled ? 'failed' : 'disabled',
-        services: [],
-        bundlePath: localGateway.bundlePath,
-        lastStartedAt: null,
-        lastError: '本地网关管理器尚未初始化。'
+  ipcMain.handle(
+    'local-gateway:get-state',
+    async (_event, payload: { probeMode?: LocalGatewayProbeMode } | null | undefined) => {
+      if (!localGatewayManager) {
+        const localGateway = readLocalGatewayConfigFromStore(configStore)
+        return {
+          overallStatus: localGateway.enabled ? 'failed' : 'disabled',
+          services: [],
+          capabilityChecks: createDefaultLocalGatewayCapabilityChecks(),
+          bundlePath: localGateway.bundlePath,
+          lastStartedAt: null,
+          lastError: '本地网关管理器尚未初始化。'
+        }
       }
+      return localGatewayManager.getUiState({
+        probeMode: payload?.probeMode ?? 'none'
+      })
     }
-    return localGatewayManager.refreshState()
-  })
+  )
 
   ipcMain.handle('local-gateway:retry-start', async () => {
     if (!localGatewayManager) {

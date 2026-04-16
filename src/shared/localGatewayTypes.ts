@@ -14,6 +14,22 @@ export type LocalGatewayConfig = {
 
 export type LocalGatewayAccountStatus = 'active' | 'cooldown' | 'disabled'
 
+export type LocalGatewayCapabilityCheckStatus = 'unknown' | 'passing' | 'failing'
+
+export type LocalGatewayProbeMode = 'none' | 'auto' | 'force'
+
+export type LocalGatewayCapabilityCheck = {
+  status: LocalGatewayCapabilityCheckStatus
+  ok: boolean
+  checkedAt: number | null
+  message: string | null
+}
+
+export type LocalGatewayCapabilityChecks = {
+  chat: LocalGatewayCapabilityCheck
+  image: LocalGatewayCapabilityCheck
+}
+
 export type LocalGatewayOverallStatus =
   | 'disabled'
   | 'unconfigured'
@@ -39,6 +55,7 @@ export type LocalGatewayServiceStatus = {
 export type LocalGatewayState = {
   overallStatus: LocalGatewayOverallStatus
   services: LocalGatewayServiceStatus[]
+  capabilityChecks: LocalGatewayCapabilityChecks
   bundlePath: string
   lastStartedAt: number | null
   lastError: string | null
