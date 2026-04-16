@@ -10,10 +10,13 @@ import {
 } from '../../cdp/chrome-launcher.ts'
 import type { AiCapability } from '../../shared/ai/aiProviderTypes.ts'
 import type {
+  LocalGatewayCapabilityCheck,
+  LocalGatewayCapabilityChecks,
   LocalGatewayAccountSummary,
   LocalGatewayChromeProfile,
   LocalGatewayConfig,
   LocalGatewayInitializationResult,
+  LocalGatewayProbeMode,
   LocalGatewaySystemChromeProfile,
   LocalGatewayState
 } from '../../shared/localGatewayTypes.ts'
@@ -23,6 +26,11 @@ import {
   isLocalGatewayImageRuntimeReady,
   type LocalGatewayHealthDependency
 } from './localGatewayHealth.ts'
+import {
+  createDefaultLocalGatewayCapabilityChecks,
+  probeLocalGatewayChatCapability,
+  probeLocalGatewayImageCapability
+} from './localGatewayCapabilityChecks.ts'
 import {
   listLocalGatewayAccounts as fetchLocalGatewayAccounts,
   syncLocalGatewayAccounts as pushLocalGatewayAccounts
@@ -66,6 +74,8 @@ type CreateLocalGatewayManagerOptions = {
 
 const DEFAULT_IMAGE_HEALTH_POLL_INTERVAL_MS = 30_000
 const DEFAULT_CHROME_EXECUTABLE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const LOCAL_GATEWAY_CHAT_PROBE_TTL_MS = 2 * 60 * 1000
+const LOCAL_GATEWAY_IMAGE_PROBE_TTL_MS = 10 * 60 * 1000
 
 type GatewayChromeTarget =
   | {
@@ -233,6 +243,8 @@ export class LocalGatewayManager {
   private imageHealthPollTimer: ReturnType<typeof setInterval> | null = null
   private imageHealthPollInFlight = false
   private imageCapabilityWanted = false
+  private capabilityChecks: LocalGatewayCapabilityChecks = createDefaultLocalGatewayCapabilityChecks()
+  private capabilityCheckInFlight: Promise<void> | null = null
 
   constructor(options: CreateLocalGatewayManagerOptions) {
     this.store = options.store
@@ -255,6 +267,7 @@ export class LocalGatewayManager {
     this.state = createLocalGatewayState({
       config,
       services: [],
+      capabilityChecks: this.capabilityChecks,
       bundlePath: config.bundlePath,
       isConfigured: isBundleConfigured(config),
       lastStartedAt: null,
@@ -302,6 +315,7 @@ export class LocalGatewayManager {
     if (this.readinessConfigKey !== nextReadinessConfigKey) {
       this.ensuredCapabilities.clear()
       this.imageCapabilityWanted = false
+      this.capabilityChecks = createDefaultLocalGatewayCapabilityChecks()
       this.readinessConfigKey = nextReadinessConfigKey
     }
     const configured = isBundleConfigured(config)
@@ -316,6 +330,7 @@ export class LocalGatewayManager {
     this.state = createLocalGatewayState({
       config,
       services,
+      capabilityChecks: this.capabilityChecks,
       bundlePath: config.bundlePath,
       isConfigured: configured,
       isStarting: this.starting,
@@ -331,6 +346,16 @@ export class LocalGatewayManager {
       this.ensuredCapabilities.delete('image')
     }
     return this.state
+  }
+
+  async getUiState(options?: { probeMode?: LocalGatewayProbeMode }): Promise<LocalGatewayState> {
+    const probeMode = options?.probeMode ?? 'none'
+    const state = await this.refreshState()
+    if (probeMode === 'none') {
+      return state
+    }
+    await this.refreshCapabilityChecks(state, probeMode)
+    return this.refreshState()
   }
 
   async autoStartIfEnabled(): Promise<LocalGatewayState> {
@@ -458,6 +483,113 @@ export class LocalGatewayManager {
       void this.healImageCapabilityIfNeeded()
     }, this.imageHealthPollIntervalMs)
     this.imageHealthPollTimer.unref?.()
+  }
+
+  private shouldRefreshCapabilityCheck(
+    check: LocalGatewayCapabilityCheck,
+    probeMode: LocalGatewayProbeMode,
+    ttlMs: number
+  ): boolean {
+    if (probeMode === 'force') return true
+    if (probeMode !== 'auto') return false
+    if (check.status === 'unknown' || check.checkedAt == null) return true
+    return Date.now() - check.checkedAt >= ttlMs
+  }
+
+  private resolveBaseServiceError(
+    state: LocalGatewayState,
+    serviceNames: Array<LocalGatewayState['services'][number]['name']>,
+    fallback: string
+  ): string {
+    for (const name of serviceNames) {
+      const service = state.services.find((item) => item.name === name)
+      if (service?.ok) continue
+      const message = typeof service?.message === 'string' ? service.message.trim() : ''
+      if (message) return message
+    }
+    return fallback
+  }
+
+  private async refreshCapabilityChecks(
+    state: LocalGatewayState,
+    probeMode: LocalGatewayProbeMode
+  ): Promise<void> {
+    const shouldCheckChat = this.shouldRefreshCapabilityCheck(
+      this.capabilityChecks.chat,
+      probeMode,
+      LOCAL_GATEWAY_CHAT_PROBE_TTL_MS
+    )
+    const shouldCheckImage = this.shouldRefreshCapabilityCheck(
+      this.capabilityChecks.image,
+      probeMode,
+      LOCAL_GATEWAY_IMAGE_PROBE_TTL_MS
+    )
+
+    if (!shouldCheckChat && !shouldCheckImage) {
+      return
+    }
+
+    if (this.capabilityCheckInFlight) {
+      await this.capabilityCheckInFlight
+      return
+    }
+
+    this.capabilityCheckInFlight = (async () => {
+      const config = readLocalGatewayConfigFromStore(this.store)
+      const nextChecks = { ...this.capabilityChecks }
+
+      if (shouldCheckChat) {
+        nextChecks.chat = areGatewayBaseServicesReady(state)
+          ? await probeLocalGatewayChatCapability({ fetch: this.fetchImpl })
+          : {
+              status: 'failing',
+              ok: false,
+              checkedAt: Date.now(),
+              message: this.resolveBaseServiceError(state, ['adapter', 'gateway'], 'Chat 基础服务未就绪。')
+            }
+      }
+
+      if (shouldCheckImage) {
+        nextChecks.image = !config.startCdpProxy
+          ? {
+              status: 'failing',
+              ok: false,
+              checkedAt: Date.now(),
+              message: '未启用 CDP 代理。'
+            }
+          : !areGatewayBaseServicesReady(state)
+            ? {
+                status: 'failing',
+                ok: false,
+                checkedAt: Date.now(),
+                message: this.resolveBaseServiceError(
+                  state,
+                  ['adapter', 'gateway'],
+                  '生图基础服务未就绪。'
+                )
+              }
+            : !isLocalGatewayImageRuntimeReady({ config, services: state.services })
+              ? {
+                  status: 'failing',
+                  ok: false,
+                  checkedAt: Date.now(),
+                  message: this.resolveBaseServiceError(
+                    state,
+                    ['cdpProxy', 'chromeDebug'],
+                    '生图运行时未就绪。'
+                  )
+                }
+              : await probeLocalGatewayImageCapability({ fetch: this.fetchImpl })
+      }
+
+      this.capabilityChecks = nextChecks
+    })()
+
+    try {
+      await this.capabilityCheckInFlight
+    } finally {
+      this.capabilityCheckInFlight = null
+    }
   }
 
   private async healImageCapabilityIfNeeded(): Promise<void> {

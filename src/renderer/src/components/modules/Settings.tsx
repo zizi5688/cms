@@ -12,13 +12,16 @@ import {
 import { Input } from '@renderer/components/ui/input'
 import { Tabs } from '@renderer/components/ui/tabs'
 import { resolveLocalGatewayPrimaryAction } from '@renderer/lib/localGatewayOverviewAction'
+import {
+  formatLocalGatewayTimestamp,
+  resolveLocalGatewayStatusPresentation
+} from '@renderer/lib/localGatewayStatusPresentation'
 import { useCmsStore } from '@renderer/store/useCmsStore'
 import { createEmptyAiRuntimeDefaults } from '../../../../shared/ai/aiProviderTypes'
 import { normalizeCmsElectronPublishAction } from '../../../../shared/cmsChromeProfileTypes'
 import type {
   LocalGatewayAccountStatus,
   LocalGatewayAccountSummary,
-  LocalGatewayOverallStatus,
   LocalGatewayServiceStatus,
   LocalGatewayState,
   LocalGatewaySystemChromeProfile
@@ -171,36 +174,6 @@ function getLocalGatewayAccountStatusClassName(
 }
 
 type LocalGatewayCapabilityTone = 'ready' | 'warning' | 'failure'
-
-function getLocalGatewayOverviewPresentation(
-  status: LocalGatewayOverallStatus | null | undefined
-): {
-  label: string
-  dotClassName: string
-  panelClassName: string
-} {
-  if (status === 'services_ready') {
-    return {
-      label: '网关运行中',
-      dotClassName: 'bg-emerald-400 shadow-[0_0_0_4px_rgba(16,185,129,0.18)]',
-      panelClassName: 'border-emerald-800/60 bg-emerald-950/20'
-    }
-  }
-
-  if (status === 'degraded' || status === 'starting') {
-    return {
-      label: status === 'starting' ? '网关启动中' : '部分服务异常',
-      dotClassName: 'bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.18)]',
-      panelClassName: 'border-amber-800/60 bg-amber-950/20'
-    }
-  }
-
-  return {
-    label: '网关未启动',
-    dotClassName: 'bg-rose-400 shadow-[0_0_0_4px_rgba(251,113,133,0.18)]',
-    panelClassName: 'border-rose-800/60 bg-rose-950/20'
-  }
-}
 
 function getLocalGatewayCapabilityPresentation(input: {
   ready: boolean
@@ -401,70 +374,64 @@ function Settings(): React.JSX.Element {
     [displayedSystemChromeProfiles, selectedChatChromeProfileDirectories]
   )
   const localGatewayServices = localGatewayState?.services ?? []
-  const localGatewayServicesByName = useMemo(
-    () => new Map(localGatewayServices.map((service) => [service.name, service] as const)),
-    [localGatewayServices]
-  )
-  const adapterService = localGatewayServicesByName.get('adapter') ?? null
-  const gatewayService = localGatewayServicesByName.get('gateway') ?? null
-  const adminUiService = localGatewayServicesByName.get('adminUi') ?? null
-  const cdpProxyService = localGatewayServicesByName.get('cdpProxy') ?? null
-  const chromeDebugService = localGatewayServicesByName.get('chromeDebug') ?? null
   const overallLocalGatewayStatus =
     localGatewayState?.overallStatus ?? (config.localGateway.enabled ? 'failed' : 'disabled')
-  const localGatewayOverview = useMemo(
-    () => getLocalGatewayOverviewPresentation(overallLocalGatewayStatus),
-    [overallLocalGatewayStatus]
+  const localGatewayStatusPresentation = useMemo(
+    () =>
+      resolveLocalGatewayStatusPresentation({
+        state: localGatewayState,
+        config: config.localGateway,
+        accounts: localGatewayAccounts
+      }),
+    [config.localGateway, localGatewayAccounts, localGatewayState]
   )
-  const isChatCapabilityReady = Boolean(adapterService?.ok && gatewayService?.ok)
-  const isFlowCapabilityReady = Boolean(cdpProxyService?.ok && chromeDebugService?.ok)
-  const isAdminCapabilityReady = Boolean(adminUiService?.ok)
+  const localGatewayOverview = useMemo(
+    () =>
+      localGatewayStatusPresentation.overview.ready
+        ? {
+            label: localGatewayStatusPresentation.overview.label,
+            dotClassName: 'bg-emerald-400 shadow-[0_0_0_4px_rgba(16,185,129,0.18)]',
+            panelClassName: 'border-emerald-800/60 bg-emerald-950/20'
+          }
+        : overallLocalGatewayStatus === 'starting'
+          ? {
+              label: localGatewayStatusPresentation.overview.label,
+              dotClassName: 'bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.18)]',
+              panelClassName: 'border-amber-800/60 bg-amber-950/20'
+            }
+          : {
+              label: localGatewayStatusPresentation.overview.label,
+              dotClassName: 'bg-rose-400 shadow-[0_0_0_4px_rgba(251,113,133,0.18)]',
+              panelClassName: 'border-rose-800/60 bg-rose-950/20'
+            },
+    [localGatewayStatusPresentation.overview, overallLocalGatewayStatus]
+  )
+  const isChatCapabilityReady = localGatewayStatusPresentation.chat.ready
+  const isFlowCapabilityReady = localGatewayStatusPresentation.flow.ready
+  const isAdminCapabilityReady = localGatewayStatusPresentation.admin.ready
   const chatCapability = useMemo(() => {
     return getLocalGatewayCapabilityPresentation({
       ready: isChatCapabilityReady,
-      label:
-        adapterService?.message ??
-        gatewayService?.message ??
-        (config.localGateway.enabled ? '未启动' : '未启用'),
-      tone:
-        !config.localGateway.enabled || overallLocalGatewayStatus === 'unconfigured'
-          ? 'warning'
-          : 'failure'
+      label: localGatewayStatusPresentation.chat.label,
+      tone: 'failure'
     })
-  }, [
-    adapterService,
-    config.localGateway.enabled,
-    gatewayService,
-    isChatCapabilityReady,
-    overallLocalGatewayStatus
-  ])
-  const flowCapability = useMemo(() => {
-    const missingChrome =
-      cdpProxyService?.message?.includes('Chrome 未启动') ||
-      chromeDebugService?.message?.includes('Chrome 未开启远程调试端口') ||
-      chromeDebugService?.message?.includes('Chrome 未启动')
-    return getLocalGatewayCapabilityPresentation({
-      ready: isFlowCapabilityReady,
-      label: !config.localGateway.startCdpProxy
-        ? '未启用'
-        : missingChrome
-          ? 'Chrome 未启动'
-          : (cdpProxyService?.message ?? chromeDebugService?.message ?? '未启动'),
-      tone: missingChrome || !config.localGateway.startCdpProxy ? 'warning' : 'failure'
-    })
-  }, [
-    cdpProxyService,
-    chromeDebugService,
-    config.localGateway.startCdpProxy,
-    isFlowCapabilityReady
-  ])
+  }, [isChatCapabilityReady, localGatewayStatusPresentation.chat.label])
+  const flowCapability = useMemo(
+    () =>
+      getLocalGatewayCapabilityPresentation({
+        ready: isFlowCapabilityReady,
+        label: localGatewayStatusPresentation.flow.label,
+        tone: 'failure'
+      }),
+    [isFlowCapabilityReady, localGatewayStatusPresentation.flow.label]
+  )
   const adminCapability = useMemo(() => {
     return getLocalGatewayCapabilityPresentation({
       ready: isAdminCapabilityReady,
-      label: !config.localGateway.startAdminUi ? '未启用' : (adminUiService?.message ?? '未启动'),
-      tone: config.localGateway.startAdminUi ? 'failure' : 'warning'
+      label: localGatewayStatusPresentation.admin.label,
+      tone: 'failure'
     })
-  }, [adminUiService, config.localGateway.startAdminUi, isAdminCapabilityReady])
+  }, [isAdminCapabilityReady, localGatewayStatusPresentation.admin.label])
   const primaryLocalGatewayAction = useMemo(
     () =>
       resolveLocalGatewayPrimaryAction({
@@ -652,15 +619,32 @@ function Settings(): React.JSX.Element {
     }
   }, [addLog])
 
-  const refreshLocalGatewayState = useCallback(async (): Promise<void> => {
-    if (typeof window.electronAPI.getLocalGatewayState !== 'function') return
-    try {
-      const state = await window.electronAPI.getLocalGatewayState()
-      setLocalGatewayState(state)
-    } catch (error) {
-      addLog(`[本地网关] 读取状态失败：${extractErrorMessage(error)}`)
-    }
-  }, [addLog])
+  const refreshLocalGatewayState = useCallback(
+    async (options?: {
+      probeMode?: 'none' | 'auto' | 'force'
+      refreshAccounts?: boolean
+    }): Promise<void> => {
+      if (typeof window.electronAPI.getLocalGatewayState !== 'function') return
+      try {
+        const [state, accounts] = await Promise.all([
+          window.electronAPI.getLocalGatewayState({
+            probeMode: options?.probeMode ?? 'none'
+          }),
+          options?.refreshAccounts &&
+          typeof window.electronAPI.listLocalGatewayAccounts === 'function'
+            ? window.electronAPI.listLocalGatewayAccounts()
+            : Promise.resolve(null)
+        ])
+        setLocalGatewayState(state)
+        if (accounts) {
+          setLocalGatewayAccounts(accounts)
+        }
+      } catch (error) {
+        addLog(`[本地网关] 读取状态失败：${extractErrorMessage(error)}`)
+      }
+    },
+    [addLog]
+  )
 
   const refreshSystemChromeProfiles = useCallback(async (): Promise<void> => {
     if (typeof window.electronAPI.listLocalGatewaySystemChromeProfiles !== 'function') return
@@ -740,12 +724,15 @@ function Settings(): React.JSX.Element {
   }, [refreshLocalGatewayState])
 
   useEffect(() => {
-    void refreshSystemChromeProfiles()
-  }, [refreshSystemChromeProfiles])
+    void refreshLocalGatewayState({
+      probeMode: 'auto',
+      refreshAccounts: true
+    })
+  }, [refreshLocalGatewayState])
 
   useEffect(() => {
-    void refreshLocalGatewayAccounts()
-  }, [refreshLocalGatewayAccounts])
+    void refreshSystemChromeProfiles()
+  }, [refreshSystemChromeProfiles])
 
   useEffect(() => {
     if (skipFirstLocalGatewayAccountsSyncRef.current) {
@@ -778,7 +765,10 @@ function Settings(): React.JSX.Element {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void refreshLocalGatewayState()
+      void refreshLocalGatewayState({
+        probeMode: 'auto',
+        refreshAccounts: true
+      })
     }, 15_000)
 
     return () => {
@@ -943,6 +933,10 @@ function Settings(): React.JSX.Element {
       const state = await window.electronAPI.retryStartLocalGateway()
       setLocalGatewayState(state)
       addLog(`[本地网关] 重试恢复完成：${state.overallStatus}`)
+      await refreshLocalGatewayState({
+        probeMode: 'force',
+        refreshAccounts: true
+      })
     } catch (error) {
       addLog(`[本地网关] 重试恢复失败：${extractErrorMessage(error)}`)
     } finally {
@@ -966,14 +960,20 @@ function Settings(): React.JSX.Element {
         result.output.trim() || `初始化完成：${result.profileDirectory}`
       )
       addLog(`[本地网关] 初始化完成：${result.profileDirectory}`)
-      await refreshLocalGatewayState()
+      await refreshLocalGatewayState({
+        probeMode: 'force',
+        refreshAccounts: true
+      })
     } catch (error) {
       const message =
         unwrapElectronInvokeError(extractErrorMessage(error)) ||
         '初始化失败，请检查本地网关配置后重试。'
       setLocalGatewayInitializationOutput(message)
       addLog(`[本地网关] 初始化失败：${message}`)
-      await refreshLocalGatewayState()
+      await refreshLocalGatewayState({
+        probeMode: 'force',
+        refreshAccounts: true
+      })
     } finally {
       setIsInitializingLocalGateway(false)
     }
@@ -1712,7 +1712,7 @@ function Settings(): React.JSX.Element {
                     </div>
                   </div>
                   <div className="text-xs text-zinc-400">
-                    最近启动：{formatDateTime(localGatewayState?.lastStartedAt ?? null)}
+                    最近启动：{formatLocalGatewayTimestamp(localGatewayState?.lastStartedAt ?? null)}
                   </div>
                 </div>
 
@@ -1768,7 +1768,12 @@ function Settings(): React.JSX.Element {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => void refreshLocalGatewayState()}
+                    onClick={() =>
+                      void refreshLocalGatewayState({
+                        probeMode: 'force',
+                        refreshAccounts: true
+                      })
+                    }
                     className="h-auto px-1 text-xs text-zinc-400 hover:bg-transparent hover:text-zinc-100"
                   >
                     刷新状态

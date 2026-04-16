@@ -1492,7 +1492,9 @@ declare global {
       defaultInterval?: number
       localGateway?: Partial<LocalGatewayConfig>
     }) => Promise<{ success: true }>
-    getLocalGatewayState: () => Promise<LocalGatewayState>
+    getLocalGatewayState: (payload?: {
+      probeMode?: import('../shared/localGatewayTypes').LocalGatewayProbeMode
+    }) => Promise<LocalGatewayState>
     retryStartLocalGateway: () => Promise<LocalGatewayState>
     listLocalGatewayChromeProfiles: () => Promise<LocalGatewayChromeProfile[]>
     listLocalGatewaySystemChromeProfiles: () => Promise<LocalGatewaySystemChromeProfile[]>

@@ -13,6 +13,7 @@ import type {
   LocalGatewayChromeProfile,
   LocalGatewayConfig,
   LocalGatewayInitializationResult,
+  LocalGatewayProbeMode,
   LocalGatewayState,
   LocalGatewaySystemChromeProfile
 } from '../shared/localGatewayTypes.ts'
@@ -1674,7 +1675,9 @@ const electronAPI = {
     defaultInterval?: number
     localGateway?: Partial<LocalGatewayConfig>
   }): Promise<{ success: true }> => ipcRenderer.invoke('save-config', patch),
-  getLocalGatewayState: (): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:get-state'),
+  getLocalGatewayState: (payload?: {
+    probeMode?: LocalGatewayProbeMode
+  }): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:get-state', payload),
   retryStartLocalGateway: (): Promise<LocalGatewayState> => ipcRenderer.invoke('local-gateway:retry-start'),
   listLocalGatewayChromeProfiles: (): Promise<LocalGatewayChromeProfile[]> =>
     ipcRenderer.invoke('local-gateway:list-chrome-profiles'),
