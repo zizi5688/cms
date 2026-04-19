@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { homedir } from 'node:os'
 import { mkdirSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { PassThrough } from 'node:stream'
@@ -7,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { LocalGatewayProcessManager } from './localGatewayProcessManager.ts'
+import { resolveLocalGatewayDedicatedChromeUserDataDir } from './localGatewayRuntime.ts'
 
 function createConfig(root) {
   return {
@@ -63,6 +65,22 @@ test('LocalGatewayProcessManager injects gateway and cdp proxy environment for d
   assert.equal(spawnCalls[2].options.env.CDP_PROXY_CHROME_PORT, '9333')
   assert.equal(
     spawnCalls[2].options.env.CDP_PROXY_CHROME_USER_DATA_DIR,
-    join(root, 'runtime', 'chrome-remote-debug-user-data')
+    resolveLocalGatewayDedicatedChromeUserDataDir(root)
+  )
+})
+
+test('resolveLocalGatewayDedicatedChromeUserDataDir defaults outside the bundle on macOS', () => {
+  if (process.platform !== 'darwin') return
+
+  assert.equal(
+    resolveLocalGatewayDedicatedChromeUserDataDir('/tmp/ignored-bundle-root'),
+    join(
+      homedir(),
+      'Library',
+      'Application Support',
+      'Local AI Gateway',
+      'runtime',
+      'chrome-remote-debug-user-data'
+    )
   )
 })
