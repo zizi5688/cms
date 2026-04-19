@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.5] - 2026-04-19
+
+### Fix (修复)
+- **External Runtime Directory**: 本地网关 dedicated Chrome 的 runtime 与远程调试 user-data-dir 现在默认落到系统应用支持目录，不再写回 `Local AI Gateway` 打包目录，方便迁移和分发网关目录。
+- **Runtime Path Coverage**: 补齐本地网关 runtime 路径解析与环境注入测试，确保 Flow 图片链路继续沿用 dedicated Chrome，同时把运行时目录稳定解析到外置位置。
+
 ## [1.4.4] - 2026-04-16
 
 ### Fix (修复)
