@@ -33,10 +33,26 @@ function writeImageRuntimeHealth(root, value) {
   writeFileSync(join(root, 'image-runtime-health.json'), JSON.stringify(value), 'utf-8')
 }
 
-function createImageRuntimeHealthDeps(root) {
+function createImageRuntimeHealthDeps(root, options = {}) {
   return {
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       const normalized = String(url)
+      if (normalized.includes('3456/targets')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => options.cdp?.targets ?? []
+        }
+      }
+      if (normalized.includes('3456/eval')) {
+        const body = typeof init?.body === 'string' ? init.body : ''
+        const value = options.cdp?.eval ? await options.cdp.eval(body, normalized) : {}
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ value })
+        }
+      }
       if (normalized.includes('8766/health') || normalized.includes('4174/health') || normalized.includes('4175')) {
         return { ok: true, status: 200 }
       }
@@ -173,6 +189,71 @@ test('LocalGatewayManager reports services_ready when core services are healthy'
 
   const state = await manager.refreshState()
   assert.equal(state.overallStatus, 'services_ready')
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager image capability refresh does not send a real Flow generation request', async () => {
+  const root = join(tmpdir(), `local-gateway-image-capability-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  const requestedUrls = []
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    healthDeps: {
+      fetch: async (url) => {
+        const normalized = String(url)
+        requestedUrls.push(normalized)
+        if (normalized.includes('flow-web-image:generateContent')) {
+          throw new Error('image capability refresh must not mutate Flow by sending a generation request')
+        }
+        if (normalized.includes('gemini-web-chat:generateContent')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts: [{ text: 'OK' }]
+                  }
+                }
+              ]
+            })
+          }
+        }
+        if (normalized.includes('3456/health')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ connected: true })
+          }
+        }
+        return { ok: true, status: 200 }
+      },
+      isPortListening: async () => true
+    }
+  })
+
+  const state = await manager.getUiState({ probeMode: 'force' })
+
+  assert.equal(state.capabilityChecks.image.status, 'passing')
+  assert.equal(state.capabilityChecks.image.ok, true)
+  assert.equal(state.capabilityChecks.image.message, null)
+  assert.equal(
+    requestedUrls.some((url) => url.includes('flow-web-image:generateContent')),
+    false
+  )
+
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -347,6 +428,7 @@ test('LocalGatewayManager initializeGateway uses selected system Chrome profile 
 set -euo pipefail
 echo "profile=\${CHROME_PROFILE_DIRECTORY}"
 echo "userData=\${CHROME_DEFAULT_USER_DATA_DIR}"
+echo "allowDedicated=\${LOCAL_AI_GATEWAY_ALLOW_DEDICATED_CHROME}"
 `,
     'utf-8'
   )
@@ -383,6 +465,7 @@ echo "userData=\${CHROME_DEFAULT_USER_DATA_DIR}"
   assert.equal(result.profileDirectory, 'Profile 7')
   assert.match(result.output, /profile=Profile 7/)
   assert.match(result.output, /userData=.*Library\/Application Support\/Google\/Chrome/)
+  assert.match(result.output, /allowDedicated=0/)
 
   rmSync(root, { recursive: true, force: true })
 })
@@ -664,6 +747,320 @@ echo "bootstrap run \${count}"
   await waitFor(async () => manager.getState().overallStatus === 'services_ready', 2000)
 
   assert.equal(manager.getState().overallStatus, 'services_ready')
+
+  manager.dispose()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager self-heal poll reinjects Flow hook when runtime ports stay healthy', async () => {
+  const root = join(tmpdir(), `local-gateway-image-hook-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: true, chromeDebug: true })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+COUNT_FILE="${root}/init-count.txt"
+count=0
+if [[ -f "${root}/init-count.txt" ]]; then
+  count="$(cat "${root}/init-count.txt")"
+fi
+count=$((count + 1))
+printf '%s' "\${count}" > "${root}/init-count.txt"
+echo "bootstrap run \${count}"
+`,
+    'utf-8'
+  )
+  let hookInjected = false
+  const evalScripts = []
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: createImageRuntimeHealthDeps(root, {
+      cdp: {
+        targets: [
+          {
+            targetId: 'flow-project',
+            type: 'page',
+            url: 'https://labs.google/fx/tools/flow/project/demo'
+          }
+        ],
+        eval: async (script) => {
+          evalScripts.push(script)
+          if (script.includes('window.location.href')) {
+            return {
+              url: 'https://labs.google/fx/tools/flow/project/demo',
+              hasHook: false,
+              hasProtection: false,
+              isLoggedIn: true
+            }
+          }
+          if (script.includes('__LOCAL_AI_FLOW_HEALTH_HOOKED_AT')) {
+            hookInjected = true
+            return { ok: true, hasHook: true }
+          }
+          return {}
+        }
+      }
+    }),
+    imageHealthPollIntervalMs: 20
+  })
+
+  await manager.ensureReadyForCapability('image')
+  await waitFor(() => hookInjected, 2000)
+
+  assert.equal(existsSync(join(root, 'init-count.txt')), false)
+  assert.equal(
+    evalScripts.some((script) => script.includes('__LOCAL_AI_FLOW_HEALTH_HOOKED_AT')),
+    true
+  )
+  assert.equal(evalScripts.some((script) => script.includes('__flowHookActive = true')), true)
+
+  manager.dispose()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager self-heal poll reinitializes when Flow page leaves project route', async () => {
+  const root = join(tmpdir(), `local-gateway-image-page-recover-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: true, chromeDebug: true })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+COUNT_FILE="${root}/init-count.txt"
+count=0
+if [[ -f "${root}/init-count.txt" ]]; then
+  count="$(cat "${root}/init-count.txt")"
+fi
+count=$((count + 1))
+printf '%s' "\${count}" > "${root}/init-count.txt"
+echo "bootstrap run \${count}"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: createImageRuntimeHealthDeps(root, {
+      cdp: {
+        targets: [
+          {
+            targetId: 'flow-home',
+            type: 'page',
+            url: 'https://labs.google/fx/tools/flow'
+          }
+        ],
+        eval: async () => ({
+          url: 'https://labs.google/fx/tools/flow',
+          hasHook: false,
+          hasProtection: false,
+          isLoggedIn: true
+        })
+      }
+    }),
+    imageHealthPollIntervalMs: 20
+  })
+
+  await manager.ensureReadyForCapability('image')
+  await waitFor(
+    () => existsSync(join(root, 'init-count.txt')) && readFileSync(join(root, 'init-count.txt'), 'utf-8') === '1',
+    2000
+  )
+
+  manager.dispose()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager self-heal poll records login expiry without automatic recovery', async () => {
+  const root = join(tmpdir(), `local-gateway-image-login-expired-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: true, chromeDebug: true })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' 'started' > "${root}/init-count.txt"
+echo "bootstrap run"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: createImageRuntimeHealthDeps(root, {
+      cdp: {
+        targets: [
+          {
+            targetId: 'flow-project',
+            type: 'page',
+            url: 'https://labs.google/fx/tools/flow/project/demo'
+          }
+        ],
+        eval: async () => ({
+          url: 'https://labs.google/fx/tools/flow/project/demo',
+          hasHook: true,
+          hasProtection: false,
+          isLoggedIn: false
+        })
+      }
+    }),
+    imageHealthPollIntervalMs: 20
+  })
+
+  await manager.ensureReadyForCapability('image')
+  await waitFor(() => String(manager.getState().lastError ?? '').includes('登录'), 2000)
+
+  assert.equal(existsSync(join(root, 'init-count.txt')), false)
+
+  manager.dispose()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('LocalGatewayManager self-heal poll records Flow protection without automatic recovery', async () => {
+  const root = join(tmpdir(), `local-gateway-image-protection-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  writeImageRuntimeHealth(root, { cdpProxy: true, chromeDebug: true })
+  writeFileSync(
+    join(root, 'local-ai-gateway-startup', 'scripts', 'bootstrap_local_ai_gateway.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' 'started' > "${root}/init-count.txt"
+echo "bootstrap run"
+`,
+    'utf-8'
+  )
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    chromeDeps: {
+      resolveCmsProfile: async () => ({
+        profile: {
+          id: 'cms-gateway-profile',
+          nickname: '本地网关专用',
+          profileDir: 'cms-gateway-profile',
+          purpose: 'gateway',
+          xhsLoggedIn: false,
+          lastLoginCheck: null
+        },
+        runtime: {
+          executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          userDataDir: '/tmp/chrome-cms-data'
+        }
+      })
+    },
+    healthDeps: createImageRuntimeHealthDeps(root, {
+      cdp: {
+        targets: [
+          {
+            targetId: 'flow-project',
+            type: 'page',
+            url: 'https://labs.google/fx/tools/flow/project/demo'
+          }
+        ],
+        eval: async () => ({
+          url: 'https://labs.google/fx/tools/flow/project/demo',
+          hasHook: true,
+          hasProtection: true,
+          isLoggedIn: true
+        })
+      }
+    }),
+    imageHealthPollIntervalMs: 20
+  })
+
+  await manager.ensureReadyForCapability('image')
+  await waitFor(() => String(manager.getState().lastError ?? '').includes('风控'), 2000)
+
+  assert.equal(existsSync(join(root, 'init-count.txt')), false)
 
   manager.dispose()
   rmSync(root, { recursive: true, force: true })

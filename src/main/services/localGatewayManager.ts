@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import { existsSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync } from 'fs'
 import net from 'node:net'
 import { join } from 'path'
 
@@ -28,8 +28,7 @@ import {
 } from './localGatewayHealth.ts'
 import {
   createDefaultLocalGatewayCapabilityChecks,
-  probeLocalGatewayChatCapability,
-  probeLocalGatewayImageCapability
+  probeLocalGatewayChatCapability
 } from './localGatewayCapabilityChecks.ts'
 import {
   listLocalGatewayAccounts as fetchLocalGatewayAccounts,
@@ -54,6 +53,30 @@ type LocalGatewayStore = {
 
 type LocalGatewayProcessManagerHandle = Pick<LocalGatewayProcessManager, 'ensureServices' | 'dispose'>
 
+type CdpProxyTarget = {
+  targetId?: unknown
+  url?: unknown
+  type?: unknown
+}
+
+type CdpProxyEvalResponse<T> = {
+  value?: T
+  error?: string
+}
+
+type FlowPageHealthPayload = {
+  url?: unknown
+  hasHook?: unknown
+  hasProtection?: unknown
+  isLoggedIn?: unknown
+}
+
+type FlowHookReinjectPayload = {
+  ok?: unknown
+  hasHook?: unknown
+  error?: unknown
+}
+
 type CreateLocalGatewayManagerOptions = {
   store: LocalGatewayStore
   logsDir: string
@@ -73,9 +96,15 @@ type CreateLocalGatewayManagerOptions = {
 }
 
 const DEFAULT_IMAGE_HEALTH_POLL_INTERVAL_MS = 30_000
+const FLOW_PAGE_HEALTH_TIMEOUT_MS = 5_000
+const CDP_PROXY_BASE_URL = 'http://127.0.0.1:3456'
 const DEFAULT_CHROME_EXECUTABLE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const LOCAL_GATEWAY_CHAT_PROBE_TTL_MS = 2 * 60 * 1000
 const LOCAL_GATEWAY_IMAGE_PROBE_TTL_MS = 10 * 60 * 1000
+const FLOW_PROJECT_URL_PATTERN = /\/tools\/flow\/project\/[^/?#]+/i
+const FLOW_URL_PATTERN = /\/tools\/flow(?:\/|$|[?#])/i
+const FLOW_PROTECTION_LAST_ERROR = 'Flow 当前命中风控，请在 Chrome 中手动处理验证后重试。'
+const FLOW_LOGIN_EXPIRED_LAST_ERROR = 'Flow 登录已过期，请在当前 Chrome Profile 中重新登录后重试。'
 
 type GatewayChromeTarget =
   | {
@@ -95,6 +124,115 @@ type GatewayChromeTarget =
 
 function normalizeNonEmptyString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function isFlowProjectUrl(value: unknown): boolean {
+  return FLOW_PROJECT_URL_PATTERN.test(normalizeNonEmptyString(value))
+}
+
+function isFlowUrl(value: unknown): boolean {
+  return FLOW_URL_PATTERN.test(normalizeNonEmptyString(value))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object')
+}
+
+function resolveCdpProxyTargetId(target: CdpProxyTarget | null | undefined): string {
+  return normalizeNonEmptyString(target?.targetId)
+}
+
+function pickFlowPageTarget(targets: CdpProxyTarget[]): CdpProxyTarget | null {
+  const pages = [...targets].reverse().filter((target) => normalizeNonEmptyString(target.type) === 'page')
+  return pages.find((target) => isFlowProjectUrl(target.url)) ?? pages.find((target) => isFlowUrl(target.url)) ?? null
+}
+
+function buildFlowPageHealthScript(): string {
+  return `(() => ({
+    url: window.location.href,
+    hasHook: typeof window.__LOCAL_AI_FLOW_ORIGINAL_FETCH === 'function',
+    hasProtection: !!document.querySelector('[data-testid="protection-error"], .challenge-container, iframe[src*="captcha"]'),
+    isLoggedIn: !document.querySelector('[data-testid="sign-in-button"], a[href*="accounts.google.com/signin"]')
+  }))()`
+}
+
+function buildFlowHealthHookScript(): string {
+  return `(() => {
+    const originalFetch =
+      typeof window.__LOCAL_AI_FLOW_ORIGINAL_FETCH === 'function'
+        ? window.__LOCAL_AI_FLOW_ORIGINAL_FETCH
+        : typeof window.fetch === 'function'
+          ? window.fetch.bind(window)
+          : null;
+    if (typeof originalFetch !== 'function') {
+      return { ok: false, error: 'Flow fetch hook could not access window.fetch.' };
+    }
+    window.__LOCAL_AI_FLOW_ORIGINAL_FETCH = originalFetch;
+    window.__LOCAL_AI_FLOW_LOGS = Array.isArray(window.__LOCAL_AI_FLOW_LOGS) ? window.__LOCAL_AI_FLOW_LOGS : [];
+    window.__LOCAL_AI_FLOW_STATE =
+      window.__LOCAL_AI_FLOW_STATE && typeof window.__LOCAL_AI_FLOW_STATE === 'object'
+        ? window.__LOCAL_AI_FLOW_STATE
+        : { nextRequestId: 1 };
+    window.fetch = async (...args) => {
+      const input = args[0];
+      const init = args[1];
+      const request = input instanceof Request ? input : null;
+      const url = typeof input === 'string' ? input : request?.url || String(input);
+      const method = String(init?.method || request?.method || 'GET').toUpperCase();
+      const shouldLog = url.includes('flowMedia:batchGenerateImages');
+      const state =
+        window.__LOCAL_AI_FLOW_STATE && typeof window.__LOCAL_AI_FLOW_STATE === 'object'
+          ? window.__LOCAL_AI_FLOW_STATE
+          : { nextRequestId: 1 };
+      const requestId = shouldLog ? Number(state.nextRequestId || 1) : null;
+      if (shouldLog) {
+        state.nextRequestId = Number(state.nextRequestId || 1) + 1;
+        window.__LOCAL_AI_FLOW_LOGS.push({ ts: Date.now(), kind: 'fetch-start', requestId, url, method });
+      }
+      try {
+        const response = await originalFetch(...args);
+        if (shouldLog) {
+          const responseText = await response.clone().text().catch(() => '');
+          window.__LOCAL_AI_FLOW_LOGS.push({
+            ts: Date.now(),
+            kind: 'fetch',
+            requestId,
+            url,
+            method,
+            status: response.status,
+            responseText
+          });
+        }
+        window.__LOCAL_AI_FLOW_STATE = state;
+        return response;
+      } catch (error) {
+        if (shouldLog) {
+          window.__LOCAL_AI_FLOW_LOGS.push({
+            ts: Date.now(),
+            kind: 'fetch-error',
+            requestId,
+            url,
+            method,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        window.__LOCAL_AI_FLOW_STATE = state;
+        throw error;
+      }
+    };
+    window.fetch.__flowHookActive = true;
+    window.__LOCAL_AI_FLOW_HEALTH_HOOKED_AT = Date.now();
+    return { ok: true, hasHook: typeof window.__LOCAL_AI_FLOW_ORIGINAL_FETCH === 'function' };
+  })()`
+}
+
+function buildPassingCapabilityCheck(): LocalGatewayCapabilityCheck {
+  return {
+    status: 'passing',
+    ok: true,
+    checkedAt: Date.now(),
+    message: null
+  }
 }
 
 function resolvePrimarySystemChromeProfileDirectory(config: LocalGatewayConfig): string {
@@ -231,6 +369,7 @@ export class LocalGatewayManager {
     executablePath: string
     url?: string
   }) => Promise<void>
+  private readonly logsDir: string
   private readonly fetchImpl: typeof fetch
   private readonly isPortListening: (port: number) => Promise<boolean>
   private state: LocalGatewayState
@@ -248,6 +387,7 @@ export class LocalGatewayManager {
 
   constructor(options: CreateLocalGatewayManagerOptions) {
     this.store = options.store
+    this.logsDir = options.logsDir
     this.fetchImpl = options.healthDeps?.fetch ?? fetch
     this.isPortListening = options.healthDeps?.isPortListening ?? defaultPortListeningCheck
     this.ensureGatewayProfileImpl = options.chromeDeps?.ensureGatewayProfile ?? ensureCmsGatewayProfileRecord
@@ -485,6 +625,138 @@ export class LocalGatewayManager {
     this.imageHealthPollTimer.unref?.()
   }
 
+  private async withFlowPageHealthTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController()
+    let timeout: ReturnType<typeof setTimeout> | null = null
+
+    try {
+      return await Promise.race([
+        operation(controller.signal),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            controller.abort()
+            reject(new Error('Flow 页面状态探测超时。'))
+          }, FLOW_PAGE_HEALTH_TIMEOUT_MS)
+        })
+      ])
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout)
+      }
+    }
+  }
+
+  private async fetchCdpProxyJson<T>(
+    path: string,
+    init: RequestInit | undefined,
+    signal: AbortSignal
+  ): Promise<T> {
+    const response = await this.fetchImpl(`${CDP_PROXY_BASE_URL}${path}`, {
+      ...(init ?? {}),
+      signal
+    })
+    const payload = typeof response.json === 'function' ? await response.json().catch(() => null) : null
+
+    if (!response.ok) {
+      const message = isRecord(payload) && typeof payload.error === 'string' ? payload.error.trim() : ''
+      throw new Error(message || `CDP proxy request failed: HTTP ${response.status}`)
+    }
+
+    return payload as T
+  }
+
+  private async listFlowCdpTargets(signal: AbortSignal): Promise<CdpProxyTarget[]> {
+    const payload = await this.fetchCdpProxyJson<unknown[]>('/targets', undefined, signal)
+    if (!Array.isArray(payload)) {
+      throw new Error('CDP proxy targets response was not an array.')
+    }
+    return payload as CdpProxyTarget[]
+  }
+
+  private async evalFlowCdpValue<T>(
+    targetId: string,
+    expression: string,
+    signal: AbortSignal
+  ): Promise<T> {
+    const payload = await this.fetchCdpProxyJson<CdpProxyEvalResponse<T>>(
+      `/eval?target=${encodeURIComponent(targetId)}`,
+      {
+        method: 'POST',
+        body: expression
+      },
+      signal
+    )
+
+    if (typeof payload?.error === 'string' && payload.error.trim()) {
+      throw new Error(payload.error.trim())
+    }
+
+    return payload?.value as T
+  }
+
+  private writeHealthRecoveryLog(message: string): void {
+    try {
+      mkdirSync(this.logsDir, { recursive: true })
+      appendFileSync(join(this.logsDir, 'health-recovery.log'), `${new Date().toISOString()} ${message}\n`)
+    } catch {
+      void 0
+    }
+  }
+
+  private async probeFlowPageHealth(): Promise<void> {
+    await this.withFlowPageHealthTimeout(async (signal) => {
+      const targets = await this.listFlowCdpTargets(signal)
+      const target = pickFlowPageTarget(targets)
+      const targetId = resolveCdpProxyTargetId(target)
+
+      if (!targetId || !isFlowProjectUrl(target?.url)) {
+        throw new Error('Flow 项目页未就绪，需要重新初始化本地网关图片运行时。')
+      }
+
+      const health = await this.evalFlowCdpValue<FlowPageHealthPayload>(
+        targetId,
+        buildFlowPageHealthScript(),
+        signal
+      )
+
+      if (!isFlowProjectUrl(health?.url)) {
+        throw new Error('Flow 页面已离开项目路径，需要重新初始化本地网关图片运行时。')
+      }
+
+      if (health?.hasProtection === true) {
+        this.lastError = FLOW_PROTECTION_LAST_ERROR
+        await this.refreshState()
+        return
+      }
+
+      if (health?.isLoggedIn === false) {
+        this.lastError = FLOW_LOGIN_EXPIRED_LAST_ERROR
+        await this.refreshState()
+        return
+      }
+
+      if (health?.hasHook === false) {
+        const reinjectResult = await this.evalFlowCdpValue<FlowHookReinjectPayload>(
+          targetId,
+          buildFlowHealthHookScript(),
+          signal
+        )
+        if (reinjectResult?.ok !== true || reinjectResult?.hasHook !== true) {
+          const message = normalizeNonEmptyString(reinjectResult?.error)
+          throw new Error(message || 'Flow fetch hook 重注入失败。')
+        }
+        const message = '[LocalGateway] Flow fetch hook missing during health poll; re-injected via CDP.'
+        console.info(message)
+        this.writeHealthRecoveryLog(message)
+      }
+
+      if (this.lastError === FLOW_PROTECTION_LAST_ERROR || this.lastError === FLOW_LOGIN_EXPIRED_LAST_ERROR) {
+        this.lastError = null
+        await this.refreshState()
+      }
+    })
+  }
+
   private shouldRefreshCapabilityCheck(
     check: LocalGatewayCapabilityCheck,
     probeMode: LocalGatewayProbeMode,
@@ -577,9 +849,9 @@ export class LocalGatewayManager {
                     state,
                     ['cdpProxy', 'chromeDebug'],
                     '生图运行时未就绪。'
-                  )
-                }
-              : await probeLocalGatewayImageCapability({ fetch: this.fetchImpl })
+                )
+              }
+            : buildPassingCapabilityCheck()
       }
 
       this.capabilityChecks = nextChecks
@@ -609,6 +881,13 @@ export class LocalGatewayManager {
         return
       }
       if (isLocalGatewayImageRuntimeReady({ config, services: state.services })) {
+        try {
+          await this.probeFlowPageHealth()
+        } catch {
+          await this.initializeGateway({
+            smokeImage: false
+          })
+        }
         return
       }
       await this.initializeGateway({
@@ -702,7 +981,10 @@ export class LocalGatewayManager {
       CHROME_DEFAULT_USER_DATA_DIR: target.userDataDir,
       CHROME_APP_BIN: target.executablePath,
       CHROME_DEBUG_USER_DATA_DIR: resolveLocalGatewayDedicatedChromeUserDataDir(bundlePath),
-      LOCAL_AI_GATEWAY_ALLOW_DEDICATED_CHROME: '1',
+      // System Chrome selections should stay on the real profile instead of silently mirroring into
+      // the dedicated runtime copy. CMS-managed gateway profiles still allow the dedicated fallback.
+      LOCAL_AI_GATEWAY_ALLOW_DEDICATED_CHROME:
+        target.kind === 'cms' && config.allowDedicatedChrome ? '1' : '0',
       LOCAL_AI_GATEWAY_CHROME_DEBUG_PORT: String(resolveLocalGatewayChromeDebugPort()),
       CDP_PROXY_CHROME_PORT: String(resolveLocalGatewayChromeDebugPort()),
       CDP_PROXY_CHROME_USER_DATA_DIR: resolveLocalGatewayDedicatedChromeUserDataDir(bundlePath),
