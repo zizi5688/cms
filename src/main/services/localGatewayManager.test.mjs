@@ -192,6 +192,71 @@ test('LocalGatewayManager reports services_ready when core services are healthy'
   rmSync(root, { recursive: true, force: true })
 })
 
+test('LocalGatewayManager image capability refresh does not send a real Flow generation request', async () => {
+  const root = join(tmpdir(), `local-gateway-image-capability-${Date.now()}`)
+  createConfiguredBundleRoot(root)
+  const requestedUrls = []
+
+  const manager = new LocalGatewayManager({
+    store: createStore({
+      localGateway: {
+        enabled: true,
+        bundlePath: root,
+        autoStartOnAppLaunch: false,
+        startAdminUi: true,
+        startCdpProxy: true,
+        gatewayCmsProfileId: 'cms-gateway-profile'
+      }
+    }),
+    logsDir: join(root, 'logs'),
+    healthDeps: {
+      fetch: async (url) => {
+        const normalized = String(url)
+        requestedUrls.push(normalized)
+        if (normalized.includes('flow-web-image:generateContent')) {
+          throw new Error('image capability refresh must not mutate Flow by sending a generation request')
+        }
+        if (normalized.includes('gemini-web-chat:generateContent')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              candidates: [
+                {
+                  content: {
+                    parts: [{ text: 'OK' }]
+                  }
+                }
+              ]
+            })
+          }
+        }
+        if (normalized.includes('3456/health')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ connected: true })
+          }
+        }
+        return { ok: true, status: 200 }
+      },
+      isPortListening: async () => true
+    }
+  })
+
+  const state = await manager.getUiState({ probeMode: 'force' })
+
+  assert.equal(state.capabilityChecks.image.status, 'passing')
+  assert.equal(state.capabilityChecks.image.ok, true)
+  assert.equal(state.capabilityChecks.image.message, null)
+  assert.equal(
+    requestedUrls.some((url) => url.includes('flow-web-image:generateContent')),
+    false
+  )
+
+  rmSync(root, { recursive: true, force: true })
+})
+
 test('LocalGatewayManager initializeGateway records startup time after bootstrap succeeds', async (t) => {
   const root = join(tmpdir(), `local-gateway-init-success-${Date.now()}`)
   createConfiguredBundleRoot(root)

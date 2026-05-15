@@ -28,8 +28,7 @@ import {
 } from './localGatewayHealth.ts'
 import {
   createDefaultLocalGatewayCapabilityChecks,
-  probeLocalGatewayChatCapability,
-  probeLocalGatewayImageCapability
+  probeLocalGatewayChatCapability
 } from './localGatewayCapabilityChecks.ts'
 import {
   listLocalGatewayAccounts as fetchLocalGatewayAccounts,
@@ -225,6 +224,15 @@ function buildFlowHealthHookScript(): string {
     window.__LOCAL_AI_FLOW_HEALTH_HOOKED_AT = Date.now();
     return { ok: true, hasHook: typeof window.__LOCAL_AI_FLOW_ORIGINAL_FETCH === 'function' };
   })()`
+}
+
+function buildPassingCapabilityCheck(): LocalGatewayCapabilityCheck {
+  return {
+    status: 'passing',
+    ok: true,
+    checkedAt: Date.now(),
+    message: null
+  }
 }
 
 function resolvePrimarySystemChromeProfileDirectory(config: LocalGatewayConfig): string {
@@ -841,9 +849,9 @@ export class LocalGatewayManager {
                     state,
                     ['cdpProxy', 'chromeDebug'],
                     '生图运行时未就绪。'
-                  )
-                }
-              : await probeLocalGatewayImageCapability({ fetch: this.fetchImpl })
+                )
+              }
+            : buildPassingCapabilityCheck()
       }
 
       this.capabilityChecks = nextChecks
